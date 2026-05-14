@@ -1,0 +1,15 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境 (如果有)
+venv/
+env/
+
+# IDE 配置文件
+.vscode/
+.idea/
+
+# ⚠️ 极其重要：忽略你的私密配置文件
+core/config.yaml
