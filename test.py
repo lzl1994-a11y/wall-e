@@ -6,7 +6,7 @@ import re     # 🚀 新增：引入正则表达式模块，用于文本清洗
 
 from services.llm_service import LLMService
 from services.tts_service import TTSService
-import services.mcp_service as mcp
+
 def main():
     print("🚀 正在初始化大模型服务...")
     try:
