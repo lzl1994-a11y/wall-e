@@ -1,193 +1,314 @@
 #!/usr/bin/env python3
+import json
+import queue
+import re
+import threading
+import traceback
+import uuid
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-import json
-import re
+from pypinyin import Style, pinyin
 
-# 引入拼音转换库
-from pypinyin import pinyin, Style
-
-# 从你的 services/llm_service.py 中导入大模型底层驱动
 from services.llm_service import LLMService
 
+
 class LLMBrainNode(Node):
+    CORRECTION_LABELS = {
+        "\u4fee\u6b63\u6587\u672c",
+        "\u7ea0\u9519\u6587\u672c",
+        "\u6821\u6b63\u6587\u672c",
+        "\u8bc6\u522b\u4fee\u6b63",
+        "\u4fee\u6b63\u540e\u6587\u672c",
+        "corrected_text",
+        "corrected text",
+    }
+    TTS_CLEAN_RE = re.compile(
+        "[^\\w\\s\u4e00-\u9fa5\uff0c\u3002\uff1f\uff01\u3001\uff1a\uff1b\u201c\u201d\uff08\uff09\u300a\u300b.,?!]"
+    )
+
     def __init__(self):
         super().__init__('walle_llm_brain')
-        
-        # 1. 初始化底层大模型服务层
+
         try:
             self.llm = LLMService()
-            self.get_logger().info('✅ 大模型服务层底层初始化成功')
+            self.get_logger().info('LLM service initialized.')
         except Exception as e:
-            self.get_logger().error(f'🔴 大模型服务层初始化失败: {e}')
+            self.get_logger().error(f'LLM service initialization failed: {e}')
             return
 
         self.chat_history = []
-        self.punctuations = {'。', '？', '.', '?', '！', '!'}
+        self.punctuations = {'\u3002', '\uff1f', '.', '?', '\uff01', '!'}
 
-        # 2. 订阅语音识别结果话题 (STT 节点 -> 本节点)
         self.voice_subscription = self.create_subscription(
             String,
             'voice_text',
             self.voice_callback,
-            10
+            10,
         )
-
-        # 3. 声明发布者：发给语音播报话题 (本节点 -> TTS 节点)
         self.tts_publisher = self.create_publisher(String, 'tts_text', 10)
-        
-        # 4. 声明发布者：发给动作执行话题 (本节点 -> 动作/底盘/舵机节点)
         self.action_publisher = self.create_publisher(String, 'action_cmd', 10)
-
-        # 🌟 5. 新增发布者：发布纠错后的完美文本话题 (本节点 -> 屏幕/UI/日志节点)
         self.corrected_publisher = self.create_publisher(String, 'corrected_text', 10)
-
-        # 🌟 新增发布者：专门发给串口下位机的完整 AI 回复
         self.full_ai_publisher = self.create_publisher(String, 'full_ai_text', 10)
+        self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
+
+        self._request_queue = queue.Queue(maxsize=8)
+        self._worker_running = True
+        self._worker_thread = threading.Thread(
+            target=self._llm_worker,
+            name='llm-worker',
+            daemon=True,
+        )
+        self._worker_thread.start()
 
     def voice_callback(self, msg):
-        """当语音识别节点（STT）监听到完整句子时，自动触发的大脑思考回调"""
-        user_prompt = msg.data
+        """Queue the request so the ROS callback thread is never blocked by LLM I/O."""
+        user_prompt = (msg.data or '').strip()
         if not user_prompt:
             return
-            
-        self.get_logger().info(f'🧠 [大脑收到原始听觉]: "{user_prompt}"')
-        
-        # 1. 瞬间生成拼音对照表
+
+        turn_id = uuid.uuid4().hex[:12]
+        self.get_logger().info(f'[{turn_id}] Voice text received: {user_prompt}')
+
+        try:
+            self._request_queue.put_nowait({
+                'turn_id': turn_id,
+                'user_prompt': user_prompt,
+            })
+        except queue.Full:
+            self.get_logger().error('LLM request queue is full; dropped this voice input.')
+
+    def _llm_worker(self):
+        while self._worker_running:
+            try:
+                task = self._request_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if task is None:
+                self._request_queue.task_done()
+                continue
+
+            try:
+                self._process_voice_task(task['turn_id'], task['user_prompt'])
+            except Exception as e:
+                self.get_logger().error(f'Unhandled LLM worker error: {e}\n{traceback.format_exc()}')
+                self._publish_screen_dialog(
+                    task.get('turn_id', ''),
+                    task.get('user_prompt', ''),
+                    '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002',
+                    [],
+                    error=str(e),
+                )
+            finally:
+                self._request_queue.task_done()
+
+    def _process_voice_task(self, turn_id, user_prompt):
         py_list = pinyin(user_prompt, style=Style.NORMAL)
-        py_str = " ".join([item[0] for item in py_list])
-        
-        # 2. 🌟 升级版增强 Prompt：强行规范大模型的输出首行格式
-        # 2. 🌟 究极增强版 Prompt：铁腕规范大模型的思考与输出格式
+        py_str = ' '.join([item[0] for item in py_list])
+
         augmented_prompt = (
-            f"【原始语音识别文本】: \"{user_prompt}\"\n"
-            f"【参考拼音对照表】: {py_str}\n\n"
-            f"【核心指令与输出规范】（你必须严格遵守以下2条铁律，不可偏废）：\n"
-            f"1. 纠错与首行拦截格式：你的回复的**第一行**，必须且只能是你结合拼音、上下文语境纠正后的标准文本。格式固定为：【修正文本】: [纠正后的文本]，随后**立刻紧跟一个换行符**（\\n）。绝对不能把这几个字漏掉，也不能在前面加任何前缀。\n"
-            f"2. 意图响应：从**第二行**开始，根据你纠正后的真实意图，给出你作为一个实体机器人的正常对话回复，或者直接调用合适的动作工具。\n\n"
-            f"请开始你的思考与响应："
+            f"\u3010\u539f\u59cb\u8bed\u97f3\u8bc6\u522b\u6587\u672c\u3011: \"{user_prompt}\"\n"
+            f"\u3010\u53c2\u8003\u62fc\u97f3\u5bf9\u7167\u8868\u3011: {py_str}\n\n"
+            f"\u3010\u6838\u5fc3\u6307\u4ee4\u4e0e\u8f93\u51fa\u89c4\u8303\u3011\uff08\u4f60\u5fc5\u987b\u4e25\u683c\u9075\u5b88\u4ee5\u4e0b2\u6761\u94c1\u5f8b\uff0c\u4e0d\u53ef\u504f\u5e9f\uff09\uff1a\n"
+            f"1. \u7ea0\u9519\u4e0e\u9996\u884c\u62e6\u622a\u683c\u5f0f\uff1a\u4f60\u7684\u56de\u590d\u7684\u7b2c\u4e00\u884c\u5fc5\u987b\u662f\u7ea0\u6b63\u540e\u7684\u6807\u51c6\u6587\u672c\u3002"
+            f"\u63a8\u8350\u683c\u5f0f\u4e3a\uff1a\u3010\u4fee\u6b63\u6587\u672c\u3011: [\u7ea0\u6b63\u540e\u7684\u6587\u672c]\uff0c\u968f\u540e\u7acb\u523b\u6362\u884c\u3002\n"
+            f"2. \u610f\u56fe\u54cd\u5e94\uff1a\u4ece\u7b2c\u4e8c\u884c\u5f00\u59cb\uff0c\u6839\u636e\u7ea0\u6b63\u540e\u7684\u771f\u5b9e\u610f\u56fe\u7ed9\u51fa\u6b63\u5e38\u5bf9\u8bdd\u56de\u590d\uff0c"
+            f"\u6216\u8005\u76f4\u63a5\u8c03\u7528\u5408\u9002\u7684\u52a8\u4f5c\u5de5\u5177\u3002\n\n"
+            f"\u8bf7\u5f00\u59cb\u4f60\u7684\u601d\u8003\u4e0e\u54cd\u5e94\uff1a"
         )
-        
-        self.get_logger().info(f'💡 [提示词已注入拼音与纠错规范]，正在请求大模型...')
-        
-        text_buffer = ""
-        sentence_buffer = ""
+
+        self.get_logger().info(f'[{turn_id}] Sending request to LLM...')
+
+        text_buffer = ''
+        sentence_buffer = ''
         punc_count = 0
-        
-        # 🌟 状态控制变量：用于首行拦截
         corrected_text_extracted = False
-        corrected_text = ""
-        
-        # 3. 传入加强版 prompt 让模型思考
-        stream = self.llm.chat_stream(augmented_prompt, self.chat_history)
-        
-        for data in stream:
-            # ==========================================
-            # 语音通道：处理大模型生成的流式聊天文本
-            # ==========================================
-            if data["type"] == "text":
-                chunk = data["content"]
-                text_buffer += chunk
-                sentence_buffer += chunk
-                
-                # 🌟 核心高能拦截算法：只在开头执行，捕获【修正文本】行
-                if not corrected_text_extracted:
-                    if "\n" in sentence_buffer:
-                        parts = sentence_buffer.split("\n", 1)
-                        first_line = parts[0].strip()
-                        
-                        if "【修正文本】:" in first_line:
-                            # 提取出冒号后面的纯净正确文本
-                            corrected_text = first_line.replace("【修正文本】:", "").strip()
-                            
-                            # 广播到 ROS 2 的 corrected_text 话题中
-                            corr_msg = String()
-                            corr_msg.data = corrected_text
-                            self.corrected_publisher.publish(corr_msg)
-                            self.get_logger().info(f'✨ [文本纠错成功] -> 原文: "{user_prompt}" | 修正后: "{corrected_text}"')
-                            
-                            # 🧠 极其关键：把第一行从缓冲区里无感剥离！剩下的才是真正要给 TTS 播报的对白
-                            sentence_buffer = parts[1] if len(parts) > 1 else ""
+        corrected_text = ''
+        corrected_text_published = False
+        actions = []
+
+        def publish_corrected(value):
+            nonlocal corrected_text, corrected_text_published
+            corrected_text = (value or user_prompt).strip() or user_prompt
+            corrected_text_published = True
+            msg = String()
+            msg.data = corrected_text
+            self.corrected_publisher.publish(msg)
+            self.get_logger().info(
+                f'[{turn_id}] Corrected text: raw="{user_prompt}" corrected="{corrected_text}"'
+            )
+
+        try:
+            stream = self.llm.chat_stream(augmented_prompt, list(self.chat_history))
+
+            for data in stream:
+                data_type = data.get('type')
+
+                if data_type == 'text':
+                    chunk = data.get('content', '')
+                    text_buffer += chunk
+                    sentence_buffer += chunk
+
+                    # Keep the existing first-line split idea, but accept several label variants.
+                    if not corrected_text_extracted:
+                        if '\n' in sentence_buffer:
+                            parts = sentence_buffer.split('\n', 1)
+                            first_line = parts[0].strip()
+                            extracted = self._extract_corrected_text(first_line)
+
+                            if extracted:
+                                publish_corrected(extracted)
+                                sentence_buffer = parts[1] if len(parts) > 1 else ''
+                            else:
+                                publish_corrected(user_prompt)
+
+                            corrected_text_extracted = True
+                        elif len(sentence_buffer) > 60:
+                            publish_corrected(user_prompt)
                             corrected_text_extracted = True
                         else:
-                            # 防御性逻辑：如果模型没听话首行没带标签，直接放行防止卡死
-                            corrected_text_extracted = True
-                    elif len(sentence_buffer) > 60:
-                        # 防御性逻辑：攒了60个字还没换行，说明模型没用换行，强行放行处理
-                        corrected_text_extracted = True
-                    else:
-                        # 换行符还没出来，继续攒着首行，不往下走 TTS 的标点切分，防止把控制台标签误播报
-                        continue
-                
-                # --- 下面进入正常的 TTS 句子切分与净化分发流 ---
-                for char in chunk:
-                    # 如果当前字符还在第一行没处理完的碎碎片里，跳过
-                    if not corrected_text_extracted:
-                        break
-                        
-                    if char in self.punctuations:
-                        punc_count += 1
-                        
-                    if punc_count >= 2:
-                        clean_sentence = sentence_buffer.strip()
-                        # 剔除 Emoji 等干扰项
-                        tts_safe = re.sub(r'[^\w\s\u4e00-\u9fa5，。？！、：；“”（）《》.,?!]', '', clean_sentence)
-                        
-                        if tts_safe.strip():
-                            out_msg = String()
-                            out_msg.data = tts_safe.strip()
-                            self.tts_publisher.publish(out_msg)
-                            self.get_logger().info(f'📤 [分发单句语音]: {out_msg.data}')
-                        
-                        sentence_buffer = ""
-                        punc_count = 0
-                        
-            # ==========================================
-            # 动作通道：处理工具/动作调用
-            # ==========================================
-            elif data["type"] == "tool_call":
-                self.get_logger().info(f'⚡ [决策出动作指令]: 技能名称 = {data["name"]}')
-                action_msg = String()
-                action_msg.data = json.dumps({
-                    "name": data["name"],
-                    "arguments": data["arguments"]
-                })
-                self.action_publisher.publish(action_msg)
+                            continue
 
-        # 扫尾工作：流式输出结束后，处理末尾漏掉的文本
+                    for char in chunk:
+                        if not corrected_text_extracted:
+                            break
+
+                        if char in self.punctuations:
+                            punc_count += 1
+
+                        if punc_count >= 2:
+                            clean_sentence = sentence_buffer.strip()
+                            tts_safe = self.TTS_CLEAN_RE.sub('', clean_sentence)
+
+                            if tts_safe.strip():
+                                out_msg = String()
+                                out_msg.data = tts_safe.strip()
+                                self.tts_publisher.publish(out_msg)
+                                self.get_logger().info(f'[{turn_id}] Published TTS sentence: {out_msg.data}')
+
+                            sentence_buffer = ''
+                            punc_count = 0
+
+                elif data_type == 'tool_call':
+                    action_payload = {
+                        'turn_id': turn_id,
+                        'name': data.get('name'),
+                        'arguments': data.get('arguments', '{}'),
+                    }
+                    actions.append(action_payload)
+
+                    self.get_logger().info(f'[{turn_id}] Tool call: {action_payload["name"]}')
+                    action_msg = String()
+                    action_msg.data = json.dumps(action_payload, ensure_ascii=False)
+                    self.action_publisher.publish(action_msg)
+
+        except Exception as e:
+            self.get_logger().error(f'[{turn_id}] LLM request/stream failed: {e}\n{traceback.format_exc()}')
+            if not corrected_text_published:
+                publish_corrected(user_prompt)
+            failure_text = '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002'
+            self._publish_screen_dialog(turn_id, corrected_text or user_prompt, failure_text, actions, error=str(e))
+            return
+
+        if not corrected_text_published:
+            publish_corrected(user_prompt)
+
         clean_tail = sentence_buffer.strip()
         if clean_tail:
-            tts_safe_tail = re.sub(r'[^\w\s\u4e00-\u9fa5，。？！、：；“”（）《》.,?!]', '', clean_tail)
+            tts_safe_tail = self.TTS_CLEAN_RE.sub('', clean_tail)
             if tts_safe_tail.strip():
                 out_msg = String()
                 out_msg.data = tts_safe_tail.strip()
                 self.tts_publisher.publish(out_msg)
-                self.get_logger().info(f'📤 [分发尾部语音]: {out_msg.data}')
-
-        # ==========================================
-        # 🌟 记忆净化：用修正后的正确文本覆盖历史记录
-        # ==========================================
-        # 如果成功提取到了修正文本，记忆里就存绝对正确的文字；否则降级存原话
+                self.get_logger().info(f'[{turn_id}] Published TTS tail: {out_msg.data}')
 
         final_user_memory = corrected_text if corrected_text else user_prompt
-        self.chat_history.append({"role": "user", "content": final_user_memory})
-        
-        # 保存大模型的回答历史（需要过滤掉开头的【修正文本】行，保持历史干净）
-        clean_assistant_memory = text_buffer
-        if "【修正文本】:" in clean_assistant_memory and "\n" in clean_assistant_memory:
-            clean_assistant_memory = clean_assistant_memory.split("\n", 1)[1]
-            
-        if clean_assistant_memory.strip():
-            clean_text = clean_assistant_memory.strip()
-            self.chat_history.append({"role": "assistant", "content": clean_text})
-            
-            # 👇 增加这 3 行代码：把完整的干净文本发布给串口节点
+        self.chat_history.append({'role': 'user', 'content': final_user_memory})
+
+        clean_assistant_memory = self._strip_correction_line(text_buffer)
+        clean_text = clean_assistant_memory.strip()
+        if clean_text:
+            self.chat_history.append({'role': 'assistant', 'content': clean_text})
+
             full_msg = String()
             full_msg.data = clean_text
             self.full_ai_publisher.publish(full_msg)
-        
-       
+
+        self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
+
+    def _extract_corrected_text(self, first_line):
+        first_line = (first_line or '').strip()
+        if not first_line:
+            return None
+
+        cleaned = first_line.lstrip(' \t>*-#')
+
+        label = ''
+        value = ''
+        if cleaned.startswith('\u3010') and '\u3011' in cleaned:
+            label, value = cleaned[1:].split('\u3011', 1)
+        elif cleaned.startswith('[') and ']' in cleaned:
+            label, value = cleaned[1:].split(']', 1)
+        else:
+            value = cleaned
+
+        if label:
+            label = label.strip().lower()
+            if label not in self.CORRECTION_LABELS:
+                return None
+            value = value.lstrip(' \t:\uff1a')
+            return value.strip().strip('"\u201c\u201d') or None
+
+        # Fallbacks for plain labeled responses, e.g. corrected_text: hello.
+        for sep in (':', '\uff1a'):
+            if sep not in value:
+                continue
+            maybe_label, maybe_text = value.split(sep, 1)
+            if maybe_label.strip().lower() in self.CORRECTION_LABELS:
+                return maybe_text.strip().strip('"\u201c\u201d') or None
+
+        for label in self.CORRECTION_LABELS:
+            if value.lower().startswith(label.lower()):
+                maybe_text = value[len(label):].strip(' \t:\uff1a')
+                return maybe_text.strip().strip('"\u201c\u201d') or None
+
+        return None
+
+    def _strip_correction_line(self, text):
+        if '\n' not in text:
+            return text
+        first_line, rest = text.split('\n', 1)
+        if self._extract_corrected_text(first_line):
+            return rest
+        return text
+
+    def _publish_screen_dialog(self, turn_id, corrected_text, ai_text, actions, error=None):
+        payload = {
+            'turn_id': turn_id,
+            'corrected_text': corrected_text or '',
+            'ai_text': ai_text or '',
+            'actions': actions or [],
+        }
+        if error:
+            payload['error'] = error
+
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.screen_dialog_publisher.publish(msg)
+        self.get_logger().info(f'[{turn_id}] Published atomic screen dialog.')
+
+    def destroy_node(self):
+        self._worker_running = False
+        if hasattr(self, '_request_queue'):
+            try:
+                self._request_queue.put_nowait(None)
+            except queue.Full:
+                pass
+        if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=1.0)
+        super().destroy_node()
 
 
 def main(args=None):
@@ -201,5 +322,7 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 
+
 if __name__ == '__main__':
     main()
+
