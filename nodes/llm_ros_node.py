@@ -31,16 +31,14 @@ class LLMBrainNode(Node):
     def __init__(self):
         super().__init__('walle_llm_brain')
 
-        try:
-            self.llm = LLMService()
-            self.get_logger().info('LLM service initialized.')
-        except Exception as e:
-            self.get_logger().error(f'LLM service initialization failed: {e}')
-            return
-
+        self.llm = None
         self.chat_history = []
-        self.punctuations = {'\u3002', '\uff1f', '.', '?', '\uff01', '!'}
+        self.punctuations = {'。', '？', '.', '?', '！', '!'}
+        self._request_queue = queue.Queue(maxsize=8)
+        self._worker_running = False
 
+        # Create ROS endpoints before the slow LLM client init. This lets DDS
+        # discover `voice_text` while the model service is warming up.
         self.voice_subscription = self.create_subscription(
             String,
             'voice_text',
@@ -53,7 +51,13 @@ class LLMBrainNode(Node):
         self.full_ai_publisher = self.create_publisher(String, 'full_ai_text', 10)
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
 
-        self._request_queue = queue.Queue(maxsize=8)
+        try:
+            self.llm = LLMService()
+            self.get_logger().info('LLM service initialized.')
+        except Exception as e:
+            self.get_logger().error(f'LLM service initialization failed: {e}')
+            return
+
         self._worker_running = True
         self._worker_thread = threading.Thread(
             target=self._llm_worker,

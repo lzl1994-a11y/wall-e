@@ -23,17 +23,15 @@ ROOT = Path(__file__).resolve().parent
 
 
 def build_node_list(args):
-    nodes = []
+    nodes = [("llm", ROOT / "nodes" / "llm_ros_node.py")]
+
+    if not args.no_serial:
+        nodes.append(("serial", ROOT / "nodes" / "serial_ros_node.py"))
 
     if args.real_stt:
         nodes.append(("stt", ROOT / "nodes" / "stt_ros_node.py"))
     else:
         nodes.append(("keyboard_stt", ROOT / "nodes" / "keyboard_stt_node.py"))
-
-    nodes.append(("llm", ROOT / "nodes" / "llm_ros_node.py"))
-
-    if not args.no_serial:
-        nodes.append(("serial", ROOT / "nodes" / "serial_ros_node.py"))
 
     return nodes
 

@@ -6,6 +6,7 @@ topic used by `stt_ros_node.py`, so the LLM pipeline can be tested without a
 microphone.
 """
 
+import sys
 import threading
 
 import rclpy
@@ -23,10 +24,26 @@ class KeyboardSTTNode(Node):
         self.get_logger().info('Keyboard STT test node started. Type text and press Enter.')
         self.get_logger().info('Type /exit or press Ctrl+C to quit.')
 
+    def _read_line(self):
+        """Read terminal input with UTF-8/GB18030 fallback for serial/SSH consoles."""
+        sys.stdout.write('voice_text> ')
+        sys.stdout.flush()
+
+        raw = sys.stdin.buffer.readline()
+        if raw == b'':
+            raise EOFError
+
+        for encoding in ('utf-8', 'gb18030', 'gbk'):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode('utf-8', errors='replace')
+
     def _input_loop(self):
         while self._running and rclpy.ok():
             try:
-                text = input('voice_text> ').strip()
+                text = self._read_line().strip()
             except (EOFError, KeyboardInterrupt):
                 self._running = False
                 rclpy.shutdown()
