@@ -29,6 +29,11 @@ class STTService:
             joiner=f"{self.model_dir}/joiner-epoch-99-avg-1.onnx",
             # sherpa-onnx requires modified_beam_search when hotwords are enabled.
             decoding_method="modified_beam_search",
+            # Turn partial streaming text into final sentences after trailing silence.
+            enable_endpoint_detection=True,
+            rule1_min_trailing_silence=2.4,
+            rule2_min_trailing_silence=1.2,
+            rule3_min_utterance_length=20.0,
             num_threads=1,
             sample_rate=16000,
             feature_dim=80,
