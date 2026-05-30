@@ -27,6 +27,8 @@ class STTService:
             encoder=f"{self.model_dir}/encoder-epoch-99-avg-1.int8.onnx",
             decoder=f"{self.model_dir}/decoder-epoch-99-avg-1.onnx",
             joiner=f"{self.model_dir}/joiner-epoch-99-avg-1.onnx",
+            # sherpa-onnx requires modified_beam_search when hotwords are enabled.
+            decoding_method="modified_beam_search",
             num_threads=1,
             sample_rate=16000,
             feature_dim=80,
