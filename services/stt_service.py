@@ -1,5 +1,6 @@
 # services/stt_service.py
 import queue
+import re
 import sys
 import threading
 import time
@@ -10,6 +11,9 @@ import sounddevice as sd
 
 class STTService:
     """Speech-to-text service with VAD endpoint detection."""
+    SINGLE_ASCII_RE = re.compile(r"[A-Za-z]")
+    MIXED_CJK_NOISE_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]{1,2}(?=[\u4e00-\u9fff])|(?<=[\u4e00-\u9fff])[A-Za-z]{1,2}(?![A-Za-z])")
+    SINGLE_TOKEN_RE = re.compile(r"[A-Za-z]{1,2}")
 
     def __init__(self, model_dir=r"F:\well-e-bot\sherpa-onnx", on_sentence_received=None):
         self.model_dir = model_dir
@@ -19,7 +23,14 @@ class STTService:
         self.audio_stream = None
         self.audio_queue = queue.Queue(maxsize=80)
         self._stream_lock = threading.Lock()
+        self._voice_state_lock = threading.Lock()
         self._listen_thread = None
+        # Use audio energy as the main guard against short noise bursts that
+        # otherwise get decoded into stray letters such as "A" or "Y".
+        self.voice_rms_threshold = 0.015
+        self.min_voiced_duration_sec = 0.35
+        self.min_single_ascii_duration_sec = 0.55
+        self._voiced_duration_sec = 0.0
 
         print("[STT] Loading local speech recognition engine...")
         self.recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
@@ -64,6 +75,11 @@ class STTService:
             return
 
         samples = indata.copy().reshape(-1)
+        if len(samples):
+            rms = float((samples * samples).mean() ** 0.5)
+            if rms >= self.voice_rms_threshold:
+                self._mark_voiced(len(samples) / 16000.0)
+
         try:
             self.audio_queue.put_nowait(samples)
         except queue.Full:
@@ -93,6 +109,46 @@ class STTService:
             except queue.Empty:
                 break
 
+    def _mark_voiced(self, seconds):
+        with self._voice_state_lock:
+            self._voiced_duration_sec += seconds
+
+    def _take_voiced_duration(self):
+        with self._voice_state_lock:
+            voiced_duration = self._voiced_duration_sec
+            self._voiced_duration_sec = 0.0
+        return voiced_duration
+
+    def _clean_sentence(self, sentence):
+        sentence = (sentence or "").strip()
+        if not sentence:
+            return ""
+
+        has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in sentence)
+        if not has_cjk:
+            return re.sub(r"\s+", " ", sentence).strip()
+
+        sentence = self.MIXED_CJK_NOISE_RE.sub(" ", sentence)
+        tokens = [
+            token for token in sentence.split()
+            if not self.SINGLE_TOKEN_RE.fullmatch(token)
+        ]
+        sentence = "".join(tokens) if tokens else sentence
+        sentence = re.sub(r"\s+", " ", sentence).strip()
+        return sentence
+
+    def _should_publish_sentence(self, sentence, voiced_duration_sec):
+        if not sentence:
+            return False
+
+        if voiced_duration_sec < self.min_voiced_duration_sec:
+            return False
+
+        if self.SINGLE_ASCII_RE.fullmatch(sentence):
+            return voiced_duration_sec >= self.min_single_ascii_duration_sec
+
+        return True
+
     def _process_loop(self):
         """Decode thread: the only thread that touches recognizer stream/decode/reset."""
         last_text = ""
@@ -119,8 +175,15 @@ class STTService:
                     last_text = current_text
 
                 if self.recognizer.is_endpoint(self.stream):
-                    if current_text.strip():
-                        sentence = current_text.strip()
+                    voiced_duration_sec = self._take_voiced_duration()
+                    cleaned_sentence = self._clean_sentence(current_text)
+                    if self._should_publish_sentence(cleaned_sentence, voiced_duration_sec):
+                        sentence = cleaned_sentence
+                    elif cleaned_sentence:
+                        print(
+                            f"\n[STT] Dropped noisy/short utterance: "
+                            f"{cleaned_sentence!r} ({voiced_duration_sec:.2f}s voiced)"
+                        )
 
                     self.recognizer.reset(self.stream)
                     last_text = ""
@@ -139,12 +202,14 @@ class STTService:
         """Pause listening while the robot speaks."""
         self.is_paused = True
         self._clear_audio_queue()
+        self._take_voiced_duration()
 
     def resume(self):
         """Resume listening with clean buffers."""
         self._clear_audio_queue()
         with self._stream_lock:
             self.recognizer.reset(self.stream)
+        self._take_voiced_duration()
         self.is_paused = False
 
     def stop(self):
