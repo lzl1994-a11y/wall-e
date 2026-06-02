@@ -52,6 +52,54 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `screen_dialog` | `walle_llm_brain` | `walle_serial_node` | 一整轮完整对话包，包含 `turn_id`、`corrected_text`、`ai_text`、`actions`。目前屏幕串口节点主要看这个。 |
 | `/wall_e/vision` | `yolo_brain_node` | 当前默认无人订阅 | 视觉识别结果演示话题。 |
 
+### 视觉跟踪链路（--tracking）
+
+使能跟踪:
+
+```bash
+python launch_nodes.py --tracking
+```
+
+此时在默认链路基础上附加:
+
+```text
+wali_tracking_node  -> /servo_cmd -> servo_ros_node  -> ServoControl (舵机PCA9685)
+                    -> /motor_cmd -> motor_ros_node  -> ServoControl (电机TB6612)
+        ^
+        ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
+        ├─ /action_cmd                    (LLM 模式切换)
+        └─ /doa_angle  <- doa_ros_node <-> DOA串口
+```
+
+## 视觉跟踪节点清单
+
+| 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
+| --- | --- | --- | --- | --- | --- |
+| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机和电机控制指令。 |
+| `nodes/servo_ros_node.py` | `servo_ros_node` | `--tracking` | `/servo_cmd` | 无 | 舵机桥接节点，将 ROS 指令转发给 ServoControl.set_angle() 驱动 PCA9685 舵机。 |
+| `nodes/motor_ros_node.py` | `motor_ros_node` | `--tracking` | `/motor_cmd` | 无 | 电机桥接节点，将 ROS 指令转发给 ServoControl.set_motor() 驱动 TB6612FNG 电机。 |
+| `nodes/doa_ros_node.py` | `doa_ros_node` | `--tracking` (除非 `--no-doa`) | 无(串口直读) | `/doa_angle` | DOA 声源定位桥接节点，对接 D-DOA TDOA 模块串口，发布声源角度。 |
+
+### 视觉跟踪话题
+
+| 话题 | 发布者 | 订阅者 | 作用 |
+| --- | --- | --- | --- |
+| `/servo_cmd` | `wali_tracking_node` | `servo_ros_node` | JSON: `{"name":"head_yaw","angle":110}` |
+| `/motor_cmd` | `wali_tracking_node` | `motor_ros_node` | JSON: `{"left":{"action":1,"throttle":30},"right":{...}}` |
+| `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
+| `/hobot_mono2d_body_detection` | RDK X3 `mono2d_body_detection` | `wali_tracking_node` | `ai_msgs/PerceptionTargets`，BPU 检测结果（body/face/head/hand 框 + track_id） |
+
+### 跟随模式切换
+
+LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
+
+```json
+{"turn_id":"...","name":"set_tracking_mode","arguments":{"mode":"body_follow"}}
+{"turn_id":"...","name":"set_tracking_mode","arguments":{"mode":"face_follow"}}
+{"turn_id":"...","name":"set_vision_gate","arguments":{"enabled":true}}    // 默认 body_follow
+{"turn_id":"...","name":"set_vision_gate","arguments":{"enabled":false}}   // 关闭跟踪
+```
+
 ## 辅助服务文件
 
 这些文件不是 ROS 节点，但被节点调用：

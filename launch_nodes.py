@@ -33,6 +33,14 @@ def build_node_list(args):
     else:
         nodes.append(("keyboard_stt", ROOT / "nodes" / "keyboard_stt_node.py"))
 
+    # ── 视觉跟踪相关节点（通过 --tracking 启用）──
+    if args.tracking:
+        nodes.append(("servo_ros", ROOT / "nodes" / "servo_ros_node.py"))
+        nodes.append(("motor_ros", ROOT / "nodes" / "motor_ros_node.py"))
+        nodes.append(("tracking", ROOT / "nodes" / "wali_tracking_node.py"))
+        if not args.no_doa:
+            nodes.append(("doa_ros", ROOT / "nodes" / "doa_ros_node.py"))
+
     return nodes
 
 
@@ -94,6 +102,16 @@ def main():
         "--no-serial",
         action="store_true",
         help="Do not start serial_ros_node.py.",
+    )
+    parser.add_argument(
+        "--tracking",
+        action="store_true",
+        help="Start visual tracking nodes (servo_ros, motor_ros, wali_tracking, doa_ros).",
+    )
+    parser.add_argument(
+        "--no-doa",
+        action="store_true",
+        help="When --tracking is active, skip doa_ros_node.",
     )
     args = parser.parse_args()
 
