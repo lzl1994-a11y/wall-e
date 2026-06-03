@@ -8,7 +8,7 @@ class SerialBridge:
     瓦力纯净硬件网桥服务 (完全解耦 ROS)
     职责：连接下位机，提供最基础的发送接口，并自动管理屏幕的唤醒状态。
     """
-    def __init__(self, device_name="walle_screen", timeout_seconds=30.0):
+    def __init__(self, device_name="WALL_E_TFT", timeout_seconds=30.0):
         self.device_name = device_name
         self.timeout_seconds = timeout_seconds
         
@@ -70,7 +70,7 @@ class SerialBridge:
                 final_payload = wake_cmd + payload
                 
                 # 3. 发送给下位机 (注意编码格式)
-                self.ser.write(final_payload.encode('utf-8'))
+                self.ser.write(final_payload.encode('gbk'))
                 
                 # 4. 刷新最后发送的时间戳
                 self.last_send_time = current_time
