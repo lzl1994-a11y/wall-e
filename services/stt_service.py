@@ -27,7 +27,7 @@ class STTService:
         self._listen_thread = None
         # Use audio energy as the main guard against short noise bursts that
         # otherwise get decoded into stray letters such as "A" or "Y".
-        self.voice_rms_threshold = 0.015
+        self.voice_rms_threshold = 0.003  # ESP32-S3 UAC 输出幅度偏低，降低阈值
         self.min_voiced_duration_sec = 0.35
         self.min_single_ascii_duration_sec = 0.55
         self._voiced_duration_sec = 0.0
