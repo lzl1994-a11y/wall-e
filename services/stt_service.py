@@ -160,6 +160,11 @@ class STTService:
             sentence = None
             chunks = self._drain_audio_queue()
 
+            # 队列积压诊断：超过 20 帧说明解码跟不上音频输入
+            qsize = self.audio_queue.qsize()
+            if qsize > 20:
+                print(f"\n[STT] ⚠️ 音频队列积压 {qsize} 帧，解码可能掉队！")
+
             with self._stream_lock:
                 for samples in chunks:
                     self.stream.accept_waveform(16000, samples)
