@@ -39,17 +39,16 @@ class STTService:
             decoder=f"{self.model_dir}/decoder-epoch-99-avg-1.onnx",
             joiner=f"{self.model_dir}/joiner-epoch-99-avg-1.onnx",
             # sherpa-onnx requires modified_beam_search when hotwords are enabled.
-            decoding_method="modified_beam_search",
+            # 暂时关闭 hotwords 排查模型质量，改 greedy_search 提速
+            decoding_method="greedy_search",
             # Turn partial streaming text into final sentences after trailing silence.
             enable_endpoint_detection=True,
             rule1_min_trailing_silence=2.4,
             rule2_min_trailing_silence=1.2,
             rule3_min_utterance_length=20.0,
-            num_threads=1,
+            num_threads=2,
             sample_rate=16000,
             feature_dim=80,
-            hotwords_file=f"{self.model_dir}/hotwords.txt",
-            hotwords_score=2.5,
         )
         self.stream = self.recognizer.create_stream()
 
@@ -160,9 +159,18 @@ class STTService:
             sentence = None
             chunks = self._drain_audio_queue()
 
-            # 队列积压诊断：超过 20 帧说明解码跟不上音频输入
+            # 队列积压诊断：超过 20 帧说明解码跟不上音频输入，直接丢弃旧帧保实时性
             qsize = self.audio_queue.qsize()
-            if qsize > 20:
+            if qsize > 30:
+                print(f"\n[STT] ⚠️ 队列积压 {qsize} 帧，丢弃旧帧保实时！")
+                # 只保留最新 10 帧，其余丢弃
+                while self.audio_queue.qsize() > 10:
+                    try:
+                        self.audio_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                chunks = self._drain_audio_queue()
+            elif qsize > 20:
                 print(f"\n[STT] ⚠️ 音频队列积压 {qsize} 帧，解码可能掉队！")
 
             with self._stream_lock:
