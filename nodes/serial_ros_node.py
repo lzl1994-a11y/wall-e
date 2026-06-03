@@ -13,7 +13,7 @@ class SerialNode(Node):
         super().__init__('walle_serial_node')
 
         self.get_logger().info('Serial bridge node starting...')
-        self.bridge = SerialBridge(device_name="walle_screen")
+        self.bridge = SerialBridge(device_name="WALL_E_TFT")
 
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')

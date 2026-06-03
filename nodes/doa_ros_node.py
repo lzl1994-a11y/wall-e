@@ -19,11 +19,11 @@ class DoaRosNode(Node):
         # 通过 SerialBroker 自动发现 DOA 模块串口
         broker = SerialBroker()
         broker.scan_and_identify()
-        port = broker.get_port_for("IAM:ESP_MIC")
+        port = broker.get_port_for("ESP_MIC")
 
         if not port:
             self.get_logger().error(
-                "SerialBroker 未发现 DOA 模块 (IAM:ESP_MIC)，"
+                "SerialBroker 未发现 DOA 模块 (ESP_MIC)，"
                 "检查硬件连接和握手固件"
             )
             self._listener = None
