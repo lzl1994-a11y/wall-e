@@ -126,65 +126,57 @@ class STTService:
 
         print("[STT] ☁️ 检测到语音结束，正在请求阿里云识别...")
         
-        audio_data = b"".join(self.voice_buffer)
-        self.voice_buffer = []
-        self.silence_frames = 0
+        # 封装为标准 WAV 格式临时文件发送给云端
+        import tempfile
+        import wave
+        import os
         
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+            with wave.open(tmp_file, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2) # 16-bit
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(audio_data)
+
         try:
-            import dashscope
-            from dashscope.audio.asr import Recognition, RecognitionCallback
-            import threading
+            import requests
             
-            dashscope.api_key = self.api_key
+            headers = {
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            data = {
+                "model": "sensevoice-v1"
+            }
             
-            class STTCallback(RecognitionCallback):
-                def __init__(self):
-                    self.text = ""
-                    self.done = threading.Event()
-
-                def on_event(self, result):
-                    try:
-                        sentence = result.get_sentence()
-                        if sentence and 'text' in sentence:
-                            self.text = sentence['text']
-                    except Exception:
-                        pass
+            with open(tmp_path, "rb") as f:
+                files = {
+                    "file": ("audio.wav", f, "audio/wav")
+                }
                 
-                def on_close(self):
-                    self.done.set()
-
-                def on_error(self, message):
-                    # 避免 DashScope SDK 内部的 KeyError Bug
-                    print("[STT] 阿里云 WebSocket 连接断开或鉴权失败。请检查 API Key 或网络。")
-                    self.done.set()
-
-            cb = STTCallback()
-            recognition = Recognition(
-                model='paraformer-realtime-v1',
-                format='pcm',
-                sample_rate=16000,
-                callback=cb
-            )
-            
-            recognition.start()
-            
-            # 必须分块发送！一次性发送过大的 PCM 会导致阿里云强制断开 WebSocket 连接
-            chunk_size = 3200 # 每次发送 100ms (16000 * 2 * 0.1)
-            for i in range(0, len(audio_data), chunk_size):
-                recognition.send_audio_frame(audio_data[i:i+chunk_size])
-                time.sleep(0.01)
+                # 直接通过 HTTP 同步调用阿里云的 OpenAI 兼容接口，摆脱所有坑爹的 WebSocket 和回调！
+                response = requests.post(
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions",
+                    headers=headers,
+                    data=data,
+                    files=files,
+                    timeout=10
+                )
                 
-            recognition.stop()
-            
-            # 等待网络收尾，最多等 2 秒
-            cb.done.wait(timeout=2.0)
-            
-            text = cb.text.strip()
-            if text and self.on_sentence_received:
-                print(f"[STT] ✅ 识别结果: {text}")
-                self.on_sentence_received(text)
+            if response.status_code == 200:
+                result = response.json()
+                text = result.get('text', '').strip()
+                if text and self.on_sentence_received:
+                    print(f"[STT] ✅ 识别结果: {text}")
+                    self.on_sentence_received(text)
+            else:
+                print(f"[STT] ❌ 阿里云调用失败: HTTP {response.status_code}, {response.text}")
+                
         except Exception as e:
-            print(f"[STT] ❌ 阿里云调用失败: {e}")
+            print(f"[STT] ❌ 请求异常: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def pause(self):
         """Pause listening while the robot speaks (自听抵消)."""
