@@ -126,6 +126,10 @@ class STTService:
 
         print("[STT] ☁️ 检测到语音结束，正在请求阿里云识别...")
         
+        audio_data = b"".join(self.voice_buffer)
+        self.voice_buffer = []
+        self.silence_frames = 0
+        
         # 封装为标准 WAV 格式临时文件发送给云端
         import tempfile
         import wave
