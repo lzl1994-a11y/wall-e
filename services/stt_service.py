@@ -130,47 +130,56 @@ class STTService:
         self.voice_buffer = []
         self.silence_frames = 0
         
-        # 封装为标准 WAV 格式临时文件发送给云端
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-            tmp_path = tmp_file.name
-            with wave.open(tmp_file, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2) # 16-bit
-                wf.setframerate(self.sample_rate)
-                wf.writeframes(audio_data)
-
         try:
-            # 使用阿里云原生 dashscope SDK 调用 SenseVoice
             import dashscope
-            from dashscope.audio.asr import Recognition
+            from dashscope.audio.asr import Recognition, RecognitionCallback
+            import threading
             
             dashscope.api_key = self.api_key
             
-            # 正确用法：直接调用类方法 Recognition.call()，不要实例化
-            result = Recognition.call(
-                model='sensevoice-v1',
-                file=tmp_path,
-                format='wav', 
-                sample_rate=16000
+            class STTCallback(RecognitionCallback):
+                def __init__(self):
+                    self.text = ""
+                    self.done = threading.Event()
+
+                def on_event(self, result):
+                    try:
+                        sentence = result.get_sentence()
+                        if sentence and 'text' in sentence:
+                            self.text = sentence['text']
+                    except Exception:
+                        pass
+                
+                def on_close(self):
+                    self.done.set()
+
+                def on_error(self, message):
+                    print(f"[STT] Callback 错误: {message}")
+                    self.done.set()
+
+            cb = STTCallback()
+            # 必须实例化并传入 callback，推荐使用 paraformer-realtime-v1 以获得最好的延迟体验
+            recognition = Recognition(
+                model='paraformer-realtime-v1',
+                format='pcm',
+                sample_rate=16000,
+                callback=cb
             )
             
-            if result.status_code == 200:
-                # 解析 SenseVoice 的返回格式
-                text = ""
-                try:
-                    text = result.output['results'][0]['text']
-                except Exception:
-                    text = result.get_sentence()
-                
-                text = text.strip()
-                if text and self.on_sentence_received:
-                    print(f"[STT] ✅ 识别结果: {text}")
-                    self.on_sentence_received(text)
-            else:
-                print(f"[STT] ❌ 阿里云识别失败: HTTP {result.status_code}, 错误信息: {result.message}")
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            recognition.start()
+            # 我们直接把 VAD 截取好的一段录音发进去
+            recognition.send_audio_frame(audio_data)
+            recognition.stop()
+            
+            # 等待网络收尾，最多等 2 秒
+            cb.done.wait(timeout=2.0)
+            
+            text = cb.text.strip()
+            if text and self.on_sentence_received:
+                print(f"[STT] ✅ 识别结果: {text}")
+                self.on_sentence_received(text)
+        except Exception as e:
+            print(f"[STT] ❌ 阿里云识别失败: {e}")
 
     def pause(self):
         """Pause listening while the robot speaks (自听抵消)."""
