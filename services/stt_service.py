@@ -140,40 +140,43 @@ class STTService:
                 wf.writeframes(audio_data)
 
         try:
-            import requests
+            import dashscope
+            from dashscope.audio.asr import Recognition, RecognitionCallback
             
-            headers = {
-                "Authorization": f"Bearer {self.api_key}"
-            }
-            data = {
-                "model": "sensevoice-v1"
-            }
+            dashscope.api_key = self.api_key
             
-            with open(tmp_path, "rb") as f:
-                files = {
-                    "file": ("audio.wav", f, "audio/wav")
-                }
+            # 由于 Recognition(self) 必须要求传入一个 callback，我们放一个空的
+            class DummyCb(RecognitionCallback):
+                pass
                 
-                # 直接通过 HTTP 同步调用阿里云的 OpenAI 兼容接口，摆脱所有坑爹的 WebSocket 和回调！
-                response = requests.post(
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions",
-                    headers=headers,
-                    data=data,
-                    files=files,
-                    timeout=10
-                )
-                
-            if response.status_code == 200:
-                result = response.json()
-                text = result.get('text', '').strip()
-                if text and self.on_sentence_received:
-                    print(f"[STT] ✅ 识别结果: {text}")
-                    self.on_sentence_received(text)
-            else:
-                print(f"[STT] ❌ 阿里云调用失败: HTTP {response.status_code}, {response.text}")
+            # 实例化 Recognition，使用 paraformer-v1（非 realtime 版本，专门用来做整句短语音）
+            recognition = Recognition(
+                model='paraformer-v1',
+                format='wav',
+                sample_rate=16000,
+                callback=DummyCb()
+            )
+            
+            # 使用官方 SDK 提供的内置单文件同步上传方法（它会自动帮我们在后台分块处理，不会断开）
+            result = recognition.call(tmp_path)
+            
+            text = ""
+            sentence = result.get_sentence()
+            if sentence:
+                if isinstance(sentence, list):
+                    text = "".join(item.get('text', '') for item in sentence)
+                elif isinstance(sentence, dict):
+                    text = sentence.get('text', '')
+            
+            text = text.strip()
+            if text and self.on_sentence_received:
+                print(f"[STT] ✅ 识别结果: {text}")
+                self.on_sentence_received(text)
+            elif not text:
+                print("[STT] 阿里云未识别到有效文字 (可能是静音或噪音)。")
                 
         except Exception as e:
-            print(f"[STT] ❌ 请求异常: {e}")
+            print(f"[STT] ❌ 阿里云调用失败: {e}")
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
