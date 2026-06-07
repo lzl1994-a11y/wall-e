@@ -83,7 +83,10 @@ class STTService:
         max_silence_frames = int(self.silence_threshold / (self.frame_duration_ms / 1000.0))
         
         byte_buffer = bytearray()
-        chunk_size = self.frame_size * 2 # 16-bit 占用2个字节
+        chunk_size = self.frame_size * 2 # 16-bit 占用2个字节 (30ms = 960 bytes)
+        
+        # 专门用于攒够 100ms (3200 bytes) 后再发送的缓冲区
+        send_buffer = bytearray()
         
         import dashscope
         from dashscope.audio.asr import Recognition, RecognitionCallback
@@ -97,6 +100,7 @@ class STTService:
             if self.is_paused:
                 time.sleep(0.1)
                 byte_buffer.clear()
+                send_buffer.clear()
                 continue
 
             try:
@@ -106,7 +110,7 @@ class STTService:
             except queue.Empty:
                 pass
 
-            # 当缓冲里凑齐了完整的 30ms 帧，就进行一次 VAD 检测并流式发送
+            # 当缓冲里凑齐了完整的 30ms 帧，就进行一次 VAD 检测并准备流式发送
             while len(byte_buffer) >= chunk_size:
                 frame_bytes = bytes(byte_buffer[:chunk_size])
                 del byte_buffer[:chunk_size]
@@ -120,6 +124,7 @@ class STTService:
                     if not in_speech:
                         in_speech = True
                         self.silence_frames = 0
+                        send_buffer.clear()
                         print("[STT] 🗣️ 检测到人声，开始实时流式传输...")
                         
                         class STTCallback(RecognitionCallback):
@@ -136,7 +141,6 @@ class STTService:
                             def on_close(self):
                                 self.done.set()
                             def on_error(self, message):
-                                # 不要直接打印 message，避开 SDK 内部 KeyError:'headers' 格式化 Bug
                                 print("[STT] 阿里云流式连接结束 (已被服务器安全断开)。")
                                 self.done.set()
 
@@ -145,7 +149,8 @@ class STTService:
                             model='paraformer-realtime-v1',
                             format='pcm',
                             sample_rate=16000,
-                            callback=cb
+                            callback=cb,
+                            api_key=self.api_key # 显式传入确保子线程有权限
                         )
                         try:
                             recognition.start()
@@ -155,19 +160,46 @@ class STTService:
 
                     self.silence_frames = 0
                     if recognition:
-                        recognition.send_audio_frame(frame_bytes)
+                        send_buffer.extend(frame_bytes)
+                        # 必须攒够 100ms (3200 bytes) 再发送，防止 30ms (960 bytes) 发送太快触发阿里云防洪断连
+                        if len(send_buffer) >= 3200:
+                            try:
+                                recognition.send_audio_frame(bytes(send_buffer))
+                            except Exception as e:
+                                print(f"[STT] ⚠️ 发送失败: {e}")
+                                recognition = None
+                            send_buffer.clear()
 
                 elif in_speech:
                     self.silence_frames += 1
                     if recognition:
-                        recognition.send_audio_frame(frame_bytes)
+                        send_buffer.extend(frame_bytes)
+                        if len(send_buffer) >= 3200:
+                            try:
+                                recognition.send_audio_frame(bytes(send_buffer))
+                            except Exception as e:
+                                print(f"[STT] ⚠️ 发送失败: {e}")
+                                recognition = None
+                            send_buffer.clear()
                     
                     # 达到了断句的阈值
                     if self.silence_frames > max_silence_frames:
                         in_speech = False
                         print("[STT] ☁️ 语音结束，正在获取最终识别结果...")
                         if recognition:
-                            recognition.stop()
+                            # 发送残留的数据
+                            if len(send_buffer) > 0:
+                                try:
+                                    recognition.send_audio_frame(bytes(send_buffer))
+                                except Exception:
+                                    pass
+                                send_buffer.clear()
+                                
+                            try:
+                                recognition.stop()
+                            except Exception:
+                                pass
+                                
                             cb.done.wait(timeout=3.0)
                             text = cb.text.strip()
                             if text and self.on_sentence_received:
