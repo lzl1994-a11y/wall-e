@@ -78,12 +78,20 @@ class STTService:
         return True
 
     def _process_loop(self):
-        """核心处理线程：智能拼装音频并调用 API"""
+        """核心处理线程：实时流式传输音频至云端"""
         in_speech = False
         max_silence_frames = int(self.silence_threshold / (self.frame_duration_ms / 1000.0))
         
         byte_buffer = bytearray()
         chunk_size = self.frame_size * 2 # 16-bit 占用2个字节
+        
+        import dashscope
+        from dashscope.audio.asr import Recognition, RecognitionCallback
+        import threading
+        dashscope.api_key = self.api_key
+        
+        recognition = None
+        cb = None
 
         while self.is_running:
             if self.is_paused:
@@ -98,94 +106,78 @@ class STTService:
             except queue.Empty:
                 pass
 
-            # 当缓冲里凑齐了完整的 30ms 帧，就进行一次 VAD 检测
+            # 当缓冲里凑齐了完整的 30ms 帧，就进行一次 VAD 检测并流式发送
             while len(byte_buffer) >= chunk_size:
                 frame_bytes = bytes(byte_buffer[:chunk_size])
                 del byte_buffer[:chunk_size]
 
-                is_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
+                try:
+                    is_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
+                except Exception:
+                    continue
 
                 if is_speech:
-                    in_speech = True
+                    if not in_speech:
+                        in_speech = True
+                        self.silence_frames = 0
+                        print("[STT] 🗣️ 检测到人声，开始实时流式传输...")
+                        
+                        class STTCallback(RecognitionCallback):
+                            def __init__(self):
+                                self.text = ""
+                                self.done = threading.Event()
+                            def on_event(self, result):
+                                try:
+                                    sentence = result.get_sentence()
+                                    if sentence and 'text' in sentence:
+                                        self.text = sentence['text']
+                                except Exception:
+                                    pass
+                            def on_close(self):
+                                self.done.set()
+                            def on_error(self, message):
+                                # 不要直接打印 message，避开 SDK 内部 KeyError:'headers' 格式化 Bug
+                                print("[STT] 阿里云流式连接结束 (已被服务器安全断开)。")
+                                self.done.set()
+
+                        cb = STTCallback()
+                        recognition = Recognition(
+                            model='paraformer-realtime-v1',
+                            format='pcm',
+                            sample_rate=16000,
+                            callback=cb
+                        )
+                        try:
+                            recognition.start()
+                        except Exception as e:
+                            print(f"[STT] 阿里云启动失败: {e}")
+                            recognition = None
+
                     self.silence_frames = 0
-                    self.voice_buffer.append(frame_bytes)
+                    if recognition:
+                        recognition.send_audio_frame(frame_bytes)
+
                 elif in_speech:
                     self.silence_frames += 1
-                    self.voice_buffer.append(frame_bytes)
+                    if recognition:
+                        recognition.send_audio_frame(frame_bytes)
                     
                     # 达到了断句的阈值
                     if self.silence_frames > max_silence_frames:
                         in_speech = False
-                        self._trigger_asr()
-
-    def _trigger_asr(self):
-        # 如果说话时间太短 (比如只有一点噪音)，直接抛弃
-        if len(self.voice_buffer) < (0.4 / (self.frame_duration_ms / 1000.0)):
-            self.voice_buffer = []
-            return
-
-        print("[STT] ☁️ 检测到语音结束，正在请求阿里云识别...")
-        
-        audio_data = b"".join(self.voice_buffer)
-        self.voice_buffer = []
-        self.silence_frames = 0
-        
-        try:
-            import dashscope
-            from dashscope.audio.asr import Recognition, RecognitionCallback
-            import threading
-            
-            dashscope.api_key = self.api_key
-            
-            class STTCallback(RecognitionCallback):
-                def __init__(self):
-                    self.text = ""
-                    self.done = threading.Event()
-
-                def on_event(self, result):
-                    try:
-                        sentence = result.get_sentence()
-                        if sentence and 'text' in sentence:
-                            self.text = sentence['text']
-                    except Exception:
-                        pass
-                
-                def on_close(self):
-                    self.done.set()
-
-                def on_error(self, message):
-                    print(f"[STT] 阿里云连接异常: {message}")
-                    self.done.set()
-
-            cb = STTCallback()
-            recognition = Recognition(
-                model='paraformer-realtime-v1',
-                format='pcm',
-                sample_rate=16000,
-                callback=cb
-            )
-            
-            recognition.start()
-            
-            # 手动分块发送，避开阿里云 SDK 的大文件 WebSocket 断连 Bug
-            chunk_size = 3200 # 每次发送 100ms (16000 * 2 * 0.1)
-            for i in range(0, len(audio_data), chunk_size):
-                recognition.send_audio_frame(audio_data[i:i+chunk_size])
-                # 休眠 0.02 秒。相当于 5 倍真实语速播放给服务器，兼顾极低延迟且绝不断连
-                time.sleep(0.02)
-                
-            recognition.stop()
-            cb.done.wait(timeout=3.0)
-            
-            text = cb.text.strip()
-            if text and self.on_sentence_received:
-                print(f"[STT] ✅ 识别结果: {text}")
-                self.on_sentence_received(text)
-            else:
-                print("[STT] 阿里云未能识别出文字 (可能声音太小或只有底噪)。")
-                
-        except Exception as e:
-            print(f"[STT] ❌ 请求异常: {e}")
+                        print("[STT] ☁️ 语音结束，正在获取最终识别结果...")
+                        if recognition:
+                            recognition.stop()
+                            cb.done.wait(timeout=3.0)
+                            text = cb.text.strip()
+                            if text and self.on_sentence_received:
+                                print(f"[STT] ✅ 识别结果: {text}")
+                                self.on_sentence_received(text)
+                            else:
+                                print("[STT] 阿里云未能识别出文字 (可能声音太小或只有底噪)。")
+                            
+                            recognition = None
+                            cb = None
 
     def pause(self):
         """Pause listening while the robot speaks (自听抵消)."""
