@@ -154,11 +154,11 @@ class STTService:
                     self.done.set()
 
                 def on_error(self, message):
-                    print(f"[STT] Callback 错误: {message}")
+                    # 避免 DashScope SDK 内部的 KeyError Bug
+                    print("[STT] 阿里云 WebSocket 连接断开或鉴权失败。请检查 API Key 或网络。")
                     self.done.set()
 
             cb = STTCallback()
-            # 必须实例化并传入 callback，推荐使用 paraformer-realtime-v1 以获得最好的延迟体验
             recognition = Recognition(
                 model='paraformer-realtime-v1',
                 format='pcm',
@@ -167,8 +167,13 @@ class STTService:
             )
             
             recognition.start()
-            # 我们直接把 VAD 截取好的一段录音发进去
-            recognition.send_audio_frame(audio_data)
+            
+            # 必须分块发送！一次性发送过大的 PCM 会导致阿里云强制断开 WebSocket 连接
+            chunk_size = 3200 # 每次发送 100ms (16000 * 2 * 0.1)
+            for i in range(0, len(audio_data), chunk_size):
+                recognition.send_audio_frame(audio_data[i:i+chunk_size])
+                time.sleep(0.01)
+                
             recognition.stop()
             
             # 等待网络收尾，最多等 2 秒
@@ -179,7 +184,7 @@ class STTService:
                 print(f"[STT] ✅ 识别结果: {text}")
                 self.on_sentence_received(text)
         except Exception as e:
-            print(f"[STT] ❌ 阿里云识别失败: {e}")
+            print(f"[STT] ❌ 阿里云调用失败: {e}")
 
     def pause(self):
         """Pause listening while the robot speaks (自听抵消)."""
