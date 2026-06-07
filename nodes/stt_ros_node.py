@@ -13,12 +13,11 @@ class STTNode(Node):
         # 1. 声明发布者：专往 'voice_text' 这个话题里扔字符串
         self.publisher_ = self.create_publisher(String, 'voice_text', 10)
         
-        self.get_logger().info('⏳ 正在预热 Sherpa-ONNX 听觉引擎...')
+        self.get_logger().info('⏳ 正在预热 阿里云 SenseVoice 听觉引擎...')
         
         try:
             # 2. 启动底层引擎，并把“发布消息”的动作作为回调函数塞进去
             self.stt_engine = STTService(
-                model_dir="F:/well-e-bot/sherpa-onnx", # 注意确认你的实际路径
                 on_sentence_received=self.on_speech_detected
             )
             self.stt_engine.start()

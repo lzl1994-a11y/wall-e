@@ -1,229 +1,183 @@
 # services/stt_service.py
 import queue
-import re
-import sys
 import threading
 import time
-
-import sherpa_onnx
+import wave
+import tempfile
+import os
+import yaml
+import numpy as np
 import sounddevice as sd
-
+import webrtcvad
+from openai import OpenAI
 
 class STTService:
-    """Speech-to-text service with VAD endpoint detection."""
-    SINGLE_ASCII_RE = re.compile(r"[A-Za-z]")
-    MIXED_CJK_NOISE_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]{1,2}(?=[\u4e00-\u9fff])|(?<=[\u4e00-\u9fff])[A-Za-z]{1,2}(?![A-Za-z])")
-    SINGLE_TOKEN_RE = re.compile(r"[A-Za-z]{1,2}")
-
-    def __init__(self, model_dir=r"F:\well-e-bot\sherpa-onnx", on_sentence_received=None):
-        self.model_dir = model_dir
+    """
+    [ZH] 阿里云 SenseVoice 语音识别服务 (带 WebRTC VAD 静音检测)
+         抛弃本地低效模型，利用 VAD 智能切分句子后秒级传输至云端。
+    """
+    def __init__(self, config_path="core/config.yaml", on_sentence_received=None):
         self.on_sentence_received = on_sentence_received
         self.is_running = False
         self.is_paused = False
-        self.audio_stream = None
-        self.audio_queue = queue.Queue(maxsize=80)
-        self._stream_lock = threading.Lock()
-        self._voice_state_lock = threading.Lock()
-        self._listen_thread = None
-        # Use audio energy as the main guard against short noise bursts that
-        # otherwise get decoded into stray letters such as "A" or "Y".
-        self.voice_rms_threshold = 0.003  # ESP32-S3 UAC 输出幅度偏低，降低阈值
-        self.min_voiced_duration_sec = 0.20  # 降低阈值，0.35 对短句太苛刻
-        self.min_single_ascii_duration_sec = 0.55
-        self._voiced_duration_sec = 0.0
+        
+        # 用于缓存录音的队列
+        self.audio_queue = queue.Queue(maxsize=300)
+        
+        # 1. 读取配置文件中的 API Key 和 URL
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+            
+        api_key = config['ai_settings']['api_key']
+        # 注意：SenseVoice 强制要求使用兼容模式的 v1 端点
+        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
 
-        print("[STT] Loading local speech recognition engine...")
-        self.recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
-            tokens=f"{self.model_dir}/tokens.txt",
-            encoder=f"{self.model_dir}/encoder-epoch-99-avg-1.int8.onnx",
-            decoder=f"{self.model_dir}/decoder-epoch-99-avg-1.onnx",
-            joiner=f"{self.model_dir}/joiner-epoch-99-avg-1.onnx",
-            # sherpa-onnx requires modified_beam_search when hotwords are enabled.
-            # 暂时关闭 hotwords 排查模型质量，改 greedy_search 提速
-            decoding_method="greedy_search",
-            # Turn partial streaming text into final sentences after trailing silence.
-            enable_endpoint_detection=True,
-            rule1_min_trailing_silence=2.4,
-            rule2_min_trailing_silence=1.2,
-            rule3_min_utterance_length=20.0,
-            num_threads=2,
-            sample_rate=16000,
-            feature_dim=80,
-        )
-        self.stream = self.recognizer.create_stream()
+        # 2. 初始化 WebRTC VAD (Voice Activity Detection)
+        self.sample_rate = 16000
+        # VAD 灵敏度 0-3 (3是最激进的过滤模式，只对真实人声敏感)
+        self.vad = webrtcvad.Vad(3)
+        
+        # WebRTC 强制要求帧长为 10, 20 或 30 毫秒
+        self.frame_duration_ms = 30
+        self.frame_size = int(self.sample_rate * (self.frame_duration_ms / 1000.0))
+        
+        self.silence_threshold = 0.8  # 当停止说话超过 0.8 秒后触发断句
+        self.voice_buffer = []        # 存放当前这一句话的音频切片
+        self.silence_frames = 0
+        
+        self._listen_thread = None
+        self.audio_stream = None
 
     def start(self):
         self.is_running = True
-
         self._listen_thread = threading.Thread(target=self._process_loop, daemon=True)
         self._listen_thread.start()
+
+        # [内部回调] 麦克风硬件的中断回调
+        def callback(indata, frames, time_info, status):
+            if not self.is_running or self.is_paused:
+                return
+            # 将麦克风采样的 float32 数据转成 PCM 16-bit
+            int16_data = (indata * 32767).astype(np.int16)
+            try:
+                self.audio_queue.put_nowait(int16_data.tobytes())
+            except queue.Full:
+                pass
 
         self.audio_stream = sd.InputStream(
             channels=1,
             dtype="float32",
-            samplerate=16000,
-            callback=self._audio_callback,
+            samplerate=self.sample_rate,
+            blocksize=self.frame_size, # 每次吐出 30ms (480采样点)
+            callback=callback,
         )
         self.audio_stream.start()
-        print("[STT] Speech listener started.")
-        return True
-
-    def _audio_callback(self, indata, frames, time_info, status):
-        """Audio callback only queues samples; sherpa stream is owned by decode thread."""
-        if not self.is_running or self.is_paused:
-            return
-
-        samples = indata.copy().reshape(-1)
-        if len(samples):
-            rms = float((samples * samples).mean() ** 0.5)
-            if rms >= self.voice_rms_threshold:
-                self._mark_voiced(len(samples) / 16000.0)
-
-        try:
-            self.audio_queue.put_nowait(samples)
-        except queue.Full:
-            # Keep latency bounded by dropping the oldest audio chunk.
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self.audio_queue.put_nowait(samples)
-            except queue.Full:
-                pass
-
-    def _drain_audio_queue(self):
-        chunks = []
-        while True:
-            try:
-                chunks.append(self.audio_queue.get_nowait())
-            except queue.Empty:
-                break
-        return chunks
-
-    def _clear_audio_queue(self):
-        while True:
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                break
-
-    def _mark_voiced(self, seconds):
-        with self._voice_state_lock:
-            self._voiced_duration_sec += seconds
-
-    def _take_voiced_duration(self):
-        with self._voice_state_lock:
-            voiced_duration = self._voiced_duration_sec
-            self._voiced_duration_sec = 0.0
-        return voiced_duration
-
-    def _clean_sentence(self, sentence):
-        sentence = (sentence or "").strip()
-        if not sentence:
-            return ""
-
-        has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in sentence)
-        if not has_cjk:
-            return re.sub(r"\s+", " ", sentence).strip()
-
-        sentence = self.MIXED_CJK_NOISE_RE.sub(" ", sentence)
-        tokens = [
-            token for token in sentence.split()
-            if not self.SINGLE_TOKEN_RE.fullmatch(token)
-        ]
-        sentence = "".join(tokens) if tokens else sentence
-        sentence = re.sub(r"\s+", " ", sentence).strip()
-        return sentence
-
-    def _should_publish_sentence(self, sentence, voiced_duration_sec):
-        if not sentence:
-            return False
-
-        if voiced_duration_sec < self.min_voiced_duration_sec:
-            return False
-
-        if self.SINGLE_ASCII_RE.fullmatch(sentence):
-            return voiced_duration_sec >= self.min_single_ascii_duration_sec
-
+        print("[STT] 🎙️ 阿里云 SenseVoice 语音监听已启动...")
         return True
 
     def _process_loop(self):
-        """Decode thread: the only thread that touches recognizer stream/decode/reset."""
-        last_text = ""
+        """核心处理线程：智能拼装音频并调用 API"""
+        in_speech = False
+        max_silence_frames = int(self.silence_threshold / (self.frame_duration_ms / 1000.0))
+        
+        byte_buffer = bytearray()
+        chunk_size = self.frame_size * 2 # 16-bit 占用2个字节
+
         while self.is_running:
             if self.is_paused:
                 time.sleep(0.1)
+                byte_buffer.clear()
                 continue
 
-            sentence = None
-            chunks = self._drain_audio_queue()
+            try:
+                # 每隔 100ms 拉取一次队列
+                incoming_bytes = self.audio_queue.get(timeout=0.1)
+                byte_buffer.extend(incoming_bytes)
+            except queue.Empty:
+                pass
 
-            # 队列积压诊断：超过 20 帧说明解码跟不上音频输入，直接丢弃旧帧保实时性
-            qsize = self.audio_queue.qsize()
-            if qsize > 30:
-                print(f"\n[STT] ⚠️ 队列积压 {qsize} 帧，丢弃旧帧保实时！")
-                # 只保留最新 10 帧，其余丢弃
-                while self.audio_queue.qsize() > 10:
-                    try:
-                        self.audio_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                chunks = self._drain_audio_queue()
-            elif qsize > 20:
-                print(f"\n[STT] ⚠️ 音频队列积压 {qsize} 帧，解码可能掉队！")
+            # 当缓冲里凑齐了完整的 30ms 帧，就进行一次 VAD 检测
+            while len(byte_buffer) >= chunk_size:
+                frame_bytes = bytes(byte_buffer[:chunk_size])
+                del byte_buffer[:chunk_size]
 
-            with self._stream_lock:
-                for samples in chunks:
-                    self.stream.accept_waveform(16000, samples)
+                is_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
 
-                while self.recognizer.is_ready(self.stream):
-                    self.recognizer.decode_stream(self.stream)
+                if is_speech:
+                    in_speech = True
+                    self.silence_frames = 0
+                    self.voice_buffer.append(frame_bytes)
+                elif in_speech:
+                    self.silence_frames += 1
+                    self.voice_buffer.append(frame_bytes)
+                    
+                    # 达到了断句的阈值
+                    if self.silence_frames > max_silence_frames:
+                        in_speech = False
+                        self._trigger_asr()
 
-                current_text = self.recognizer.get_result(self.stream)
+    def _trigger_asr(self):
+        # 如果说话时间太短 (比如只有一点噪音)，直接抛弃
+        if len(self.voice_buffer) < (0.4 / (self.frame_duration_ms / 1000.0)):
+            self.voice_buffer = []
+            return
 
-                if current_text != last_text and current_text:
-                    sys.stdout.write(f"\r[STT listening]: {current_text}")
-                    sys.stdout.flush()
-                    last_text = current_text
+        print("[STT] ☁️ 检测到语音结束，正在请求阿里云识别...")
+        
+        audio_data = b"".join(self.voice_buffer)
+        self.voice_buffer = []
+        self.silence_frames = 0
+        
+        # 封装为标准 WAV 格式临时文件发送给云端
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+            with wave.open(tmp_file, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2) # 16-bit
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(audio_data)
 
-                if self.recognizer.is_endpoint(self.stream):
-                    voiced_duration_sec = self._take_voiced_duration()
-                    cleaned_sentence = self._clean_sentence(current_text)
-                    if self._should_publish_sentence(cleaned_sentence, voiced_duration_sec):
-                        sentence = cleaned_sentence
-                    elif cleaned_sentence:
-                        print(
-                            f"\n[STT] Dropped noisy/short utterance: "
-                            f"{cleaned_sentence!r} ({voiced_duration_sec:.2f}s voiced)"
-                        )
-
-                    self.recognizer.reset(self.stream)
-                    last_text = ""
-
-            if sentence:
-                print("")
-                if self.on_sentence_received:
-                    try:
-                        self.on_sentence_received(sentence)
-                    except Exception as e:
-                        print(f"[STT] Sentence callback failed: {e}")
-
-            time.sleep(0.01)
+        try:
+            # 使用 OpenAI 兼容库无缝调用阿里云 SenseVoice
+            with open(tmp_path, "rb") as f:
+                transcription = self.client.audio.transcriptions.create(
+                    model="sensevoice-v1",
+                    file=f
+                )
+            
+            text = transcription.text.strip()
+            
+            if text and self.on_sentence_received:
+                print(f"[STT] ✅ 识别结果: {text}")
+                self.on_sentence_received(text)
+        except Exception as e:
+            print(f"[STT] ❌ 阿里云识别失败: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def pause(self):
-        """Pause listening while the robot speaks."""
+        """Pause listening while the robot speaks (自听抵消)."""
         self.is_paused = True
-        self._clear_audio_queue()
-        self._take_voiced_duration()
+        self.voice_buffer = []
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+        print("\n[STT] ⏸️ 麦克风已暂停监听 (防止回声)")
 
     def resume(self):
         """Resume listening with clean buffers."""
-        self._clear_audio_queue()
-        with self._stream_lock:
-            self.recognizer.reset(self.stream)
-        self._take_voiced_duration()
+        self.voice_buffer = []
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
         self.is_paused = False
+        print("[STT] ▶️ 麦克风已恢复监听")
 
     def stop(self):
         self.is_running = False
@@ -233,4 +187,4 @@ class STTService:
             self.audio_stream = None
         if self._listen_thread and self._listen_thread.is_alive():
             self._listen_thread.join(timeout=1.0)
-        print("[STT] Speech listener stopped.")
+        print("[STT] 🛑 语音监听已完全停止.")

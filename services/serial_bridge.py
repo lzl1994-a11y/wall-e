@@ -8,7 +8,7 @@ class SerialBridge:
     瓦力纯净硬件网桥服务 (完全解耦 ROS)
     职责：连接下位机，提供最基础的发送接口，并自动管理屏幕的唤醒状态。
     """
-    def __init__(self, device_name="", timeout_seconds=30.0):
+    def __init__(self, device_name="WALL_E_TFT", timeout_seconds=30.0):
         self.device_name = device_name
         self.timeout_seconds = timeout_seconds
         
