@@ -145,11 +145,14 @@ class STTService:
             from dashscope.audio.asr import Recognition
             
             dashscope.api_key = self.api_key
-            recognition = Recognition(model='sensevoice-v1',
-                                      format='pcm',
-                                      sample_rate=16000)
             
-            result = recognition.call(tmp_path)
+            # 正确用法：直接调用类方法 Recognition.call()，不要实例化
+            result = Recognition.call(
+                model='sensevoice-v1',
+                file=tmp_path,
+                format='wav', 
+                sample_rate=16000
+            )
             
             if result.status_code == 200:
                 # 解析 SenseVoice 的返回格式
