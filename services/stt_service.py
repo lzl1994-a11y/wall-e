@@ -29,6 +29,7 @@ class STTService:
             config = yaml.safe_load(f)
             
         api_key = config['ai_settings']['api_key']
+        self.api_key = api_key
         # 注意：SenseVoice 强制要求使用兼容模式的 v1 端点
         base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -139,20 +140,31 @@ class STTService:
                 wf.writeframes(audio_data)
 
         try:
-            # 使用 OpenAI 兼容库无缝调用阿里云 SenseVoice
-            with open(tmp_path, "rb") as f:
-                transcription = self.client.audio.transcriptions.create(
-                    model="sensevoice-v1",
-                    file=f
-                )
+            # 使用阿里云原生 dashscope SDK 调用 SenseVoice
+            import dashscope
+            from dashscope.audio.asr import Recognition
             
-            text = transcription.text.strip()
+            dashscope.api_key = self.api_key
+            recognition = Recognition(model='sensevoice-v1',
+                                      format='pcm',
+                                      sample_rate=16000)
             
-            if text and self.on_sentence_received:
-                print(f"[STT] ✅ 识别结果: {text}")
-                self.on_sentence_received(text)
-        except Exception as e:
-            print(f"[STT] ❌ 阿里云识别失败: {e}")
+            result = recognition.call(tmp_path)
+            
+            if result.status_code == 200:
+                # 解析 SenseVoice 的返回格式
+                text = ""
+                try:
+                    text = result.output['results'][0]['text']
+                except Exception:
+                    text = result.get_sentence()
+                
+                text = text.strip()
+                if text and self.on_sentence_received:
+                    print(f"[STT] ✅ 识别结果: {text}")
+                    self.on_sentence_received(text)
+            else:
+                print(f"[STT] ❌ 阿里云识别失败: HTTP {result.status_code}, 错误信息: {result.message}")
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
