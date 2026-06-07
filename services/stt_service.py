@@ -130,60 +130,62 @@ class STTService:
         self.voice_buffer = []
         self.silence_frames = 0
         
-        # 封装为标准 WAV 格式临时文件发送给云端
-        import tempfile
-        import wave
-        import os
-        
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-            tmp_path = tmp_file.name
-            with wave.open(tmp_file, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2) # 16-bit
-                wf.setframerate(self.sample_rate)
-                wf.writeframes(audio_data)
-
         try:
             import dashscope
             from dashscope.audio.asr import Recognition, RecognitionCallback
+            import threading
             
             dashscope.api_key = self.api_key
             
-            # 由于 Recognition(self) 必须要求传入一个 callback，我们放一个空的
-            class DummyCb(RecognitionCallback):
-                pass
+            class STTCallback(RecognitionCallback):
+                def __init__(self):
+                    self.text = ""
+                    self.done = threading.Event()
+
+                def on_event(self, result):
+                    try:
+                        sentence = result.get_sentence()
+                        if sentence and 'text' in sentence:
+                            self.text = sentence['text']
+                    except Exception:
+                        pass
                 
-            # 实例化 Recognition，使用 paraformer-v1（非 realtime 版本，专门用来做整句短语音）
+                def on_close(self):
+                    self.done.set()
+
+                def on_error(self, message):
+                    print(f"[STT] 阿里云连接异常: {message}")
+                    self.done.set()
+
+            cb = STTCallback()
             recognition = Recognition(
-                model='paraformer-v1',
-                format='wav',
+                model='paraformer-realtime-v1',
+                format='pcm',
                 sample_rate=16000,
-                callback=DummyCb()
+                callback=cb
             )
             
-            # 使用官方 SDK 提供的内置单文件同步上传方法（它会自动帮我们在后台分块处理，不会断开）
-            result = recognition.call(tmp_path)
+            recognition.start()
             
-            text = ""
-            sentence = result.get_sentence()
-            if sentence:
-                if isinstance(sentence, list):
-                    text = "".join(item.get('text', '') for item in sentence)
-                elif isinstance(sentence, dict):
-                    text = sentence.get('text', '')
+            # 手动分块发送，避开阿里云 SDK 的大文件 WebSocket 断连 Bug
+            chunk_size = 3200 # 每次发送 100ms (16000 * 2 * 0.1)
+            for i in range(0, len(audio_data), chunk_size):
+                recognition.send_audio_frame(audio_data[i:i+chunk_size])
+                # 休眠 0.02 秒。相当于 5 倍真实语速播放给服务器，兼顾极低延迟且绝不断连
+                time.sleep(0.02)
+                
+            recognition.stop()
+            cb.done.wait(timeout=3.0)
             
-            text = text.strip()
+            text = cb.text.strip()
             if text and self.on_sentence_received:
                 print(f"[STT] ✅ 识别结果: {text}")
                 self.on_sentence_received(text)
-            elif not text:
-                print("[STT] 阿里云未识别到有效文字 (可能是静音或噪音)。")
+            else:
+                print("[STT] 阿里云未能识别出文字 (可能声音太小或只有底噪)。")
                 
         except Exception as e:
-            print(f"[STT] ❌ 阿里云调用失败: {e}")
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            print(f"[STT] ❌ 请求异常: {e}")
 
     def pause(self):
         """Pause listening while the robot speaks (自听抵消)."""

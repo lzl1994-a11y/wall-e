@@ -31,7 +31,7 @@ def test_openai_audio():
                 'file': ('test.wav', f, 'audio/wav')
             }
             data = {
-                'model': 'sensevoice-v1'
+                'model': 'paraformer-v1'
             }
             headers = {
                 'Authorization': f'Bearer {api_key}'
