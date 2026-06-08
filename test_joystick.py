@@ -8,11 +8,21 @@ device = None
 for path in evdev.list_devices():
     d = evdev.InputDevice(path)
     caps = d.capabilities(verbose=False)
+    abs_caps = caps.get(3, {})
+    key_caps = caps.get(1, {})
     # 有 ABS 轴（摇杆）+ KEY 按键 = 手柄/游戏控制器
-    if 3 in caps and 1 in caps:
+    if abs_caps and key_caps:
+        # 处理 list 类型
+        if isinstance(abs_caps, list):
+            abs_count = len(abs_caps)
+            abs_info = abs_caps[:8]  # 取前几个看看
+        else:
+            abs_count = len(abs_caps)
+            abs_info = abs_caps
+        key_count = len(key_caps) if isinstance(key_caps, list) else len(key_caps)
         print(f"发现手柄: {d.name}  [{d.phys}]  路径: {d.path}")
-        print(f"  轴数量: {len(caps.get(3, {}))} 键数量: {len(caps.get(1, {}))}")
-        print(f"  轴详情: {[(k, v) for k, v in caps.get(3, {}).items()]}")
+        print(f"  轴数量: {abs_count} 键数量: {key_count}")
+        print(f"  轴详情: {abs_info}")
         device = d
         break
 
