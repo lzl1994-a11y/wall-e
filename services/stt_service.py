@@ -1,31 +1,21 @@
 # services/stt_service.py
 """
-[ZH] 阿里云 Paraformer 语音识别服务
-     使用 dashscope.audio.asr.Recognition.call() 同步 HTTP 模式
+[ZH] 阿里云语音识别服务
+     使用 OpenAI 兼容 HTTP 端点 (multipart form upload)
      配合 WebRTC VAD 进行静音断句，断句后写入临时 WAV 文件一次性上传云端。
-     避免 WebSocket 流式 API 在后台线程中的 asyncio 事件循环问题。
-[EN] Alibaba Cloud Paraformer STT service (synchronous HTTP mode).
+     纯 HTTP 模式，无线程/asyncio 问题。
+[EN] Alibaba Cloud STT service via OpenAI-compatible HTTP endpoint.
 """
 import os
 import queue
 import tempfile
 import threading
-import time
 import wave
 import yaml
 import numpy as np
 import sounddevice as sd
 import webrtcvad
-
-import dashscope
-from dashscope.audio.asr import Recognition, RecognitionCallback
-
-
-# ---------------------------------------------------------------------------
-# 空回调：call() 方法必须传 callback 但不使用流式事件
-# ---------------------------------------------------------------------------
-class _DummyCallback(RecognitionCallback):
-    pass
+from openai import OpenAI
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +185,13 @@ class STTService:
                         speech_frame_count = 0
 
     # ===================================================================
-    # 云端识别
+    # 云端识别 (OpenAI 兼容 HTTP 端点)
     # ===================================================================
+    MODEL = "sensevoice-v1"
+    BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
     def _process_speech(self, frames):
-        """将帧列表写入临时 WAV，通过 Recognition.call() 同步上传并获取结果。"""
+        """将帧列表写入临时 WAV，通过 OpenAI 兼容端点上传并获取识别结果。"""
         if not frames:
             return
 
@@ -217,27 +210,22 @@ class STTService:
                 wf.setframerate(self.SAMPLE_RATE)
                 wf.writeframes(pcm_data)
 
-            # 先保存调试音频，再调用 API
             debug_path = "/tmp/stt_debug_last.wav"
             import shutil
             shutil.copy2(wav_path, debug_path)
             print(f"[STT] 调试音频已保存: {debug_path} ({duration_ms}ms)")
 
-            rec = Recognition(
-                model='paraformer-realtime-v1',
-                format='wav',
-                sample_rate=self.SAMPLE_RATE,
-                callback=_DummyCallback(),
-            )
+            client = OpenAI(api_key=self.api_key, base_url=self.BASE_URL)
 
-            print(f"[STT] 上传语音 {duration_ms}ms 至云端...")
-            result = rec.call(wav_path)
-
-            sentence = result.get_sentence()
-            # get_sentence() 返回列表 [{text: '...', ...}]，取第一项
-            if isinstance(sentence, list) and sentence:
-                sentence = sentence[0]
-            text = sentence.get('text', '').strip() if isinstance(sentence, dict) else ''
+            print(f"[STT] 上传语音 {duration_ms}ms 至 {self.MODEL} ...")
+            with open(wav_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=self.MODEL,
+                    file=audio_file,
+                    response_format="text",
+                )
+            # transcription 是纯文本字符串
+            text = transcription.strip() if transcription else ""
 
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")
