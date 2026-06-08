@@ -1,14 +1,17 @@
 # services/stt_service.py
 """
-[ZH] 阿里云 Paraformer 实时语音识别服务
-     使用 dashscope.audio.asr.Recognition 流式 API (paraformer-realtime-v1)
-     配合 WebRTC VAD 进行静音断句，断句后立即获取云端识别结果。
-[EN] Alibaba Cloud Paraformer real-time STT service.
-     Uses dashscope.audio.asr.Recognition streaming API with WebRTC VAD.
+[ZH] 阿里云 Paraformer 语音识别服务
+     使用 dashscope.audio.asr.Recognition.call() 同步 HTTP 模式
+     配合 WebRTC VAD 进行静音断句，断句后写入临时 WAV 文件一次性上传云端。
+     避免 WebSocket 流式 API 在后台线程中的 asyncio 事件循环问题。
+[EN] Alibaba Cloud Paraformer STT service (synchronous HTTP mode).
 """
+import os
 import queue
+import tempfile
 import threading
 import time
+import wave
 import yaml
 import numpy as np
 import sounddevice as sd
@@ -19,30 +22,10 @@ from dashscope.audio.asr import Recognition, RecognitionCallback
 
 
 # ---------------------------------------------------------------------------
-# 云端识别结果回调
+# 空回调：call() 方法必须传 callback 但不使用流式事件
 # ---------------------------------------------------------------------------
-class _STTCallback(RecognitionCallback):
-    """Recognition 流式回调：收集最终断句文本并通过 Event 通知主线程。"""
-
-    def __init__(self):
-        self.text = ""
-        self.done = threading.Event()
-        self._error = None
-
-    def on_event(self, result):
-        try:
-            sentence = result.get_sentence()
-            if sentence and 'text' in sentence:
-                self.text = sentence['text']
-        except Exception:
-            pass
-
-    def on_close(self):
-        self.done.set()
-
-    def on_error(self, message):
-        self._error = message
-        self.done.set()
+class _DummyCallback(RecognitionCallback):
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +33,7 @@ class _STTCallback(RecognitionCallback):
 # ---------------------------------------------------------------------------
 class STTService:
     """
-    外部接口保持与旧版兼容:
+    外部接口保持兼容:
         stt = STTService(config_path, on_sentence_received=callback)
         stt.start()   # 开始监听
         stt.stop()    # 停止监听
@@ -59,13 +42,12 @@ class STTService:
     """
 
     SAMPLE_RATE = 16000
-    FRAME_MS = 30                       # VAD 帧长
+    FRAME_MS = 30
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
-    FRAME_BYTES = FRAME_SIZE * 2        # int16 = 2 bytes/frame
-    SEND_INTERVAL_MS = 120              # 向云端发送音频的间隔
-    SEND_INTERVAL_BYTES = int(SAMPLE_RATE * SEND_INTERVAL_MS / 1000) * 2
-    SILENCE_SEC = 0.8                   # 静音断句阈值
-    RESULT_TIMEOUT = 4.0                # 等待云端结果的超时
+    FRAME_BYTES = FRAME_SIZE * 2
+    SILENCE_SEC = 0.8            # 静音断句阈值
+    MAX_SPEECH_SEC = 15.0        # 单句最长时长（防止无限录制）
+    API_TIMEOUT = 5.0            # 云端 API 调用超时
 
     def __init__(self, config_path="core/config.yaml", on_sentence_received=None):
         self.on_sentence_received = on_sentence_received
@@ -76,10 +58,9 @@ class STTService:
             config = yaml.safe_load(f)
         self.api_key = config['ai_settings']['api_key']
 
-        self.vad = webrtcvad.Vad(2)     # 灵敏度 0-3，2 适合桌面环境
+        self.vad = webrtcvad.Vad(2)
         self.audio_queue = queue.Queue(maxsize=300)
 
-        # 内部状态
         self._listen_thread = None
         self._audio_stream = None
         self._paused_event = threading.Event()
@@ -100,7 +81,7 @@ class STTService:
             callback=self._audio_callback,
         )
         self._audio_stream.start()
-        print("[STT] Paraformer 实时语音监听已启动")
+        print("[STT] Paraformer 语音监听已启动 (同步 HTTP 模式)")
         return True
 
     def stop(self):
@@ -147,50 +128,33 @@ class STTService:
             pass
 
     def _run(self):
-        """
-        主循环：从音频队列取帧 → VAD 检测 → 驱动 Recognition 流式会话。
-        状态机：IDLE → LISTENING → WAITING_RESULT → IDLE
-        """
-        # Recognition 内部使用 asyncio WebSocket，后台线程必须显式创建并持续运行事件循环
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        def _run_loop():
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
-
-        threading.Thread(target=_run_loop, daemon=True).start()
-
+        """主循环：VAD 检测 → 采集语音 → 静音断句 → 写 WAV → call() 云端识别。"""
         dashscope.api_key = self.api_key
 
         max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
-        byte_buf = bytearray()
-        send_buf = bytearray()
+        max_frames = int(self.MAX_SPEECH_SEC / (self.FRAME_MS / 1000.0))
 
+        byte_buf = bytearray()
+        speech_frames = []      # 当前句子的所有音频帧
         silence_count = 0
         in_speech = False
-        recognition = None
-        callback = None
+        speech_frame_count = 0
 
         while self.is_running:
             if self._paused_event.is_set():
                 time.sleep(0.1)
                 byte_buf.clear()
-                send_buf.clear()
+                speech_frames.clear()
                 in_speech = False
-                if recognition:
-                    self._abort_recognition(recognition)
-                    recognition = None
+                silence_count = 0
+                speech_frame_count = 0
                 continue
 
-            # 取音频数据（带超时避免空转）
             try:
                 byte_buf.extend(self.audio_queue.get(timeout=0.1))
             except queue.Empty:
                 pass
 
-            # 逐帧处理
             while len(byte_buf) >= self.FRAME_BYTES:
                 frame = bytes(byte_buf[:self.FRAME_BYTES])
                 del byte_buf[:self.FRAME_BYTES]
@@ -200,100 +164,85 @@ class STTService:
                 if is_speech:
                     silence_count = 0
                     if not in_speech:
-                        # 状态切换：IDLE → LISTENING
                         in_speech = True
-                        send_buf.clear()
-                        recognition, callback = self._start_recognition()
-                        print("[STT] 检测到人声，开始流式传输")
-                        # 首帧立即发送，防止 WebSocket 服务端超时断开
-                        if recognition:
-                            send_buf.extend(frame)
-                            self._send_now(send_buf, recognition)
-                        continue
-                    if recognition:
-                        send_buf.extend(frame)
-                        self._try_flush(send_buf, recognition)
+                        speech_frames.clear()
+                        speech_frame_count = 0
+                        print("[STT] 检测到人声，开始录制")
+                    speech_frames.append(frame)
+                    speech_frame_count += 1
+                    # 超长保护：强制断句
+                    if speech_frame_count >= max_frames:
+                        print("[STT] 达到最大录制时长，强制断句")
+                        self._process_speech(speech_frames)
+                        speech_frames.clear()
+                        in_speech = False
+                        speech_frame_count = 0
+
                 elif in_speech:
                     silence_count += 1
-                    if recognition:
-                        send_buf.extend(frame)
-                        self._try_flush(send_buf, recognition)
-                    if silence_count > max_silence:
-                        # 状态切换：LISTENING → WAITING_RESULT
+                    speech_frames.append(frame)
+                    speech_frame_count += 1
+
+                    if silence_count > max_silence or speech_frame_count >= max_frames:
                         in_speech = False
                         silence_count = 0
-                        result = self._finish_recognition(
-                            recognition, callback, send_buf
-                        )
-                        recognition = None
-                        callback = None
-                        if result and self.on_sentence_received:
-                            print(f"[STT] {result}")
-                            self.on_sentence_received(result)
+                        # 剔除末尾的静音帧，减少无效数据
+                        trim_count = min(speech_frame_count, max_silence)
+                        trimmed = speech_frames[:-trim_count] if trim_count < len(speech_frames) else speech_frames
+                        if trimmed:
+                            self._process_speech(trimmed)
+                        speech_frames.clear()
+                        speech_frame_count = 0
 
     # ===================================================================
-    # Recognition 会话管理
+    # 云端识别
     # ===================================================================
-    def _start_recognition(self):
-        cb = _STTCallback()
-        rec = Recognition(
-            model='paraformer-realtime-v1',
-            format='pcm',
-            sample_rate=self.SAMPLE_RATE,
-            callback=cb,
-        )
+    def _process_speech(self, frames):
+        """将帧列表写入临时 WAV，通过 Recognition.call() 同步上传并获取结果。"""
+        if not frames:
+            return
+
+        pcm_data = b"".join(frames)
+        duration_ms = len(pcm_data) // 2 * 1000 // self.SAMPLE_RATE
+        if duration_ms < 200:   # 短于 200ms 的片段忽略
+            return
+
+        wav_path = None
         try:
-            rec.start()
-            # start() 不抛异常不代表成功，检查是否已被服务端拒绝
-            if cb._error:
-                print(f"[STT] Recognition 启动被拒: {cb._error}")
-                return None, None
+            fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="stt_")
+            os.close(fd)
+            with wave.open(wav_path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.SAMPLE_RATE)
+                wf.writeframes(pcm_data)
+
+            rec = Recognition(
+                model='paraformer-realtime-v2',
+                format='wav',
+                sample_rate=self.SAMPLE_RATE,
+                callback=_DummyCallback(),
+            )
+
+            print(f"[STT] 上传语音 {duration_ms}ms 至云端...")
+            result = rec.call(wav_path)
+            sentence = result.get_sentence()
+            text = sentence.get('text', '').strip() if sentence else ''
+
+            if text and self.on_sentence_received:
+                print(f"[STT] {text}")
+                self.on_sentence_received(text)
+            else:
+                print("[STT] 云端未识别出文字")
+
         except Exception as e:
-            print(f"[STT] Recognition 启动异常: {e}")
-            return None, None
-        return rec, cb
-
-    def _send_now(self, send_buf, recognition):
-        """立即发送缓冲数据（不管是否攒够阈值），用于首帧保活。"""
-        try:
-            recognition.send_audio_frame(bytes(send_buf))
-        except Exception as e:
-            print(f"[STT] 发送音频帧失败: {e}")
-        send_buf.clear()
-
-    def _try_flush(self, send_buf, recognition):
-        """攒够 SEND_INTERVAL_BYTES 后一次性发送，避免触发云端限流。"""
-        if len(send_buf) >= self.SEND_INTERVAL_BYTES:
-            try:
-                recognition.send_audio_frame(bytes(send_buf))
-            except Exception as e:
-                print(f"[STT] 发送音频帧失败: {e}")
-            send_buf.clear()
-
-    def _finish_recognition(self, recognition, callback, send_buf):
-        """停止 Recognition 会话并取回最终识别文本。"""
-        if not recognition or not callback:
-            return ""
-        # 发送残留数据
-        if send_buf:
-            try:
-                recognition.send_audio_frame(bytes(send_buf))
-            except Exception:
-                pass
-            send_buf.clear()
-        # 停止会话
-        try:
-            recognition.stop()
-        except Exception:
-            pass
-        callback.done.wait(timeout=self.RESULT_TIMEOUT)
-        return callback.text.strip()
-
-    def _abort_recognition(self, recognition):
-        try:
-            recognition.stop()
-        except Exception:
-            pass
+            print(f"[STT] 云端识别失败: {e}")
+        finally:
+            if wav_path and os.path.exists(wav_path):
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
 
     # ===================================================================
     # VAD
