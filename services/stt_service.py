@@ -10,6 +10,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 import wave
 import yaml
 import numpy as np
@@ -118,9 +119,7 @@ class STTService:
             pass
 
     def _run(self):
-        """主循环：VAD 检测 → 采集语音 → 静音断句 → 写 WAV → call() 云端识别。"""
-        dashscope.api_key = self.api_key
-
+        """主循环：VAD 检测 → 采集语音 → 静音断句 → 写 WAV → 云端识别。"""
         max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
         max_frames = int(self.MAX_SPEECH_SEC / (self.FRAME_MS / 1000.0))
 
