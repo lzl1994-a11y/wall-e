@@ -151,6 +151,11 @@ class STTService:
         主循环：从音频队列取帧 → VAD 检测 → 驱动 Recognition 流式会话。
         状态机：IDLE → LISTENING → WAITING_RESULT → IDLE
         """
+        # Recognition 内部使用 asyncio WebSocket，后台线程必须显式创建事件循环
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         dashscope.api_key = self.api_key
 
         max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
@@ -233,8 +238,12 @@ class STTService:
         )
         try:
             rec.start()
+            # start() 不抛异常不代表成功，检查是否已被服务端拒绝
+            if cb._error:
+                print(f"[STT] Recognition 启动被拒: {cb._error}")
+                return None, None
         except Exception as e:
-            print(f"[STT] Recognition 启动失败: {e}")
+            print(f"[STT] Recognition 启动异常: {e}")
             return None, None
         return rec, cb
 
