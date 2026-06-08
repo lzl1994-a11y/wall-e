@@ -151,10 +151,16 @@ class STTService:
         主循环：从音频队列取帧 → VAD 检测 → 驱动 Recognition 流式会话。
         状态机：IDLE → LISTENING → WAITING_RESULT → IDLE
         """
-        # Recognition 内部使用 asyncio WebSocket，后台线程必须显式创建事件循环
+        # Recognition 内部使用 asyncio WebSocket，后台线程必须显式创建并持续运行事件循环
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+
+        def _run_loop():
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        threading.Thread(target=_run_loop, daemon=True).start()
 
         dashscope.api_key = self.api_key
 
