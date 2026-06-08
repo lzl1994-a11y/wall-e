@@ -1,11 +1,12 @@
 # services/stt_service.py
 """
-[ZH] 阿里云语音识别服务
-     使用 OpenAI 兼容 HTTP 端点 (multipart form upload)
+[ZH] 阿里云 Paraformer 语音识别服务
+     使用 dashscope.audio.asr.Recognition.call() 同步模式
      配合 WebRTC VAD 进行静音断句，断句后写入临时 WAV 文件一次性上传云端。
-     纯 HTTP 模式，无线程/asyncio 问题。
-[EN] Alibaba Cloud STT service via OpenAI-compatible HTTP endpoint.
+     后台线程中显式设置 asyncio 事件循环，解决 Linux 下 SDK 内部 WebSocket 无法工作的问题。
+[EN] Alibaba Cloud Paraformer STT service (synchronous mode with explicit event loop).
 """
+import asyncio
 import os
 import queue
 import tempfile
@@ -16,6 +17,16 @@ import yaml
 import numpy as np
 import sounddevice as sd
 import webrtcvad
+
+import dashscope
+from dashscope.audio.asr import Recognition, RecognitionCallback
+
+
+# ---------------------------------------------------------------------------
+# 空回调：call() 方法必须传 callback 但不使用流式事件
+# ---------------------------------------------------------------------------
+class _DummyCallback(RecognitionCallback):
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +130,12 @@ class STTService:
 
     def _run(self):
         """主循环：VAD 检测 → 采集语音 → 静音断句 → 写 WAV → 云端识别。"""
+        # Linux 后台线程默认没有 asyncio 事件循环，dashscope SDK 的 WebSocket 依赖它
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        dashscope.api_key = self.api_key
+
         max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
         max_frames = int(self.MAX_SPEECH_SEC / (self.FRAME_MS / 1000.0))
 
@@ -183,13 +200,10 @@ class STTService:
                         speech_frame_count = 0
 
     # ===================================================================
-    # 云端识别 (DashScope 原生 REST API)
+    # 云端识别 (dashscope SDK Recognition.call)
     # ===================================================================
-    MODEL = "paraformer-realtime-v1"
-    ASR_URL = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/recognition"
-
     def _process_speech(self, frames):
-        """将帧列表写入临时 WAV，通过 DashScope REST API 直传二进制获取识别结果。"""
+        """将帧列表写入临时 WAV，通过 Recognition.call() 同步上传并获取结果。"""
         if not frames:
             return
 
@@ -213,41 +227,26 @@ class STTService:
             shutil.copy2(wav_path, debug_path)
             print(f"[STT] 调试音频已保存: {debug_path} ({duration_ms}ms)")
 
-            import requests
-
-            with open(wav_path, "rb") as f:
-                raw = f.read()
-
-            print(f"[STT] 上传语音 {duration_ms}ms 至 {self.MODEL} ...")
-            resp = requests.post(
-                self.ASR_URL,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/octet-stream",
-                },
-                params={
-                    "model": self.MODEL,
-                    "format": "wav",
-                    "sample_rate": str(self.SAMPLE_RATE),
-                },
-                data=raw,
-                timeout=15,
+            rec = Recognition(
+                model='paraformer-realtime-v1',
+                format='wav',
+                sample_rate=self.SAMPLE_RATE,
+                callback=_DummyCallback(),
             )
 
-            if resp.status_code != 200:
-                print(f"[STT] API 返回 {resp.status_code}: {resp.text[:200]}")
-                return
+            print(f"[STT] 上传语音 {duration_ms}ms 至云端...")
+            result = rec.call(wav_path)
 
-            data = resp.json()
-            output = data.get("output", {})
-            sentence = output.get("sentence", {})
-            text = sentence.get("text", "").strip() if isinstance(sentence, dict) else ""
+            sentence = result.get_sentence()
+            if isinstance(sentence, list) and sentence:
+                sentence = sentence[0]
+            text = sentence.get('text', '').strip() if isinstance(sentence, dict) else ''
 
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")
                 self.on_sentence_received(text)
             else:
-                print(f"[STT] 云端未识别出文字 (output={output})")
+                print("[STT] 云端未识别出文字")
 
         except Exception as e:
             print(f"[STT] 云端识别失败: {e}")
