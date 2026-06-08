@@ -186,7 +186,7 @@ class STTService:
     # ===================================================================
     # 云端识别 (OpenAI 兼容 HTTP 端点)
     # ===================================================================
-    MODEL = "sensevoice-v1"
+    MODEL = "paraformer-v1"
     BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     def _process_speech(self, frames):
