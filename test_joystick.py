@@ -57,7 +57,12 @@ try:
             }
             desc = axis_names.get(event.code, f"轴{event.code}")
             # 归一化到 -1.0 ~ 1.0
-            info = device.capabilities().get(evdev.ecodes.EV_ABS, {}).get(event.code)
+            abs_caps = device.capabilities(verbose=False).get(evdev.ecodes.EV_ABS, [])
+            info = None
+            for code, ainfo in abs_caps:
+                if code == event.code:
+                    info = ainfo
+                    break
             if info:
                 lo, hi = info.min, info.max
                 mid = (lo + hi) / 2
