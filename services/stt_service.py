@@ -224,7 +224,7 @@ class STTService:
             print(f"[STT] 调试音频已保存: {debug_path} ({duration_ms}ms)")
 
             rec = Recognition(
-                model='paraformer-realtime-v2',
+                model='paraformer-realtime-v1',
                 format='wav',
                 sample_rate=self.SAMPLE_RATE,
                 callback=_DummyCallback(),
@@ -233,12 +233,11 @@ class STTService:
             print(f"[STT] 上传语音 {duration_ms}ms 至云端...")
             result = rec.call(wav_path)
 
-            # 调试：打印完整 result 结构
-            print(f"[STT] result.output: {result.output}")
-            print(f"[STT] result.get_sentence(): {result.get_sentence()}")
-
             sentence = result.get_sentence()
-            text = sentence.get('text', '').strip() if sentence else ''
+            # get_sentence() 返回列表 [{text: '...', ...}]，取第一项
+            if isinstance(sentence, list) and sentence:
+                sentence = sentence[0]
+            text = sentence.get('text', '').strip() if isinstance(sentence, dict) else ''
 
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")
