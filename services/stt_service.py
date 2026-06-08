@@ -16,7 +16,6 @@ import yaml
 import numpy as np
 import sounddevice as sd
 import webrtcvad
-from openai import OpenAI
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +183,13 @@ class STTService:
                         speech_frame_count = 0
 
     # ===================================================================
-    # 云端识别 (OpenAI 兼容 HTTP 端点)
+    # 云端识别 (DashScope 原生 REST API)
     # ===================================================================
-    MODEL = "paraformer-v1"
-    BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    MODEL = "paraformer-realtime-v1"
+    ASR_URL = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/recognition"
 
     def _process_speech(self, frames):
-        """将帧列表写入临时 WAV，通过 OpenAI 兼容端点上传并获取识别结果。"""
+        """将帧列表写入临时 WAV，通过 DashScope REST API 直传二进制获取识别结果。"""
         if not frames:
             return
 
@@ -214,23 +213,41 @@ class STTService:
             shutil.copy2(wav_path, debug_path)
             print(f"[STT] 调试音频已保存: {debug_path} ({duration_ms}ms)")
 
-            client = OpenAI(api_key=self.api_key, base_url=self.BASE_URL)
+            import requests
+
+            with open(wav_path, "rb") as f:
+                raw = f.read()
 
             print(f"[STT] 上传语音 {duration_ms}ms 至 {self.MODEL} ...")
-            with open(wav_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=self.MODEL,
-                    file=audio_file,
-                    response_format="text",
-                )
-            # transcription 是纯文本字符串
-            text = transcription.strip() if transcription else ""
+            resp = requests.post(
+                self.ASR_URL,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/octet-stream",
+                },
+                params={
+                    "model": self.MODEL,
+                    "format": "wav",
+                    "sample_rate": str(self.SAMPLE_RATE),
+                },
+                data=raw,
+                timeout=15,
+            )
+
+            if resp.status_code != 200:
+                print(f"[STT] API 返回 {resp.status_code}: {resp.text[:200]}")
+                return
+
+            data = resp.json()
+            output = data.get("output", {})
+            sentence = output.get("sentence", {})
+            text = sentence.get("text", "").strip() if isinstance(sentence, dict) else ""
 
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")
                 self.on_sentence_received(text)
             else:
-                print("[STT] 云端未识别出文字")
+                print(f"[STT] 云端未识别出文字 (output={output})")
 
         except Exception as e:
             print(f"[STT] 云端识别失败: {e}")
