@@ -194,6 +194,11 @@ class STTService:
                         send_buf.clear()
                         recognition, callback = self._start_recognition()
                         print("[STT] 检测到人声，开始流式传输")
+                        # 首帧立即发送，防止 WebSocket 服务端超时断开
+                        if recognition:
+                            send_buf.extend(frame)
+                            self._send_now(send_buf, recognition)
+                        continue
                     if recognition:
                         send_buf.extend(frame)
                         self._try_flush(send_buf, recognition)
@@ -232,6 +237,14 @@ class STTService:
             print(f"[STT] Recognition 启动失败: {e}")
             return None, None
         return rec, cb
+
+    def _send_now(self, send_buf, recognition):
+        """立即发送缓冲数据（不管是否攒够阈值），用于首帧保活。"""
+        try:
+            recognition.send_audio_frame(bytes(send_buf))
+        except Exception as e:
+            print(f"[STT] 发送音频帧失败: {e}")
+        send_buf.clear()
 
     def _try_flush(self, send_buf, recognition):
         """攒够 SEND_INTERVAL_BYTES 后一次性发送，避免触发云端限流。"""
