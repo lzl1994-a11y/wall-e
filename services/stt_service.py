@@ -226,6 +226,11 @@ class STTService:
 
             print(f"[STT] 上传语音 {duration_ms}ms 至云端...")
             result = rec.call(wav_path)
+
+            # 调试：打印完整 result 结构
+            print(f"[STT] result.output: {result.output}")
+            print(f"[STT] result.get_sentence(): {result.get_sentence()}")
+
             sentence = result.get_sentence()
             text = sentence.get('text', '').strip() if sentence else ''
 
@@ -234,6 +239,12 @@ class STTService:
                 self.on_sentence_received(text)
             else:
                 print("[STT] 云端未识别出文字")
+
+            # 保存最近一段音频供调试试听，覆盖写入
+            debug_path = os.path.join(tempfile.gettempdir(), "stt_debug_last.wav")
+            import shutil
+            shutil.copy2(wav_path, debug_path)
+            print(f"[STT] 调试音频已保存: {debug_path}")
 
         except Exception as e:
             print(f"[STT] 云端识别失败: {e}")
