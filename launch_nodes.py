@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """Start the local ROS2 Python nodes for Wali.
 
-Default test pipeline:
-  keyboard_stt_node.py -> voice_text -> llm_ros_node.py -> screen_dialog -> serial_ros_node.py
-
-Examples:
-  python3 launch_nodes.py
-  python3 launch_nodes.py --real-stt
-  python3 launch_nodes.py --no-serial
+Voice pipeline is set in core/config.yaml → launch.voice_pipeline
+and can be overridden by CLI flags: --voice-chat / --real-stt / --keyboard-stt.
 """
 
 import argparse
@@ -19,12 +14,27 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = ROOT / "core" / "config.yaml"
 
 # 默认自动重连：最多 5 次，每次间隔 3 秒
 DEFAULT_MAX_RESTARTS = 5
 DEFAULT_RESTART_DELAY = 3.0
+
+
+def load_config():
+    if yaml is None:
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
 
 
 @dataclass
@@ -37,18 +47,35 @@ class NodeEntry:
 
 
 def build_node_list(args):
+    config = load_config()
+    launch_cfg = config.get("launch", {})
+
+    # voice_pipeline: CLI 优先 → config → keyboard
+    if args.voice_chat:
+        pipeline = "voice_chat"
+    elif args.real_stt:
+        pipeline = "real_stt"
+    elif args.keyboard_stt:
+        pipeline = "keyboard"
+    else:
+        pipeline = launch_cfg.get("voice_pipeline", "keyboard")
+
     nodes = [NodeEntry("llm", ROOT / "nodes" / "llm_ros_node.py")]
 
-    if not args.no_serial:
+    # serial: CLI --no-serial 覆盖 config
+    if not args.no_serial and launch_cfg.get("serial", True):
         nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
 
-    if args.real_stt:
+    if pipeline == "voice_chat":
+        nodes.append(NodeEntry("voice_chat", ROOT / "nodes" / "voice_chat_ros_node.py"))
+        nodes = [n for n in nodes if n.name != "llm"]
+    elif pipeline == "real_stt":
         nodes.append(NodeEntry("stt", ROOT / "nodes" / "stt_ros_node.py"))
     else:
         nodes.append(NodeEntry("keyboard_stt", ROOT / "nodes" / "keyboard_stt_node.py"))
 
-    # ── 视觉跟踪相关节点（通过 --tracking 启用）──
-    if args.tracking:
+    # tracking: CLI --tracking 覆盖 config
+    if args.tracking or launch_cfg.get("tracking", False):
         nodes.append(NodeEntry("tracking", ROOT / "nodes" / "wali_tracking_node.py"))
         if not args.no_hardware:
             nodes.append(NodeEntry("servo_ros", ROOT / "nodes" / "servo_ros_node.py"))
@@ -80,7 +107,6 @@ def start_process(entry: NodeEntry):
         "stdout": None,
         "stderr": None,
     }
-
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -131,9 +157,19 @@ def restart_managed(mp: ManagedProcess):
 def main():
     parser = argparse.ArgumentParser(description="Start Wali ROS2 Python nodes.")
     parser.add_argument(
+        "--voice-chat",
+        action="store_true",
+        help="Use Qwen-Omni audio→LLM pipeline (replaces stt+llm).",
+    )
+    parser.add_argument(
         "--real-stt",
         action="store_true",
-        help="Start stt_ros_node.py instead of keyboard_stt_node.py.",
+        help="Use stt_ros_node.py (Aliyun Paraformer).",
+    )
+    parser.add_argument(
+        "--keyboard-stt",
+        action="store_true",
+        help="Use keyboard_stt_node.py (text simulation).",
     )
     parser.add_argument(
         "--no-serial",
@@ -143,25 +179,24 @@ def main():
     parser.add_argument(
         "--tracking",
         action="store_true",
-        help="Start visual tracking nodes (servo_ros, motor_ros, wali_tracking, doa_ros).",
+        help="Start visual tracking nodes.",
     )
     parser.add_argument(
         "--no-doa",
         action="store_true",
-        help="When --tracking is active, skip doa_ros_node.",
+        help="When tracking is active, skip doa_ros_node.",
     )
     parser.add_argument(
         "--no-hardware",
         action="store_true",
-        help="When --tracking is active, skip servo_ros and motor_ros (no PCA9685).",
+        help="When tracking is active, skip servo_ros and motor_ros.",
     )
     args = parser.parse_args()
 
     entries = build_node_list(args)
-    managed = []                     # 运行中的受管进程列表
-    stopped = False                  # Ctrl+C 标志位，避免重启循环
+    managed = []
+    stopped = False
 
-    # 设置 Ctrl+C 处理器，只设置标志位
     def _sigint_handler(sig, frame):
         nonlocal stopped
         if stopped:
@@ -171,23 +206,21 @@ def main():
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
+    # print which pipeline is active
+    names = [e.name for e in entries]
+    print(f"[launcher] nodes: {', '.join(names)}")
+
     try:
-        # 首次启动全部节点
         for entry in entries:
             managed.append(start_process(entry))
             time.sleep(0.5)
 
-        print("[launcher] all nodes started.")
-        if not args.real_stt:
-            print("[launcher] type text at the 'voice_text>' prompt to simulate STT.")
-        print("[launcher] press Ctrl+C to stop all nodes.")
+        print("[launcher] all nodes started. press Ctrl+C to stop.")
 
-        # 主监控循环：节点崩溃 → 自动重启（有上限）
         while not stopped:
             for i, mp in enumerate(managed):
                 code = mp.proc.poll()
                 if code is not None:
-                    # 某个节点退出了
                     name = mp.entry.name
                     max_r = mp.entry.max_restarts
 
@@ -201,7 +234,6 @@ def main():
                         time.sleep(mp.entry.restart_delay)
                         if stopped:
                             break
-                        # 重启并替换列表中的旧条目
                         managed[i] = restart_managed(mp)
 
             time.sleep(1.0)
