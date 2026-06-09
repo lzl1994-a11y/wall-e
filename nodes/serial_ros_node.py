@@ -44,6 +44,7 @@ class SerialNode(Node):
                 self.get_logger().info(f'[{turn_id}] Sent user text -> {payload.strip()}')
 
         if ai_text:
+            self.bridge.send_raw("openchat:1\n")
             self.bridge.send_raw("eyeaction:talk\n")
             payload = f"ai:{ai_text}\n"
             if self.bridge.send_raw(payload):
@@ -59,6 +60,7 @@ class SerialNode(Node):
 
     def ai_callback(self, msg):
         """Handle a full AI response from the legacy topic."""
+        self.bridge.send_raw("openchat:1\n")
         self.bridge.send_raw("eyeaction:talk\n")
         payload = f"ai:{msg.data}\n"
         if self.bridge.send_raw(payload):
