@@ -65,6 +65,7 @@ def build_node_list(args):
     # serial: CLI --no-serial 覆盖 config
     if not args.no_serial and launch_cfg.get("serial", True):
         nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
+        nodes.append(NodeEntry("action", ROOT / "nodes" / "action_ros_node.py"))
 
     if pipeline == "voice_chat":
         nodes.append(NodeEntry("voice_chat", ROOT / "nodes" / "voice_chat_ros_node.py"))

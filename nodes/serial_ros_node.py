@@ -9,6 +9,8 @@ from services.serial_bridge import SerialBridge
 
 
 class SerialNode(Node):
+    """TFT 串口通信节点：屏幕文字显示 + eyeaction:talk。动作分发由 action_ros_node 负责。"""
+
     def __init__(self):
         super().__init__('walle_serial_node')
 
@@ -20,8 +22,7 @@ class SerialNode(Node):
 
         self.get_logger().info('Serial ROS node is online.')
 
-        # Use only the atomic per-turn message for the screen to avoid duplicated
-        # corrected_text/full_ai_text/action_cmd deliveries.
+        # 订阅原子化回合消息
         self.sub_screen_dialog = self.create_subscription(
             String, 'screen_dialog', self.screen_dialog_callback, 10)
 
@@ -36,7 +37,6 @@ class SerialNode(Node):
         turn_id = dialog.get("turn_id", "")
         corrected_text = (dialog.get("corrected_text") or "").strip()
         ai_text = (dialog.get("ai_text") or "").strip()
-        actions = dialog.get("actions") or []
 
         if corrected_text:
             payload = f"you:{corrected_text}\n"
@@ -50,9 +50,6 @@ class SerialNode(Node):
             if self.bridge.send_raw(payload):
                 self.get_logger().info(f'[{turn_id}] Sent AI text -> {payload.strip()}')
 
-        for action in actions:
-            self._send_action_dict(action)
-
     def you_callback(self, msg):
         payload = f"you:{msg.data}\n"
         if self.bridge.send_raw(payload):
@@ -65,35 +62,6 @@ class SerialNode(Node):
         payload = f"ai:{msg.data}\n"
         if self.bridge.send_raw(payload):
             self.get_logger().info(f'Sent AI text -> {payload.strip()}')
-
-    def _send_action_dict(self, cmd_data):
-        """Shared action translation for action_cmd and screen_dialog.actions."""
-        tool_name = cmd_data.get("name")
-
-        if tool_name == "express_emotion":
-            args_obj = cmd_data.get("arguments", {})
-            if isinstance(args_obj, str):
-                args = json.loads(args_obj or "{}")
-            else:
-                args = args_obj
-            emotion = args.get("emotion", "happy")
-            payload = f"eyeaction:{emotion}\n"
-            if self.bridge.send_raw(payload):
-                self.get_logger().info(f'Sent eye action -> {payload.strip()}')
-        else:
-            payload = f"action:{json.dumps(cmd_data, ensure_ascii=False)}\n"
-            if self.bridge.send_raw(payload):
-                self.get_logger().info(f'Sent action -> {payload.strip()}')
-
-    def action_callback(self, msg):
-        """Handle one action command from the legacy topic."""
-        try:
-            cmd_data = json.loads(msg.data)
-            self._send_action_dict(cmd_data)
-        except json.JSONDecodeError:
-            self.get_logger().error(f"Action command JSON parse failed: {msg.data}")
-        except Exception as e:
-            self.get_logger().error(f"Action command handling failed: {e}")
 
     def destroy_node(self):
         self.get_logger().info('Closing serial bridge...')

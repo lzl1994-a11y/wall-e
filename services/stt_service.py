@@ -57,7 +57,10 @@ class STTService:
 
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
-        self.api_key = config['ai_settings']['api_key']
+        stt_cfg = config['stt_settings']
+        self.api_key = stt_cfg['api_key']
+        self.base_url = stt_cfg['base_url']
+        self.model = stt_cfg['model']
 
         self.vad = webrtcvad.Vad(2)
         self.audio_queue = queue.Queue(maxsize=300)
@@ -228,7 +231,7 @@ class STTService:
             print(f"[STT] 调试音频已保存: {debug_path} ({duration_ms}ms)")
 
             rec = Recognition(
-                model='paraformer-realtime-v1',
+                model=self.model,
                 format='wav',
                 sample_rate=self.SAMPLE_RATE,
                 callback=_DummyCallback(),

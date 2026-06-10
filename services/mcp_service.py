@@ -16,7 +16,16 @@ mcp = FastMCP("Wali_Action_Center")
 @mcp.tool()
 def express_emotion(emotion: str) -> str:
     """
-    控制瓦力表达情绪。支持：curious(好奇), happy(开心), sad(难过), surprised(惊讶)。
+    控制瓦力表达情绪。
+    
+    emotion 可选：
+      - "curious"  : 好奇，眼睛微动
+      - "happy"    : 开心，眉毛上扬、欢快动作
+      - "sad"      : 难过，手部低垂、眼睛低落
+      - "surprised": 惊讶，眼睛瞪大、眉毛上扬、脖子后仰
+      - "disdain"  : 鄙视/翻白眼
+      - "angry"    : 生气
+    
     通过 ROS /action_cmd 下发，由 servo_ros_node 执行。
     """
     return "ok"
@@ -25,14 +34,48 @@ def express_emotion(emotion: str) -> str:
 @mcp.tool()
 def perform_action(action: str) -> str:
     """
-    执行特定行为动作。支持：dance(跳舞), talk_micro_move(对话微动)。
+    执行特定行为动作。
+    
+    action 可选：
+      - "dance"            : 全身跳舞
+      - "talk_micro_move"  : 对话微动（手+眼小幅自然动作）
+      - "wave"             : 挥手
+      - "nod"              : 点头
+      - "shake_head"       : 摇头
+      - "look_up"          : 抬头
+      - "look_down"        : 低头
+      - "tilt_head"        : 歪头
+    
     通过 ROS /action_cmd 下发，由 servo_ros_node 执行。
     """
     return "ok"
 
 
 # ==========================================
-# 底盘 / 视觉跟踪类（由 wali_tracking_node 执行）
+# 底盘类（由 motor_ros_node 执行）
+# ==========================================
+
+@mcp.tool()
+def move_chassis(direction: str, duration: int = 1) -> str:
+    """
+    控制瓦力履带底盘移动。
+    
+    direction 可选：
+      - "forward"  : 前进
+      - "backward" : 后退
+      - "spin"     : 原地转圈
+      - "left"     : 左转
+      - "right"    : 右转
+    
+    duration: 持续秒数，默认 1 秒，建议 1~3 秒。
+    
+    通过 ROS /action_cmd 下发，由 motor_ros_node 执行。
+    """
+    return "ok"
+
+
+# ==========================================
+# 视觉跟踪类（由 wali_tracking_node 执行）
 # ==========================================
 
 @mcp.tool()
