@@ -58,8 +58,9 @@ class STTService:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         stt_cfg = config['stt_settings']
-        self.api_key = stt_cfg['api_key']
-        self.base_url = stt_cfg['base_url']
+        ai_cfg = config['ai_settings']
+        self.api_key = ai_cfg['api_key']
+        self.base_url = ai_cfg['base_url']
         self.model = stt_cfg['model']
 
         self.vad = webrtcvad.Vad(2)

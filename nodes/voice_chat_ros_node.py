@@ -16,6 +16,7 @@ from std_msgs.msg import String
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
+from services.tool_dispatcher import build_action_cmd
 
 
 class VoiceChatNode(Node):
@@ -24,13 +25,22 @@ class VoiceChatNode(Node):
 
         self.tts_pub = self.create_publisher(String, "tts_text", 10)
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
+        self.action_pub = self.create_publisher(String, "action_cmd", 10)
 
         self.get_logger().info("正在预热 Qwen-Omni 直聊引擎...")
 
         self.vc = VoiceChatService()
         self.vc.on_llm_reply = self._on_llm_reply
+        self.vc.on_tool_call = self._on_tool_call
         self.vc.start()
         self.get_logger().info("语音直聊节点已上线（无回声防护，后续补）")
+
+    def _on_tool_call(self, name, arguments):
+        payload = build_action_cmd(name, arguments)
+        msg = String()
+        msg.data = payload
+        self.action_pub.publish(msg)
+        self.get_logger().info(f"Tool: {name}({arguments})")
 
     def _on_llm_reply(self, text):
         text = text.strip()

@@ -1,16 +1,9 @@
-"""
-[ZH] 大模型调用服务：封装 Kimi/OpenAI 接口，管理 API Key 和上下文历史。
-     行为：接收 Prompt 和动态工具单，返回大模型的流式文本与工具 JSON。
-[EN] LLM Calling Service: Encapsulates Kimi/OpenAI API, manages API keys and chat history.
-     Behavior: Receives Prompts and dynamic tool lists, yields streaming text and tool JSON.
-"""
 # services/llm_service.py
+import json
 import yaml
 from openai import OpenAI
+from services.tool_dispatcher import get_tools, ToolCallAccumulator
 
-# [ZH] 直接从 MCP 服务获取动态生成的技能表
-# [EN] Dynamically fetch generated skills from the MCP service
-import services.mcp_service as mcp
 
 class LLMService:
     def __init__(self, config_path="core/config.yaml"):
@@ -54,56 +47,27 @@ class LLMService:
             
             # [ZH] 挂载 FastMCP 自动生成的工具表
             # [EN] Mount auto-generated tools from FastMCP
-            tools=mcp.get_chat_tools(), 
+            tools=get_tools(), 
             
             tool_choice="auto",
             temperature=self.settings.get('temperature', 0.3),
             
-            # [ZH] 核心：开启流式输出
-            # [EN] Core: Enable streaming output
             stream=True 
         )
 
-        # [ZH] 用于临时存储碎片化的工具调用数据
-        # [EN] Buffer for temporarily storing fragmented tool call data
-        tool_calls_buffer = {}
+        acc = ToolCallAccumulator()
 
         for chunk in response:
             delta = chunk.choices[0].delta
 
-            # ==========================================
-            # [ZH] 动作通道 (处理工具指令)
-            # [EN] Action Channel (Processing tool commands)
-            # ==========================================
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    # [ZH] 获取碎片的索引 (应对多工具并发调用)
-                    # [EN] Get chunk index (to handle concurrent multi-tool calls)
-                    idx = tc.index
-                    if idx not in tool_calls_buffer:
-                        tool_calls_buffer[idx] = {"name": tc.function.name, "arguments": ""}
-                    
-                    # [ZH] 拼装 JSON 字符串碎片
-                    # [EN] Assemble JSON string chunks
-                    if tc.function.arguments:
-                        tool_calls_buffer[idx]["arguments"] += tc.function.arguments
+            acc.feed(delta)
 
-            # ==========================================
-            # [ZH] 语音通道 (处理正常聊天文本)
-            # [EN] Voice Channel (Processing normal chat text)
-            # ==========================================
             if delta.content:
-                # [ZH] 直接 yield 出文本，清洗工作交给外层流水线
-                # [EN] Yield text directly, leaving filtering to the outer pipeline
                 yield {"type": "text", "content": delta.content}
 
-        # ==========================================
-        # [ZH] 扫尾工作 (分发组装好的动作)
-        # [EN] Cleanup (Dispatch assembled actions)
-        # ==========================================
-        for idx, tool_data in tool_calls_buffer.items():
+        for tc in acc.flush():
             yield {
                 "type": "tool_call", 
-                "name": tool_data["name"], 
-                "arguments": tool_data["arguments"]
+                "name": tc["name"], 
+                "arguments": json.dumps(tc["arguments"])
             }

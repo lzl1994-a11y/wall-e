@@ -18,6 +18,7 @@ import numpy as np
 import sounddevice as sd
 import webrtcvad
 from openai import OpenAI
+from services.tool_dispatcher import get_tools, ToolCallAccumulator, build_action_cmd
 
 
 class VoiceChatService:
@@ -47,7 +48,7 @@ class VoiceChatService:
 
         ai = config["ai_settings"]
         self.client = OpenAI(api_key=ai["api_key"], base_url=ai["base_url"])
-        self.model = "qwen-omni-turbo"    # 阿里多模态音频模型
+        self.model = ai["model"]
         self.system_prompt = config.get("system_prompt", "")
 
         self.vad = webrtcvad.Vad(2)
@@ -61,6 +62,9 @@ class VoiceChatService:
 
         # 回调：LLM 返回文本后由调用方决定怎么处理（通常喂给 TTS）
         self.on_llm_reply = None
+
+        # 回调：LLM 返回工具调用后由调用方决定怎么处理（通常发到 /action_cmd）
+        self.on_tool_call = None
 
     # ================================================================
     # Public API（与 stt_service 完全兼容）
@@ -257,17 +261,20 @@ class VoiceChatService:
                 model=self.model,
                 messages=messages,
                 modalities=["text"],
+                tools=get_tools(),
+                tool_choice="auto",
                 stream=True,
                 stream_options={"include_usage": True},
                 timeout=self.API_TIMEOUT,
             )
 
             elapsed = time.time() - t0
-            # 收集流式文本
+            acc = ToolCallAccumulator()
             chunks = []
             for chunk in response:
                 if chunk.choices:
                     delta = chunk.choices[0].delta
+                    acc.feed(delta)
                     if hasattr(delta, "content") and delta.content:
                         chunks.append(delta.content)
             reply = "".join(chunks).strip()
@@ -276,6 +283,12 @@ class VoiceChatService:
 
             if reply and self.on_llm_reply:
                 self.on_llm_reply(reply)
+
+            # 处理工具调用
+            for tc in acc.flush():
+                print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
+                if self.on_tool_call:
+                    self.on_tool_call(tc["name"], tc["arguments"])
 
         except Exception as e:
             print(f"[VoiceChat] LLM 调用失败: {e}")
