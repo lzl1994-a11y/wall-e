@@ -1,8 +1,9 @@
-"""直接语音对话服务：VAD → 断句 → 多模态 LLM（音频直入）→ TTS
+"""直接语音对话服务：唤醒词守门 → VAD → 断句 → 多模态 LLM（音频直入）→ TTS
 
-替换原来 STT → 文本 → LLM 的两跳链路。
-与 stt_service.py 复用相同的 VAD + 断句逻辑，
-第 3 步从阿里 Paraformer STT 换成阿里 Qwen-Omni 多模态模型。
+2025-06 集成 Sherpa-ONNX 唤醒词检测：
+  未唤醒态 → 音频只喂给 KeywordSpotter，检测到"瓦力瓦力"后切换为唤醒态
+  唤醒态   → 走原有 VAD + 断句 + Qwen-Omni 多模态链路
+  唤醒后 N 秒无语音 → 自动回到未唤醒态（_awake_timeout）
 """
 
 import base64
@@ -26,7 +27,7 @@ class VoiceChatService:
 
     Usage:
         vc = VoiceChatService(config_path="core/config.yaml")
-        vc.on_llm_reply = lambda text: your_tts(text)   # 拿到 LLM 回复后播报
+        vc.on_llm_reply = lambda text: your_tts(text)
         vc.start()
         ...
         vc.stop()
@@ -51,6 +52,22 @@ class VoiceChatService:
         self.model = ai["model"]
         self.system_prompt = config.get("system_prompt", "")
 
+        # ── 唤醒词配置 ──
+        ww_cfg = config.get("wake_word", {})
+        self._wake_word_enabled = ww_cfg.get("enabled", False)
+        self._ww_keyword = ww_cfg.get("keyword", "瓦力瓦力")
+        self._ww_model_dir = ww_cfg.get("model_dir", "models/sherpa-onnx")
+        self._ww_threshold = ww_cfg.get("threshold", 0.5)
+        self._awake_timeout = ww_cfg.get("awake_timeout", 8.0)
+
+        self._kw_spotter = None
+        self._kw_stream = None
+        self._awake = False
+        self._awake_since = 0.0
+
+        if self._wake_word_enabled:
+            self._init_wake_word()
+
         self.vad = webrtcvad.Vad(2)
         self.audio_queue = queue.Queue(maxsize=300)
 
@@ -65,6 +82,61 @@ class VoiceChatService:
 
         # 回调：LLM 返回工具调用后由调用方决定怎么处理（通常发到 /action_cmd）
         self.on_tool_call = None
+
+    # ================================================================
+    # 唤醒词初始化
+    # ================================================================
+    def _init_wake_word(self):
+        """加载 Sherpa-ONNX KeywordSpotter 模型。"""
+        try:
+            import sherpa_onnx
+        except ImportError:
+            print("[VoiceChat] sherpa-onnx 未安装，唤醒词功能已禁用")
+            print("[VoiceChat] 安装: pip install sherpa-onnx")
+            self._wake_word_enabled = False
+            return
+
+        tokens = os.path.join(self._ww_model_dir, "tokens.txt")
+        encoder = os.path.join(self._ww_model_dir, "encoder-epoch-99-avg-1.onnx")
+        decoder = os.path.join(self._ww_model_dir, "decoder-epoch-99-avg-1.onnx")
+        joiner = os.path.join(self._ww_model_dir, "joiner-epoch-99-avg-1.onnx")
+        keywords_file = os.path.join(self._ww_model_dir, "keywords.txt")
+
+        # 自动生成 keywords.txt
+        if not os.path.exists(keywords_file):
+            os.makedirs(self._ww_model_dir, exist_ok=True)
+            pinyin = self._ww_keyword.replace("瓦力瓦力", "wa li wa li")
+            if pinyin == self._ww_keyword:
+                pinyin = "wa li wa li"
+            with open(keywords_file, "w", encoding="utf-8") as f:
+                f.write(f"{pinyin} @{self._ww_keyword}\n")
+            print(f"[VoiceChat] 已生成 keywords.txt: {keywords_file}")
+
+        missing = [f for f in [tokens, encoder, decoder, joiner] if not os.path.exists(f)]
+        if missing:
+            print(f"[VoiceChat] 唤醒词模型文件缺失: {missing}")
+            print(f"[VoiceChat] 模型目录: {self._ww_model_dir}")
+            print("[VoiceChat] 下载: pip install sherpa-onnx 后运行 "
+                  "download_sherpa_kws_model.py")
+            self._wake_word_enabled = False
+            return
+
+        try:
+            self._kw_spotter = sherpa_onnx.KeywordSpotter(
+                tokens=tokens,
+                encoder=encoder,
+                decoder=decoder,
+                joiner=joiner,
+                keywords_file=keywords_file,
+                keywords_threshold=self._ww_threshold,
+                num_threads=1,
+            )
+            self._kw_stream = self._kw_spotter.create_stream()
+            print(f"[VoiceChat] 唤醒词已就绪: '{self._ww_keyword}' "
+                  f"(threshold={self._ww_threshold})")
+        except Exception as e:
+            print(f"[VoiceChat] 初始化唤醒词失败: {e}")
+            self._wake_word_enabled = False
 
     # ================================================================
     # Public API（与 stt_service 完全兼容）
@@ -82,7 +154,8 @@ class VoiceChatService:
             callback=self._audio_callback,
         )
         self._audio_stream.start()
-        print("[VoiceChat] 直接语音对话已启动 (Qwen-Omni)")
+        tag = "唤醒词 + Qwen-Omni" if self._wake_word_enabled else "Qwen-Omni"
+        print(f"[VoiceChat] 直接语音对话已启动 ({tag})")
         return True
 
     def stop(self):
@@ -118,6 +191,9 @@ class VoiceChatService:
                 self.audio_queue.get_nowait()
             except queue.Empty:
                 break
+        # 唤醒态重置
+        if self._wake_word_enabled:
+            self._reset_wake_state()
 
     def _audio_callback(self, indata, frames, time_info, status):
         if not self.is_running or self.is_paused:
@@ -135,7 +211,42 @@ class VoiceChatService:
             return False
 
     # ================================================================
-    # 主循环：VAD + 断句（与 stt_service 一致）
+    # 唤醒词状态管理
+    # ================================================================
+    def _reset_wake_state(self):
+        """回到「未唤醒」状态，重建 sherpa-onnx stream。"""
+        self._awake = False
+        self._awake_since = 0.0
+        if self._kw_spotter and self._kw_stream:
+            try:
+                self._kw_spotter.reset(self._kw_stream)
+            except Exception:
+                pass
+
+    def _check_wake_word(self, frame):
+        """将单帧 int16 PCM 喂入 Sherpa-ONNX，返回是否检测到唤醒词。"""
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+        try:
+            self._kw_stream.accept_waveform(self.SAMPLE_RATE, samples)
+        except Exception:
+            return False
+
+        detected = False
+        try:
+            while self._kw_spotter.is_ready(self._kw_stream):
+                self._kw_spotter.decode(self._kw_stream)
+                result = self._kw_spotter.get_result(self._kw_stream)
+                if result and hasattr(result, 'keyword') and result.keyword:
+                    print(f"[VoiceChat] 🎤 唤醒成功: {result.keyword}")
+                    detected = True
+                    break
+        except Exception:
+            pass
+
+        return detected
+
+    # ================================================================
+    # 主循环：唤醒词守门 → VAD + 断句 → LLM
     # ================================================================
     def _run(self):
         max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
@@ -160,12 +271,30 @@ class VoiceChatService:
             try:
                 byte_buf.extend(self.audio_queue.get(timeout=0.1))
             except queue.Empty:
+                # 唤醒超时检查
+                if self._wake_word_enabled and self._awake:
+                    if time.time() - self._awake_since > self._awake_timeout:
+                        print("[VoiceChat] 唤醒超时，回到待机")
+                        self._reset_wake_state()
                 pass
 
             while len(byte_buf) >= self.FRAME_BYTES:
                 frame = bytes(byte_buf[:self.FRAME_BYTES])
                 del byte_buf[:self.FRAME_BYTES]
 
+                # ── 唤醒词守门 ──
+                if self._wake_word_enabled and not self._awake:
+                    if self._check_wake_word(frame):
+                        self._awake = True
+                        self._awake_since = time.time()
+                        # 唤醒后清空 VAD 缓冲区，只保留当前帧之后的数据
+                        speech_frames.clear()
+                        in_speech = False
+                        silence_count = 0
+                        speech_frame_count = 0
+                    continue  # 未唤醒时不做 VAD
+
+                # ── VAD + 断句（唤醒态或未启用唤醒词） ──
                 is_speech = self._vad_check(frame)
 
                 if is_speech:
@@ -228,8 +357,11 @@ class VoiceChatService:
 
             # 调试备份
             import shutil
-            shutil.copy2(wav_path, "/tmp/vc_debug_last.wav")
-            print(f"[VoiceChat] 调试音频已保存 /tmp/vc_debug_last.wav ({duration_ms}ms)")
+            debug_dir = os.path.expanduser("~/.wali_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            debug_path = os.path.join(debug_dir, "vc_debug_last.wav")
+            shutil.copy2(wav_path, debug_path)
+            print(f"[VoiceChat] 调试音频已保存 {debug_path} ({duration_ms}ms)")
 
             # 读 WAV → base64
             with open(wav_path, "rb") as f:
@@ -298,3 +430,7 @@ class VoiceChatService:
                     os.remove(wav_path)
                 except OSError:
                     pass
+
+            # LLM 回复完成后，回到未唤醒态，等待下一次唤醒
+            if self._wake_word_enabled:
+                self._reset_wake_state()
