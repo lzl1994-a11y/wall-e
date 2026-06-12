@@ -153,7 +153,11 @@ class VoiceChatService:
         if not os.path.exists(keywords_file):
             os.makedirs(self._ww_model_dir, exist_ok=True)
             with open(keywords_file, "w", encoding="utf-8") as f:
-                f.write("wa li wa li @瓦力瓦力\n")
+                f.write("w a l i w a l i @瓦力瓦力\n"  # BPE 子词分词，模型 tokens.txt 里没有 wa/li 完整拼音
+                        "w a n i w a n i @瓦力瓦力\n"
+                        "w a l íng w a l íng @瓦力瓦力\n"
+                        "w a y i w a y i @瓦力瓦力\n"
+                        "w a l èi w a l èi @瓦力瓦力\n")
 
         try:
             self._kw_spotter = sherpa_onnx.KeywordSpotter(

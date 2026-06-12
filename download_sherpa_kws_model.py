@@ -98,8 +98,15 @@ def main():
     # 确保 keywords.txt 存在
     keywords_file = MODEL_DIR / "keywords.txt"
     if not keywords_file.exists():
-        keywords_file.write_text("wa li wa li @瓦力瓦力", encoding="utf-8")
-        print(f"  ✓ keywords.txt (自动生成)")
+        keywords_file.write_text(
+            "w a l i w a l i @瓦力瓦力\n"   # BPE 子词分词，模型 tokens.txt 里没有 wa/li 完整拼音
+            "w a n i w a n i @瓦力瓦力\n"
+            "w a l íng w a l íng @瓦力瓦力\n"
+            "w a y i w a y i @瓦力瓦力\n"
+            "w a l èi w a l èi @瓦力瓦力\n",
+            encoding="utf-8",
+        )
+        print(f"  ✓ keywords.txt (自动生成，BPE 分词)")
 
     print(f"\n完成! 模型已就绪: {MODEL_DIR}")
 
