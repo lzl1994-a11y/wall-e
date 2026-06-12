@@ -120,22 +120,40 @@ class VoiceChatService:
             self._wake_word_enabled = False
             return
 
+        import glob as _glob
+
         tokens = os.path.join(self._ww_model_dir, "tokens.txt")
-        encoder = os.path.join(self._ww_model_dir, "encoder-epoch-99-avg-1.onnx")
-        decoder = os.path.join(self._ww_model_dir, "decoder-epoch-99-avg-1.onnx")
-        joiner = os.path.join(self._ww_model_dir, "joiner-epoch-99-avg-1.onnx")
         keywords_file = os.path.join(self._ww_model_dir, "keywords.txt")
+
+        # 用 glob 匹配实际文件名（不硬编码版本号），优先非 int8
+        def _pick_nonint8(pattern):
+            files = _glob.glob(pattern)
+            nonint8 = [f for f in files if "int8" not in os.path.basename(f)]
+            return nonint8 if nonint8 else files
+
+        _enc = _pick_nonint8(os.path.join(self._ww_model_dir, "encoder-*.onnx"))
+        _dec = _pick_nonint8(os.path.join(self._ww_model_dir, "decoder-*.onnx"))
+        _joi = _pick_nonint8(os.path.join(self._ww_model_dir, "joiner-*.onnx"))
+
+        if not (_enc and _dec and _joi and os.path.exists(tokens)):
+            missing = []
+            if not _enc: missing.append("encoder-*.onnx")
+            if not _dec: missing.append("decoder-*.onnx")
+            if not _joi: missing.append("joiner-*.onnx")
+            if not os.path.exists(tokens): missing.append("tokens.txt")
+            print(f"[VoiceChat] 唤醒词模型缺失: {missing}")
+            print(f"[VoiceChat] 请运行 download_sherpa_kws_model.py 下载模型")
+            self._wake_word_enabled = False
+            return
+
+        encoder = _enc[0]
+        decoder = _dec[0]
+        joiner = _joi[0]
 
         if not os.path.exists(keywords_file):
             os.makedirs(self._ww_model_dir, exist_ok=True)
             with open(keywords_file, "w", encoding="utf-8") as f:
                 f.write("wa li wa li @瓦力瓦力\n")
-
-        missing = [f for f in [tokens, encoder, decoder, joiner] if not os.path.exists(f)]
-        if missing:
-            print(f"[VoiceChat] 唤醒词模型缺失: {missing}")
-            self._wake_word_enabled = False
-            return
 
         try:
             self._kw_spotter = sherpa_onnx.KeywordSpotter(
@@ -258,7 +276,9 @@ class VoiceChatService:
             return
         self._wake_cooldown_until = now + 1.5  # 1.5s 冷却
 
-        print(f"[VoiceChat] 唤醒成功: {self._ww_keyword}")
+        print(f"[VoiceChat] 🎤 唤醒成功: {self._ww_keyword}  "
+              f"(冷却剩余 {max(0, self._wake_cooldown_until - now):.1f}s, "
+              f"距上次唤醒 {now - self._awake_since:.1f}s)")
 
         # 如果有正在进行的 LLM 调用，强制中断
         if self._llm_thread and self._llm_thread.is_alive():
