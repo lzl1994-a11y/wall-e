@@ -16,7 +16,7 @@ import pydub  # pip install pydub
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "assets" / "wake_response.wav"
 
-VOICE = "zh-CN-XiaoxiaoNeural"
+VOICE = "zh-CN-YunxiaNeural"
 TEXT = "我在，今天你想聊什么"
 
 
@@ -25,7 +25,7 @@ async def synthesize():
 
     # edge-tts → MP3 bytes
     print(f"合成: '{TEXT}' (voice={VOICE})")
-    communicate = edge_tts.Communicate(TEXT, VOICE, rate="+10%", pitch="+0Hz")
+    communicate = edge_tts.Communicate(TEXT, VOICE, rate="+20%", pitch="+5Hz")
     mp3_data = b""
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
@@ -35,7 +35,8 @@ async def synthesize():
         raise RuntimeError("edge-tts 返回空数据，请检查网络或 voice 名称")
 
     # MP3 → WAV (pydub)
-    audio = pydub.AudioSegment.from_mp3(pydub.utils.mediainfo_bytes(mp3_data))
+    import io
+    audio = pydub.AudioSegment.from_mp3(io.BytesIO(mp3_data))
     # 转 16kHz 16-bit mono，与机器人音频管线一致
     audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
 

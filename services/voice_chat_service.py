@@ -157,13 +157,9 @@ class VoiceChatService:
         joiner = _joi[0]
 
         if not os.path.exists(keywords_file):
-            os.makedirs(self._ww_model_dir, exist_ok=True)
-            with open(keywords_file, "w", encoding="utf-8") as f:
-                f.write("w a l i w a l i @瓦力瓦力\n"  # BPE 子词分词，模型 tokens.txt 里没有 wa/li 完整拼音
-                        "w a n i w a n i @瓦力瓦力\n"
-                        "w a l íng w a l íng @瓦力瓦力\n"
-                        "w a y i w a y i @瓦力瓦力\n"
-                        "w a l èi w a l èi @瓦力瓦力\n")
+            print(f"[VoiceChat] 唤醒词配置文件缺失: {keywords_file}")
+            self._wake_word_enabled = False
+            return
 
         try:
             self._kw_spotter = sherpa_onnx.KeywordSpotter(
@@ -278,12 +274,10 @@ class VoiceChatService:
             return False
         try:
             while self._kw_spotter.is_ready(self._kw_stream):
-                print("[DEBUG_KWS] spotter methods:", [m for m in dir(self._kw_spotter) if not m.startswith('_')])
                 self._kw_spotter.decode_stream(self._kw_stream)
                 result = self._kw_spotter.get_result(self._kw_stream)
                 # result 是字符串：命中返回 "瓦力瓦力"，未命中返回 ""
                 if result:
-                    print(f"[DEBUG_KWS] ★ 命中: {result}")
                     return True
         except Exception as e:
             print(f"[DEBUG_KWS] 异常: {e}")
