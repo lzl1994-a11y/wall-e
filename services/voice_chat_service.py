@@ -85,7 +85,8 @@ class VoiceChatService:
         if self._wake_word_enabled:
             self._init_wake_word()
 
-        self.vad = webrtcvad.Vad(2)
+        self.vad = webrtcvad.Vad(2)          # 断句用，中等灵敏度
+        self._ww_vad = webrtcvad.Vad(0)      # 唤醒词前置滤网，最宽松模式
         self.audio_queue = queue.Queue(maxsize=300)
 
         self.is_running = False
@@ -423,14 +424,16 @@ class VoiceChatService:
                     self._debug_ring.pop(0)
 
                 # ── 唤醒词检测（始终运行，所有状态） ──
-                if self._wake_word_enabled and self._check_wake_word(frame):
-                    self._on_wake_detected()
-                    # 清空 VAD 缓冲，从头开始听
-                    speech_frames.clear()
-                    in_speech = False
-                    silence_count = 0
-                    speech_frame_count = 0
-                    continue
+                # 前置 VAD 滤网：静音帧不喂入模型，省算力
+                if self._wake_word_enabled and self._ww_vad.is_speech(frame, self.SAMPLE_RATE):
+                    if self._check_wake_word(frame):
+                        self._on_wake_detected()
+                        # 清空 VAD 缓冲，从头开始听
+                        speech_frames.clear()
+                        in_speech = False
+                        silence_count = 0
+                        speech_frame_count = 0
+                        continue
 
                 # ── 非 AWAKE 状态跳过 VAD ──
                 with self._state_lock:
