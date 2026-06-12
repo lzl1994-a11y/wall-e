@@ -271,21 +271,21 @@ class VoiceChatService:
     # 唤醒词检测 + 状态管理
     # ================================================================
     def _check_wake_word(self, frame):
-        """返回 True 表示检测到唤醒词。"""
         samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
         try:
             self._kw_stream.accept_waveform(self.SAMPLE_RATE, samples)
         except Exception:
             return False
-
         try:
             while self._kw_spotter.is_ready(self._kw_stream):
                 self._kw_spotter.decode(self._kw_stream)
                 result = self._kw_spotter.get_result(self._kw_stream)
+                # ── 临时调试：打印每次就绪的搜索结果 ──
+                print(f"[DEBUG_KWS] is_ready=True, result={result}, keyword={result.keyword if (result and hasattr(result,'keyword')) else 'N/A'}")
                 if result and hasattr(result, 'keyword') and result.keyword:
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DEBUG_KWS] 异常: {e}")
         return False
 
     def _on_wake_detected(self):
