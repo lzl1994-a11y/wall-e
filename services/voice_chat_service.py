@@ -199,6 +199,16 @@ class VoiceChatService:
         self._audio_stream.start()
         tag = "唤醒词 + Qwen-Omni" if self._wake_word_enabled else "Qwen-Omni"
         print(f"[VoiceChat] 已启动 ({tag})")
+
+        # 打印音频设备信息
+        try:
+            dev = sd.query_devices(kind="input")
+            print(f"[VoiceChat] 输入设备: {dev['name']} | "
+                  f"默认采样率:{int(dev['default_samplerate'])} | "
+                  f"通道数:{dev['max_input_channels']}")
+        except Exception:
+            print("[VoiceChat] 无法查询输入设备信息")
+
         return True
 
     def stop(self):
@@ -385,8 +395,16 @@ class VoiceChatService:
                 self._heartbeat_at = now_hb
                 qs = self.audio_queue.qsize()
                 state_name = self._state.name
+                # 计算最近 1 秒的电平 (RMS)
+                rms_db = -999
+                if self._debug_ring:
+                    recent = self._debug_ring[-min(50, len(self._debug_ring)):]
+                    pcm = b"".join(recent)
+                    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+                    rms = np.sqrt(np.mean(arr ** 2))
+                    rms_db = 20 * np.log10(max(rms, 1e-6))
                 print(f"[VoiceChat] ♥ 音频流活跃 | 队列:{qs} | 状态:{state_name} | "
-                      f"环缓冲:{len(self._debug_ring)}帧")
+                      f"电平:{rms_db:.0f}dB | 环缓冲:{len(self._debug_ring)}帧")
 
             # 超时检查（AWAKE / LLM_PENDING 状态）
             with self._state_lock:
