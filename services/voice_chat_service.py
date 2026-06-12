@@ -108,6 +108,11 @@ class VoiceChatService:
         self.on_tool_call = None       # LLM 工具调用
         self.on_llm_timeout = None     # 40s 无回复超时
 
+        # ── 调试 ──
+        self._debug_ring = []  # 最近 N 帧音频 (int16 bytes)，用于调试保存
+        self._debug_ring_max = int(5.0 / (self.FRAME_MS / 1000.0))  # 5 秒
+        self._heartbeat_at = 0.0
+
     # ================================================================
     # 唤醒词初始化
     # ================================================================
@@ -296,6 +301,16 @@ class VoiceChatService:
         self._awake_since = now
         self._last_llm_activity = now
 
+        # 重置唤醒词流，防止持续误触发
+        if self._kw_spotter:
+            try:
+                self._kw_stream = self._kw_spotter.create_stream()
+            except Exception:
+                pass
+
+        # 保存调试音频（最近 5 秒）
+        self._save_debug_audio("wake_trigger")
+
         # 通知外部：播放应答语音 + 切 TFT
         if self.on_wake_word:
             try:
@@ -314,6 +329,27 @@ class VoiceChatService:
                 self.on_llm_timeout()
             except Exception as e:
                 print(f"[VoiceChat] on_llm_timeout 回调异常: {e}")
+
+    def _save_debug_audio(self, tag="debug"):
+        """保存调试环缓冲中最近几秒的音频到 ~/.wali_debug/ 目录。"""
+        if not self._debug_ring:
+            return
+        try:
+            import wave as _wave
+            debug_dir = os.path.expanduser("~/.wali_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(debug_dir, f"ww_{tag}_{ts}.wav")
+            pcm = b"".join(self._debug_ring)
+            with _wave.open(path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.SAMPLE_RATE)
+                wf.writeframes(pcm)
+            dur = len(pcm) / (self.SAMPLE_RATE * 2)
+            print(f"[VoiceChat] 调试音频已保存: {path} ({dur:.1f}s)")
+        except Exception as e:
+            print(f"[VoiceChat] 保存调试音频失败: {e}")
 
     # ================================================================
     # 主循环
@@ -343,6 +379,15 @@ class VoiceChatService:
             except queue.Empty:
                 pass
 
+            # ── 调试心跳：每 2 秒打印，确认音频流在工作 ──
+            now_hb = time.time()
+            if now_hb - self._heartbeat_at > 2.0:
+                self._heartbeat_at = now_hb
+                qs = self.audio_queue.qsize()
+                state_name = self._state.name
+                print(f"[VoiceChat] ♥ 音频流活跃 | 队列:{qs} | 状态:{state_name} | "
+                      f"环缓冲:{len(self._debug_ring)}帧")
+
             # 超时检查（AWAKE / LLM_PENDING 状态）
             with self._state_lock:
                 current_state = self._state
@@ -353,6 +398,11 @@ class VoiceChatService:
             while len(byte_buf) >= self.FRAME_BYTES:
                 frame = bytes(byte_buf[:self.FRAME_BYTES])
                 del byte_buf[:self.FRAME_BYTES]
+
+                # 调试环缓冲
+                self._debug_ring.append(frame)
+                if len(self._debug_ring) > self._debug_ring_max:
+                    self._debug_ring.pop(0)
 
                 # ── 唤醒词检测（始终运行，所有状态） ──
                 if self._wake_word_enabled and self._check_wake_word(frame):
