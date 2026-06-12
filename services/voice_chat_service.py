@@ -281,7 +281,8 @@ class VoiceChatService:
                 print("[DEBUG_KWS] spotter methods:", [m for m in dir(self._kw_spotter) if not m.startswith('_')])
                 self._kw_spotter.decode_stream(self._kw_stream)
                 result = self._kw_spotter.get_result(self._kw_stream)
-                # ── 临时调试：打印每次就绪的搜索结果 ──
+                # ── 临时调试 ──
+                print(f"[DEBUG_KWS] type={type(result).__name__}, dir={[m for m in dir(result) if not m.startswith('_')]}")
                 print(f"[DEBUG_KWS] is_ready=True, result={result}, keyword={result.keyword if (result and hasattr(result,'keyword')) else 'N/A'}")
                 if result and hasattr(result, 'keyword') and result.keyword:
                     return True
