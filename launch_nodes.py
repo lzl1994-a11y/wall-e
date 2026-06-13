@@ -62,6 +62,10 @@ def build_node_list(args):
 
     nodes = [NodeEntry("llm", ROOT / "nodes" / "llm_ros_node.py")]
 
+    # 音频播放管线（始终启动）
+    nodes.append(NodeEntry("tts_play", ROOT / "nodes" / "tts_play_node.py"))
+    nodes.append(NodeEntry("audio_playback", ROOT / "nodes" / "audio_playback_node.py"))
+
     # serial: CLI --no-serial 覆盖 config
     if not args.no_serial and launch_cfg.get("serial", True):
         nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))

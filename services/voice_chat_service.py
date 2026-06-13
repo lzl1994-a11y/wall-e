@@ -109,7 +109,8 @@ class VoiceChatService:
 
         # ── 回调 ──
         self.on_wake_word = None       # 唤醒词触发（应播放应答语音、切 TFT 页面）
-        self.on_llm_reply = None       # LLM 文本回复
+        self.on_llm_reply = None       # LLM 文本回复（最终完整回复，用于屏幕显示）
+        self.on_llm_chunk = None       # LLM 流式文本块（每收到一个 chunk 就回调，用于逐句 TTS）
         self.on_tool_call = None       # LLM 工具调用
         self.on_llm_timeout = None     # 40s 无回复超时
 
@@ -554,10 +555,7 @@ class VoiceChatService:
             )
 
             acc = ToolCallAccumulator()
-            buffer = ""          # 累积完整回复，用于最终解析历史
-            ai_buffer = ""       # ai: 之后的流式缓冲区
-            in_ai = False        # 是否已进入 ai: 段
-            sentences = set("。！？；\n")
+            chunks = []
 
             for chunk in response:
                 if self._cancel_llm.is_set():
@@ -567,9 +565,6 @@ class VoiceChatService:
                             response.close()
                         except Exception:
                             pass
-                    # 剩余 ai_buffer 也要送出
-                    if ai_buffer.strip() and self.on_llm_reply:
-                        self.on_llm_reply(ai_buffer.strip())
                     self._llm_done()
                     return
 
@@ -578,37 +573,12 @@ class VoiceChatService:
                     acc.feed(delta)
                     if hasattr(delta, "content") and delta.content:
                         text = delta.content
-                        buffer += text
-                        skip_append = False
-
-                        # 检测 ai: 前缀，进入流式输出模式
-                        if not in_ai and "ai:" in buffer:
-                            parts = buffer.split("ai:", 1)
-                            buffer = parts[0] + "ai:"
-                            in_ai = True
-                            ai_buffer = parts[1] if len(parts) > 1 else ""
-                            skip_append = True  # text 已通过 parts[1] 进入 ai_buffer
-
-                        # 流式输出：每凑足一个完整句子就立即发给 TTS
-                        if in_ai:
-                            if not skip_append:
-                                ai_buffer += text
-                            while any(p in ai_buffer for p in sentences):
-                                idx = min(
-                                    (ai_buffer.index(p) for p in sentences if p in ai_buffer)
-                                )
-                                sentence = ai_buffer[:idx + 1].strip()
-                                ai_buffer = ai_buffer[idx + 1:].lstrip()
-                                if sentence and self.on_llm_reply:
-                                    self.on_llm_reply(sentence)
+                        chunks.append(text)
+                        if self.on_llm_chunk:
+                            self.on_llm_chunk(text)
 
             elapsed = time.time() - t0
-
-            # 最后一段剩余文字
-            if in_ai and ai_buffer.strip() and self.on_llm_reply:
-                self.on_llm_reply(ai_buffer.strip())
-
-            reply = buffer.strip()
+            reply = "".join(chunks).strip()
             print(f"[VoiceChat] LLM 回复 ({elapsed:.1f}s): {reply}")
 
             # 解析 you/asr 文本存入对话历史
