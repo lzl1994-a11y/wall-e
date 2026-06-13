@@ -18,6 +18,7 @@ import threading
 import time
 import wave
 import yaml
+from collections import deque
 from enum import Enum, auto
 
 import numpy as np
@@ -66,6 +67,9 @@ class VoiceChatService:
         self.client = OpenAI(api_key=ai["api_key"], base_url=ai["base_url"])
         self.model = ai["model"]
         self.system_prompt = config.get("system_prompt", "")
+
+        # ── 对话历史（最近20轮，用于拼入messages提供上下文） ──
+        self._chat_history: deque = deque(maxlen=40)  # 20轮 × 2条(user+assistant)
 
         # ── 唤醒词配置 ──
         ww_cfg = config.get("wake_word", {})
@@ -516,22 +520,24 @@ class VoiceChatService:
             with open(wav_path, "rb") as f:
                 audio_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "请回复这段语音。"},
-                        {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": f"data:;base64,{audio_b64}",
-                                "format": "wav",
-                            },
+            messages = [{"role": "system", "content": self.system_prompt}]
+
+            # 插入最近20轮对话历史（纯文本，不含音频）
+            messages.extend(list(self._chat_history))
+
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请回复这段语音。"},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": f"data:;base64,{audio_b64}",
+                            "format": "wav",
                         },
-                    ],
-                },
-            ]
+                    },
+                ],
+            })
 
             print(f"[VoiceChat] 发送音频 {duration_ms}ms → {self.model}")
             t0 = time.time()
@@ -548,16 +554,22 @@ class VoiceChatService:
             )
 
             acc = ToolCallAccumulator()
-            chunks = []
+            buffer = ""          # 累积完整回复，用于最终解析历史
+            ai_buffer = ""       # ai: 之后的流式缓冲区
+            in_ai = False        # 是否已进入 ai: 段
+            sentences = set("。！？；\n")
+
             for chunk in response:
                 if self._cancel_llm.is_set():
                     print("[VoiceChat] LLM 调用被唤醒词中断")
-                    # 尝试关闭底层连接
                     if hasattr(response, 'close'):
                         try:
                             response.close()
                         except Exception:
                             pass
+                    # 剩余 ai_buffer 也要送出
+                    if ai_buffer.strip() and self.on_llm_reply:
+                        self.on_llm_reply(ai_buffer.strip())
                     self._llm_done()
                     return
 
@@ -565,14 +577,53 @@ class VoiceChatService:
                     delta = chunk.choices[0].delta
                     acc.feed(delta)
                     if hasattr(delta, "content") and delta.content:
-                        chunks.append(delta.content)
+                        text = delta.content
+                        buffer += text
+                        skip_append = False
+
+                        # 检测 ai: 前缀，进入流式输出模式
+                        if not in_ai and "ai:" in buffer:
+                            parts = buffer.split("ai:", 1)
+                            buffer = parts[0] + "ai:"
+                            in_ai = True
+                            ai_buffer = parts[1] if len(parts) > 1 else ""
+                            skip_append = True  # text 已通过 parts[1] 进入 ai_buffer
+
+                        # 流式输出：每凑足一个完整句子就立即发给 TTS
+                        if in_ai:
+                            if not skip_append:
+                                ai_buffer += text
+                            while any(p in ai_buffer for p in sentences):
+                                idx = min(
+                                    (ai_buffer.index(p) for p in sentences if p in ai_buffer)
+                                )
+                                sentence = ai_buffer[:idx + 1].strip()
+                                ai_buffer = ai_buffer[idx + 1:].lstrip()
+                                if sentence and self.on_llm_reply:
+                                    self.on_llm_reply(sentence)
 
             elapsed = time.time() - t0
-            reply = "".join(chunks).strip()
+
+            # 最后一段剩余文字
+            if in_ai and ai_buffer.strip() and self.on_llm_reply:
+                self.on_llm_reply(ai_buffer.strip())
+
+            reply = buffer.strip()
             print(f"[VoiceChat] LLM 回复 ({elapsed:.1f}s): {reply}")
 
-            if reply and self.on_llm_reply:
-                self.on_llm_reply(reply)
+            # 解析 you/asr 文本存入对话历史
+            asr_text = ""
+            ai_text = reply
+            if reply.startswith("you:"):
+                lines = reply.split("\n", 1)
+                asr_text = lines[0][4:].strip()
+                ai_text = lines[1].strip() if len(lines) > 1 else ""
+                if ai_text.startswith("ai:"):
+                    ai_text = ai_text[3:].strip()
+            if asr_text:
+                self._chat_history.append({"role": "user", "content": asr_text})
+            if ai_text:
+                self._chat_history.append({"role": "assistant", "content": ai_text})
 
             for tc in acc.flush():
                 print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
