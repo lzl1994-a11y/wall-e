@@ -10,6 +10,13 @@ class _SMBusI2C:
     """极小 I2C 适配层：把 smbus2.SMBus 伪装成 PCA9685 期望的 busio.I2C 接口。"""
     def __init__(self, bus_num: int):
         self._bus = SMBus(bus_num)
+        self._lock = threading.Lock()
+
+    def try_lock(self):
+        return self._lock.acquire(blocking=False)
+
+    def unlock(self):
+        self._lock.release()
     def writeto(self, address: int, buffer: bytes, *, stop: bool = True):
         if len(buffer) == 0:
             return
