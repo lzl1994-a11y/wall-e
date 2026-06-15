@@ -70,6 +70,8 @@ def build_node_list(args):
     if not args.no_serial and launch_cfg.get("serial", True):
         nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
         nodes.append(NodeEntry("action", ROOT / "nodes" / "action_ros_node.py"))
+        nodes.append(NodeEntry("servo_ros", ROOT / "nodes" / "servo_ros_node.py"))
+        nodes.append(NodeEntry("motor_ros", ROOT / "nodes" / "motor_ros_node.py"))
 
     if pipeline == "voice_chat":
         nodes.append(NodeEntry("voice_chat", ROOT / "nodes" / "voice_chat_ros_node.py"))
@@ -82,9 +84,6 @@ def build_node_list(args):
     # tracking: CLI --tracking 覆盖 config
     if args.tracking or launch_cfg.get("tracking", False):
         nodes.append(NodeEntry("tracking", ROOT / "nodes" / "wali_tracking_node.py"))
-        if not args.no_hardware:
-            nodes.append(NodeEntry("servo_ros", ROOT / "nodes" / "servo_ros_node.py"))
-            nodes.append(NodeEntry("motor_ros", ROOT / "nodes" / "motor_ros_node.py"))
         if not args.no_doa:
             nodes.append(NodeEntry("doa_ros", ROOT / "nodes" / "doa_ros_node.py"))
 
