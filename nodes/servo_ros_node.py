@@ -38,7 +38,7 @@ class ServoRosNode(Node):
 
         if name:
             self.servo.set_angle(name, angle)
-            self.get_logger().debug(f"Servo {name} -> {angle}°")
+            self.get_logger().info(f"[Servo] {name} -> {angle}°")
         else:
             self.get_logger().warn(f"Servo command missing 'name': {cmd}")
 

@@ -404,8 +404,7 @@ class VoiceChatService:
                     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                     rms = np.sqrt(np.mean(arr ** 2))
                     rms_db = 20 * np.log10(max(rms, 1e-6))
-                print(f"[VoiceChat] ♥ 音频流活跃 | 队列:{qs} | 状态:{state_name} | "
-                      f"电平:{rms_db:.0f}dB | 环缓冲:{len(self._debug_ring)}帧")
+                # 音频流状态日志已关闭，减少刷屏
 
             # 超时检查（AWAKE / LLM_PENDING 状态）
             with self._state_lock:
@@ -552,6 +551,9 @@ class VoiceChatService:
                 stream=True,
                 stream_options={"include_usage": True},
                 timeout=self.API_TIMEOUT,
+                max_tokens=1024,
+                frequency_penalty=0.3,
+                presence_penalty=0.3,
             )
 
             acc = ToolCallAccumulator()
