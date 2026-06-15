@@ -48,7 +48,9 @@ class ServoControl:
         # 初始化 PCA9685（I2C）
         # ==========================================
         print("   -> 正在连接 I2C 总线并唤醒 PCA9685...")
-        self.i2c = busio.I2C(1)  # RDK X3 的 /dev/i2c-1
+        import board
+        import busio
+        self.i2c = busio.I2C(board.SCL, board.SDA)
         self.pca = PCA9685(self.i2c, address=0x70)
         self.pca.frequency = 50  # 舵机标准工作频率 50Hz，电机也兼容
 
