@@ -48,9 +48,10 @@ class ServoControl:
         # 初始化 PCA9685（I2C）
         # ==========================================
         print("   -> 正在连接 I2C 总线并唤醒 PCA9685...")
-        import board
         import busio
-        self.i2c = busio.I2C(board.SCL, board.SDA)
+        from adafruit_blinka.microcontroller.generic_linux.i2c import I2C as _I2C
+        self.i2c = busio.I2C(1)  # 强制指定 /dev/i2c-1
+        self.i2c._i2c = _I2C(1)
         self.pca = PCA9685(self.i2c, address=0x70)
         self.pca.frequency = 50  # 舵机标准工作频率 50Hz，电机也兼容
 
