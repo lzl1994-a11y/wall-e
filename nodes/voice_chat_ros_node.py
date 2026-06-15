@@ -175,6 +175,11 @@ class VoiceChatNode(Node):
             if ai_text.startswith("ai:"):
                 ai_text = ai_text[3:].strip()
 
+        # 终端输出：让用户看到自己说了什么
+        if corrected_text:
+            self.get_logger().info(f"[识别] {corrected_text}")
+        self.get_logger().info(f"[回复] {ai_text[:80]}")
+
         # flush 残留 TTS 文本
         if self._sentence_buffer.strip():
             tts_safe = TTS_CLEAN_RE.sub("", self._sentence_buffer.strip())

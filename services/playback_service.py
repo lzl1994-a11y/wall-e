@@ -26,17 +26,30 @@ class PlaybackService:
         print(f"[Playback Service] 播放器就绪 (mode={mode}, device={self._device}, sr={sample_rate})")
 
     def _select_device(self):
-        """根据 mode 选择 sounddevice 输出设备 ID。"""
-        if self.mode != "usb":
-            return None  # 系统默认
+        """根据 mode 选择 sounddevice 输出设备 ID。
 
+        ESP32-S3 UAC 设备同时提供输入（麦克风）和输出（喇叭），
+        共用同一个 PortAudio 设备索引。VoiceChatService 的 InputStream
+        占用该设备后，播放也必须用精确索引，不能用 -1（None）。
+        """
         devices = sd.query_devices()
+        # 优先找同时有输入和输出的设备（UAC）
         for idx, dev in enumerate(devices):
             if dev["max_input_channels"] > 0 and dev["max_output_channels"] > 0:
-                print(f"[Playback Service] USB 音频设备: [{idx}] {dev['name']}")
+                print(f"[Playback Service] UAC 音频设备: [{idx}] {dev['name']}")
                 return idx
 
-        print("[Playback Service] 未找到 USB 音频设备，回退到 default")
+        # 兜底：用系统默认输入设备索引（VoiceChatService 占的那个）
+        try:
+            default_dev = sd.query_devices(kind="input")
+            for idx, dev in enumerate(devices):
+                if dev["name"] == default_dev["name"]:
+                    print(f"[Playback Service] 默认输入设备: [{idx}] {dev['name']}")
+                    return idx
+        except Exception:
+            pass
+
+        print("[Playback Service] 未找到音频设备，回退到 None")
         return None
 
     def play(self, samples: np.ndarray):
