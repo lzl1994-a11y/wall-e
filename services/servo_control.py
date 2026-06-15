@@ -3,8 +3,28 @@
 # 全部通过 I2C 一条总线控制，不再使用 GPIO 直连电机。
 import time
 import threading
-import busio
+from smbus2 import SMBus
 from adafruit_pca9685 import PCA9685
+
+class _SMBusI2C:
+    """极小 I2C 适配层：把 smbus2.SMBus 伪装成 PCA9685 期望的 busio.I2C 接口。"""
+    def __init__(self, bus_num: int):
+        self._bus = SMBus(bus_num)
+    def writeto(self, address: int, buffer: bytes, *, stop: bool = True):
+        if len(buffer) == 0:
+            return
+        if len(buffer) == 1:
+            self._bus.write_byte_data(address, buffer[0], 0)
+        else:
+            self._bus.write_i2c_block_data(address, buffer[0], list(buffer[1:]))
+        return
+    def readfrom_into(self, address: int, buffer: bytearray, *, stop: bool = True):
+        if len(buffer) == 0:
+            return
+        data = self._bus.read_i2c_block_data(address, buffer[0], len(buffer) - 1)
+        for i, b in enumerate(data):
+            buffer[i + 1] = b
+        return
 
 class ServoControl:
     
@@ -48,10 +68,7 @@ class ServoControl:
         # 初始化 PCA9685（I2C）
         # ==========================================
         print("   -> 正在连接 I2C 总线并唤醒 PCA9685...")
-        import busio
-        from adafruit_blinka.microcontroller.generic_linux.i2c import I2C as _I2C
-        self.i2c = busio.I2C(1)  # 强制指定 /dev/i2c-1
-        self.i2c._i2c = _I2C(1)
+        self.i2c = _SMBusI2C(1)   # /dev/i2c-1，地址 0x70
         self.pca = PCA9685(self.i2c, address=0x70)
         self.pca.frequency = 50  # 舵机标准工作频率 50Hz，电机也兼容
 
