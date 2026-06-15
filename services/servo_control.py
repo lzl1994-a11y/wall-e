@@ -17,21 +17,46 @@ class _SMBusI2C:
 
     def unlock(self):
         self._lock.release()
-    def writeto(self, address: int, buffer: bytes, *, stop: bool = True):
-        if len(buffer) == 0:
+    def writeto(self, address: int, buffer: bytes, **kwargs):
+        start = kwargs.get('start', 0)
+        end = kwargs.get('end', len(buffer))
+        buf = buffer[start:end]
+        if len(buf) == 0:
             return
-        if len(buffer) == 1:
-            self._bus.write_byte_data(address, buffer[0], 0)
+        if len(buf) == 1:
+            self._bus.write_byte_data(address, buf[0], 0)
         else:
-            self._bus.write_i2c_block_data(address, buffer[0], list(buffer[1:]))
-        return
-    def readfrom_into(self, address: int, buffer: bytearray, *, stop: bool = True):
-        if len(buffer) == 0:
+            self._bus.write_i2c_block_data(address, buf[0], list(buf[1:]))
+
+    def readfrom_into(self, address: int, buffer: bytearray, **kwargs):
+        start = kwargs.get('start', 0)
+        end = kwargs.get('end', len(buffer))
+        length = end - start
+        if length == 0:
             return
-        data = self._bus.read_i2c_block_data(address, buffer[0], len(buffer) - 1)
-        for i, b in enumerate(data):
-            buffer[i + 1] = b
-        return
+        # If pure read without register write, use read_byte for 1 byte.
+        if length == 1:
+            buffer[start] = self._bus.read_byte(address)
+        else:
+            # Fallback for raw read, though rarely used in PCA9685
+            for i in range(length):
+                buffer[start + i] = self._bus.read_byte(address)
+
+    def writeto_then_readfrom(self, address: int, out_buffer: bytes, in_buffer: bytearray, **kwargs):
+        out_start = kwargs.get('out_start', 0)
+        out_end = kwargs.get('out_end', len(out_buffer))
+        in_start = kwargs.get('in_start', 0)
+        in_end = kwargs.get('in_end', len(in_buffer))
+        
+        out_buf = out_buffer[out_start:out_end]
+        in_len = in_end - in_start
+        
+        if len(out_buf) > 0 and in_len > 0:
+            reg = out_buf[0]
+            # Write register address and read block data
+            data = self._bus.read_i2c_block_data(address, reg, in_len)
+            for i in range(in_len):
+                in_buffer[in_start + i] = data[i]
 
 class ServoControl:
     
