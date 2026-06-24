@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""串口通信节点：唯一的串口持有者。
+
+订阅 Topic 并透传下位机：
+  /screen_dialog → 屏幕文字（you: / ai:）
+  /tft_cmd       → TFT 控制指令（eyeaction:...）
+  /pca9685_raw   → PCA9685 15 通道原始值（由 hardware_bridge_node 产出）
+
+动作分发由 action_ros_node 负责，硬件驱动由 hardware_bridge_node 负责。
+本节点只做串口透传，不做任何业务解析。
+"""
+
 import json
 
 import rclpy
@@ -9,8 +20,6 @@ from services.serial_bridge import SerialBridge
 
 
 class SerialNode(Node):
-    """TFT 串口通信节点：屏幕文字显示 + eyeaction:talk。动作分发由 action_ros_node 负责。"""
-
     def __init__(self):
         super().__init__('walle_serial_node')
 
@@ -20,12 +29,16 @@ class SerialNode(Node):
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')
 
-        self.get_logger().info('Serial ROS node is online.')
+        # 订阅 Topic
+        self.create_subscription(String, 'screen_dialog', self.screen_dialog_callback, 10)
+        self.create_subscription(String, 'tft_cmd', self.tft_cmd_callback, 10)
+        self.create_subscription(String, 'pca9685_raw', self.pca9685_callback, 10)
 
-        # 订阅原子化回合消息
-        self.sub_screen_dialog = self.create_subscription(
-            String, 'screen_dialog', self.screen_dialog_callback, 10)
+        self.get_logger().info('Serial ROS node is online (sole serial owner).')
 
+    # ------------------------------------------------------------------
+    # screen_dialog: 屏幕文字
+    # ------------------------------------------------------------------
     def screen_dialog_callback(self, msg):
         """Send a complete turn to the lower screen in one callback."""
         try:
@@ -63,6 +76,24 @@ class SerialNode(Node):
         if self.bridge.send_raw(payload):
             self.get_logger().info(f'Sent AI text -> {payload.strip()}')
 
+    # ------------------------------------------------------------------
+    # tft_cmd: 表情控制指令（原 action_ros_node 直接写串口）
+    # ------------------------------------------------------------------
+    def tft_cmd_callback(self, msg):
+        if self.bridge.send_raw(msg.data):
+            self.get_logger().debug(f'[Serial] TFT cmd forwarded: {msg.data.strip()}')
+
+    # ------------------------------------------------------------------
+    # pca9685_raw: 硬件 15 通道原始值（原 hardware_bridge_node 直接写串口）
+    # ------------------------------------------------------------------
+    def pca9685_callback(self, msg):
+        payload = msg.data + '\n'
+        if self.bridge.send_raw(payload):
+            self.get_logger().debug(f'[Serial] PCA9685 forwarded ({len(msg.data)} bytes)')
+
+    # ------------------------------------------------------------------
+    # 清理
+    # ------------------------------------------------------------------
     def destroy_node(self):
         self.get_logger().info('Closing serial bridge...')
         if hasattr(self, 'bridge'):

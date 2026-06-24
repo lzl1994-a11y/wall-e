@@ -70,8 +70,7 @@ def build_node_list(args):
     if not args.no_serial and launch_cfg.get("serial", True):
         nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
         nodes.append(NodeEntry("action", ROOT / "nodes" / "action_ros_node.py"))
-        nodes.append(NodeEntry("servo_ros", ROOT / "nodes" / "servo_ros_node.py"))
-        nodes.append(NodeEntry("motor_ros", ROOT / "nodes" / "motor_ros_node.py"))
+        nodes.append(NodeEntry("hardware_bridge", ROOT / "nodes" / "hardware_bridge_node.py"))
 
     if pipeline == "voice_chat":
         nodes.append(NodeEntry("voice_chat", ROOT / "nodes" / "voice_chat_ros_node.py"))

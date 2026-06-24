@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 # nodes/action_ros_node.py
-# MCP tool_call -> ROS 话题 / TFT 串口 的动作分发器
-# 订阅 /action_cmd，翻译到 /servo_cmd、/motor_cmd、TFT 串口
+# MCP tool_call -> ROS 话题 的动作分发器
+# 订阅 /action_cmd，翻译到 /servo_cmd、/motor_cmd、/tft_cmd
 
 import json
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-
-from services.serial_bridge import SerialBridge
 
 
 class ActionRosNode(Node):
@@ -42,14 +40,10 @@ class ActionRosNode(Node):
     def __init__(self):
         super().__init__('action_ros_node')
 
-        # TFT 串口（用于 express_emotion）
-        self.bridge = SerialBridge(device_name="WALL_E_TFT")
-        if not self.bridge.ser:
-            self.get_logger().error('Action node: TFT serial bridge connection failed')
-
-        # 发布舵机/电机指令
+        # 发布舵机/电机/TFT 指令
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
         self.motor_pub = self.create_publisher(String, '/motor_cmd', 10)
+        self.tft_pub   = self.create_publisher(String, '/tft_cmd', 10)
 
         # Oneshot 定时器
         self._servo_timer = None
@@ -77,9 +71,10 @@ class ActionRosNode(Node):
 
         if tool_name == "express_emotion":
             emotion = args.get("emotion", "happy")
-            payload = f"eyeaction:{emotion}\n"
-            if self.bridge.send_raw(payload):
-                self.get_logger().info(f'[Action] TFT eyeaction:{emotion}')
+            msg_out = String()
+            msg_out.data = f"eyeaction:{emotion}\n"
+            self.tft_pub.publish(msg_out)
+            self.get_logger().info(f'[Action] TFT eyeaction:{emotion}')
 
         elif tool_name == "perform_action":
             action = args.get("action", "talk_micro_move")
@@ -146,8 +141,6 @@ class ActionRosNode(Node):
             self.destroy_timer(self._servo_timer)
             self._servo_timer = None
         self._stop_motors()
-        if hasattr(self, 'bridge'):
-            self.bridge.close()
         super().destroy_node()
 
 

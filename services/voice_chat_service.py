@@ -89,7 +89,7 @@ class VoiceChatService:
         if self._wake_word_enabled:
             self._init_wake_word()
 
-        self.vad = webrtcvad.Vad(2)          # 断句用，中等灵敏度
+        self.vad = webrtcvad.Vad(3)          # 断句用，最高激进度，滤噪声
         self._ww_vad = webrtcvad.Vad(0)      # 唤醒词前置滤网，最宽松模式
         self.audio_queue = queue.Queue(maxsize=300)
 
