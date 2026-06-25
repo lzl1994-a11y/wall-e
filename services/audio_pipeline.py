@@ -15,9 +15,9 @@ import threading
 import time
 
 import numpy as np
+import onnxruntime as ort
 import sounddevice as sd
 import yaml
-from silero_vad import load_silero_vad_onnx
 
 
 class WakeWordDetector:
@@ -127,11 +127,14 @@ class AudioPipeline:
             config = yaml.safe_load(f)
 
         self._ww = WakeWordDetector(config)
-        # silero-vad: 神经网络人声检测，远优于 webrtcvad
-        self._vad = load_silero_vad_onnx()
+        # silero-vad ONNX: 神经网络人声检测，远优于 webrtcvad
+        model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "silero_vad.onnx")
+        self._vad = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        self._vad_input = self._vad.get_inputs()[0].name
         # 断句阈值 0.5，唤醒词前置滤网用更宽松的 0.3
         self._vad_thresh = 0.5
         self._ww_vad_thresh = 0.3
+        self._vad_sr = 16000  # silero 固定 16kHz
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
@@ -281,10 +284,12 @@ class AudioPipeline:
                         speech_frame_count = 0
 
     def _vad_prob(self, frame: bytes) -> float:
-        """silero-vad 人声概率：frame(bytes) → float(0~1)。仅失败时返回 0。"""
+        """silero-vad ONNX 人声概率：frame(bytes) → float(0~1)。失败返回 0。"""
         try:
             audio = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
-            return self._vad(audio, self.SAMPLE_RATE).item()
+            audio = audio.reshape(1, -1)
+            output = self._vad.run(None, {self._vad_input: audio})[0]
+            return float(output[0][0])
         except Exception:
             return 0.0
 
