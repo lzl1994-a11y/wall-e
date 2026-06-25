@@ -51,6 +51,7 @@ class LLMBrainNode(Node):
         self.corrected_publisher = self.create_publisher(String, 'corrected_text', 10)
         self.full_ai_publisher = self.create_publisher(String, 'full_ai_text', 10)
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
+        self.busy_publisher = self.create_publisher(String, 'llm_busy', 10)
 
         try:
             self.llm = LLMService()
@@ -110,6 +111,11 @@ class LLMBrainNode(Node):
                 self._request_queue.task_done()
 
     def _process_voice_task(self, turn_id, user_prompt):
+        # 通知 STT 节点暂停 ASR
+        busy_msg = String()
+        busy_msg.data = "busy"
+        self.busy_publisher.publish(busy_msg)
+
         py_list = pinyin(user_prompt, style=Style.NORMAL)
         py_str = ' '.join([item[0] for item in py_list])
 
@@ -215,6 +221,9 @@ class LLMBrainNode(Node):
                 publish_corrected(user_prompt)
             failure_text = '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002'
             self._publish_screen_dialog(turn_id, corrected_text or user_prompt, failure_text, actions, error=str(e))
+            idle_msg = String()
+            idle_msg.data = "idle"
+            self.busy_publisher.publish(idle_msg)
             return
 
         if not corrected_text_published:
@@ -242,6 +251,11 @@ class LLMBrainNode(Node):
             self.full_ai_publisher.publish(full_msg)
 
         self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
+
+        # 通知 STT 节点恢复 ASR
+        idle_msg = String()
+        idle_msg.data = "idle"
+        self.busy_publisher.publish(idle_msg)
 
     def _extract_corrected_text(self, first_line):
         first_line = (first_line or '').strip()

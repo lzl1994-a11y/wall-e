@@ -12,6 +12,11 @@ class STTNode(Node):
         
         # 1. 声明发布者：专往 'voice_text' 这个话题里扔字符串
         self.publisher_ = self.create_publisher(String, 'voice_text', 10)
+
+        # 订阅 LLM 忙闲状态，LLM 处理中暂停 ASR
+        self.busy_subscription = self.create_subscription(
+            String, 'llm_busy', self._on_llm_busy, 10
+        )
         
         self.get_logger().info('⏳ 正在预热 阿里云 SenseVoice 听觉引擎...')
         
@@ -35,6 +40,15 @@ class STTNode(Node):
         msg = String()
         msg.data = text
         self.publisher_.publish(msg)
+
+    def _on_llm_busy(self, msg):
+        """LLM 忙时暂停 ASR，闲时恢复。"""
+        if msg.data == "busy":
+            self.get_logger().info('🔇 LLM 忙，暂停 ASR')
+            self.stt_engine.pause()
+        elif msg.data == "idle":
+            self.get_logger().info('🔊 LLM 闲，恢复 ASR')
+            self.stt_engine.resume()
 
     def destroy_node(self):
         # 节点被杀死时，务必释放底层麦克风资源，防止端口被占死
