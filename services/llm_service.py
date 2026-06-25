@@ -58,6 +58,8 @@ class LLMService:
         acc = ToolCallAccumulator()
 
         for chunk in response:
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
 
             acc.feed(delta)
