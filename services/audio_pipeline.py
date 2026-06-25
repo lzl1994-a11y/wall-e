@@ -234,8 +234,11 @@ class AudioPipeline:
                 frame = bytes(byte_buf[:self.FRAME_BYTES])
                 del byte_buf[:self.FRAME_BYTES]
 
-                # ── 唤醒词检测（silero-vad 前置滤网） ──
-                if self._ww.enabled and self._vad_prob(frame) > self._ww_vad_thresh:
+                # ── silero-vad 单次推理（有状态模型，每帧只能调一次）──
+                speech_prob = self._vad_prob(frame)
+
+                # ── 唤醒词检测 ──
+                if self._ww.enabled and speech_prob > self._ww_vad_thresh:
                     if self._ww.check(frame):
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
                         speech_frames.clear()
@@ -250,7 +253,7 @@ class AudioPipeline:
                         continue
 
                 # ── VAD + 静音断句 ──
-                is_speech = self._vad_check(frame)
+                is_speech = speech_prob > self._vad_thresh
 
                 if is_speech:
                     silence_count = 0
@@ -300,9 +303,6 @@ class AudioPipeline:
                 return float(out_prob[0][0])
         except Exception:
             return 0.0
-
-    def _vad_check(self, frame):
-        return self._vad_prob(frame) > self._vad_thresh
 
     def _emit_sentence(self, frames):
         """将帧列表合并为 PCM bytes，触发 on_sentence 回调。"""
