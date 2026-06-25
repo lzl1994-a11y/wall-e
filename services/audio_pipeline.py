@@ -130,11 +130,11 @@ class AudioPipeline:
         # silero-vad ONNX: 神经网络人声检测，远优于 webrtcvad
         model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "silero_vad.onnx")
         self._vad = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self._vad_input = self._vad.get_inputs()[0].name
+        self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._vad_lock = threading.Lock()
         # 断句阈值 0.5，唤醒词前置滤网用更宽松的 0.3
         self._vad_thresh = 0.5
         self._ww_vad_thresh = 0.3
-        self._vad_sr = 16000  # silero 固定 16kHz
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
@@ -184,6 +184,8 @@ class AudioPipeline:
         self._drain_queue()
         self._is_paused = False
         self._paused_event.clear()
+        with self._vad_lock:
+            self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
         print("[AudioPipeline] 已恢复")
 
     # ── Internal ──
@@ -288,8 +290,14 @@ class AudioPipeline:
         try:
             audio = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
             audio = audio.reshape(1, -1)
-            output = self._vad.run(None, {self._vad_input: audio})[0]
-            return float(output[0][0])
+            with self._vad_lock:
+                out_prob, out_state = self._vad.run(None, {
+                    "input": audio,
+                    "state": self._vad_state,
+                    "sr": np.array(16000, dtype=np.int64),
+                })
+                self._vad_state = out_state
+                return float(out_prob[0][0])
         except Exception:
             return 0.0
 
