@@ -107,6 +107,7 @@ class STTService:
     def _on_awake_timeout(self):
         with self._awake_lock:
             self._awake = False
+        self._pipe.set_awake(False)
         print(f"[STT] {self._awake_timeout:.0f}s 无语音，退出监听，等待唤醒词")
 
     # ===================================================================

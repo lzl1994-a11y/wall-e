@@ -129,12 +129,13 @@ class AudioPipeline:
         self._ww = WakeWordDetector(config)
         # silero-vad ONNX: 神经网络人声检测，远优于 webrtcvad
         model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "silero_vad.onnx")
+        print(f"[AudioPipeline] 加载 silero-vad 模型: {model_path}  (存在={os.path.exists(model_path)})")
         self._vad = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
         self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
         self._vad_lock = threading.Lock()
-        # 断句阈值 0.5，唤醒词前置滤网用更宽松的 0.3
+        self._vad_err_count = 0
+        # 断句 VAD 阈值
         self._vad_thresh = 0.5
-        self._ww_vad_thresh = 0.3
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
@@ -142,6 +143,7 @@ class AudioPipeline:
         self._paused_event = threading.Event()
         self._listen_thread = None
         self._audio_stream = None
+        self._awake = False  # 唤醒后才启动 VAD 断句
 
         self.on_sentence = None     # Callable[[bytes], None]
         self.on_wake_word = None    # Callable[[], None]
@@ -173,6 +175,10 @@ class AudioPipeline:
             self._listen_thread.join(timeout=2.0)
         self._drain_queue()
         print("[AudioPipeline] 已停止")
+
+    def set_awake(self, value: bool):
+        """外部重置唤醒状态（超时后关闭 VAD）"""
+        self._awake = value
 
     def pause(self):
         self._is_paused = True
@@ -234,13 +240,11 @@ class AudioPipeline:
                 frame = bytes(byte_buf[:self.FRAME_BYTES])
                 del byte_buf[:self.FRAME_BYTES]
 
-                # ── silero-vad 单次推理（有状态模型，每帧只能调一次）──
-                speech_prob = self._vad_prob(frame)
-
-                # ── 唤醒词检测 ──
-                if self._ww.enabled and speech_prob > self._ww_vad_thresh:
+                # ── 唤醒词检测（所有帧直送 Sherpa-ONNX，不做 VAD 前置过滤）──
+                if self._ww.enabled:
                     if self._ww.check(frame):
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
+                        self._awake = True
                         speech_frames.clear()
                         in_speech = False
                         silence_count = 0
@@ -252,8 +256,12 @@ class AudioPipeline:
                                 print(f"[AudioPipeline] on_wake_word 异常: {e}")
                         continue
 
+                # ── 未唤醒时跳过 VAD 断句 ──
+                if not self._awake:
+                    continue
+
                 # ── VAD + 静音断句 ──
-                is_speech = speech_prob > self._vad_thresh
+                is_speech = self._vad_prob(frame) > self._vad_thresh
 
                 if is_speech:
                     silence_count = 0
@@ -301,7 +309,12 @@ class AudioPipeline:
                 })
                 self._vad_state = out_state
                 return float(out_prob[0][0])
-        except Exception:
+        except Exception as e:
+            self._vad_err_count += 1
+            if self._vad_err_count == 1:
+                print(f"[AudioPipeline] silero-vad 推理失败: {e}")
+            elif self._vad_err_count % 500 == 0:
+                print(f"[AudioPipeline] silero-vad 累计 {self._vad_err_count} 次失败")
             return 0.0
 
     def _emit_sentence(self, frames):
