@@ -12,14 +12,14 @@ class LLMService:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
             
-        self.settings = config['ai_settings']
+        self.settings = config['llm']
         self.system_prompt = config['system_prompt']
         
         # [ZH] 2. 初始化 OpenAI 客户端 (在此项目中指向 Kimi 的接口)
         # [EN] 2. Initialize OpenAI client (pointing to Kimi API in this project)
         self.client = OpenAI(
-            api_key=self.settings['api_key'],
-            base_url=self.settings['base_url']
+            api_key=self.settings['key'],
+            base_url=self.settings['url']
         )
         self.model = self.settings['model']
 

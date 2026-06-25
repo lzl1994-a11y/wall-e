@@ -5,6 +5,7 @@ import re
 import threading
 import traceback
 import uuid
+from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -32,7 +33,7 @@ class LLMBrainNode(Node):
         super().__init__('walle_llm_brain')
 
         self.llm = None
-        self.chat_history = []
+        self.chat_history = deque(maxlen=40)  # 和 VoiceChatService 一致，防止 OOM
         self.punctuations = {'。', '？', '.', '?', '！', '!'}
         self._request_queue = queue.Queue(maxsize=8)
         self._worker_running = False

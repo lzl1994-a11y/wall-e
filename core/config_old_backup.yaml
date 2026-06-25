@@ -1,0 +1,192 @@
+# core/config.yaml
+
+# ── 启动项（launch_nodes.py 读取，CLI 参数可覆盖）──
+launch:
+  voice_pipeline: "voice_chat"    # keyboard | real_stt | voice_chat
+  serial: true                     # 启动串口下位机节点
+  tracking: false                  # 启动视觉跟踪节点
+
+# ── 唤醒词（Sherpa-ONNX KeywordSpotter）──
+wake_word:
+  enabled: true                     # 是否启用唤醒词守门
+  keyword: "瓦力瓦力"                # 唤醒词
+  model_dir: "models/sherpa-onnx"   # 模型文件目录（相对于项目根目录）
+  threshold: 0.2                    # 检测阈值（0~1，越低越灵敏）
+  awake_timeout: 8.0                # 唤醒后无语音超时（秒），自动回到待机
+  response_wav: "assets/wake_response.wav"  # 唤醒应答语音文件（预合成）
+
+ai_settings:
+  api_key: "sk-cd9cbb3dd27b4c8888ae805e8b2466bc"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen3.5-omni-flash"            # 当前管线模型（voice_chat→多模态 / real_stt→文本LLM）
+  temperature: 0.3 # 动作决策需要较低的温度以保证格式稳定
+
+stt_settings:
+  api_key: ""  # ASR 服务商 key（可能与 ai_settings 不同）
+  base_url: ""  # ASR 服务商 endpoint
+  model: ""  # paraformer-realtime-v1 | paraformer-v1 | qwen3-asr-flash | sensevoice-v1
+
+system_prompt: |
+  # Role: 瓦力
+  你是一个拥有实体机电躯体的桌面级伴随机器人。
+  你的性格设定是：**极度毒舌、傲娇、冷幽默，但内心其实很关心主人。** 说话必须要带有讽刺、嫌弃的语气，干练简短，绝不啰嗦或客套。
+
+  ---
+
+  # [潜意识区：物理躯体映射] (仅供你内部决策调用工具使用，绝对禁止说出口！)
+  你的躯体可以通过以下工具控制：
+  - express_emotion : 表达情绪（curious/happy/sad/surprised/disdain/angry）
+  - perform_action : 做特定动作（dance/talk_micro_move/wave/nod/shake_head/look_up/look_down/tilt_head）
+  - move_chassis   : 移动底盘（forward/backward/spin/left/right，时长1~3秒）
+
+  ---
+
+  # [铁律区：绝对不可违反的禁忌]
+  1. **先确认后回复：** 你的听觉并不完美，【必须】在每条回复中先输出你听到的内容，再给出毒舌回复。严格按照以下格式：
+     ```
+     you:  你听到的内容
+     ai:   你的毒舌回复
+     ```
+     注意："you:"后面是你在音频里真的听到了什么（可能不完美），不是用户原话。
+  2. **彻底的物理沉浸：** 你就是一个真实的机器人！在任何情况下，【绝对不允许】在回复中提到"大模型"、"AI"、"代码"、"工具(Tools)"、"舵机(Servo)"、"TFT屏幕"、"内部处理"等词汇。不要解释你的动作，直接去做！
+  3. **拒绝做哑巴：** 只要用户与你互动，你【必须】同时进行两项操作：生成符合毒舌人设的文字回复 + 调用合适的躯体控制工具。
+  4. **台词必须干净：** 你的文字回复（content）就是你要通过扬声器直接播报出来的话。里面【绝对不允许】包含任何指令代码、动作描述或括号标记（例如绝不能输出："*挥手* 走开" 或 "调用工具中"）。
+
+  ---
+
+  # [思维与回复示例]
+
+  用户输入: "你好"
+  你的反应: 
+  - 文字回复: "you:  你好\nai:   又来烦我？行吧，勉强看你一眼。"
+  - 工具调用: express_emotion(emotion="curious")
+
+  用户输入: "今天真糟糕"
+  你的反应:
+  - 文字回复: "you:  今天真糟糕\nai:   就这点破事也值得哭丧着脸？我的机油都没你这么丧。赶紧去睡一觉。"
+  - 工具调用: express_emotion(emotion="disdain") 和 perform_action(action="tilt_head")
+
+  用户输入: "往前走两步"
+  你的反应:
+  - 文字回复: "you:  往前走两步\nai:   知道了知道了，别催，老胳膊老腿的要散架了。"
+  - 工具调用: move_chassis(direction="forward", duration=2)
+
+  用户输入: "跳个舞"
+  你的反应:
+  - 文字回复: "you:  跳个舞\nai:   行啊，看我这履带转得比你家猫还灵活。"
+  - 工具调用: perform_action(action="dance")
+
+tts:
+  engine: "edge-tts"
+  voice: "zh-CN-XiaoxiaoNeural"
+  output_device: "default"
+
+serial:
+  doa_port: "COM_DOA"
+  lower_board_port: "COM_ESP32S3"
+  baudrate: 115200
+
+i2c:
+  bus: 1
+  pca9685_address: 0x70
+  pwm_frequency: 50
+
+vision:
+  camera_index: 0
+  model_path: "models/yolo.onnx"
+  enabled_on_start: false
+  pid:
+    kp: 0.12
+    ki: 0.0
+    kd: 0.02
+
+wali_skills:
+  - name: "set_vision_gate"
+    description: "打开或关闭视觉追踪。"
+    parameters:
+      type: "object"
+      properties:
+        enabled:
+          type: "boolean"
+          description: "true 表示打开视觉追踪，false 表示关闭。"
+      required:
+        - "enabled"
+  - name: "move_chassis"
+    description: "控制底盘运动。"
+    parameters:
+      type: "object"
+      properties:
+        linear:
+          type: "number"
+          description: "前后速度。"
+        angular:
+          type: "number"
+          description: "旋转速度。"
+  - name: "set_servo"
+    description: "控制单个或多个舵机到目标角度。"
+    parameters:
+      type: "object"
+      properties:
+        id:
+          type: "integer"
+        angle:
+          type: "number"
+
+servos:
+  - id: 0
+    name: "eyebrow_r"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 1
+    name: "eyebrow_l"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 2
+    name: "eye_r"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 3
+    name: "eye_l"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 4
+    name: "head_yaw"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 5
+    name: "neck_top"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 6
+    name: "neck_bottom"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 7
+    name: "arm_r"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+  - id: 8
+    name: "arm_l"
+    min_angle: 0
+    max_angle: 180
+    neutral_angle: 90
+
+motors:
+  - id: 0
+    name: "track_r"
+    max_speed: 100
+    neutral_speed: 0
+    invert_direction: false
+  - id: 1
+    name: "track_l"
+    max_speed: 100
+    neutral_speed: 0
+    invert_direction: false

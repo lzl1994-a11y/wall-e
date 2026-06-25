@@ -50,15 +50,15 @@ def build_node_list(args):
     config = load_config()
     launch_cfg = config.get("launch", {})
 
-    # voice_pipeline: CLI 优先 → config → keyboard
+    # pipeline mode: CLI 优先 → config → keyboard
     if args.voice_chat:
-        pipeline = "voice_chat"
+        pipeline = "multimodal"
     elif args.real_stt:
-        pipeline = "real_stt"
+        pipeline = "asr_llm"
     elif args.keyboard_stt:
         pipeline = "keyboard"
     else:
-        pipeline = launch_cfg.get("voice_pipeline", "keyboard")
+        pipeline = config.get("pipeline", {}).get("mode", "keyboard")
 
     nodes = [NodeEntry("llm", ROOT / "nodes" / "llm_ros_node.py")]
 
@@ -72,10 +72,10 @@ def build_node_list(args):
         nodes.append(NodeEntry("action", ROOT / "nodes" / "action_ros_node.py"))
         nodes.append(NodeEntry("hardware_bridge", ROOT / "nodes" / "hardware_bridge_node.py"))
 
-    if pipeline == "voice_chat":
+    if pipeline == "multimodal":
         nodes.append(NodeEntry("voice_chat", ROOT / "nodes" / "voice_chat_ros_node.py"))
         nodes = [n for n in nodes if n.name != "llm"]
-    elif pipeline == "real_stt":
+    elif pipeline == "asr_llm":
         nodes.append(NodeEntry("stt", ROOT / "nodes" / "stt_ros_node.py"))
     else:
         nodes.append(NodeEntry("keyboard_stt", ROOT / "nodes" / "keyboard_stt_node.py"))

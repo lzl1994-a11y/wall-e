@@ -1,249 +1,94 @@
 # services/stt_service.py
 """
-[ZH] 阿里云 Paraformer 语音识别服务
-     使用 dashscope.audio.asr.Recognition.call() 同步模式
-     配合 WebRTC VAD 进行静音断句，断句后写入临时 WAV 文件一次性上传云端。
-     后台线程中显式设置 asyncio 事件循环，解决 Linux 下 SDK 内部 WebSocket 无法工作的问题。
-[EN] Alibaba Cloud Paraformer STT service (synchronous mode with explicit event loop).
+[ZH] 语音识别服务
+     委托 AudioPipeline 完成音频采集+唤醒词守门+VAD断句，
+     本层仅负责 PCM→WAV→ASR适配器→文本回调。
+[EN] STT service: delegates audio capture/VAD to AudioPipeline,
+     only handles WAV encoding → ASR adapter → text callback.
 """
-import asyncio
 import os
-import queue
 import tempfile
-import threading
-import time
 import wave
-import yaml
 import numpy as np
-import sounddevice as sd
-import webrtcvad
 
-import dashscope
-from dashscope.audio.asr import Recognition, RecognitionCallback
+from .asr import create_asr
+from .audio_pipeline import AudioPipeline
 
 
-# ---------------------------------------------------------------------------
-# 空回调：call() 方法必须传 callback 但不使用流式事件
-# ---------------------------------------------------------------------------
-class _DummyCallback(RecognitionCallback):
-    pass
-
-
-# ---------------------------------------------------------------------------
-# 主服务
-# ---------------------------------------------------------------------------
 class STTService:
     """
     外部接口保持兼容:
         stt = STTService(config_path, on_sentence_received=callback)
+        stt.on_wake_word = lambda: play_wav()
         stt.start()   # 开始监听
         stt.stop()    # 停止监听
         stt.pause()   # 机器人说话时暂停（防回声）
         stt.resume()  # 恢复监听
     """
 
-    SAMPLE_RATE = 16000
-    FRAME_MS = 30
-    FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
-    FRAME_BYTES = FRAME_SIZE * 2
-    SILENCE_SEC = 0.8            # 静音断句阈值
-    MAX_SPEECH_SEC = 15.0        # 单句最长时长（防止无限录制）
-    API_TIMEOUT = 5.0            # 云端 API 调用超时
+    SAMPLE_RATE = AudioPipeline.SAMPLE_RATE
 
     def __init__(self, config_path="core/config.yaml", on_sentence_received=None):
         self.on_sentence_received = on_sentence_received
-        self.is_running = False
-        self.is_paused = False
+        self.asr_adapter = create_asr(config_path)
 
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        stt_cfg = config['stt_settings']
-        self.api_key = stt_cfg['api_key']
-        self.base_url = stt_cfg['base_url']
-        self.model = stt_cfg['model']
+        self._pipe = AudioPipeline(config_path)
+        self._pipe.on_sentence = self._on_sentence
 
-        self.vad = webrtcvad.Vad(2)
-        self.audio_queue = queue.Queue(maxsize=300)
+        # 透传唤醒词回调
+        self.on_wake_word = None
+        self._pipe.on_wake_word = self._on_wake_word
 
-        self._listen_thread = None
-        self._audio_stream = None
-        self._paused_event = threading.Event()
+    def _on_wake_word(self):
+        if self.on_wake_word:
+            self.on_wake_word()
 
     # ===================================================================
     # Public API
     # ===================================================================
     def start(self):
-        self.is_running = True
-        self._paused_event.clear()
-        self._listen_thread = threading.Thread(target=self._run, daemon=True)
-        self._listen_thread.start()
-        self._audio_stream = sd.InputStream(
-            channels=1,
-            dtype="float32",
-            samplerate=self.SAMPLE_RATE,
-            blocksize=self.FRAME_SIZE,
-            callback=self._audio_callback,
-        )
-        self._audio_stream.start()
-        print("[STT] Paraformer 语音监听已启动 (同步 HTTP 模式)")
+        self._pipe.start()
+        print(f"[STT] 语音监听已启动 (适配器: {type(self.asr_adapter).__name__})")
         return True
 
     def stop(self):
-        self.is_running = False
-        self._paused_event.set()
-        if self._audio_stream:
-            self._audio_stream.stop()
-            self._audio_stream.close()
-            self._audio_stream = None
-        if self._listen_thread and self._listen_thread.is_alive():
-            self._listen_thread.join(timeout=2.0)
-        self._drain_queue()
+        self._pipe.stop()
         print("[STT] 语音监听已停止")
 
     def pause(self):
-        self.is_paused = True
-        self._paused_event.set()
-        self._drain_queue()
+        self._pipe.pause()
         print("[STT] 麦克风已暂停 (防回声)")
 
     def resume(self):
-        self._drain_queue()
-        self.is_paused = False
-        self._paused_event.clear()
+        self._pipe.resume()
         print("[STT] 麦克风已恢复")
 
     # ===================================================================
-    # Internal
+    # PCM → WAV → ASR
     # ===================================================================
-    def _drain_queue(self):
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                break
-
-    def _audio_callback(self, indata, frames, time_info, status):
-        if not self.is_running or self.is_paused:
-            return
-        try:
-            int16 = (indata[:, 0] * 32767).astype(np.int16)
-            self.audio_queue.put_nowait(int16.tobytes())
-        except queue.Full:
-            pass
-
-    def _run(self):
-        """主循环：VAD 检测 → 采集语音 → 静音断句 → 写 WAV → 云端识别。"""
-        # Linux 后台线程默认没有 asyncio 事件循环，dashscope SDK 的 WebSocket 依赖它
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        dashscope.api_key = self.api_key
-
-        max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
-        max_frames = int(self.MAX_SPEECH_SEC / (self.FRAME_MS / 1000.0))
-
-        byte_buf = bytearray()
-        speech_frames = []      # 当前句子的所有音频帧
-        silence_count = 0
-        in_speech = False
-        speech_frame_count = 0
-
-        while self.is_running:
-            if self._paused_event.is_set():
-                time.sleep(0.1)
-                byte_buf.clear()
-                speech_frames.clear()
-                in_speech = False
-                silence_count = 0
-                speech_frame_count = 0
-                continue
-
-            try:
-                byte_buf.extend(self.audio_queue.get(timeout=0.1))
-            except queue.Empty:
-                pass
-
-            while len(byte_buf) >= self.FRAME_BYTES:
-                frame = bytes(byte_buf[:self.FRAME_BYTES])
-                del byte_buf[:self.FRAME_BYTES]
-
-                is_speech = self._vad_check(frame)
-
-                if is_speech:
-                    silence_count = 0
-                    if not in_speech:
-                        in_speech = True
-                        speech_frames.clear()
-                        speech_frame_count = 0
-                        print("[STT] 检测到人声，开始录制")
-                    speech_frames.append(frame)
-                    speech_frame_count += 1
-                    # 超长保护：强制断句
-                    if speech_frame_count >= max_frames:
-                        print("[STT] 达到最大录制时长，强制断句")
-                        self._process_speech(speech_frames)
-                        speech_frames.clear()
-                        in_speech = False
-                        speech_frame_count = 0
-
-                elif in_speech:
-                    silence_count += 1
-                    speech_frames.append(frame)
-                    speech_frame_count += 1
-
-                    if silence_count > max_silence or speech_frame_count >= max_frames:
-                        in_speech = False
-                        silence_count = 0
-                        # 剔除末尾的静音帧，减少无效数据
-                        trim_count = min(speech_frame_count, max_silence)
-                        trimmed = speech_frames[:-trim_count] if trim_count < len(speech_frames) else speech_frames
-                        if trimmed:
-                            self._process_speech(trimmed)
-                        speech_frames.clear()
-                        speech_frame_count = 0
-
-    # ===================================================================
-    # 云端识别 (dashscope SDK Recognition.call)
-    # ===================================================================
-    def _process_speech(self, frames):
-        """将帧列表写入临时 WAV，通过 Recognition.call() 同步上传并获取结果。"""
-        if not frames:
-            return
-
-        pcm_data = b"".join(frames)
+    def _on_sentence(self, pcm_data: bytes):
+        """AudioPipeline 断句回调：PCM bytes → WAV → ASR → 文本回调。"""
         duration_ms = len(pcm_data) // 2 * 1000 // self.SAMPLE_RATE
-        if duration_ms < 200:   # 短于 200ms 的片段忽略
-            return
 
         wav_path = None
         try:
             fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="stt_")
             os.close(fd)
-            with wave.open(wav_path, 'wb') as wf:
+            with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(self.SAMPLE_RATE)
                 wf.writeframes(pcm_data)
 
-            debug_path = "/tmp/stt_debug_last.wav"
+            # 调试副本
             import shutil
+            debug_path = os.path.expanduser("~/.wali_debug/stt_debug_last.wav")
+            os.makedirs(os.path.dirname(debug_path), exist_ok=True)
             shutil.copy2(wav_path, debug_path)
-            print(f"[STT] 调试音频已保存: {debug_path} ({duration_ms}ms)")
-
-            rec = Recognition(
-                model=self.model,
-                format='wav',
-                sample_rate=self.SAMPLE_RATE,
-                callback=_DummyCallback(),
-            )
+            print(f"[STT] 调试音频: {debug_path} ({duration_ms}ms)")
 
             print(f"[STT] 上传语音 {duration_ms}ms 至云端...")
-            result = rec.call(wav_path)
-
-            sentence = result.get_sentence()
-            if isinstance(sentence, list) and sentence:
-                sentence = sentence[0]
-            text = sentence.get('text', '').strip() if isinstance(sentence, dict) else ''
+            text = self.asr_adapter.recognize(wav_path, self.SAMPLE_RATE)
 
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")
@@ -259,12 +104,3 @@ class STTService:
                     os.remove(wav_path)
                 except OSError:
                     pass
-
-    # ===================================================================
-    # VAD
-    # ===================================================================
-    def _vad_check(self, frame):
-        try:
-            return self.vad.is_speech(frame, self.SAMPLE_RATE)
-        except Exception:
-            return False
