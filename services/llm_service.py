@@ -51,8 +51,10 @@ class LLMService:
             
             tool_choice="auto",
             temperature=self.settings.get('temperature', 0.3),
+            max_tokens=self.settings.get('max_tokens', 1024),
             
-            stream=True 
+            stream=True,
+            extra_body={"enable_thinking": False}
         )
 
         acc = ToolCallAccumulator()

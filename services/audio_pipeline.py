@@ -16,8 +16,8 @@ import time
 
 import numpy as np
 import sounddevice as sd
-import webrtcvad
 import yaml
+from silero_vad import load_silero_vad_onnx
 
 
 class WakeWordDetector:
@@ -127,9 +127,11 @@ class AudioPipeline:
             config = yaml.safe_load(f)
 
         self._ww = WakeWordDetector(config)
-        # 断句用高激进度(3)，唤醒词前置滤网用最宽松(0)
-        self._vad = webrtcvad.Vad(3)
-        self._ww_vad = webrtcvad.Vad(0)
+        # silero-vad: 神经网络人声检测，远优于 webrtcvad
+        self._vad = load_silero_vad_onnx()
+        # 断句阈值 0.5，唤醒词前置滤网用更宽松的 0.3
+        self._vad_thresh = 0.5
+        self._ww_vad_thresh = 0.3
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
@@ -227,8 +229,8 @@ class AudioPipeline:
                 frame = bytes(byte_buf[:self.FRAME_BYTES])
                 del byte_buf[:self.FRAME_BYTES]
 
-                # ── 唤醒词检测（VAD 前置滤网） ──
-                if self._ww.enabled and self._ww_vad.is_speech(frame, self.SAMPLE_RATE):
+                # ── 唤醒词检测（silero-vad 前置滤网） ──
+                if self._ww.enabled and self._vad_prob(frame) > self._ww_vad_thresh:
                     if self._ww.check(frame):
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
                         speech_frames.clear()
@@ -278,11 +280,16 @@ class AudioPipeline:
                         speech_frames.clear()
                         speech_frame_count = 0
 
-    def _vad_check(self, frame):
+    def _vad_prob(self, frame: bytes) -> float:
+        """silero-vad 人声概率：frame(bytes) → float(0~1)。仅失败时返回 0。"""
         try:
-            return self._vad.is_speech(frame, self.SAMPLE_RATE)
+            audio = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+            return self._vad(audio, self.SAMPLE_RATE).item()
         except Exception:
-            return False
+            return 0.0
+
+    def _vad_check(self, frame):
+        return self._vad_prob(frame) > self._vad_thresh
 
     def _emit_sentence(self, frames):
         """将帧列表合并为 PCM bytes，触发 on_sentence 回调。"""
