@@ -252,6 +252,12 @@ class AudioPipeline:
                         in_speech = False
                         silence_count = 0
                         speech_frame_count = 0
+                        
+                        # 【核心修复】：唤醒时必须重置 VAD 状态！
+                        # 否则经过长时间跳帧后，VAD 内部的 LSTM 状态与当前音频断层，会导致输出概率永远接近 0
+                        with self._vad_lock:
+                            self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
+                            
                         if self.on_wake_word:
                             try:
                                 self.on_wake_word()
