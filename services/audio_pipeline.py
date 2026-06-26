@@ -157,13 +157,26 @@ class AudioPipeline:
         self._paused_event.clear()
         self._listen_thread = threading.Thread(target=self._run, daemon=True)
         self._listen_thread.start()
-        self._audio_stream = sd.InputStream(
-            channels=1,
-            dtype="float32",
-            samplerate=self.SAMPLE_RATE,
-            blocksize=self.FRAME_SIZE,
-            callback=self._audio_callback,
-        )
+        
+        # 【核心修复】：防止双声道麦克风（如 I2S/USB 阵列）出现“左耳静音，右耳有声”导致的漏音问题。
+        # 改为尝试请求双声道并做平均混合，如果硬件不支持双声道，再退回到单声道。
+        try:
+            self._audio_stream = sd.InputStream(
+                channels=2,
+                dtype="float32",
+                samplerate=self.SAMPLE_RATE,
+                blocksize=self.FRAME_SIZE,
+                callback=self._audio_callback,
+            )
+        except Exception:
+            self._audio_stream = sd.InputStream(
+                channels=1,
+                dtype="float32",
+                samplerate=self.SAMPLE_RATE,
+                blocksize=self.FRAME_SIZE,
+                callback=self._audio_callback,
+            )
+            
         self._audio_stream.start()
         print(f"[AudioPipeline] 已启动 (唤醒词={'ON' if self._ww.enabled else 'OFF'})")
 
@@ -209,7 +222,13 @@ class AudioPipeline:
         if not self._is_running or self._is_paused:
             return
         try:
-            int16 = (indata[:, 0] * 32767).astype(np.int16)
+            # 无论输入是单声道还是双声道，全部混合为单声道 (mono)
+            if indata.shape[1] > 1:
+                mono_audio = np.mean(indata, axis=1)
+            else:
+                mono_audio = indata[:, 0]
+                
+            int16 = (mono_audio * 32767).astype(np.int16)
             self.audio_queue.put_nowait(int16.tobytes())
         except queue.Full:
             pass
@@ -311,9 +330,14 @@ class AudioPipeline:
             # 1. 解码 PCM
             audio = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
             
-            # 【关键】：硬件麦克风收音振幅极小（可能只有 0.003），
-            # 导致 Silero VAD 认为这是绝对静音。这里强制放大 10 倍！
-            audio = np.clip(audio * 10.0, -1.0, 1.0)
+            # 【核心修复】：消除 ESP32 麦克风的直流偏置 (DC Offset)！
+            # 很多廉价 I2S 或 ESP32 麦克风存在严重的直流偏置，导致波形整体偏离 0 轴。
+            # Sherpa-ONNX 内部算频谱能自动过滤偏置，但 Silero-VAD 吃的是生波形，
+            # 一旦有偏置，神经网络就会把它当成巨大的异常静音块，概率死锁在 0.003 左右。
+            audio = audio - np.mean(audio)
+            
+            # 适当放大收音音量
+            audio = np.clip(audio * 5.0, -1.0, 1.0)
             
             audio = audio.reshape(1, -1)
             with self._vad_lock:
@@ -325,10 +349,9 @@ class AudioPipeline:
                 self._vad_state = out_state
                 prob = float(out_prob[0][0])
                 
-                # 为了向你证明音频确实送进了模型，我们加一个动态日志！
-                # 只有在唤醒状态下才会调用此函数，每调用一次打印一下概率，让你亲眼看到模型在工作
+                # 保留日志，这次注意看概率是否有明显回升！
                 self._vad_err_count += 1
-                if self._vad_err_count % 10 == 0:  # 每 10 帧 (320ms) 打印一次，防止刷屏
+                if self._vad_err_count % 10 == 0:  
                     print(f"  [VAD Debug] 模型当前判定人声概率: {prob:.3f} (阈值 {self._vad_thresh})")
                     
                 return prob
