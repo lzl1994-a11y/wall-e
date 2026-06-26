@@ -119,7 +119,7 @@ class AudioPipeline:
     """
 
     SAMPLE_RATE = 16000
-    FRAME_MS = 32  # 【核心修复】：必须是 32ms！这样每帧才是 exactly 512 采样点，Silero-VAD 严格要求 512 的整数倍，如果是 30ms(480点) 会导致 VAD 内部卷积错位，概率永远崩溃为 0！
+    FRAME_MS = 30  # WebRTC VAD 严格要求 10ms, 20ms, 或 30ms
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
     FRAME_BYTES = FRAME_SIZE * 2
     SILENCE_SEC = 0.8
@@ -130,15 +130,21 @@ class AudioPipeline:
             config = yaml.safe_load(f)
 
         self._ww = WakeWordDetector(config)
-        # silero-vad ONNX: 神经网络人声检测，远优于 webrtcvad
-        model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "silero_vad.onnx")
-        print(f"[AudioPipeline] 加载 silero-vad 模型: {model_path}  (存在={os.path.exists(model_path)})")
-        self._vad = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
+        
+        # 【替换为 WebRTC VAD】：专门抵抗机械噪音 + 无视直流偏置！
+        try:
+            import webrtcvad
+            self._vad = webrtcvad.Vad(3)  # 等级 3：最严格过滤模式，最不容易被履带噪音误触发
+            self._has_webrtc = True
+            print("[AudioPipeline] 加载 WebRTC VAD 成功 (Aggressiveness=3)")
+        except ImportError:
+            self._has_webrtc = False
+            print("[AudioPipeline] 未安装 webrtcvad，请执行: pip install webrtcvad")
+            
         self._vad_lock = threading.Lock()
         self._vad_err_count = 0
         # 断句 VAD 阈值
-        self._vad_thresh = 0.1
+        self._vad_thresh = 0.5
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
@@ -228,6 +234,9 @@ class AudioPipeline:
             else:
                 mono_audio = indata[:, 0]
                 
+            # 我们需要剔除直流偏置，防止极端情况下影响 WebRTC（虽然它天然抗 DC）
+            mono_audio = mono_audio - np.mean(mono_audio)
+                
             int16 = (mono_audio * 32767).astype(np.int16)
             self.audio_queue.put_nowait(int16.tobytes())
         except queue.Full:
@@ -271,11 +280,6 @@ class AudioPipeline:
                         in_speech = False
                         silence_count = 0
                         speech_frame_count = 0
-                        
-                        # 【核心修复】：唤醒时必须重置 VAD 状态！
-                        # 否则经过长时间跳帧后，VAD 内部的 LSTM 状态与当前音频断层，会导致输出概率永远接近 0
-                        with self._vad_lock:
-                            self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
                             
                         if self.on_wake_word:
                             try:
@@ -325,38 +329,26 @@ class AudioPipeline:
                         speech_frame_count = 0
 
     def _vad_prob(self, frame: bytes) -> float:
-        """silero-vad ONNX 人声概率：frame(bytes) → float(0~1)。失败返回 0。"""
+        """
+        WebRTC VAD: 基于高斯混合模型 (GMM) 的频域分析。
+        能极其有效地分辨【人类语音】和【机械噪音】。
+        返回 1.0 (是人声) 或 0.0 (非人声)。
+        """
+        if not getattr(self, '_has_webrtc', False):
+            return 0.0
+            
         try:
-            # 1. 解码 PCM
-            audio = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+            # frame 恰好是 30ms (960 bytes) 的 16kHz PCM，完全契合 WebRTC 的胃口
+            is_speech = self._vad.is_speech(frame, self.SAMPLE_RATE)
+            prob = 1.0 if is_speech else 0.0
             
-            # 【核心修复】：消除 ESP32 麦克风的直流偏置 (DC Offset)！
-            # 很多廉价 I2S 或 ESP32 麦克风存在严重的直流偏置，导致波形整体偏离 0 轴。
-            # Sherpa-ONNX 内部算频谱能自动过滤偏置，但 Silero-VAD 吃的是生波形，
-            # 一旦有偏置，神经网络就会把它当成巨大的异常静音块，概率死锁在 0.003 左右。
-            audio = audio - np.mean(audio)
-            
-            # 适当放大收音音量
-            audio = np.clip(audio * 5.0, -1.0, 1.0)
-            
-            audio = audio.reshape(1, -1)
-            with self._vad_lock:
-                out_prob, out_state = self._vad.run(None, {
-                    "input": audio,
-                    "state": self._vad_state,
-                    "sr": np.array(16000, dtype=np.int64),
-                })
-                self._vad_state = out_state
-                prob = float(out_prob[0][0])
+            self._vad_err_count += 1
+            if self._vad_err_count % 10 == 0:
+                status = "🗣️ 人声" if is_speech else "🔇 噪音/静音"
+                print(f"  [WebRTC VAD] 状态: {status}")
                 
-                # 保留日志，这次注意看概率是否有明显回升！
-                self._vad_err_count += 1
-                if self._vad_err_count % 10 == 0:  
-                    print(f"  [VAD Debug] 模型当前判定人声概率: {prob:.3f} (阈值 {self._vad_thresh})")
-                    
-                return prob
+            return prob
         except Exception as e:
-            print(f"[AudioPipeline] silero-vad 推理异常: {e}")
             return 0.0
 
     def _emit_sentence(self, frames):
