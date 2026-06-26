@@ -41,7 +41,10 @@ class WakeWordDetector:
 
         def _pick(pattern):
             files = _glob.glob(pattern)
-            return [f for f in files if "int8" not in os.path.basename(f)] or files
+            # 过滤 int8 模型，且如果有多个模型，优先选择带有 epoch-99 的中文模型
+            fp32_files = [f for f in files if "int8" not in os.path.basename(f)]
+            epoch99 = [f for f in fp32_files if "epoch-99" in os.path.basename(f)]
+            return epoch99 if epoch99 else (fp32_files or files)
 
         _enc = _pick(os.path.join(self._model_dir, "encoder-*.onnx"))
         _dec = _pick(os.path.join(self._model_dir, "decoder-*.onnx"))
