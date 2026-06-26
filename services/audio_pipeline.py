@@ -135,7 +135,7 @@ class AudioPipeline:
         self._vad_lock = threading.Lock()
         self._vad_err_count = 0
         # 断句 VAD 阈值
-        self._vad_thresh = 0.5
+        self._vad_thresh = 0.1
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
