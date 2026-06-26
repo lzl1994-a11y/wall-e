@@ -243,12 +243,43 @@ class LLMBrainNode(Node):
 
         clean_assistant_memory = self._strip_correction_line(text_buffer)
         clean_text = clean_assistant_memory.strip()
-        if clean_text:
-            self.chat_history.append({'role': 'assistant', 'content': clean_text})
+        
+        assistant_msg = {'role': 'assistant', 'content': clean_text}
+        
+        # If tools were called, we must append them to the assistant message in OpenAI format
+        # and also provide a mock 'tool' response to satisfy the conversation schema.
+        if actions:
+            openai_tool_calls = []
+            for i, act in enumerate(actions):
+                # We need a dummy ID for the history
+                call_id = f"call_{turn_id}_{i}"
+                act['id'] = call_id  # Save it so we can reference it in the tool message
+                openai_tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": act["name"],
+                        "arguments": act.get("arguments", "{}")
+                    }
+                })
+            assistant_msg['tool_calls'] = openai_tool_calls
 
+        self.chat_history.append(assistant_msg)
+
+        if clean_text:
             full_msg = String()
             full_msg.data = clean_text
             self.full_ai_publisher.publish(full_msg)
+
+        # Append tool responses so the LLM knows the tools succeeded
+        if actions:
+            for act in actions:
+                self.chat_history.append({
+                    'role': 'tool',
+                    'tool_call_id': act['id'],
+                    'name': act['name'],
+                    'content': '{"status": "success"}'
+                })
 
         self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
 
