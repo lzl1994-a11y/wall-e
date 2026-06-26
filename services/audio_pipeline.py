@@ -119,7 +119,7 @@ class AudioPipeline:
     """
 
     SAMPLE_RATE = 16000
-    FRAME_MS = 30
+    FRAME_MS = 32  # 【核心修复】：必须是 32ms！这样每帧才是 exactly 512 采样点，Silero-VAD 严格要求 512 的整数倍，如果是 30ms(480点) 会导致 VAD 内部卷积错位，概率永远崩溃为 0！
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
     FRAME_BYTES = FRAME_SIZE * 2
     SILENCE_SEC = 0.8
