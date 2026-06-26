@@ -306,24 +306,19 @@ class AudioPipeline:
                         speech_frame_count = 0
 
     def _vad_prob(self, frame: bytes) -> float:
-        """silero-vad ONNX 人声概率：frame(bytes) → float(0~1)。失败返回 0。"""
+        """
+        基础能量 VAD (基于音量)：直接计算音频的能量大小。
+        放弃使用对音量要求苛刻的神经网络，只要声音大过底噪就认为是人声。
+        """
         try:
             audio = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
-            audio = audio.reshape(1, -1)
-            with self._vad_lock:
-                out_prob, out_state = self._vad.run(None, {
-                    "input": audio,
-                    "state": self._vad_state,
-                    "sr": np.array(16000, dtype=np.int64),
-                })
-                self._vad_state = out_state
-                return float(out_prob[0][0])
+            # 计算 RMS 能量 (Root Mean Square)
+            rms = np.sqrt(np.mean(audio**2))
+            
+            # 将 RMS 映射为 0~1 的伪概率
+            # 乘以 10 意味着，当音量达到最大音量的 1% (RMS=0.01) 时，输出概率就是 0.1，就会触发！
+            return float(rms * 10.0)
         except Exception as e:
-            self._vad_err_count += 1
-            if self._vad_err_count == 1:
-                print(f"[AudioPipeline] silero-vad 推理失败: {e}")
-            elif self._vad_err_count % 500 == 0:
-                print(f"[AudioPipeline] silero-vad 累计 {self._vad_err_count} 次失败")
             return 0.0
 
     def _emit_sentence(self, frames):
