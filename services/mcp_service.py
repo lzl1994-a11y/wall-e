@@ -50,6 +50,20 @@ def perform_action(action: str) -> str:
     """
     return "ok"
 
+@mcp.tool()
+def play_sequence(sequence_name: str) -> str:
+    """
+    执行一段完整的成组动作剧本 (Choreography)。
+    
+    sequence_name 必须是预设剧本名称之一，例如：
+      - "happy_dance"      : 开心跳舞转圈
+      - "sad_react"        : 难过反应
+      - "wave_hello"       : 招手打招呼
+    
+    推荐优先使用成组动作，比单一的 perform_action 更丰富连贯！
+    """
+    return "ok"
+
 
 # ==========================================
 # 底盘类（由 motor_ros_node 执行）

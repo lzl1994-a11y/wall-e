@@ -74,7 +74,8 @@ class HardwareBridgeNode(Node):
 
         name = cmd.get('name', '')
         angle = cmd.get('angle', -1)
-        if not name or angle < 0:
+        pwm = cmd.get('pwm', -1)
+        if not name:
             return
 
         ch = {
@@ -85,7 +86,12 @@ class HardwareBridgeNode(Node):
             self.get_logger().warn(f'[Bridge] 未知舵机名称: {name}')
             return
 
-        self._state[ch] = self._angle_to_duty(angle)
+        if pwm >= 0:
+            # 12-bit PWM -> 16-bit payload
+            self._state[ch] = int(pwm * 16)
+        elif angle >= 0:
+            self._state[ch] = self._angle_to_duty(angle)
+            
         self._publish_state()
 
     def _on_motor_cmd(self, msg):
