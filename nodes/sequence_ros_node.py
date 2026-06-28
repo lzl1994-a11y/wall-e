@@ -59,6 +59,8 @@ class SequenceRosNode(Node):
 
         # 统一订阅 /action_cmd (接管之前 action_ros_node 的职责)
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
+        
+        self._first_tick = True
         self.get_logger().info('Sequence ROS Node online, taking over /action_cmd. 50Hz interpolation running.')
         
     def _load_yaml(self, path):
@@ -280,6 +282,12 @@ class SequenceRosNode(Node):
 
         # --- 3. 轨迹控制器：50Hz 舵机高频插值与瞬态限位 ---
         changed_servos = set()
+        
+        if self._first_tick:
+            self._first_tick = False
+            for name in self._virtual_state:
+                changed_servos.add(name)
+                
         for name in list(self._virtual_state.keys()):
             target = self._targets[name]
             step = self._steps[name]

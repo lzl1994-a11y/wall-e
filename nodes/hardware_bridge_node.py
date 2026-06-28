@@ -20,6 +20,9 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 
+import os
+import yaml
+
 class HardwareBridgeNode(Node):
     def __init__(self):
         super().__init__('hardware_bridge_node')
@@ -33,14 +36,26 @@ class HardwareBridgeNode(Node):
         self._MOTOR_LOW = 0
 
         # 15 通道当前状态 (PCA9685 原始值)
-        # 舵机初始化为 90° (中性位)
-        _90deg = int(self._DUTY_MIN + (self._DUTY_MAX - self._DUTY_MIN) * 90 / 180)
-        self._state = [
-            _90deg, _90deg, _90deg, _90deg,   # 0-3: 眉毛/眼睛
-            _90deg, _90deg, _90deg, _90deg, _90deg,  # 4-8: 脖子/手臂
-            0, 0, 0,    # 9-11: 左电机 (停止)
-            0, 0, 0,    # 12-14: 右电机 (停止)
-        ]
+        # 初始化舵机状态（从 config.yaml 读取真实安全的 init 值，防止启动时超限死锁）
+        self._state = [0] * 15
+        for i in range(15):
+            self._state[i] = int(self._DUTY_MIN + (self._DUTY_MAX - self._DUTY_MIN) * 90 / 180) # 默认备用值
+            
+        try:
+            yaml_path = os.path.join(os.path.dirname(__file__), '../core/config.yaml')
+            with open(yaml_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f) or {}
+                for servo in config_data.get('servos', []):
+                    idx = servo.get('id')
+                    init_val = servo.get('init')
+                    if idx is not None and init_val is not None and 0 <= idx < 15:
+                        self._state[idx] = int(init_val)
+        except Exception as e:
+            self.get_logger().error(f'[Bridge] 读取 config.yaml 失败: {e}')
+            
+        # 电机初始全停
+        for i in range(9, 15):
+            self._state[i] = 0
 
         self.create_subscription(String, '/servo_cmd', self._on_servo_cmd, 10)
         self.create_subscription(String, '/motor_cmd', self._on_motor_cmd, 10)
