@@ -10,11 +10,29 @@ from fastmcp import FastMCP
 
 mcp = FastMCP("Wali_Action_Center")
 
+# 已知动作的中英文语义映射字典（用于增强大模型的语义理解）
+_semantic_mappings = {
+    "happy_dance": "开心跳舞转圈",
+    "wave_hello": "招手/打招呼",
+    "sad_react": "难过反应/低迷",
+    "scared": "害怕吓一跳/防御",
+    "raise_hand": "举手/引起注意",
+    "basic_nod": "点头肯定/同意",
+    "basic_wave": "简单的单手挥动",
+    "arms_up": "举手/抬手/双手举高/投降",
+    "arms_down": "放下双手",
+    "head_down": "低头/沮丧",
+    "turn_head_left": "向左看/左转头",
+    "turn_head_right": "向右看/右转头",
+    "look_left_up": "左上张望/思考",
+    "look_center": "回正/往前看"
+}
+
 # 动态读取动作编排文件，生成动作菜单
 def _build_sequence_prompt():
     base_prompt = (
         "控制瓦力的物理躯体做出各种动作。这是你控制身体动作的唯一指定工具！\n\n"
-        "【核心智能要求】：你应当具备语义意图识别能力！当用户的要求（例如“抬手”、“伸个手”、“举高高”）"
+        "【核心智能要求】：你应当具备语义意图识别能力！当用户的要求（例如“抬手”、“伸个手”、“向右看”）"
         "与下方列表并非字面完全一致时，你必须自己理解意图，并选择一个最接近的动作调用，绝对不要因为字面不一致就拒绝调用工具！\n\n"
         "sequence_name 必须是以下预设动作之一：\n"
     )
@@ -27,11 +45,15 @@ def _build_sequence_prompt():
         seqs = list(seq_data.get('sequences', {}).keys())
         poses = list(seq_data.get('poses', {}).keys())
         
+        # 加上中文语义后缀
+        seqs_with_semantics = [f"{s}({_semantic_mappings[s]})" if s in _semantic_mappings else s for s in seqs]
+        poses_with_semantics = [f"{p}({_semantic_mappings[p]})" if p in _semantic_mappings else p for p in poses]
+        
         menu = []
         if seqs:
-            menu.append("【成组复杂剧本 (Sequences)】: " + ", ".join(seqs))
+            menu.append("【成组复杂剧本 (Sequences)】: " + ", ".join(seqs_with_semantics))
         if poses:
-            menu.append("【基础单点动作 (Poses)】: " + ", ".join(poses))
+            menu.append("【基础单点动作 (Poses)】: " + ", ".join(poses_with_semantics))
             
         return base_prompt + "\n".join(menu)
     except Exception as e:
@@ -63,11 +85,9 @@ def express_emotion(emotion: str) -> str:
     return "ok"
 
 
+@mcp.tool(description=_play_sequence_doc)
 def play_sequence(sequence_name: str) -> str:
     return "ok"
-
-play_sequence.__doc__ = _play_sequence_doc
-play_sequence = mcp.tool()(play_sequence)
 
 
 # ==========================================
