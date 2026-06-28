@@ -63,11 +63,11 @@ def express_emotion(emotion: str) -> str:
     return "ok"
 
 
-@mcp.tool()
 def play_sequence(sequence_name: str) -> str:
     return "ok"
 
 play_sequence.__doc__ = _play_sequence_doc
+play_sequence = mcp.tool()(play_sequence)
 
 
 # ==========================================
@@ -79,12 +79,14 @@ def move_chassis(direction: str, duration: int = 1) -> str:
     """
     控制瓦力履带底盘移动。
     
+    【警告】：如果用户只是让你“向左看”、“向右看”或者“转头”，请调用 play_sequence 工具！只有当用户明确要求“走动”、“移动身体”、“转身”、“前进后退”时，才使用本底盘控制工具！
+    
     direction 可选：
       - "forward"  : 前进
       - "backward" : 后退
       - "spin"     : 原地转圈
-      - "left"     : 左转
-      - "right"    : 右转
+      - "left"     : 左转弯
+      - "right"    : 右转弯
     
     duration: 持续秒数，默认 1 秒，建议 1~3 秒。
     
