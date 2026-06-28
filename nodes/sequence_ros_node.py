@@ -243,8 +243,40 @@ class SequenceRosNode(Node):
                 for act in item.get('actions', []):
                     self._dispatch_action(act)
 
-        # 2. 轨迹控制器：50Hz 舵机高频插值与发布
-        for name in self._virtual_state:
+        # --- 2. 动态防碰撞：目标值修正 (Target Adjustments) ---
+        # 确保系统最终收敛到一个安全的静态目标
+        t_head = self._targets.get('head_yaw', 5000)
+        
+        # 规则1: 左转头时如果右眼低于3000则设置为3000 (头左偏是 > 5000)
+        if t_head > 5000:
+            if self._targets.get('eye_r', 3000) < 3000:
+                self._targets['eye_r'] = 3000
+                
+        # 规则2: 右转头情况下左眼不能大于7500 (头右偏是 < 5000)
+        if t_head < 5000:
+            if self._targets.get('eye_l', 7500) > 7500:
+                self._targets['eye_l'] = 7500
+                
+        # 规则3: 跷跷板联动机制 (只有右眼下降才能抬起左眼，且升降量相等)
+        t_eye_r = self._targets.get('eye_r', 3000)
+        # 右眼下降量 (低于3000的部分)
+        r_drop = max(0, 3000 - t_eye_r)
+        # 左眼最大允许抬起到的位置 (7500 减去 右眼下降量)
+        min_allowed_eye_l = 7500 - r_drop
+        if self._targets.get('eye_l', 7500) < min_allowed_eye_l:
+            self._targets['eye_l'] = min_allowed_eye_l
+            
+        t_eye_l = self._targets.get('eye_l', 7500)
+        # 左眼下降量 (大于7500的部分)
+        l_drop = max(0, t_eye_l - 7500)
+        # 右眼最大允许抬起到的位置 (3000 加上 左眼下降量)
+        max_allowed_eye_r = 3000 + l_drop
+        if self._targets.get('eye_r', 3000) > max_allowed_eye_r:
+            self._targets['eye_r'] = max_allowed_eye_r
+
+        # --- 3. 轨迹控制器：50Hz 舵机高频插值与瞬态限位 ---
+        changed_servos = set()
+        for name in list(self._virtual_state.keys()):
             target = self._targets[name]
             step = self._steps[name]
             current = self._virtual_state[name]
@@ -252,14 +284,49 @@ class SequenceRosNode(Node):
             if step <= 0 or current == target:
                 continue
                 
+            next_val = current
             if abs(target - current) <= step:
-                self._virtual_state[name] = target
+                next_val = target
             elif target > current:
-                self._virtual_state[name] += step
+                next_val += step
             else:
-                self._virtual_state[name] -= step
+                next_val -= step
                 
-            # 发送给 hardware_bridge_node (12-bit raw pwm)
+            # 瞬态拦截：防止在走向安全目标的过程中，发生中间态物理干涉
+            if name == 'head_yaw' and next_val > 5000:
+                if self._virtual_state.get('eye_r', 3000) < 3000:
+                    next_val = 5000  # 眼睛还没抬起来，不许头往左转
+                    
+            if name == 'eye_r' and next_val < 3000:
+                if self._virtual_state.get('head_yaw', 5000) > 5000:
+                    next_val = 3000  # 头还在左边没回正，不许眼睛往下低
+                    
+            if name == 'head_yaw' and next_val < 5000:
+                if self._virtual_state.get('eye_l', 7500) > 7500:
+                    next_val = 5000  # 眼睛还没抬起来，不许头往右转
+                    
+            if name == 'eye_l' and next_val > 7500:
+                if self._virtual_state.get('head_yaw', 5000) < 5000:
+                    next_val = 7500  # 头还在右边没回正，不许眼睛往下低
+                    
+            # 瞬态拦截：跷跷板联动
+            if name == 'eye_l':
+                v_eye_r = self._virtual_state.get('eye_r', 3000)
+                allow_l_raise = 7500 - max(0, 3000 - v_eye_r)
+                if next_val < allow_l_raise:
+                    next_val = allow_l_raise
+                    
+            if name == 'eye_r':
+                v_eye_l = self._virtual_state.get('eye_l', 7500)
+                allow_r_raise = 3000 + max(0, v_eye_l - 7500)
+                if next_val > allow_r_raise:
+                    next_val = allow_r_raise
+                    
+            self._virtual_state[name] = next_val
+            changed_servos.add(name)
+            
+        # 4. 发布状态
+        for name in changed_servos:
             msg = String()
             msg.data = json.dumps({"name": name, "pwm": int(self._virtual_state[name])})
             self.servo_pub.publish(msg)
