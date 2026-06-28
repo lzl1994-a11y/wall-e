@@ -32,35 +32,20 @@ def express_emotion(emotion: str) -> str:
 
 
 @mcp.tool()
-def perform_action(action: str) -> str:
-    """
-    执行特定行为动作。
-    
-    action 可选：
-      - "dance"            : 全身跳舞
-      - "talk_micro_move"  : 对话微动（手+眼小幅自然动作）
-      - "wave"             : 挥手
-      - "nod"              : 点头
-      - "shake_head"       : 摇头
-      - "look_up"          : 抬头
-      - "look_down"        : 低头
-      - "tilt_head"        : 歪头
-    
-    通过 ROS /action_cmd 下发，由 servo_ros_node 执行。
-    """
-    return "ok"
-
-@mcp.tool()
 def play_sequence(sequence_name: str) -> str:
     """
-    执行一段完整的成组动作剧本 (Choreography)。
+    控制瓦力的物理躯体做出各种动作。这是你控制身体动作的唯一指定工具！
     
-    sequence_name 必须是预设剧本名称之一，例如：
+    当用户让你“动一动”、“招手”、“点头”或者你需要配合情绪做动作时，必须调用此工具。
+    
+    sequence_name 必须是以下预设动作之一：
+      - "wave_hello"       : 招手/打招呼
       - "happy_dance"      : 开心跳舞转圈
-      - "sad_react"        : 难过反应
-      - "wave_hello"       : 招手打招呼
-    
-    推荐优先使用成组动作，比单一的 perform_action 更丰富连贯！
+      - "sad_react"        : 难过反应/低迷
+      - "scared"           : 害怕吓一跳/防御
+      - "basic_nod"        : 点头肯定
+      - "basic_wave"       : 简单的单手挥动
+      - "complex_greet"    : 复杂的组合问候
     """
     return "ok"
 

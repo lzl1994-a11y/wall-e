@@ -9,28 +9,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 class SequenceRosNode(Node):
-    # 兼容原 action_ros_node 的预设宏，转换为序列动作
-    ACTION_MACROS = {
-        "dance": [
-            {"type": "servo", "name": "arm_r", "angle": 140, "step_size": 3.0},
-            {"type": "servo", "name": "arm_l", "angle": 40, "step_size": 3.0},
-            {"type": "servo", "name": "head_yaw", "angle": 110, "step_size": 2.0},
-        ],
-        "talk_micro_move": [
-            {"type": "servo", "name": "arm_r", "angle": 95, "step_size": 2.0},
-            {"type": "servo", "name": "arm_l", "angle": 85, "step_size": 2.0},
-        ],
-        "wave": [
-            {"type": "servo", "name": "arm_r", "angle": 140, "step_size": 4.0},
-            {"type": "servo", "name": "arm_l", "angle": 140, "step_size": 4.0},
-        ],
-        "nod": [
-            {"type": "servo", "name": "neck_bottom", "angle": 100, "step_size": 3.0}
-        ],
-        "shake_head": [
-            {"type": "servo", "name": "head_yaw", "angle": 65, "step_size": 3.0}
-        ],
-    }
+    # 所有的动作预设已迁移至 sequences.yaml，由 _flatten_sequence 处理
 
     MOTION_TO_MOTOR = {
         "forward":  {"left": {"action": 1, "throttle": 55}, "right": {"action": 1, "throttle": 55}},
@@ -135,14 +114,7 @@ class SequenceRosNode(Node):
                 "duration": float(args.get("duration", 1.0))
             })
             
-        elif tool == "perform_action":
-            action_name = args.get("action", "")
-            macros = self.ACTION_MACROS.get(action_name, [])
-            for m in macros:
-                self._dispatch_action(m)
-            # 对于单一动作，1秒后自动回中 (可选，或者大模型自己发复位指令)
-            self._auto_reset_timer = self.create_timer(1.0, self._reset_servos_to_init)
-            
+
         elif tool == "play_sequence":
             seq_name = args.get("sequence_name", "")
             
