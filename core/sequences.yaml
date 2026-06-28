@@ -150,7 +150,18 @@ sequences:
     - time: 0.0
       actions:
         - { type: express_emotion, emotion: sad }
-        - { type: pose, name: sad_eyes, step_size: 3.0 } # 双眼下垂
+        - { type: pose, name: sad_eyes, step_size: 60.0 }
     - time: 1.0
       actions:
-        - { type: pose, name: arms_up, step_size: 5.0 }  # 1秒后，双手极快速抬起 (防御姿态)
+        - { type: pose, name: arms_up, step_size: 100.0 }
+
+  raise_hand:
+    - time: 0.0
+      actions:
+        - { type: express_emotion, emotion: happy }
+        - { type: pose, name: arms_up, step_size: 80.0 }
+        - { type: pose, name: look_left_up, step_size: 60.0 }
+    - time: 2.0
+      actions:
+        - { type: pose, name: arms_down, step_size: 60.0 }
+        - { type: pose, name: look_center, step_size: 60.0 }

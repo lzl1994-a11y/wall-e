@@ -138,6 +138,9 @@ class SequenceRosNode(Node):
         frames = []
         seq = self._sequences.get(seq_name)
         if not seq:
+            # 如果在 sequences 里没找到，但在 poses 里找到了，就临时包成一个单帧的动作
+            if seq_name in self._poses:
+                return [{'time': offset_time, 'actions': [{'type': 'pose', 'name': seq_name}]}]
             return frames
             
         # 兼容旧版本带有 loop_hz 字典的情况，如果是列表则直接遍历
