@@ -261,23 +261,20 @@ class SequenceRosNode(Node):
                 self._targets['eye_l'] = 7500
                 if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
                 
-        # 规则3: 跷跷板联动机制 (只有右眼下降才能抬起左眼，且升降量相等)
-        t_eye_r = self._targets.get('eye_r', 3000)
-        # 右眼下降量 (低于3000的部分)
-        r_drop = max(0, 3000 - t_eye_r)
-        # 左眼最大允许抬起到的位置 (7500 减去 右眼下降量)
-        min_allowed_eye_l = 7500 - r_drop
-        if self._targets.get('eye_l', 7500) < min_allowed_eye_l:
-            self._targets['eye_l'] = min_allowed_eye_l
+        # 规则3: 跷跷板联动机制 (抽象数学约束: eye_l + eye_r >= 10500)
+        # 防止左眼和右眼同时过度抬起导致的机械干涉
+        t_eye_r = self._targets.get('eye_r', 1920)
+        t_eye_l = self._targets.get('eye_l', 8000)
+        
+        min_l = 10500 - t_eye_r
+        if t_eye_l < min_l:
+            self._targets['eye_l'] = min_l
             if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
             
-        t_eye_l = self._targets.get('eye_l', 7500)
-        # 左眼下降量 (大于7500的部分)
-        l_drop = max(0, t_eye_l - 7500)
-        # 右眼最大允许抬起到的位置 (3000 加上 左眼下降量)
-        max_allowed_eye_r = 3000 + l_drop
-        if self._targets.get('eye_r', 3000) > max_allowed_eye_r:
-            self._targets['eye_r'] = max_allowed_eye_r
+        t_eye_l = self._targets.get('eye_l', 8000)
+        min_r = 10500 - t_eye_l
+        if t_eye_r < min_r:
+            self._targets['eye_r'] = min_r
             if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
 
         # --- 3. 轨迹控制器：50Hz 舵机高频插值与瞬态限位 ---
@@ -321,18 +318,18 @@ class SequenceRosNode(Node):
                 if self._virtual_state.get('head_yaw', 5000) < 5000:
                     next_val = 7500  # 头还在右边没回正，不许眼睛往下低
                     
-            # 瞬态拦截：跷跷板联动
+            # 瞬态拦截：跷跷板联动 (eye_l + eye_r >= 10500)
             if name == 'eye_l':
-                v_eye_r = self._virtual_state.get('eye_r', 3000)
-                allow_l_raise = 7500 - max(0, 3000 - v_eye_r)
-                if next_val < allow_l_raise:
-                    next_val = allow_l_raise
+                v_eye_r = self._virtual_state.get('eye_r', 1920)
+                min_allow = 10500 - v_eye_r
+                if next_val < min_allow:
+                    next_val = min_allow
                     
             if name == 'eye_r':
-                v_eye_l = self._virtual_state.get('eye_l', 7500)
-                allow_r_raise = 3000 + max(0, v_eye_l - 7500)
-                if next_val > allow_r_raise:
-                    next_val = allow_r_raise
+                v_eye_l = self._virtual_state.get('eye_l', 8000)
+                min_allow = 10500 - v_eye_l
+                if next_val < min_allow:
+                    next_val = min_allow
                     
             self._virtual_state[name] = next_val
             changed_servos.add(name)

@@ -24,6 +24,8 @@ _semantic_mappings = {
     "head_down": "低头/沮丧",
     "turn_head_left": "向左看/左转头",
     "turn_head_right": "向右看/右转头",
+    "tilt_head_left": "向左歪头/左倾/左眼下右眼上",
+    "tilt_head_right": "向右歪头/右倾/右眼下左眼上",
     "look_left_up": "左上张望/思考",
     "look_center": "回正/往前看"
 }

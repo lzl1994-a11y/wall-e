@@ -63,6 +63,18 @@ poses:
     targets:
       head_yaw: 1920     # 最右
 
+  tilt_head_left:
+    default_step: 30.0
+    targets:
+      eye_l: 8192
+      eye_r: 2308
+
+  tilt_head_right:
+    default_step: 30.0
+    targets:
+      eye_l: 6500
+      eye_r: 4000
+
   eyebrows_open:
     default_step: 30.0
     targets:
