@@ -87,8 +87,8 @@ class HardwareBridgeNode(Node):
             return
 
         if pwm >= 0:
-            # 12-bit PWM -> 16-bit payload
-            self._state[ch] = int(pwm * 16)
+            # 协议已统一为 16-bit 原始值，直接透传
+            self._state[ch] = int(pwm)
         elif angle >= 0:
             self._state[ch] = self._angle_to_duty(angle)
             

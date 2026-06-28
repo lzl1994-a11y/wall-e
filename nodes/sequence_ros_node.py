@@ -211,10 +211,12 @@ class SequenceRosNode(Node):
         if t == 'servo':
             name = act.get('name')
             if name in self._servos_config:
-                target_pwm = self._clamp_pwm(name, act.get('angle', 150))
+                # 兼容 angle 字段（如果有），但更推荐直接使用 pwm 字段
+                val = act.get('pwm', act.get('angle', 4000))
+                target_pwm = self._clamp_pwm(name, val)
                 if target_pwm is not None:
                     self._targets[name] = target_pwm
-                    self._steps[name] = float(act.get('step_size', 2.0))
+                    self._steps[name] = float(act.get('step_size', 40.0))
                     
         elif t == 'pose':
             pose_name = act.get('name')

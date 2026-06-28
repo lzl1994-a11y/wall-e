@@ -1,173 +1,150 @@
-# 瓦力成组动作剧本配置文件
-#
-# loop_hz: 动作分发循环的频率 (推荐 50Hz，对应 20ms)
-#
-# actions 支持的类型：
-# - { type: servo, name: xxx, angle: 0~180, step_size: x.x }
-#     说明: 独立控制某个舵机。angle 是 0~180 的相对角度，底层会自动映射到物理限位。
-#           step_size 是每次循环(20ms)改变的度数，限制它的最大转速。
-# - { type: motor, direction: forward/backward/spin/left/right, duration: x.x }
-#     说明: 控制底盘运动，duration 是持续时间(秒)
-# - { type: express_emotion, emotion: happy/sad/angry/etc }
-#     说明: 切换屏幕表情
-# - { type: pose, name: xxx, step_size: x.x }
-#     说明: 调用 poses 区域定义的基础姿态，并可覆盖其默认步长。
+# core/sequences.yaml
+# 定义瓦力的动作序列、基础姿态宏
+# 注意：所有的目标数值都已转换为 16-bit PWM，不再使用 0-180 的抽象角度！
 
 poses:
   arms_up:
-    default_step: 4.0
+    default_step: 80.0
     targets:
-      arm_r: 510
-      arm_l: 120
+      arm_r: 4000
+      arm_l: 6000
   
   arms_down:
-    default_step: 4.0
+    default_step: 80.0
     targets:
-      arm_r: 120
-      arm_l: 510
+      arm_r: 8000
+      arm_l: 2000
 
   look_left_up:
-    default_step: 3.0
+    default_step: 60.0
     targets:
-      head_yaw: 512
-      neck_top: 300
+      head_yaw: 7600
+      neck_top: 4000
+      neck_bottom: 7000
 
   look_center:
-    default_step: 3.0
+    default_step: 60.0
     targets:
-      head_yaw: 250
-      neck_top: 130
+      head_yaw: 5000
+      neck_top: 4000
+      neck_bottom: 4000
 
   tilt_right:
-    default_step: 2.0
+    default_step: 40.0
     targets:
-      eye_r: 120    # 极限1
-      eye_l: 360    # 极限2
+      eye_r: 2000    # 右眼最低
+      eye_l: 6000    # 左眼最高
 
   tilt_left:
-    default_step: 2.0
+    default_step: 40.0
     targets:
-      eye_r: 280    # 极限2
-      eye_l: 520    # 极限1
+      eye_r: 4000    # 右眼最高
+      eye_l: 8192    # 左眼最低
 
   sad_eyes:
-    default_step: 2.0
+    default_step: 40.0
     targets:
-      eye_r: 120    # 极限1
-      eye_l: 520    # 极限1
+      eye_r: 2000    # 最低
+      eye_l: 8192    # 最低
 
   head_down:
-    default_step: 2.0
+    default_step: 40.0
     targets:
-      neck_top: 280     # limit2 (300) - 20
-      neck_bottom: 390  # limit2 (410) - 20
+      neck_top: 6000     # 视线降低
+      neck_bottom: 3500  # 视线下沉
 
   turn_head_left:
-    default_step: 4.0
+    default_step: 80.0
     targets:
-      head_yaw: 512     # 极限2 (如果转反了请与右转互换)
+      head_yaw: 7600     # 最左
 
   turn_head_right:
-    default_step: 4.0
+    default_step: 80.0
     targets:
-      head_yaw: 120     # 极限1 (如果转反了请与左转互换)
+      head_yaw: 1920     # 最右
 
   eyebrows_open:
-    default_step: 4.0
+    default_step: 80.0
     targets:
-      eyebrow_r: 180    # 极限2
-      eyebrow_l: 370    # 极限2
+      eyebrow_r: 4200
+      eyebrow_l: 5700
 
   eyebrows_close:
-    default_step: 4.0
+    default_step: 80.0
     targets:
-      eyebrow_r: 120    # 极限1 (初始值)
-      eyebrow_l: 512    # 极限1 (初始值)
+      eyebrow_r: 1920
+      eyebrow_l: 8000
 
 sequences:
   happy_dance:
-    loop_hz: 50
-    
-    # 0.0秒：开心表情，开始转圈，双手以不同速度抬起
     - time: 0.0
       actions:
         - { type: express_emotion, emotion: happy }
         - { type: motor, direction: spin, duration: 2.0 }
-        - { type: servo, name: arm_r, angle: 180, step_size: 2.0 }
-        - { type: servo, name: arm_l, angle: 180, step_size: 1.0 }
-        - { type: servo, name: head_yaw, angle: 130, step_size: 1.5 }
-        
-    # 2.0秒：转圈结束，放下双手，头摆回来，点头
+        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
+        - { type: servo, name: arm_l, pwm: 6000, step_size: 40.0 }
+        - { type: servo, name: head_yaw, pwm: 1920, step_size: 60.0 }
+    - time: 1.0
+      actions:
+        - { type: servo, name: head_yaw, pwm: 7600, step_size: 60.0 }
     - time: 2.0
       actions:
-        - { type: servo, name: arm_r, angle: 0, step_size: 4.0 }
-        - { type: servo, name: arm_l, angle: 0, step_size: 4.0 }
-        - { type: servo, name: head_yaw, angle: 90, step_size: 3.0 }
-        - { type: servo, name: neck_top, angle: 180, step_size: 5.0 }
-        
-    # 2.5秒：收回点头
-    - time: 2.5
+        - { type: pose, name: look_center }
+        - { type: pose, name: arms_down }
+        - { type: motor, direction: backward, duration: 1.0 }
+
+  wave_hello:
+    - time: 0.0
       actions:
-        - { type: servo, name: neck_top, angle: 90, step_size: 5.0 }
+        - { type: express_emotion, emotion: happy }
+        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
+        - { type: servo, name: head_yaw, pwm: 7600, step_size: 40.0 }
+    - time: 0.5
+      actions:
+        - { type: servo, name: arm_r, pwm: 6000, step_size: 80.0 }
+    - time: 1.0
+      actions:
+        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
+    - time: 1.5
+      actions:
+        - { type: pose, name: arms_down }
+        - { type: pose, name: look_center }
+
+  basic_nod:
+    - time: 0.0
+      actions:
+        - { type: servo, name: neck_top, pwm: 6000, step_size: 100.0 }
+    - time: 0.3
+      actions:
+        - { type: servo, name: neck_top, pwm: 4000, step_size: 100.0 }
+        
+  basic_wave:
+    - time: 0.0
+      actions:
+        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
+    - time: 0.5
+      actions:
+        - { type: servo, name: arm_r, pwm: 6000, step_size: 80.0 }
+
+  complex_greet:
+    - time: 0.0
+      actions:
+        - { type: express_emotion, emotion: happy }
+        - { type: sequence, name: basic_wave }
+        - { type: pose, name: look_left_up, step_size: 20.0 }
+    - time: 2.0
+      actions:
+        - { type: sequence, name: basic_nod }
+        - { type: pose, name: look_center }
 
   sad_react:
     - time: 0.0
       actions:
         - { type: express_emotion, emotion: sad }
-        - { type: pose, name: sad_eyes, step_size: 1.0 }       # 双眼缓慢下降
-        - { type: pose, name: arms_down, step_size: 1.5 }      # 双手无力垂下
-        - { type: pose, name: eyebrows_close, step_size: 1.0 } # 眉毛收起(回到初始位置)
-        - { type: pose, name: head_down, step_size: 1.0 }      # 低头
-        
-  wave_hello:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: happy }
-        - { type: servo, name: arm_r, angle: 180, step_size: 4.0 }
-        - { type: servo, name: head_yaw, angle: 120, step_size: 2.0 }
-    - time: 0.5
-      actions:
-        - { type: servo, name: arm_r, angle: 90, step_size: 4.0 }
-    - time: 1.0
-      actions:
-        - { type: servo, name: arm_r, angle: 180, step_size: 4.0 }
-    - time: 1.5
-      actions:
-        - { type: servo, name: arm_r, angle: 0, step_size: 2.0 }
-        - { type: servo, name: head_yaw, angle: 90, step_size: 2.0 }
-
-  # ==========================================
-  # 基础动作库 (用于被其他动作嵌套调用)
-  # ==========================================
-  basic_nod:
-    - time: 0.0
-      actions:
-        - { type: servo, name: neck_top, angle: 140, step_size: 5.0 }
-    - time: 0.3
-      actions:
-        - { type: servo, name: neck_top, angle: 90, step_size: 5.0 }
-        
-  basic_wave:
-    - time: 0.0
-      actions:
-        - { type: servo, name: arm_r, angle: 180, step_size: 4.0 }
-    - time: 0.5
-      actions:
-        - { type: servo, name: arm_r, angle: 90, step_size: 4.0 }
-
-  # ==========================================
-  # 组合动作示例 (展示如何使用子序列与姿态 Pose)
-  # ==========================================
-  complex_greet:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: happy }
-        - { type: sequence, name: basic_wave } # 触发子序列(带有时间轴的时间展开)
-        - { type: pose, name: look_left_up, step_size: 1.0 } # 调用静态姿态，并用 1.0 慢速覆盖
-    - time: 2.0
-      actions:
-        - { type: sequence, name: basic_nod }
-        - { type: pose, name: look_center } # 不填 step_size 则使用宏默认的 3.0
+        - { type: pose, name: sad_eyes, step_size: 20.0 }
+        - { type: pose, name: arms_down, step_size: 30.0 }
+        - { type: pose, name: eyebrows_close, step_size: 20.0 }
+        - { type: pose, name: head_down, step_size: 20.0 }
 
   scared:
     - time: 0.0
