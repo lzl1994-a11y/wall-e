@@ -251,11 +251,13 @@ class SequenceRosNode(Node):
         if t_head > 5000:
             if self._targets.get('eye_r', 3000) < 3000:
                 self._targets['eye_r'] = 3000
+                if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
                 
         # 规则2: 右转头情况下左眼不能大于7500 (头右偏是 < 5000)
         if t_head < 5000:
             if self._targets.get('eye_l', 7500) > 7500:
                 self._targets['eye_l'] = 7500
+                if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
                 
         # 规则3: 跷跷板联动机制 (只有右眼下降才能抬起左眼，且升降量相等)
         t_eye_r = self._targets.get('eye_r', 3000)
@@ -265,6 +267,7 @@ class SequenceRosNode(Node):
         min_allowed_eye_l = 7500 - r_drop
         if self._targets.get('eye_l', 7500) < min_allowed_eye_l:
             self._targets['eye_l'] = min_allowed_eye_l
+            if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
             
         t_eye_l = self._targets.get('eye_l', 7500)
         # 左眼下降量 (大于7500的部分)
@@ -273,6 +276,7 @@ class SequenceRosNode(Node):
         max_allowed_eye_r = 3000 + l_drop
         if self._targets.get('eye_r', 3000) > max_allowed_eye_r:
             self._targets['eye_r'] = max_allowed_eye_r
+            if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
 
         # --- 3. 轨迹控制器：50Hz 舵机高频插值与瞬态限位 ---
         changed_servos = set()

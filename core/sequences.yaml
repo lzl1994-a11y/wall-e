@@ -4,13 +4,13 @@
 
 poses:
   arms_up:
-    default_step: 80.0
+    default_step: 30.0
     targets:
       arm_r: 4000
       arm_l: 6000
   
   arms_down:
-    default_step: 80.0
+    default_step: 30.0
     targets:
       arm_r: 8000
       arm_l: 2000
@@ -54,23 +54,23 @@ poses:
       neck_bottom: 3500  # 视线下沉
 
   turn_head_left:
-    default_step: 80.0
+    default_step: 30.0
     targets:
       head_yaw: 7600     # 最左
 
   turn_head_right:
-    default_step: 80.0
+    default_step: 30.0
     targets:
       head_yaw: 1920     # 最右
 
   eyebrows_open:
-    default_step: 80.0
+    default_step: 30.0
     targets:
-      eyebrow_r: 4200
-      eyebrow_l: 5700
+      eyebrow_r: 4000
+      eyebrow_l: 5900
 
   eyebrows_close:
-    default_step: 80.0
+    default_step: 30.0
     targets:
       eyebrow_r: 1920
       eyebrow_l: 8000
