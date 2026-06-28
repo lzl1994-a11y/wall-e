@@ -41,15 +41,19 @@ class HardwareBridgeNode(Node):
         for i in range(15):
             self._state[i] = int(self._DUTY_MIN + (self._DUTY_MAX - self._DUTY_MIN) * 90 / 180) # 默认备用值
             
+        self._name_to_ch = {}
         try:
             yaml_path = os.path.join(os.path.dirname(__file__), '../core/config.yaml')
             with open(yaml_path, 'r', encoding='utf-8') as f:
                 config_data = yaml.safe_load(f) or {}
                 for servo in config_data.get('servos', []):
                     idx = servo.get('id')
-                    init_val = servo.get('init')
-                    if idx is not None and init_val is not None and 0 <= idx < 15:
-                        self._state[idx] = int(init_val)
+                    s_name = servo.get('name')
+                    if idx is not None and s_name is not None:
+                        self._name_to_ch[s_name] = idx
+                        init_val = servo.get('init')
+                        if init_val is not None and 0 <= idx < 15:
+                            self._state[idx] = int(init_val)
         except Exception as e:
             self.get_logger().error(f'[Bridge] 读取 config.yaml 失败: {e}')
             
@@ -93,10 +97,7 @@ class HardwareBridgeNode(Node):
         if not name:
             return
 
-        ch = {
-            "eyebrow_r": 0, "eyebrow_l": 1, "eye_r": 2, "eye_l": 3,
-            "head_yaw": 4, "neck_top": 5, "neck_bottom": 6, "arm_r": 7, "arm_l": 8,
-        }.get(name)
+        ch = self._name_to_ch.get(name)
         if ch is None:
             self.get_logger().warn(f'[Bridge] 未知舵机名称: {name}')
             return
