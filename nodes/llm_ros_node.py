@@ -71,7 +71,9 @@ class LLMBrainNode(Node):
     def voice_callback(self, msg):
         """Queue the request so the ROS callback thread is never blocked by LLM I/O."""
         user_prompt = (msg.data or '').strip()
-        if not user_prompt:
+        # 过滤掉常见的 ASR 噪声音译（如 #，或者单纯的标点符号）
+        if not user_prompt or user_prompt == '#' or len(user_prompt.strip('.,?!。，？！# ')) == 0:
+            self.get_logger().info(f'Ignored empty/noise ASR input: "{user_prompt}"')
             return
 
         turn_id = uuid.uuid4().hex[:12]

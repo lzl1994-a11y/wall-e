@@ -12,6 +12,8 @@ import json
 import services.mcp_service as mcp
 
 
+import yaml
+
 def get_tools():
     """OpenAI function calling 格式的工具列表"""
     return mcp.get_chat_tools()
