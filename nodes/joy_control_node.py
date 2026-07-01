@@ -53,7 +53,7 @@ class JoyControlNode(Node):
         self.deadzone = 0.15
         
         # 计时器状态
-        self._timers = {
+        self._auto_timers = {
             'arm_l': 0.0, 'arm_r': 0.0,
             'eyebrow_l': 0.0, 'eyebrow_r': 0.0
         }
@@ -105,16 +105,16 @@ class JoyControlNode(Node):
                     
                     if code == HAT_X:
                         if val == -1: # 左
-                            self._timers['arm_l'] = time.time() + AUTO_RESET_DELAY
+                            self._auto_timers['arm_l'] = time.time() + AUTO_RESET_DELAY
                         elif val == 1: # 右
-                            self._timers['arm_r'] = time.time() + AUTO_RESET_DELAY
+                            self._auto_timers['arm_r'] = time.time() + AUTO_RESET_DELAY
                     elif code == HAT_Y:
                         if val == -1: # 上
-                            self._timers['arm_l'] = time.time() + AUTO_RESET_DELAY
-                            self._timers['arm_r'] = time.time() + AUTO_RESET_DELAY
+                            self._auto_timers['arm_l'] = time.time() + AUTO_RESET_DELAY
+                            self._auto_timers['arm_r'] = time.time() + AUTO_RESET_DELAY
                         elif val == 1: # 下
-                            self._timers['arm_l'] = 0.0
-                            self._timers['arm_r'] = 0.0
+                            self._auto_timers['arm_l'] = 0.0
+                            self._auto_timers['arm_r'] = 0.0
                     elif code in self._axes:
                         # 归一化
                         info = None
@@ -140,9 +140,9 @@ class JoyControlNode(Node):
                 elif event.type == ecodes.EV_KEY:
                     if event.value == 1: # 按下
                         if event.code == BTN_L1:
-                            self._timers['eyebrow_l'] = time.time() + AUTO_RESET_DELAY
+                            self._auto_timers['eyebrow_l'] = time.time() + AUTO_RESET_DELAY
                         elif event.code == BTN_R1:
-                            self._timers['eyebrow_r'] = time.time() + AUTO_RESET_DELAY
+                            self._auto_timers['eyebrow_r'] = time.time() + AUTO_RESET_DELAY
                         elif event.code == BTN_A: self._send_action_cmd("happy_dance")
                         elif event.code == BTN_B: self._send_action_cmd("sad_react")
                         elif event.code == BTN_X: self._send_action_cmd("wave_hello")
@@ -203,10 +203,10 @@ class JoyControlNode(Node):
         targets['eye_r'] = int(2000 + r2 * 2000) # 0->2000, 1->4000
 
         # 手臂与眉毛 (倒计时逻辑)
-        targets['arm_l'] = 6000 if now < self._timers['arm_l'] else 2000
-        targets['arm_r'] = 4000 if now < self._timers['arm_r'] else 8000
-        targets['eyebrow_l'] = 5700 if now < self._timers['eyebrow_l'] else 8000
-        targets['eyebrow_r'] = 4200 if now < self._timers['eyebrow_r'] else 1920
+        targets['arm_l'] = 6000 if now < self._auto_timers['arm_l'] else 2000
+        targets['arm_r'] = 4000 if now < self._auto_timers['arm_r'] else 8000
+        targets['eyebrow_l'] = 5700 if now < self._auto_timers['eyebrow_l'] else 8000
+        targets['eyebrow_r'] = 4200 if now < self._auto_timers['eyebrow_r'] else 1920
 
         # 发送 manual_servo
         msg_s = String()
