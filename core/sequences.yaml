@@ -1,179 +1,229 @@
-# core/sequences.yaml
-# 定义瓦力的动作序列、基础姿态宏
-# 注意：所有的目标数值都已转换为 16-bit PWM，不再使用 0-180 的抽象角度！
-
 poses:
   arms_up:
-    default_step: 30.0
+    default_step: 60.0
     targets:
       arm_r: 4000
       arm_l: 6000
-  
   arms_down:
-    default_step: 30.0
+    default_step: 60.0
     targets:
       arm_r: 8000
       arm_l: 2000
-
   look_left_up:
-    default_step: 60.0
+    default_step: 120.0
     targets:
       head_yaw: 7600
       neck_top: 4000
       neck_bottom: 7000
-
   look_center:
-    default_step: 60.0
+    default_step: 120.0
     targets:
       head_yaw: 5000
       neck_top: 4000
       neck_bottom: 4000
-
   tilt_right:
-    default_step: 40.0
+    default_step: 80.0
     targets:
-      eye_r: 2000    # 右眼最低
-      eye_l: 6000    # 左眼最高
-
-  tilt_left:
-    default_step: 40.0
-    targets:
-      eye_r: 4000    # 右眼最高
-      eye_l: 8192    # 左眼最低
-
-  sad_eyes:
-    default_step: 40.0
-    targets:
-      eye_r: 2000    # 最低
-      eye_l: 8192    # 最低
-
-  head_down:
-    default_step: 40.0
-    targets:
-      neck_top: 6000     # 视线降低
-      neck_bottom: 3500  # 视线下沉
-
-  turn_head_left:
-    default_step: 30.0
-    targets:
-      head_yaw: 7600     # 最左
-
-  turn_head_right:
-    default_step: 30.0
-    targets:
-      head_yaw: 1920     # 最右
-
-  tilt_head_left:
-    default_step: 30.0
-    targets:
-      eye_l: 8192
-      eye_r: 3692
-
-  tilt_head_right:
-    default_step: 30.0
-    targets:
-      eye_l: 6500
       eye_r: 2000
-
+      eye_l: 6000
+  tilt_left:
+    default_step: 80.0
+    targets:
+      eye_r: 4000
+      eye_l: 8192
+  sad_eyes:
+    default_step: 80.0
+    targets:
+      eye_r: 2000
+      eye_l: 8192
+  head_down:
+    default_step: 80.0
+    targets:
+      neck_top: 6000
+      neck_bottom: 3500
+  turn_head_left:
+    default_step: 60.0
+    targets:
+      head_yaw: 7600
+  turn_head_right:
+    default_step: 60.0
+    targets:
+      head_yaw: 1920
+  tilt_head_left:
+    default_step: 60.0
+    targets:
+      eye_l: 7500
+      eye_r: 4000
+  tilt_head_right:
+    default_step: 60.0
+    targets:
+      eye_l: 5000
+      eye_r: 2000
   eyebrows_open:
-    default_step: 30.0
+    default_step: 60.0
     targets:
       eyebrow_r: 4000
       eyebrow_l: 5900
-
   eyebrows_close:
-    default_step: 30.0
+    default_step: 60.0
     targets:
       eyebrow_r: 1920
       eyebrow_l: 8000
-
 sequences:
   happy_dance:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: happy }
-        - { type: motor, direction: spin, duration: 2.0 }
-        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
-        - { type: servo, name: arm_l, pwm: 6000, step_size: 40.0 }
-        - { type: servo, name: head_yaw, pwm: 1920, step_size: 60.0 }
-    - time: 1.0
-      actions:
-        - { type: servo, name: head_yaw, pwm: 7600, step_size: 60.0 }
-    - time: 2.0
-      actions:
-        - { type: pose, name: look_center }
-        - { type: pose, name: arms_down }
-        - { type: motor, direction: backward, duration: 1.0 }
-
+  - time: 0.0
+    actions:
+    - type: express_emotion
+      emotion: happy
+    - type: motor
+      direction: spin
+      duration: 2.0
+    - type: servo
+      name: arm_r
+      pwm: 4000
+      step_size: 160.0
+    - type: servo
+      name: arm_l
+      pwm: 6000
+      step_size: 80.0
+    - type: servo
+      name: head_yaw
+      pwm: 1920
+      step_size: 120.0
+  - time: 1.0
+    actions:
+    - type: servo
+      name: head_yaw
+      pwm: 7600
+      step_size: 120.0
+  - time: 2.0
+    actions:
+    - type: pose
+      name: look_center
+    - type: pose
+      name: arms_down
+    - type: motor
+      direction: backward
+      duration: 1.0
   wave_hello:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: happy }
-        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
-        - { type: servo, name: head_yaw, pwm: 7600, step_size: 40.0 }
-    - time: 0.5
-      actions:
-        - { type: servo, name: arm_r, pwm: 6000, step_size: 80.0 }
-    - time: 1.0
-      actions:
-        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
-    - time: 1.5
-      actions:
-        - { type: pose, name: arms_down }
-        - { type: pose, name: look_center }
-
+  - time: 0.0
+    actions:
+    - type: express_emotion
+      emotion: happy
+    - type: servo
+      name: arm_r
+      pwm: 4000
+      step_size: 160.0
+    - type: servo
+      name: head_yaw
+      pwm: 7600
+      step_size: 80.0
+  - time: 0.5
+    actions:
+    - type: servo
+      name: arm_r
+      pwm: 6000
+      step_size: 160.0
+  - time: 1.0
+    actions:
+    - type: servo
+      name: arm_r
+      pwm: 4000
+      step_size: 160.0
+  - time: 1.5
+    actions:
+    - type: pose
+      name: arms_down
+    - type: pose
+      name: look_center
   basic_nod:
-    - time: 0.0
-      actions:
-        - { type: servo, name: neck_top, pwm: 6000, step_size: 100.0 }
-    - time: 0.3
-      actions:
-        - { type: servo, name: neck_top, pwm: 4000, step_size: 100.0 }
-        
+  - time: 0.0
+    actions:
+    - type: servo
+      name: neck_top
+      pwm: 6000
+      step_size: 200.0
+  - time: 0.3
+    actions:
+    - type: servo
+      name: neck_top
+      pwm: 4000
+      step_size: 200.0
   basic_wave:
-    - time: 0.0
-      actions:
-        - { type: servo, name: arm_r, pwm: 4000, step_size: 80.0 }
-    - time: 0.5
-      actions:
-        - { type: servo, name: arm_r, pwm: 6000, step_size: 80.0 }
-
+  - time: 0.0
+    actions:
+    - type: servo
+      name: arm_r
+      pwm: 4000
+      step_size: 160.0
+  - time: 0.5
+    actions:
+    - type: servo
+      name: arm_r
+      pwm: 6000
+      step_size: 160.0
   complex_greet:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: happy }
-        - { type: sequence, name: basic_wave }
-        - { type: pose, name: look_left_up, step_size: 20.0 }
-    - time: 2.0
-      actions:
-        - { type: sequence, name: basic_nod }
-        - { type: pose, name: look_center }
-
+  - time: 0.0
+    actions:
+    - type: express_emotion
+      emotion: happy
+    - type: sequence
+      name: basic_wave
+    - type: pose
+      name: look_left_up
+      step_size: 40.0
+  - time: 2.0
+    actions:
+    - type: sequence
+      name: basic_nod
+    - type: pose
+      name: look_center
   sad_react:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: sad }
-        - { type: pose, name: sad_eyes, step_size: 20.0 }
-        - { type: pose, name: arms_down, step_size: 30.0 }
-        - { type: pose, name: eyebrows_close, step_size: 20.0 }
-        - { type: pose, name: head_down, step_size: 20.0 }
-
+  - time: 0.0
+    actions:
+    - type: express_emotion
+      emotion: sad
+    - type: pose
+      name: sad_eyes
+      step_size: 40.0
+    - type: pose
+      name: arms_down
+      step_size: 60.0
+    - type: pose
+      name: eyebrows_close
+      step_size: 40.0
+    - type: pose
+      name: head_down
+      step_size: 40.0
   scared:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: sad }
-        - { type: pose, name: sad_eyes, step_size: 60.0 }
-    - time: 1.0
-      actions:
-        - { type: pose, name: arms_up, step_size: 100.0 }
-
+  - time: 0.0
+    actions:
+    - type: express_emotion
+      emotion: sad
+    - type: pose
+      name: sad_eyes
+      step_size: 120.0
+  - time: 1.0
+    actions:
+    - type: pose
+      name: arms_up
+      step_size: 200.0
   raise_hand:
-    - time: 0.0
-      actions:
-        - { type: express_emotion, emotion: happy }
-        - { type: pose, name: arms_up, step_size: 80.0 }
-        - { type: pose, name: look_left_up, step_size: 60.0 }
-    - time: 2.0
-      actions:
-        - { type: pose, name: arms_down, step_size: 60.0 }
-        - { type: pose, name: look_center, step_size: 60.0 }
+  - time: 0.0
+    actions:
+    - type: express_emotion
+      emotion: happy
+    - type: pose
+      name: arms_up
+      step_size: 160.0
+    - type: pose
+      name: look_left_up
+      step_size: 120.0
+  - time: 2.0
+    actions:
+    - type: pose
+      name: arms_down
+      step_size: 120.0
+    - type: pose
+      name: look_center
+      step_size: 120.0

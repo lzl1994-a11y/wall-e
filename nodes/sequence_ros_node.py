@@ -116,6 +116,13 @@ class SequenceRosNode(Node):
                 "duration": float(args.get("duration", 1.0))
             })
             
+        elif tool == "manual_servo":
+            self._dispatch_action({
+                "type": "manual_servo",
+                "targets": args.get("targets", {}),
+                "step_size": args.get("step_size", 30.0)
+            })
+            
 
         elif tool == "play_sequence":
             seq_name = args.get("sequence_name", "")
@@ -227,6 +234,16 @@ class SequenceRosNode(Node):
             msg = String()
             msg.data = f"eyeaction:{emotion}\n"
             self.tft_pub.publish(msg)
+            
+        elif t == 'manual_servo':
+            targets = act.get('targets', {})
+            step_size = float(act.get('step_size', 30.0))
+            for s_name, s_pwm in targets.items():
+                if s_name in self._servos_config:
+                    target_pwm = self._clamp_pwm(s_name, s_pwm)
+                    if target_pwm is not None:
+                        self._targets[s_name] = target_pwm
+                        self._steps[s_name] = step_size
 
     def _stop_motors(self):
         msg = String()
@@ -255,24 +272,24 @@ class SequenceRosNode(Node):
                 self._targets['eye_r'] = 3000
                 if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
                 
-        # 规则2: 右转头情况下左眼不能大于7500 (头右偏是 < 5000)
+        # 规则2: 右转头情况下左眼不能大于6000 (头右偏是 < 5000)
         if t_head < 5000:
-            if self._targets.get('eye_l', 7500) > 7500:
-                self._targets['eye_l'] = 7500
+            if self._targets.get('eye_l', 6000) > 6000:
+                self._targets['eye_l'] = 6000
                 if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
                 
-        # 规则3: 跷跷板联动机制 (抽象数学约束: eye_l - eye_r >= 4500)
+        # 规则3: 跷跷板联动机制 (抽象数学约束: eye_l - eye_r >= 3000)
         # 防止左眼和右眼同时过度抬起导致的机械干涉
         t_eye_r = self._targets.get('eye_r', 3000)
-        t_eye_l = self._targets.get('eye_l', 7500)
+        t_eye_l = self._targets.get('eye_l', 6000)
         
-        min_l = t_eye_r + 4500
+        min_l = t_eye_r + 3000
         if t_eye_l < min_l:
             self._targets['eye_l'] = min_l
             if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
             
-        t_eye_l = self._targets.get('eye_l', 7500)
-        max_r = t_eye_l - 4500
+        t_eye_l = self._targets.get('eye_l', 6000)
+        max_r = t_eye_l - 3000
         if t_eye_r > max_r:
             self._targets['eye_r'] = max_r
             if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
@@ -311,23 +328,23 @@ class SequenceRosNode(Node):
                     next_val = 3000  # 头还在左边没回正，不许眼睛往下低
                     
             if name == 'head_yaw' and next_val < 5000:
-                if self._virtual_state.get('eye_l', 7500) > 7500:
+                if self._virtual_state.get('eye_l', 6000) > 6000:
                     next_val = 5000  # 眼睛还没抬起来，不许头往右转
                     
-            if name == 'eye_l' and next_val > 7500:
+            if name == 'eye_l' and next_val > 6000:
                 if self._virtual_state.get('head_yaw', 5000) < 5000:
-                    next_val = 7500  # 头还在右边没回正，不许眼睛往下低
+                    next_val = 6000  # 头还在右边没回正，不许眼睛往下低
                     
-            # 瞬态拦截：跷跷板联动 (eye_l - eye_r >= 4500)
+            # 瞬态拦截：跷跷板联动 (eye_l - eye_r >= 3000)
             if name == 'eye_l':
                 v_eye_r = self._virtual_state.get('eye_r', 3000)
-                min_allow = v_eye_r + 4500
+                min_allow = v_eye_r + 3000
                 if next_val < min_allow:
                     next_val = min_allow
                     
             if name == 'eye_r':
-                v_eye_l = self._virtual_state.get('eye_l', 7500)
-                max_allow = v_eye_l - 4500
+                v_eye_l = self._virtual_state.get('eye_l', 6000)
+                max_allow = v_eye_l - 3000
                 if next_val > max_allow:
                     next_val = max_allow
                     
