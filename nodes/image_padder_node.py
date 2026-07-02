@@ -18,7 +18,7 @@ class ImagePadderNode(Node):
         # 预先分配一块黑色的画布，避免每次分配内存
         self.canvas = np.zeros((self.target_h, self.target_w, 3), dtype=np.uint8)
         
-        self.create_subscription(Image, '/image_raw', self.img_cb, 10)
+        self.create_subscription(Image, '/image', self.img_cb, 10)
         self.pub_bgr = self.create_publisher(Image, '/image_padded_bgr', 10)
         self.pub_jpeg = self.create_publisher(Image, '/image_padded_jpeg', 10)
         
@@ -26,6 +26,11 @@ class ImagePadderNode(Node):
         
     def img_cb(self, msg):
         try:
+            expected_len = msg.height * msg.width * 3
+            if len(msg.data) != expected_len:
+                self.get_logger().error(f"Image format mismatch! Expected {expected_len} bytes (bgr8), got {len(msg.data)}. Is hobot_usb_cam outputting bgr8?")
+                return
+                
             # 纯 Numpy 转换，绕开容易缺库的 cv_bridge
             cv_img = np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
             h, w = cv_img.shape[:2]
