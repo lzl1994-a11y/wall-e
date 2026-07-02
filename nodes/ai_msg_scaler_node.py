@@ -9,35 +9,63 @@ try:
 except ImportError:
     HAS_MSGS = False
 
-class AIMSgSyncNode(Node):
+class AIMSgScaler(Node):
     """
-    纯粹的时间戳同步节点。
-    解决 hobot_codec 硬件转码后时间戳丢失，导致 websocket 无法对齐而报错丢帧的问题。
-    不再进行坐标系缩放，因为我们将相机固定为 640x480 标准分辨率，底层的 C++ 节点会自动完美对齐。
+    终极版：时间戳同步 + Letterbox 逆向坐标缩放 + 安全边界限幅。
     """
     def __init__(self):
-        super().__init__('ai_msg_sync_node')
+        super().__init__('ai_msg_scaler')
         if not HAS_MSGS:
             self.get_logger().error("Missing ai_msgs or sensor_msgs!")
             return
             
+        self.img_w = 640
+        self.img_h = 480
+        self.ai_w = 960.0
+        self.ai_h = 544.0
+        self.has_resolution = False
         self.latest_raw_stamp = None
         
-        # 订阅原始 /image (MJPEG) 获取它最新的时间戳
+        # 订阅原始 /image (MJPEG) 获取它的真实宽高和最新时间戳
         self.create_subscription(Image, '/image', self.raw_img_cb, 10)
         
         # 订阅原始的 AI 框
         self.create_subscription(PerceptionTargets, '/hobot_mono2d_body_detection_raw', self.ai_cb, 10)
         
-        # 发布时间戳同步后的框
+        # 发布修正后的框
         self.pub = self.create_publisher(PerceptionTargets, '/hobot_mono2d_body_detection', 10)
-        self.get_logger().info("AI 时间戳同步节点已启动 (纯转发无缩放)")
+        self.get_logger().info("AI 坐标系校准节点已启动 (包含 Letterbox 逆向恢复)")
         
     def raw_img_cb(self, msg):
         self.latest_raw_stamp = msg.header.stamp
+        if not self.has_resolution or self.img_w != msg.width:
+            self.img_w = msg.width
+            self.img_h = msg.height
+            self.has_resolution = True
 
     def ai_cb(self, msg):
-        # 核心功能：将 AI 框的时间戳强行篡改为最新相机的帧时间戳
+        actual_w, actual_h = float(self.img_w), float(self.img_h)
+            
+        # 核心修复 1：逆向解算 Letterbox (保持长宽比的边缘填充)
+        scale = min(self.ai_w / actual_w, self.ai_h / actual_h)
+        pad_x = (self.ai_w - actual_w * scale) / 2.0
+        pad_y = (self.ai_h - actual_h * scale) / 2.0
+            
+        for target in msg.targets:
+            for roi in target.rois:
+                # 逆向平移并除以缩放比例
+                new_x = int((roi.rect.x_offset - pad_x) / scale)
+                new_y = int((roi.rect.y_offset - pad_y) / scale)
+                new_w = int(roi.rect.width / scale)
+                new_h = int(roi.rect.height / scale)
+                
+                # 核心修复 2：防止越界导致 uint32 崩溃
+                roi.rect.x_offset = max(0, new_x)
+                roi.rect.y_offset = max(0, new_y)
+                roi.rect.width = max(0, new_w)
+                roi.rect.height = max(0, new_h)
+                
+        # 核心修复 3：时间戳强行对齐，解决丢帧卡死
         if self.latest_raw_stamp is not None:
             msg.header.stamp = self.latest_raw_stamp
             
@@ -47,7 +75,7 @@ def main():
     if not HAS_MSGS:
         return
     rclpy.init()
-    node = AIMSgSyncNode()
+    node = AIMSgScaler()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
