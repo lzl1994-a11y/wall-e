@@ -132,11 +132,13 @@ class WaliTrackingNode(Node):
         best = max(body_boxes, key=lambda b: b[2])
         cx, cy, area_ratio = best
 
-        # 1. 误差计算 (-1.0 到 1.0)
-        x_error = (cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
-        dist_error = self.BODY_TARGET_RATIO - area_ratio
+        # 2. 误差死区，防止原地震荡抖动
+        if abs(x_error) < 0.05:
+            x_error = 0.0
+        if abs(dist_error) < 0.05:
+            dist_error = 0.0
 
-        # 2. PID 计算底盘动力
+        # 3. PID 计算底盘动力
         yaw_out = self._pid_chassis_yaw.update(x_error, dt)
         dist_out = self._pid_chassis_dist.update(dist_error, dt)
 
@@ -194,6 +196,16 @@ class WaliTrackingNode(Node):
 
         # 垂直误差 (负=偏上需抬头, 正=偏下需低头)
         y_error = (cy - self.IMG_HEIGHT / 2.0) / (self.IMG_HEIGHT / 2.0)
+        # 水平误差 (纯粹为了生动仿生头扭动)
+        x_error = (cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+        
+        # 死区控制：如果误差很小，当作 0 处理，防止舵机疯狂抽搐
+        if abs(x_error) < 0.05:
+            x_error = 0.0
+        if abs(y_error) < 0.05:
+            y_error = 0.0
+
+        # PID 计算脖子动力
         pitch_out = self._pid_neck_pitch.update(y_error, dt)
 
         # 累加到绝对俯仰角 (-1.0 最下 到 1.0 最上) 
@@ -201,8 +213,7 @@ class WaliTrackingNode(Node):
         self._current_neck_pitch += -pitch_out
         self._current_neck_pitch = max(min(self._current_neck_pitch, 1.0), -1.0)
 
-        # 水平误差 (纯粹为了生动仿生头扭动)
-        x_error = (cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+
 
         # 下发至 sequence_ros_node
         self._publish_head_and_neck(x_error, self._current_neck_pitch)
