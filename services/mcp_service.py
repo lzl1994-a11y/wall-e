@@ -126,14 +126,14 @@ def set_tracking_mode(mode: str) -> str:
     """
     切换瓦力视觉跟踪模式。
     【重要】：
-      - 当用户要求“看着我”、“盯着我”、“注视我”时，必须调用此工具并传入 mode="face_follow"
-      - 当用户要求“跟着我”、“跟随我”时，必须调用此工具并传入 mode="body_follow"
+      - 当用户要求“看着我”、“盯着我”、“注视我”时，必须调用此工具并传入 mode="look_at_me"
+      - 当用户要求“跟着我”、“跟随我”时，必须调用此工具并传入 mode="follow_me"
       - 当用户要求“别看了”、“停止跟随”、“停下”时，传入 mode="idle"
       
     参数 mode:
-      "body_follow" : 人体跟随，底盘保持人在画面中央并控制距离
-      "face_follow" : 人脸跟随，脖子俯仰跟踪 + 底盘辅助
-      "idle"        : 退出跟踪，底盘停止
+      "follow_me"  : 人体跟随，底盘保持人在画面中央并控制距离
+      "look_at_me" : 人脸跟随，脖子俯仰跟踪 + 底盘辅助
+      "idle"       : 退出跟踪，底盘停止
     通过 ROS /action_cmd 下发，由 wali_tracking_node 执行。
     """
     return "ok"

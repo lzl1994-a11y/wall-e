@@ -46,8 +46,8 @@ class PID:
 
 class WaliTrackingNode(Node):
     MODE_IDLE = "idle"
-    MODE_BODY_FOLLOW = "body_follow"
-    MODE_FACE_FOLLOW = "face_follow"
+    MODE_BODY_FOLLOW = "follow_me"
+    MODE_FACE_FOLLOW = "look_at_me"
 
     IMG_WIDTH = 960
     IMG_HEIGHT = 544
