@@ -18,10 +18,10 @@ def main():
     
     cmd = [
         "bash", "-c",
-        "source /opt/tros/humble/setup.bash && ros2 launch dnn_node_example dnn_node_example.launch.py"
+        "source /opt/tros/humble/setup.bash && ros2 launch body_tracking body_tracking_without_gesture.launch.py camera_type:=usb"
     ]
     
-    print(f"[hobot_vision_node] Starting: {cmd[2]} with CAM_TYPE=usb")
+    print(f"[hobot_vision_node] Starting: body_tracking with USB camera")
     
     try:
         proc = subprocess.Popen(cmd, env=env)
