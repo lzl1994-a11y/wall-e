@@ -47,19 +47,25 @@ class AIMSgScaler(Node):
     def ai_cb(self, msg):
         if not self.has_resolution:
             # 还没有分辨率时，假设默认 1920x1080
-            scale_x = 1920.0 / self.ai_w
-            scale_y = 1080.0 / self.ai_h
+            actual_w, actual_h = 1920.0, 1080.0
         else:
-            scale_x = self.img_w / self.ai_w
-            scale_y = self.img_h / self.ai_h
+            actual_w, actual_h = float(self.img_w), float(self.img_h)
             
-        # 就地缩放坐标
+        # 核心修复：AI 节点的底层使用了 Letterbox (保持长宽比的边缘填充) 缩放图像
+        # 我们必须逆向解算 Letterbox，而不是简单粗暴的拉伸！
+        scale = min(self.ai_w / actual_w, self.ai_h / actual_h)
+        pad_x = (self.ai_w - actual_w * scale) / 2.0
+        pad_y = (self.ai_h - actual_h * scale) / 2.0
+            
+        # 就地缩放坐标 (逆向去黑边)
         for target in msg.targets:
             for roi in target.rois:
-                roi.rect.x_offset = int(roi.rect.x_offset * scale_x)
-                roi.rect.y_offset = int(roi.rect.y_offset * scale_y)
-                roi.rect.width = int(roi.rect.width * scale_x)
-                roi.rect.height = int(roi.rect.height * scale_y)
+                # 原始中心点或左上角减去 padding 后除以 scale
+                roi.rect.x_offset = int((roi.rect.x_offset - pad_x) / scale)
+                roi.rect.y_offset = int((roi.rect.y_offset - pad_y) / scale)
+                # 宽和高只需要除以 scale，因为它们不受平移(padding)影响
+                roi.rect.width = int(roi.rect.width / scale)
+                roi.rect.height = int(roi.rect.height / scale)
                 
         self.pub.publish(msg)
 
