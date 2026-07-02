@@ -83,6 +83,7 @@ def build_node_list(args):
 
     # tracking: CLI --tracking 覆盖 config
     if args.tracking or launch_cfg.get("tracking", False):
+        nodes.append(NodeEntry("hobot_vision", ROOT / "nodes" / "hobot_vision_node.py"))
         nodes.append(NodeEntry("tracking", ROOT / "nodes" / "wali_tracking_node.py"))
         if not args.no_doa:
             nodes.append(NodeEntry("doa_ros", ROOT / "nodes" / "doa_ros_node.py"))

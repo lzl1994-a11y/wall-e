@@ -1,0 +1,87 @@
+# Wali X3 Brain 🧠
+
+这是一个基于 ROS2 (Humble) 和 地平线旭日 X3 派 (Sunrise X3 Pi) 打造的仿生机器人大脑中枢。本项目为“瓦力”机器人赋予了视觉追踪、多模态语音交互、手柄接管以及物理防碰撞的能力。
+
+## 🌟 核心特性
+
+- 🤖 **仿生视觉追踪 (AI BPU)**：深度整合地平线 TogetherROS，实现无缝的人体/人脸追踪。独创“虚假扭头”仿生视效及双舵机补偿仰俯算法。
+- 🎙️ **多模态语音交互**：支持基于 Qwen-Omni 的端到端音频大模型交互，也支持传统的 STT(Paraformer) + LLM + TTS(EdgeTTS) 链路。
+- 🎮 **零侵入物理接管**：通过高频发布中枢，使用游戏手柄可随时实现最高优先级的纯物理控制（摇杆差速底盘、线性扳机压感眼球），并自动屏蔽大模型的行动指令。
+- 🛡️ **小脑安全守护**：底层 `sequence_ros_node` 提供 50Hz 动作插值平滑，并内置严格的物理干涉检测（例如转头时眼睛自动抬高防止碰撞）。
+
+## ⚙️ 硬件与环境要求
+
+1. **主板**：地平线 旭日 X3 派 (Sunrise X3 Pi)
+2. **系统**：Ubuntu 22.04 LTS (预装地平线 TogetherROS Humble)
+3. **摄像头**：支持普通 USB 摄像头 (UVC) 或官方 MIPI 排线摄像头。
+4. **控制板**：基于 ESP32/Arduino，通过串口与旭日派通信，挂载 PCA9685 (舵机) 和 TB6612 (电机驱动)。
+5. **手柄**：标准 USB 无线游戏手柄。
+
+## 🚀 安装与配置
+
+### 1. 旭日派 AI 模型安装
+视觉节点强依赖于地平线 BPU 硬件加速模型，必须确保系统内已安装官方模型包：
+```bash
+sudo apt update
+sudo apt install tros-dnn-node-example
+```
+
+### 2. 编译本项目
+将代码克隆到你的 ROS2 工作空间（如 `~/your_workspace/src/`）下：
+```bash
+cd ~/your_workspace
+colcon build --packages-select wali_x3_brain
+source install/setup.bash
+```
+
+## 🎮 启动指南
+
+系统的启动分为**“视觉感知端”**和**“瓦力大脑端”**两个独立的部分。
+
+### 第一步：启动视觉 AI 节点 (依赖地平线 BPU)
+旭日派强大的地方在于自带视觉算法包。打开终端，输入以下命令：
+
+**如果你使用 USB 摄像头 (UVC)：**
+```bash
+source /opt/tros/humble/setup.bash
+export CAM_TYPE=usb
+ros2 launch dnn_node_example dnn_node_example.launch.py
+```
+*(启动成功后，浏览器访问 `http://<旭日派IP>:8000` 即可查看带追踪框的实时画面)*
+
+### 第二步：启动瓦力大脑中枢
+打开一个新的终端：
+```bash
+source /opt/tros/humble/setup.bash
+source ~/your_workspace/install/setup.bash
+
+# 启动大脑并开启视觉跟随功能
+ros2 launch wali_x3_brain launch_nodes.py --tracking
+```
+
+#### 启动参数选项 (`launch_nodes.py`)
+- `--tracking`：开启视觉追踪节点（监听地平线 BPU 输出）。
+- `--voice-chat`：使用大模型端到端语音交互（Qwen-Omni）。
+- `--real-stt`：使用阿里云 Paraformer 语音转文字。
+- `--keyboard-stt`：使用键盘输入文字模拟语音识别（调试用）。
+- `--no-serial`：不启动串口硬件桥接节点（纯代码调试模式）。
+
+## 🧠 核心架构说明
+
+### 视觉双模式系统 (`wali_tracking_node.py`)
+为了适配“摄像头纯靠脖子仰俯，左右平移全靠底盘转弯”的独特机械结构，设计了两种状态：
+1. **模式 1 (跟随模式 - body_follow)**：纯底盘出击。根据身体大小前进后退，根据左右偏移差速旋转。同时脑袋 (`head_yaw`) 模拟转向产生“仿生看人”效果。
+2. **模式 2 (注视模式 - face_follow)**：底盘锁定刹车。脖子双舵机 (`neck_top` & `neck_bottom`) 自动反向补偿实现仰俯追踪。丢失目标自动原地打转搜寻；仅识别到身体时自动上扬镜头寻找人脸。
+
+### 手柄控制映射 (`joy_control_node.py`)
+- **左摇杆**：控制履带底盘前进/后退/差速转向。
+- **右摇杆**：控制头部 (`head_yaw` 和 脖子仰俯)。
+- **L2/R2 扳机**：0~100% 线性控制左眼/右眼抬起高度，松开自动降下（还原呆萌感）。
+- **十字键 / L1R1**：控制手臂和眉毛。自带 **3秒智能倒计时复位**，按下抬起，松开 3 秒后自动降回原位。
+- **A/B/X/Y 键**：一键触发预设宏剧本（高兴、失落、打招呼等）。
+
+## 📝 消息话题 (Topics)
+- `/hobot_dnn_detection`：来自地平线节点的 AI 识别框数据。
+- `/servo_cmd`：底层的舵机驱动指令 (JSON)。
+- `/motor_cmd`：底层的双履带电机驱动指令 (JSON)。
+- `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。
