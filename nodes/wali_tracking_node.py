@@ -78,9 +78,9 @@ class WaliTrackingNode(Node):
 
         # ── 订阅与发布 ──
         if HAS_HOBOT_MSGS:
-            self.create_subscription(PerceptionTargets, '/hobot_mono2d_body_detection', self._on_detection, 10)
+            self.create_subscription(PerceptionTargets, '/hobot_dnn_detection', self._on_detection, 10)
         else:
-            self.create_subscription(String, '/hobot_mono2d_body_detection', lambda x: None, 10)
+            self.create_subscription(String, '/hobot_dnn_detection', lambda x: None, 10)
 
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
 
@@ -113,7 +113,7 @@ class WaliTrackingNode(Node):
                 cx = rect.x_offset + rect.width / 2.0
                 cy = rect.y_offset + rect.height / 2.0
                 area_ratio = (rect.width * rect.height) / (self.IMG_WIDTH * self.IMG_HEIGHT)
-                if roi.type == "body":
+                if roi.type in ["body", "person"]:
                     body_boxes.append((cx, cy, area_ratio))
                 elif roi.type in ["face", "head"]:
                     face_boxes.append((cx, cy, area_ratio))
