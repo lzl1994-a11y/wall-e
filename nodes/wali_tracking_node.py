@@ -49,8 +49,8 @@ class WaliTrackingNode(Node):
     MODE_BODY_FOLLOW = "follow_me"
     MODE_FACE_FOLLOW = "look_at_me"
 
-    IMG_WIDTH = 640
-    IMG_HEIGHT = 480
+    IMG_WIDTH = 960
+    IMG_HEIGHT = 544
     BODY_TARGET_RATIO = 0.35  # 跟随模式下的期望身体面积占比
 
     SEARCH_ROTATE_SPEED = 25  # 丢失目标时的原地转圈速度
