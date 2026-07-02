@@ -46,18 +46,17 @@ class AIMSgScaler(Node):
     def ai_cb(self, msg):
         actual_w, actual_h = float(self.img_w), float(self.img_h)
             
-        # 核心修复 1：逆向解算 Letterbox (保持长宽比的边缘填充)
-        scale = min(self.ai_w / actual_w, self.ai_h / actual_h)
-        pad_x = (self.ai_w - actual_w * scale) / 2.0
-        pad_y = (self.ai_h - actual_h * scale) / 2.0
+        # 核心修复：底层 AI 模型并没有补黑边，而是直接进行了暴力拉伸！
+        # 所以我们只需要做最纯粹的比例逆向缩放即可。
+        scale_x = actual_w / self.ai_w
+        scale_y = actual_h / self.ai_h
             
         for target in msg.targets:
             for roi in target.rois:
-                # 逆向平移并除以缩放比例
-                new_x = int((roi.rect.x_offset - pad_x) / scale)
-                new_y = int((roi.rect.y_offset - pad_y) / scale)
-                new_w = int(roi.rect.width / scale)
-                new_h = int(roi.rect.height / scale)
+                new_x = int(roi.rect.x_offset * scale_x)
+                new_y = int(roi.rect.y_offset * scale_y)
+                new_w = int(roi.rect.width * scale_x)
+                new_h = int(roi.rect.height * scale_y)
                 
                 # 核心修复 2：防止越界导致 uint32 崩溃
                 roi.rect.x_offset = max(0, new_x)
