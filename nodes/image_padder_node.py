@@ -2,29 +2,16 @@
 import rclpy
 from rclpy.node import Node
 import numpy as np
-
-try:
-    from sensor_msgs.msg import Image
-    from cv_bridge import CvBridge
-    HAS_CV = True
-except ImportError:
-    HAS_CV = False
+import cv2
+from sensor_msgs.msg import Image
 
 class ImagePadderNode(Node):
     """
-    终极物理对齐节点：
+    终极物理对齐节点 (无 cv_bridge 依赖版)
     直接接收 640x480 的画面，并在周围补黑边，强行凑成 960x544 的画布。
-    这样一来，AI 模型和 Websocket 看到的都是 960x544 的物理画面，
-    任何坐标都不需要再转换，百分之百 1:1 绝对对齐。
     """
     def __init__(self):
         super().__init__('image_padder_node')
-        if not HAS_CV:
-            self.get_logger().error("Missing cv_bridge or sensor_msgs!")
-            return
-            
-        self.bridge = CvBridge()
-        
         self.target_w = 960
         self.target_h = 544
         
@@ -39,8 +26,8 @@ class ImagePadderNode(Node):
         
     def img_cb(self, msg):
         try:
-            # 假设输入是 bgr8
-            cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            # 纯 Numpy 转换，绕开容易缺库的 cv_bridge
+            cv_img = np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
             h, w = cv_img.shape[:2]
             
             # 计算居中坐标
@@ -55,8 +42,14 @@ class ImagePadderNode(Node):
             self.canvas[start_y:start_y+h, start_x:start_x+w] = cv_img
             
             # 1. 发布 BGR 给地平线 AI 节点
-            out_bgr = self.bridge.cv2_to_imgmsg(self.canvas, encoding='bgr8')
+            out_bgr = Image()
             out_bgr.header = msg.header
+            out_bgr.height = self.target_h
+            out_bgr.width = self.target_w
+            out_bgr.encoding = 'bgr8'
+            out_bgr.is_bigendian = 0
+            out_bgr.step = self.target_w * 3
+            out_bgr.data = self.canvas.tobytes()
             self.pub_bgr.publish(out_bgr)
             
             # 2. 发布 JPEG 给 Websocket 网页
@@ -76,8 +69,6 @@ class ImagePadderNode(Node):
             self.get_logger().error(f"填充图像失败: {e}")
 
 def main():
-    if not HAS_CV:
-        return
     rclpy.init()
     node = ImagePadderNode()
     try:
