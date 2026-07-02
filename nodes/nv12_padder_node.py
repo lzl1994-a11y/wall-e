@@ -15,9 +15,16 @@ class NV12PadderNode(Node):
         self.target_w = 960
         self.target_h = 544
         
-        # NV12 格式：Y 分量 (全分辨率)，UV 分量 (交错，高度减半)
-        self.canvas_y = np.zeros((self.target_h, self.target_w), dtype=np.uint8)
-        self.canvas_uv = np.full((self.target_h // 2, self.target_w), 128, dtype=np.uint8) # 128 是无色
+        # 预先分配一整块连续的 NV12 内存 (Y 占 w*h, UV 占 w*h/2)
+        self.nv12_size = self.target_w * self.target_h * 3 // 2
+        self.nv12_buffer = np.zeros(self.nv12_size, dtype=np.uint8)
+        
+        # 使用 numpy 的 view（视图）直接映射到这块内存，避免拷贝
+        self.canvas_y = self.nv12_buffer[:self.target_w * self.target_h].reshape((self.target_h, self.target_w))
+        self.canvas_uv = self.nv12_buffer[self.target_w * self.target_h:].reshape((self.target_h // 2, self.target_w))
+        
+        # UV 通道默认填充 128 (纯黑/无色彩)
+        self.canvas_uv.fill(128)
         
         # 订阅由 hobot_codec 解码出来的 nv12 图像
         self.create_subscription(Image, '/image_nv12', self.img_cb, 10)
@@ -25,7 +32,7 @@ class NV12PadderNode(Node):
         # 发布填充后的 nv12 图像
         self.pub = self.create_publisher(Image, '/image_padded_nv12', 10)
         
-        self.get_logger().info("NV12 物理黑边填充节点已启动 (纯 Numpy 无依赖)")
+        self.get_logger().info("NV12 物理黑边填充节点已启动 (极致性能优化版)")
         
     def img_cb(self, msg):
         try:
@@ -35,34 +42,33 @@ class NV12PadderNode(Node):
                 self.get_logger().warn(f"输入图像 ({w}x{h}) 大于画布 ({self.target_w}x{self.target_h})")
                 return
                 
-            # NV12 数据分离
+            # 【核心优化】：绝对不能切片 ROS 的 msg.data！那会导致 Python 底层进行海量内存拷贝
+            # 正确做法：一秒钟内将整个 msg.data 零拷贝映射为 numpy 数组，然后在 numpy 里进行 O(1) 瞬间切片
+            full_data = np.frombuffer(msg.data, dtype=np.uint8)
+            
             y_size = w * h
-            y_plane = np.frombuffer(msg.data[:y_size], dtype=np.uint8).reshape((h, w))
-            uv_plane = np.frombuffer(msg.data[y_size:], dtype=np.uint8).reshape((h // 2, w))
+            y_plane = full_data[:y_size].reshape((h, w))
+            uv_plane = full_data[y_size:y_size + (w * h // 2)].reshape((h // 2, w))
             
             # 计算居中坐标
             start_x = (self.target_w - w) // 2
             start_y = (self.target_h - h) // 2
             
-            # 拷贝 Y 分量 (保持背景黑)
+            # 直接物理拷贝到预先分配好的视图中 (瞬间完成)
             self.canvas_y[start_y:start_y+h, start_x:start_x+w] = y_plane
             
-            # 拷贝 UV 分量 (高度要除以 2)
             start_uv_y = start_y // 2
             self.canvas_uv[start_uv_y:start_uv_y+(h//2), start_x:start_x+w] = uv_plane
             
-            # 合并为最终的 NV12 数据
-            nv12_data = np.concatenate((self.canvas_y.flatten(), self.canvas_uv.flatten()))
-            
-            # 发布
+            # 发布 (直接把连续内存块 tobytes，无需再拼接)
             out_msg = Image()
             out_msg.header = msg.header
             out_msg.height = self.target_h
             out_msg.width = self.target_w
-            out_msg.encoding = 'nv12' # TROS 可识别
+            out_msg.encoding = 'nv12'
             out_msg.is_bigendian = 0
             out_msg.step = self.target_w
-            out_msg.data = nv12_data.tobytes()
+            out_msg.data = self.nv12_buffer.tobytes()
             
             self.pub.publish(out_msg)
             
