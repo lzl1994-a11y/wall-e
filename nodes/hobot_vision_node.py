@@ -13,13 +13,12 @@ import time
 
 def main():
     env = os.environ.copy()
-    # 注入 USB 摄像头环境变量
     env["CAM_TYPE"] = "usb"
-    # 手动构建稳定的 TROS 视觉管线 (兼容 MJPEG USB 摄像头)
-    # 1. usb_cam: 读取 USB 摄像头，默认发布 MJPEG 格式到 /image
-    # 2. hobot_codec: 订阅 /image (MJPEG)，硬件解码为 NV12 发布到 /image_nv12
-    # 3. mono2d: 切换到模型目录运行，订阅 /image_nv12，发布 AI 框到 /hobot_mono2d_body_detection
-    # 4. websocket: 订阅 /image (MJPEG) 和 AI 框，开启 8000 端口网页服务
+    
+    print("[hobot_vision_node] Cleaning up any zombie vision processes...")
+    subprocess.run("killall -9 hobot_usb_cam hobot_codec_republish mono2d_body_detection 2>/dev/null", shell=True)
+    time.sleep(1)
+    
     cmd = [
         "bash", "-c",
         "source /opt/tros/humble/setup.bash && "
@@ -46,7 +45,7 @@ def main():
     def handler(signum, frame):
         print("\n[hobot_vision_node] Stopping vision pipeline...")
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
         sys.exit(0)
