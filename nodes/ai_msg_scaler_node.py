@@ -30,6 +30,10 @@ class AIMSgScaler(Node):
         # 订阅 NV12 图像仅为了获取真实的宽高
         self.create_subscription(Image, '/image_nv12', self.img_cb, 10)
         
+        # 订阅原始 /image (MJPEG) 获取它最新的时间戳
+        self.create_subscription(Image, '/image', self.raw_img_cb, 10)
+        self.latest_raw_stamp = None
+        
         # 订阅原始的偏移框
         self.create_subscription(PerceptionTargets, '/hobot_mono2d_body_detection_raw', self.ai_cb, 10)
         
@@ -37,6 +41,9 @@ class AIMSgScaler(Node):
         self.pub = self.create_publisher(PerceptionTargets, '/hobot_mono2d_body_detection', 10)
         self.get_logger().info("AI 坐标系放大校准节点已启动")
         
+    def raw_img_cb(self, msg):
+        self.latest_raw_stamp = msg.header.stamp
+
     def img_cb(self, msg):
         if not self.has_resolution or self.img_w != msg.width:
             self.img_w = msg.width
@@ -67,6 +74,11 @@ class AIMSgScaler(Node):
                 roi.rect.width = int(roi.rect.width / scale)
                 roi.rect.height = int(roi.rect.height / scale)
                 
+        # 核心修复 2：将 AI 框的时间戳强行篡改为最新相机的帧时间戳
+        # 解决 hobot_codec 硬件转码后时间戳丢失，导致 websocket 无法对齐而报错丢帧的问题
+        if self.latest_raw_stamp is not None:
+            msg.header.stamp = self.latest_raw_stamp
+            
         self.pub.publish(msg)
 
 def main():
