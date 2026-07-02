@@ -16,9 +16,12 @@ def main():
     # 注入 USB 摄像头环境变量
     env["CAM_TYPE"] = "usb"
     
-    cmd = ["ros2", "launch", "dnn_node_example", "dnn_node_example.launch.py"]
+    cmd = [
+        "bash", "-c",
+        "source /opt/tros/humble/setup.bash && ros2 launch dnn_node_example dnn_node_example.launch.py"
+    ]
     
-    print(f"[hobot_vision_node] Starting: {' '.join(cmd)} with CAM_TYPE=usb")
+    print(f"[hobot_vision_node] Starting: {cmd[2]} with CAM_TYPE=usb")
     
     try:
         proc = subprocess.Popen(cmd, env=env)
