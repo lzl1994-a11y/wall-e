@@ -68,11 +68,18 @@ class AIMSgScaler(Node):
         for target in msg.targets:
             for roi in target.rois:
                 # 原始中心点或左上角减去 padding 后除以 scale
-                roi.rect.x_offset = int((roi.rect.x_offset - pad_x) / scale)
-                roi.rect.y_offset = int((roi.rect.y_offset - pad_y) / scale)
+                new_x = int((roi.rect.x_offset - pad_x) / scale)
+                new_y = int((roi.rect.y_offset - pad_y) / scale)
+                
                 # 宽和高只需要除以 scale，因为它们不受平移(padding)影响
-                roi.rect.width = int(roi.rect.width / scale)
-                roi.rect.height = int(roi.rect.height / scale)
+                new_w = int(roi.rect.width / scale)
+                new_h = int(roi.rect.height / scale)
+                
+                # 核心修复 3：防止边缘坐标出现负数导致 uint32 赋值越界崩溃
+                roi.rect.x_offset = max(0, new_x)
+                roi.rect.y_offset = max(0, new_y)
+                roi.rect.width = max(0, new_w)
+                roi.rect.height = max(0, new_h)
                 
         # 核心修复 2：将 AI 框的时间戳强行篡改为最新相机的帧时间戳
         # 解决 hobot_codec 硬件转码后时间戳丢失，导致 websocket 无法对齐而报错丢帧的问题
