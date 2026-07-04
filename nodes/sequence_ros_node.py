@@ -84,6 +84,10 @@ class SequenceRosNode(Node):
         max_pwm = max(l1, l2)
         return max(min_pwm, min(max_pwm, raw_pwm))
 
+    def _servo_init(self, name, fallback):
+        cfg = self._servos_config.get(name, {})
+        return float(cfg.get('init', fallback))
+
     def _on_action_cmd(self, msg):
         try:
             cmd = json.loads(msg.data)
@@ -263,36 +267,46 @@ class SequenceRosNode(Node):
                     self._dispatch_action(act)
 
         # --- 2. 动态防碰撞：目标值修正 (Target Adjustments) ---
-        # 确保系统最终收敛到一个安全的静态目标
-        t_head = self._targets.get('head_yaw', 5000)
-        
-        # 规则1: 左转头时如果右眼低于3000则设置为3000 (头左偏是 > 5000)
-        if t_head > 5000:
-            if self._targets.get('eye_r', 3000) < 3000:
-                self._targets['eye_r'] = 3000
+        # 头眼联动以 config.yaml 的 init 为分界：右转头限制左眼，左转头限制右眼。
+        head_center = self._servo_init('head_yaw', 5000)
+        eye_r_init = self._servo_init('eye_r', 3000)
+        eye_l_init = self._servo_init('eye_l', 6500)
+        eye_gap = 3000.0
+        t_head = self._targets.get('head_yaw', head_center)
+
+        # 规则1: 左转头时，右眼必须不低于右眼初始值，即 3000~4300。
+        if t_head > head_center:
+            if self._targets.get('eye_r', eye_r_init) < eye_r_init:
+                self._targets['eye_r'] = eye_r_init
                 if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
-                
-        # 规则2: 右转头情况下左眼不能大于6000 (头右偏是 < 5000)
-        if t_head < 5000:
-            if self._targets.get('eye_l', 6000) > 6000:
-                self._targets['eye_l'] = 6000
+
+        # 规则2: 右转头时，左眼必须不高于左眼初始值，即 6500~5000。
+        if t_head < head_center:
+            if self._targets.get('eye_l', eye_l_init) > eye_l_init:
+                self._targets['eye_l'] = eye_l_init
                 if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
-                
-        # 规则3: 跷跷板联动机制 (抽象数学约束: eye_l - eye_r >= 3000)
-        # 防止左眼和右眼同时过度抬起导致的机械干涉
-        t_eye_r = self._targets.get('eye_r', 3000)
-        t_eye_l = self._targets.get('eye_l', 6000)
-        
-        min_l = t_eye_r + 3000
-        if t_eye_l < min_l:
-            self._targets['eye_l'] = min_l
-            if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
-            
-        t_eye_l = self._targets.get('eye_l', 6000)
-        max_r = t_eye_l - 3000
-        if t_eye_r > max_r:
-            self._targets['eye_r'] = max_r
-            if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
+
+        # 规则3: 跷跷板联动机制 (eye_l - eye_r >= 3000)。
+        # 右转头时不能为了满足跷跷板而把左眼推回 6500 以上，只能压低右眼。
+        t_eye_r = self._targets.get('eye_r', eye_r_init)
+        t_eye_l = self._targets.get('eye_l', eye_l_init)
+
+        if t_head < head_center:
+            max_r = t_eye_l - eye_gap
+            if t_eye_r > max_r:
+                self._targets['eye_r'] = max_r
+                if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
+        else:
+            min_l = t_eye_r + eye_gap
+            if t_eye_l < min_l:
+                self._targets['eye_l'] = min_l
+                if self._steps.get('eye_l', 0) <= 0: self._steps['eye_l'] = 30.0
+
+            t_eye_l = self._targets.get('eye_l', eye_l_init)
+            max_r = t_eye_l - eye_gap
+            if t_eye_r > max_r:
+                self._targets['eye_r'] = max_r
+                if self._steps.get('eye_r', 0) <= 0: self._steps['eye_r'] = 30.0
 
         # --- 3. 轨迹控制器：50Hz 舵机高频插值与瞬态限位 ---
         changed_servos = set()
@@ -319,32 +333,34 @@ class SequenceRosNode(Node):
                 next_val -= step
                 
             # 瞬态拦截：防止在走向安全目标的过程中，发生中间态物理干涉
-            if name == 'head_yaw' and next_val > 5000:
-                if self._virtual_state.get('eye_r', 3000) < 3000:
-                    next_val = 5000  # 眼睛还没抬起来，不许头往左转
-                    
-            if name == 'eye_r' and next_val < 3000:
-                if self._virtual_state.get('head_yaw', 5000) > 5000:
-                    next_val = 3000  # 头还在左边没回正，不许眼睛往下低
-                    
-            if name == 'head_yaw' and next_val < 5000:
-                if self._virtual_state.get('eye_l', 6000) > 6000:
-                    next_val = 5000  # 眼睛还没抬起来，不许头往右转
-                    
-            if name == 'eye_l' and next_val > 6000:
-                if self._virtual_state.get('head_yaw', 5000) < 5000:
-                    next_val = 6000  # 头还在右边没回正，不许眼睛往下低
+            if name == 'head_yaw' and next_val > head_center:
+                if self._virtual_state.get('eye_r', eye_r_init) < eye_r_init:
+                    next_val = head_center  # 右眼还没到初始值以上，不许头往左转
+
+            if name == 'eye_r' and next_val < eye_r_init:
+                if self._virtual_state.get('head_yaw', head_center) > head_center:
+                    next_val = eye_r_init  # 头还在左边，右眼不许低于初始值
+
+            if name == 'head_yaw' and next_val < head_center:
+                if self._virtual_state.get('eye_l', eye_l_init) > eye_l_init:
+                    next_val = head_center  # 左眼还没到初始值以下，不许头往右转
+
+            if name == 'eye_l' and next_val > eye_l_init:
+                if self._virtual_state.get('head_yaw', head_center) < head_center:
+                    next_val = eye_l_init  # 头还在右边，左眼不许高于初始值
                     
             # 瞬态拦截：跷跷板联动 (eye_l - eye_r >= 3000)
             if name == 'eye_l':
-                v_eye_r = self._virtual_state.get('eye_r', 3000)
-                min_allow = v_eye_r + 3000
-                if next_val < min_allow:
+                v_eye_r = self._virtual_state.get('eye_r', eye_r_init)
+                min_allow = v_eye_r + eye_gap
+                if self._virtual_state.get('head_yaw', head_center) < head_center:
+                    next_val = min(next_val, eye_l_init)
+                elif next_val < min_allow:
                     next_val = min_allow
                     
             if name == 'eye_r':
-                v_eye_l = self._virtual_state.get('eye_l', 6000)
-                max_allow = v_eye_l - 3000
+                v_eye_l = self._virtual_state.get('eye_l', eye_l_init)
+                max_allow = v_eye_l - eye_gap
                 if next_val > max_allow:
                     next_val = max_allow
                     
