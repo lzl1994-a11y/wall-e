@@ -29,6 +29,8 @@ class AIMSgScaler(Node):
         self.declare_parameter("y_scale", 1.0)
         self.declare_parameter("x_offset", 0.0)
         self.declare_parameter("y_offset", 0.0)
+        self.declare_parameter("clip_width", 0.0)
+        self.declare_parameter("clip_height", 0.0)
 
         self.img_w = 640
         self.img_h = 480
@@ -102,11 +104,23 @@ class AIMSgScaler(Node):
         except Exception:
             return ""
 
+    def _clip_bounds(self):
+        clip_w = self._param_float("clip_width", 0.0)
+        clip_h = self._param_float("clip_height", 0.0)
+        if clip_w > 0.0 and clip_h > 0.0:
+            return clip_w, clip_h
+
+        if self._param_str("transform_mode") == "none":
+            return self.model_w, self.model_h
+
+        return float(self.img_w), float(self.img_h)
+
     def _clip_rect(self, x1, y1, x2, y2):
-        x1 = max(0.0, min(float(self.img_w), x1))
-        y1 = max(0.0, min(float(self.img_h), y1))
-        x2 = max(0.0, min(float(self.img_w), x2))
-        y2 = max(0.0, min(float(self.img_h), y2))
+        bound_w, bound_h = self._clip_bounds()
+        x1 = max(0.0, min(bound_w, x1))
+        y1 = max(0.0, min(bound_h, y1))
+        x2 = max(0.0, min(bound_w, x2))
+        y2 = max(0.0, min(bound_h, y2))
 
         left = int(round(min(x1, x2)))
         top = int(round(min(y1, y2)))
