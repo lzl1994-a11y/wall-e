@@ -48,6 +48,13 @@ class WaliTrackingNode(Node):
     MODE_IDLE = "idle"
     MODE_BODY_FOLLOW = "follow_me"
     MODE_FACE_FOLLOW = "look_at_me"
+    MODE_ALIASES = {
+        "idle": MODE_IDLE,
+        "body_follow": MODE_BODY_FOLLOW,
+        "follow_me": MODE_BODY_FOLLOW,
+        "face_follow": MODE_FACE_FOLLOW,
+        "look_at_me": MODE_FACE_FOLLOW,
+    }
 
     IMG_WIDTH = 960
     IMG_HEIGHT = 544
@@ -291,6 +298,27 @@ class WaliTrackingNode(Node):
         msg.data = json.dumps(payload, ensure_ascii=False)
         self._action_pub.publish(msg)
 
+    def _set_tracking_mode(self, requested_mode):
+        mode_key = str(requested_mode or "").strip()
+        mode = self.MODE_ALIASES.get(mode_key, mode_key)
+
+        if mode in (self.MODE_BODY_FOLLOW, self.MODE_FACE_FOLLOW):
+            self.mode = mode
+            self._current_neck_pitch = 0.0
+            self._last_time = time.time()
+            self._last_target_seen = time.time()
+            self._pid_chassis_yaw.reset()
+            self._pid_chassis_dist.reset()
+            self._pid_neck_pitch.reset()
+            self.get_logger().info(f"Entered tracking mode: {mode} (requested: {mode_key})")
+        elif mode == self.MODE_IDLE:
+            self.mode = self.MODE_IDLE
+            self._stop_motor()
+            self._publish_head_and_neck(0.0, 0.0) # 回中
+            self.get_logger().info("Tracking mode: IDLE")
+        else:
+            self.get_logger().warn(f"Unknown tracking mode: {requested_mode}")
+
     # ===================================================================
     # 模式切换监听
     # ===================================================================
@@ -307,19 +335,12 @@ class WaliTrackingNode(Node):
         except: args = {}
 
         if name == "set_tracking_mode":
-            mode = args.get("mode", "")
-            if mode in (self.MODE_BODY_FOLLOW, self.MODE_FACE_FOLLOW):
-                self.mode = mode
-                self._current_neck_pitch = 0.0
-                self._pid_chassis_yaw.reset()
-                self._pid_chassis_dist.reset()
-                self._pid_neck_pitch.reset()
-                self.get_logger().info(f"Entered tracking mode: {mode}")
-            elif mode == self.MODE_IDLE:
-                self.mode = self.MODE_IDLE
-                self._stop_motor()
-                self._publish_head_and_neck(0.0, 0.0) # 回中
-                self.get_logger().info("Tracking mode: IDLE")
+            self._set_tracking_mode(args.get("mode", ""))
+        elif name == "set_vision_gate":
+            enabled = args.get("enabled", False)
+            if isinstance(enabled, str):
+                enabled = enabled.strip().lower() in ("1", "true", "yes", "on")
+            self._set_tracking_mode(self.MODE_BODY_FOLLOW if enabled else self.MODE_IDLE)
 
 
 def main(args=None):
