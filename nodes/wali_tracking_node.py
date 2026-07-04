@@ -139,7 +139,8 @@ class WaliTrackingNode(Node):
         best = max(body_boxes, key=lambda b: b[2])
         cx, cy, area_ratio = best
 
-        x_error = (cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+        # 因为图像被底层 flip_horizontal 翻转了，所以此处 X 误差必须取反，才能保证底盘转向正确的物理方向
+        x_error = -(cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
         dist_error = self.BODY_TARGET_RATIO - area_ratio
 
         # 2. 误差死区，防止原地震荡抖动
@@ -185,7 +186,8 @@ class WaliTrackingNode(Node):
                 self._current_neck_pitch = max(min(self._current_neck_pitch, 1.0), -1.0)
                 # 因为没找到目标，所以水平偏差假定为身体的偏差来做仿生扭头
                 best_body = max(body_boxes, key=lambda b: b[2])
-                x_error = (best_body[0] - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+                # 因为图像被底层 flip_horizontal 翻转了，这里取反
+                x_error = -(best_body[0] - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
                 self._publish_head_and_neck(x_error, self._current_neck_pitch)
                 self._last_target_seen = time.time()
                 self._stop_motor() # 底盘死死刹住
@@ -206,8 +208,8 @@ class WaliTrackingNode(Node):
 
         # 垂直误差 (负=偏上需抬头, 正=偏下需低头)
         y_error = (cy - self.IMG_HEIGHT / 2.0) / (self.IMG_HEIGHT / 2.0)
-        # 水平误差 (纯粹为了生动仿生头扭动)
-        x_error = (cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+        # 水平误差 (纯粹为了生动仿生头扭动) - 取反以补偿底层的左右镜像
+        x_error = -(cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
         
         # 死区控制：如果误差很小，当作 0 处理，防止舵机疯狂抽搐
         if abs(x_error) < 0.05:
