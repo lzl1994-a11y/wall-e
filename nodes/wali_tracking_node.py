@@ -49,8 +49,8 @@ class WaliTrackingNode(Node):
     MODE_BODY_FOLLOW = "follow_me"
     MODE_FACE_FOLLOW = "look_at_me"
 
-    IMG_WIDTH = 960
-    IMG_HEIGHT = 544
+    IMG_WIDTH = 640
+    IMG_HEIGHT = 480
     BODY_TARGET_RATIO = 0.35  # 跟随模式下的期望身体面积占比
 
     SEARCH_ROTATE_SPEED = 25  # 丢失目标时的原地转圈速度
@@ -131,6 +131,9 @@ class WaliTrackingNode(Node):
         self._last_target_seen = time.time()
         best = max(body_boxes, key=lambda b: b[2])
         cx, cy, area_ratio = best
+
+        x_error = (cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+        dist_error = self.BODY_TARGET_RATIO - area_ratio
 
         # 2. 误差死区，防止原地震荡抖动
         if abs(x_error) < 0.05:

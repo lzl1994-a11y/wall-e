@@ -9,66 +9,114 @@ try:
 except ImportError:
     HAS_MSGS = False
 
+
 class AIMSgScaler(Node):
-    """
-    终极版：时间戳同步 + Letterbox 逆向坐标缩放 + 安全边界限幅。
-    """
+    """Map detector boxes from model coordinates back to the camera image."""
+
     def __init__(self):
-        super().__init__('ai_msg_scaler')
+        super().__init__("ai_msg_scaler")
         if not HAS_MSGS:
-            self.get_logger().error("Missing ai_msgs or sensor_msgs!")
+            self.get_logger().error("Missing ai_msgs or sensor_msgs.")
             return
-            
+
+        self.declare_parameter("image_topic", "/image")
+        self.declare_parameter("ai_topic", "/hobot_mono2d_body_detection_raw")
+        self.declare_parameter("output_topic", "/hobot_mono2d_body_detection")
+        self.declare_parameter("model_width", 960.0)
+        self.declare_parameter("model_height", 544.0)
+        self.declare_parameter("transform_mode", "stretch")
+
         self.img_w = 640
         self.img_h = 480
-        self.ai_w = 960.0
-        self.ai_h = 544.0
-        self.has_resolution = False
+        self.model_w = float(self.get_parameter("model_width").value)
+        self.model_h = float(self.get_parameter("model_height").value)
+        self.transform_mode = str(self.get_parameter("transform_mode").value)
         self.latest_raw_stamp = None
-        
-        # 订阅原始 /image (MJPEG) 获取它的真实宽高和最新时间戳
-        self.create_subscription(Image, '/image', self.raw_img_cb, 10)
-        
-        # 订阅原始的 AI 框
-        self.create_subscription(PerceptionTargets, '/hobot_mono2d_body_detection_raw', self.ai_cb, 10)
-        
-        # 发布修正后的框
-        self.pub = self.create_publisher(PerceptionTargets, '/hobot_mono2d_body_detection', 10)
-        self.get_logger().info("AI 坐标系校准节点已启动 (包含 Letterbox 逆向恢复)")
-        
+
+        image_topic = str(self.get_parameter("image_topic").value)
+        ai_topic = str(self.get_parameter("ai_topic").value)
+        output_topic = str(self.get_parameter("output_topic").value)
+
+        self.create_subscription(Image, image_topic, self.raw_img_cb, 10)
+        self.create_subscription(PerceptionTargets, ai_topic, self.ai_cb, 10)
+        self.pub = self.create_publisher(PerceptionTargets, output_topic, 10)
+
+        self.get_logger().info(
+            "AI box scaler started: "
+            f"{ai_topic} -> {output_topic}, image={image_topic}, "
+            f"mode={self.transform_mode}, model={self.model_w}x{self.model_h}"
+        )
+
     def raw_img_cb(self, msg):
         self.latest_raw_stamp = msg.header.stamp
-        if not self.has_resolution or self.img_w != msg.width:
-            self.img_w = msg.width
-            self.img_h = msg.height
-            self.has_resolution = True
+        if msg.width > 0 and msg.height > 0:
+            self.img_w = int(msg.width)
+            self.img_h = int(msg.height)
+
+    def _map_point(self, x, y):
+        actual_w = float(self.img_w)
+        actual_h = float(self.img_h)
+        mode = self.transform_mode
+
+        if mode == "none":
+            return x, y
+
+        if mode == "letterbox_fit":
+            scale = min(self.model_w / actual_w, self.model_h / actual_h)
+            pad_x = (self.model_w - actual_w * scale) / 2.0
+            pad_y = (self.model_h - actual_h * scale) / 2.0
+            return (x - pad_x) / scale, (y - pad_y) / scale
+
+        if mode == "center_crop":
+            scale = max(self.model_w / actual_w, self.model_h / actual_h)
+            crop_x = (actual_w * scale - self.model_w) / 2.0
+            crop_y = (actual_h * scale - self.model_h) / 2.0
+            return (x + crop_x) / scale, (y + crop_y) / scale
+
+        if mode == "physical_pad":
+            pad_x = (self.model_w - actual_w) / 2.0
+            pad_y = (self.model_h - actual_h) / 2.0
+            return x - pad_x, y - pad_y
+
+        # Default: detector stretches the camera image to the model input.
+        return x * actual_w / self.model_w, y * actual_h / self.model_h
+
+    def _clip_rect(self, x1, y1, x2, y2):
+        x1 = max(0.0, min(float(self.img_w), x1))
+        y1 = max(0.0, min(float(self.img_h), y1))
+        x2 = max(0.0, min(float(self.img_w), x2))
+        y2 = max(0.0, min(float(self.img_h), y2))
+
+        left = int(round(min(x1, x2)))
+        top = int(round(min(y1, y2)))
+        right = int(round(max(x1, x2)))
+        bottom = int(round(max(y1, y2)))
+        return left, top, max(0, right - left), max(0, bottom - top)
 
     def ai_cb(self, msg):
-        actual_w, actual_h = float(self.img_w), float(self.img_h)
-            
-        # 核心修复：底层 AI 模型并没有补黑边，而是直接进行了暴力拉伸！
-        # 所以我们只需要做最纯粹的比例逆向缩放即可。
-        scale_x = actual_w / self.ai_w
-        scale_y = actual_h / self.ai_h
-            
         for target in msg.targets:
             for roi in target.rois:
-                new_x = int(roi.rect.x_offset * scale_x)
-                new_y = int(roi.rect.y_offset * scale_y)
-                new_w = int(roi.rect.width * scale_x)
-                new_h = int(roi.rect.height * scale_y)
-                
-                # 核心修复 2：防止越界导致 uint32 崩溃
-                roi.rect.x_offset = max(0, new_x)
-                roi.rect.y_offset = max(0, new_y)
-                roi.rect.width = max(0, new_w)
-                roi.rect.height = max(0, new_h)
-                
-        # 核心修复 3：时间戳强行对齐，解决丢帧卡死
+                rect = roi.rect
+                x1, y1 = self._map_point(
+                    float(rect.x_offset),
+                    float(rect.y_offset),
+                )
+                x2, y2 = self._map_point(
+                    float(rect.x_offset + rect.width),
+                    float(rect.y_offset + rect.height),
+                )
+                new_x, new_y, new_w, new_h = self._clip_rect(x1, y1, x2, y2)
+
+                rect.x_offset = new_x
+                rect.y_offset = new_y
+                rect.width = new_w
+                rect.height = new_h
+
         if self.latest_raw_stamp is not None:
             msg.header.stamp = self.latest_raw_stamp
-            
+
         self.pub.publish(msg)
+
 
 def main():
     if not HAS_MSGS:
@@ -83,5 +131,6 @@ def main():
         node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
