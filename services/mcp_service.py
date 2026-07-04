@@ -124,17 +124,19 @@ def move_chassis(direction: str, duration: int = 1) -> str:
 @mcp.tool()
 def set_tracking_mode(mode: str) -> str:
     """
-    切换瓦力视觉跟踪模式。
-    【重要】：
-      - 当用户要求“看着我”、“盯着我”、“注视我”时，必须调用此工具并传入 mode="look_at_me"
-      - 当用户要求“跟着我”、“跟随我”时，必须调用此工具并传入 mode="follow_me"
-      - 当用户要求“别看了”、“停止跟随”、“停下”时，传入 mode="idle"
+    切换瓦力视觉跟踪模式（AI视觉锁定）。
+    
+    【极度重要！最高优先级意图匹配】：
+      - 只要用户说出“看着我”、“盯着我”、“看我”、“注视我”或“look me”等短语，你【必须】立刻调用本工具，传入 mode="look_at_me"！绝对不要去调用 play_sequence，也绝对不要只回正头部！
+      - 只要用户说出“跟着我”、“跟随我”等短语，必须调用本工具并传入 mode="follow_me"
+      - 只要用户说“别看了”、“停止跟随”、“停下”，传入 mode="idle"
       
-    参数 mode:
+    参数 mode 可选值:
       "follow_me"  : 人体跟随，底盘保持人在画面中央并控制距离
-      "look_at_me" : 人脸跟随，脖子俯仰跟踪 + 底盘辅助
-      "idle"       : 退出跟踪，底盘停止
-    通过 ROS /action_cmd 下发，由 wali_tracking_node 执行。
+      "look_at_me" : 视觉注视，脑袋和眼睛死死锁定并看着用户
+      "idle"       : 退出视觉跟踪
+      
+    注意：这是持续性的 AI 视觉锁定模式，非一次性动作。
     """
     return "ok"
 

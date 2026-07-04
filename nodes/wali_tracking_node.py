@@ -323,16 +323,22 @@ class WaliTrackingNode(Node):
     # 模式切换监听
     # ===================================================================
     def _on_action_cmd(self, msg):
+        self.get_logger().info(f"[TrackingNode] Received action_cmd: {msg.data}")
         try:
-            payload = json.dumps(msg.data) if not isinstance(msg.data, dict) else msg.data
             payload = json.loads(msg.data)
-        except: return
+        except Exception as e: 
+            self.get_logger().error(f"[TrackingNode] Failed to parse JSON: {e}")
+            return
 
         name = payload.get("name", "")
         args_str = payload.get("arguments", "{}")
         try:
             args = json.loads(args_str) if isinstance(args_str, str) else args_str
-        except: args = {}
+        except Exception as e: 
+            self.get_logger().error(f"[TrackingNode] Failed to parse arguments: {e}")
+            args = {}
+
+        self.get_logger().info(f"[TrackingNode] Action name: '{name}', args: {args}")
 
         if name == "set_tracking_mode":
             self._set_tracking_mode(args.get("mode", ""))
