@@ -57,7 +57,7 @@ def main():
         "ros2 run hobot_usb_cam hobot_usb_cam --ros-args --log-level WARN -p video_device:=/dev/video0 -p image_width:=640 -p image_height:=480 & "
         "ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:=/image -p pub_topic:=/image_nv12 & "
         "(cd /opt/tros/humble/lib/mono2d_body_detection && ros2 run mono2d_body_detection mono2d_body_detection --ros-args --log-level WARN -p is_shared_mem_sub:=0 -p ros_img_topic_name:=/image_nv12 -p ai_msg_pub_topic_name:=/hobot_mono2d_body_detection_raw) & "
-        f"{shlex.quote(ros_python)} {scaler_script} --ros-args --log-level WARN -p transform_mode:=stretch -p image_topic:=/image -p model_width:=960.0 -p model_height:=544.0 & "
+        f"{shlex.quote(ros_python)} {scaler_script} --ros-args --log-level WARN -p transform_mode:=none -p image_topic:=/image -p model_width:=960.0 -p model_height:=544.0 & "
         "ros2 run websocket websocket --ros-args --log-level WARN -p image_topic:=/image -p image_type:=mjpeg -p msg_pub_topic_name:=/hobot_mono2d_body_detection & "
         "wait"
     ]

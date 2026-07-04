@@ -24,7 +24,7 @@ class AIMSgScaler(Node):
         self.declare_parameter("output_topic", "/hobot_mono2d_body_detection")
         self.declare_parameter("model_width", 960.0)
         self.declare_parameter("model_height", 544.0)
-        self.declare_parameter("transform_mode", "stretch")
+        self.declare_parameter("transform_mode", "none")
 
         self.img_w = 640
         self.img_h = 480
