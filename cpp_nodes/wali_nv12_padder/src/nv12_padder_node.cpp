@@ -16,9 +16,10 @@ class Nv12PadderNode : public rclcpp::Node {
     output_topic_ = declare_parameter<std::string>("output_topic", "/image_padded_nv12");
     target_w_ = declare_parameter<int>("target_width", 960);
     target_h_ = declare_parameter<int>("target_height", 544);
+    flip_vertical_ = declare_parameter<bool>("flip_vertical", false);
 
-    if (target_w_ <= 0 || target_h_ <= 0 || (target_h_ % 2) != 0) {
-      throw std::runtime_error("target_width/target_height must be positive and height must be even");
+    if (target_w_ <= 0 || target_h_ <= 0 || (target_w_ % 2) != 0 || (target_h_ % 2) != 0) {
+      throw std::runtime_error("target_width/target_height must be positive and even for NV12");
     }
 
     reset_canvas();
@@ -29,8 +30,9 @@ class Nv12PadderNode : public rclcpp::Node {
         input_topic_, qos,
         [this](sensor_msgs::msg::Image::ConstSharedPtr msg) { on_image(*msg); });
 
-    RCLCPP_INFO(get_logger(), "Fast NV12 padder: %s -> %s, target=%dx%d",
-                input_topic_.c_str(), output_topic_.c_str(), target_w_, target_h_);
+    RCLCPP_INFO(get_logger(), "Fast NV12 padder: %s -> %s, target=%dx%d, flip_vertical=%s",
+                input_topic_.c_str(), output_topic_.c_str(), target_w_, target_h_,
+                flip_vertical_ ? "true" : "false");
   }
 
  private:
@@ -44,7 +46,7 @@ class Nv12PadderNode : public rclcpp::Node {
   void on_image(const sensor_msgs::msg::Image& msg) {
     const int src_w = static_cast<int>(msg.width);
     const int src_h = static_cast<int>(msg.height);
-    if (src_w <= 0 || src_h <= 0 || (src_h % 2) != 0) {
+    if (src_w <= 0 || src_h <= 0 || (src_w % 2) != 0 || (src_h % 2) != 0) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Invalid NV12 size: %dx%d", src_w, src_h);
       return;
     }
@@ -75,7 +77,8 @@ class Nv12PadderNode : public rclcpp::Node {
     const size_t dst_y_size = static_cast<size_t>(target_w_) * static_cast<size_t>(target_h_);
 
     for (int row = 0; row < src_h; ++row) {
-      const auto* src_row = src + static_cast<size_t>(row) * static_cast<size_t>(src_w);
+      const int src_row_index = flip_vertical_ ? (src_h - 1 - row) : row;
+      const auto* src_row = src + static_cast<size_t>(src_row_index) * static_cast<size_t>(src_w);
       auto* dst_row = dst + static_cast<size_t>(start_y + row) * static_cast<size_t>(target_w_) + static_cast<size_t>(start_x);
       std::memcpy(dst_row, src_row, static_cast<size_t>(src_w));
     }
@@ -83,8 +86,10 @@ class Nv12PadderNode : public rclcpp::Node {
     const auto* src_uv = src + src_y_size;
     auto* dst_uv = dst + dst_y_size;
     const int start_uv_y = start_y / 2;
-    for (int row = 0; row < src_h / 2; ++row) {
-      const auto* src_row = src_uv + static_cast<size_t>(row) * static_cast<size_t>(src_w);
+    const int src_uv_h = src_h / 2;
+    for (int row = 0; row < src_uv_h; ++row) {
+      const int src_row_index = flip_vertical_ ? (src_uv_h - 1 - row) : row;
+      const auto* src_row = src_uv + static_cast<size_t>(src_row_index) * static_cast<size_t>(src_w);
       auto* dst_row = dst_uv + static_cast<size_t>(start_uv_y + row) * static_cast<size_t>(target_w_) + static_cast<size_t>(start_x);
       std::memcpy(dst_row, src_row, static_cast<size_t>(src_w));
     }
@@ -104,6 +109,7 @@ class Nv12PadderNode : public rclcpp::Node {
   std::string output_topic_;
   int target_w_ = 960;
   int target_h_ = 544;
+  bool flip_vertical_ = false;
   int last_src_w_ = -1;
   int last_src_h_ = -1;
   std::vector<uint8_t> canvas_;
