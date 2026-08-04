@@ -60,7 +60,11 @@ def build_node_list(args):
     else:
         pipeline = config.get("pipeline", {}).get("mode", "keyboard")
 
-    nodes = [NodeEntry("llm", ROOT / "nodes" / "llm_ros_node.py")]
+    nodes = []
+    if not args.no_web:
+        nodes.append(NodeEntry("config_web", ROOT / "services" / "web_server.py"))
+
+    nodes.append(NodeEntry("llm", ROOT / "nodes" / "llm_ros_node.py"))
 
     # 音频播放管线（始终启动）
     nodes.append(NodeEntry("tts_play", ROOT / "nodes" / "tts_play_node.py"))
@@ -195,6 +199,11 @@ def main():
         "--no-hardware",
         action="store_true",
         help="When tracking is active, skip servo_ros and motor_ros.",
+    )
+    parser.add_argument(
+        "--no-web",
+        action="store_true",
+        help="Do not start the config web service.",
     )
     args = parser.parse_args()
 

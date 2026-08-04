@@ -1,0 +1,434 @@
+"use strict";
+
+const state = {
+  config: null,
+  secretFields: {},
+  dirtyModules: new Set(),
+  loading: false,
+};
+
+const MODULE_ROOTS = Object.freeze({
+  runtime: "launch",
+  pipeline: "pipeline",
+  asr: "asr",
+  wake_word: "wake_word",
+  tts: "tts",
+  llm: "llm",
+  system_prompt: "system_prompt",
+  serial: "serial",
+  i2c: "i2c",
+  vision: "vision",
+  servos: "servos",
+  motors: "motors",
+});
+
+const MODULE_LABELS = Object.freeze({
+  runtime: "运行",
+  pipeline: "对话链路",
+  asr: "ASR",
+  wake_word: "唤醒词",
+  tts: "TTS",
+  llm: "LLM",
+  system_prompt: "系统提示词",
+  serial: "串口",
+  i2c: "I²C",
+  vision: "视觉",
+  servos: "舵机",
+  motors: "电机",
+});
+
+const ASR_DEFAULTS = Object.freeze({
+  zhipu: {
+    model: "GLM-ASR-2512",
+    url: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+    api_key: "",
+  },
+  aliyun: { model: "paraformer-v1", api_key: "" },
+  baidu: {
+    app_id: "",
+    api_key: "",
+    dev_pid: 15372,
+    cuid: "wali-x3",
+    url: "wss://vop.baidu.com/realtime_asr",
+  },
+});
+
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+function getToken() {
+  return $("#access-token").value.trim();
+}
+
+function apiHeaders(includeJson = false) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers["X-Wali-Token"] = token;
+  if (includeJson) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    cache: "no-store",
+    ...options,
+    headers: { ...apiHeaders(Boolean(options.body)), ...(options.headers || {}) },
+  });
+  let payload = {};
+  try { payload = await response.json(); } catch (_) { /* empty or non-JSON response */ }
+  if (!response.ok) {
+    const error = new Error(payload.error || `请求失败 (${response.status})`);
+    error.details = payload.details || [];
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+function getPath(target, path) {
+  return path.split(".").reduce((value, key) => value == null ? undefined : value[key], target);
+}
+
+function setPath(target, path, value) {
+  const keys = path.split(".");
+  let cursor = target;
+  keys.slice(0, -1).forEach((key) => {
+    if (!cursor[key] || typeof cursor[key] !== "object") cursor[key] = {};
+    cursor = cursor[key];
+  });
+  cursor[keys.at(-1)] = value;
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function ensureAsrProviderConfigs() {
+  const asr = state.config.asr || (state.config.asr = {});
+  const provider = Object.hasOwn(ASR_DEFAULTS, asr.provider) ? asr.provider : "zhipu";
+  asr.provider = provider;
+
+  const hadProviderConfig = asr[provider] && typeof asr[provider] === "object";
+
+  Object.entries(ASR_DEFAULTS).forEach(([name, defaults]) => {
+    if (!asr[name] || typeof asr[name] !== "object") asr[name] = {};
+    if (name === provider && !hadProviderConfig) {
+      if (asr.model) asr[name].model = asr.model;
+      if (name === "zhipu" && asr.url) asr[name].url = asr.url;
+    }
+    Object.entries(defaults).forEach(([key, value]) => {
+      if (asr[name][key] === undefined) asr[name][key] = value;
+    });
+  });
+
+  // A legacy flat secret belongs to the provider that was active in that file.
+  if (state.secretFields["asr.key"] && state.secretFields[`asr.${provider}.api_key`] === undefined) {
+    state.secretFields[`asr.${provider}.api_key`] = true;
+  }
+}
+
+function updateAsrProviderPanels(provider = $("#asr-provider")?.value) {
+  $$('[data-asr-provider-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.asrProviderPanel !== provider;
+  });
+}
+
+function moduleContainer(module) {
+  return $(`[data-module="${module}"]`);
+}
+
+function updateDirtyIndicator() {
+  const count = state.dirtyModules.size;
+  const indicator = $("#dirty-indicator");
+  indicator.textContent = count ? `有未保存修改（${count} 个模块）` : "未修改";
+  indicator.classList.toggle("dirty", count > 0);
+  $$('[data-save-module]').forEach((button) => {
+    button.classList.toggle("dirty", state.dirtyModules.has(button.dataset.saveModule));
+  });
+}
+
+function markDirty(module) {
+  if (!state.config || state.loading || !MODULE_ROOTS[module]) return;
+  state.dirtyModules.add(module);
+  updateDirtyIndicator();
+}
+
+function clearDirty(module) {
+  state.dirtyModules.delete(module);
+  updateDirtyIndicator();
+}
+
+function clearAllDirty() {
+  state.dirtyModules.clear();
+  updateDirtyIndicator();
+}
+
+function setConnection(online, text) {
+  $("#connection-text").textContent = text;
+  $("#connection-dot").className = `status-dot ${online ? "online" : "offline"}`;
+}
+
+function showToast(message, kind = "success") {
+  const toast = $("#toast");
+  toast.textContent = message;
+  toast.className = `toast ${kind} show`;
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => { toast.className = "toast"; }, 3200);
+}
+
+function showErrors(error) {
+  const details = error.details?.length ? error.details : [error.message];
+  const list = $("#error-list");
+  list.replaceChildren(...details.map((detail) => {
+    const li = document.createElement("li");
+    li.textContent = detail;
+    return li;
+  }));
+  $("#error-box").hidden = false;
+}
+
+function inputValue(input) {
+  if (input.type === "checkbox") return input.checked;
+  const type = input.dataset.type;
+  if (type === "integer") return Number.parseInt(input.value, 10);
+  if (type === "number") return Number.parseFloat(input.value);
+  return input.value;
+}
+
+function populateFields(root = document) {
+  $$('[data-path]', root).forEach((input) => {
+    const value = getPath(state.config, input.dataset.path);
+    if (input.dataset.secret === "true") {
+      input.value = "";
+      return;
+    }
+    if (input.type === "checkbox") input.checked = Boolean(value);
+    else input.value = value ?? "";
+  });
+  $$('[data-secret-status]', root).forEach((node) => {
+    const configured = Boolean(state.secretFields[node.dataset.secretStatus]);
+    node.textContent = configured ? "当前已配置；输入新值可覆盖" : "当前未配置";
+  });
+}
+
+function createTableInput(value, type, onChange) {
+  const input = document.createElement("input");
+  input.type = type === "boolean" ? "checkbox" : (type === "string" ? "text" : "number");
+  if (type === "boolean") input.checked = Boolean(value);
+  else input.value = value ?? "";
+  if (type === "integer") input.step = "1";
+  input.addEventListener("input", () => {
+    const next = type === "boolean" ? input.checked : type === "integer" ? Number.parseInt(input.value, 10) : input.value;
+    onChange(next);
+  });
+  return input;
+}
+
+function appendCell(row, child, className = "") {
+  const cell = document.createElement("td");
+  if (className) cell.className = className;
+  cell.append(child);
+  row.append(cell);
+}
+
+function removeButton(onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "remove-row";
+  button.textContent = "×";
+  button.title = "删除";
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function renderServos() {
+  const body = $("#servo-table");
+  body.replaceChildren();
+  const servos = state.config.servos || [];
+  servos.forEach((servo, index) => {
+    const row = document.createElement("tr");
+    [
+      ["id", "integer"], ["name", "string"], ["limit_1", "integer"],
+      ["limit_2", "integer"], ["init", "integer"],
+    ].forEach(([key, type]) => appendCell(row, createTableInput(servo[key], type, (value) => {
+      servo[key] = value;
+      markDirty("servos");
+    })));
+    appendCell(row, removeButton(() => {
+      servos.splice(index, 1);
+      renderServos();
+      markDirty("servos");
+    }));
+    body.append(row);
+  });
+  $("#servo-count").textContent = `${servos.length} 个舵机`;
+}
+
+function renderMotors() {
+  const body = $("#motor-table");
+  body.replaceChildren();
+  const motors = state.config.motors || [];
+  motors.forEach((motor, index) => {
+    const row = document.createElement("tr");
+    [["id", "integer"], ["name", "string"], ["max_speed", "integer"], ["neutral_speed", "integer"]]
+      .forEach(([key, type]) => appendCell(row, createTableInput(motor[key], type, (value) => {
+        motor[key] = value;
+        markDirty("motors");
+      })));
+    appendCell(row, createTableInput(motor.invert_direction, "boolean", (value) => {
+      motor.invert_direction = value;
+      markDirty("motors");
+    }), "table-check");
+    appendCell(row, removeButton(() => {
+      motors.splice(index, 1);
+      renderMotors();
+      markDirty("motors");
+    }));
+    body.append(row);
+  });
+  $("#motor-count").textContent = `${motors.length} 个电机`;
+}
+
+function modulePatch(module) {
+  if (module === "servos" || module === "motors") {
+    return { [MODULE_ROOTS[module]]: deepClone(state.config[MODULE_ROOTS[module]] || []) };
+  }
+
+  if (module === "asr") {
+    const container = moduleContainer(module);
+    const provider = $("#asr-provider").value;
+    const patch = { asr: { provider, [provider]: {} } };
+    $$(`[data-asr-provider-panel="${provider}"] [data-path]`, container).forEach((input) => {
+      if (input.dataset.secret === "true" && !input.value) return;
+      if (input.dataset.optional === "true" && !input.value.trim()) return;
+      setPath(patch, input.dataset.path, inputValue(input));
+    });
+    return patch;
+  }
+
+  const container = moduleContainer(module);
+  const patch = {};
+  $$('[data-path]', container).forEach((input) => {
+    if (input.dataset.secret === "true" && !input.value) return;
+    setPath(patch, input.dataset.path, inputValue(input));
+  });
+  return patch;
+}
+
+function refreshModuleFromSnapshot(module, payload) {
+  const root = MODULE_ROOTS[module];
+  setPath(state.config, root, deepClone(getPath(payload.config, root)));
+  state.secretFields = payload.secret_fields || {};
+  if (module === "asr") ensureAsrProviderConfigs();
+  populateFields(moduleContainer(module));
+  if (module === "asr") updateAsrProviderPanels(state.config.asr.provider);
+  if (module === "servos") renderServos();
+  if (module === "motors") renderMotors();
+  $("#modified-at").textContent = `更新于 ${new Date(payload.modified_at).toLocaleString()}`;
+}
+
+async function loadConfig() {
+  if (state.dirtyModules.size && !window.confirm("放弃尚未保存的模块修改并重新读取配置吗？")) return;
+  state.loading = true;
+  $("#reload-button").disabled = true;
+  try {
+    const payload = await api("/api/config");
+    state.config = payload.config;
+    state.secretFields = payload.secret_fields || {};
+    ensureAsrProviderConfigs();
+    populateFields();
+    updateAsrProviderPanels(state.config.asr.provider);
+    renderServos();
+    renderMotors();
+    $("#config-path").textContent = payload.config_path;
+    $("#config-path").title = payload.config_path;
+    $("#modified-at").textContent = `更新于 ${new Date(payload.modified_at).toLocaleString()}`;
+    setConnection(true, "配置服务在线");
+    clearAllDirty();
+    $("#error-box").hidden = true;
+  } catch (error) {
+    setConnection(false, error.status === 401 ? "需要访问令牌" : "配置服务不可用");
+    showToast(error.message, "error");
+  } finally {
+    state.loading = false;
+    $("#reload-button").disabled = false;
+  }
+}
+
+async function saveModule(module) {
+  if (!state.config || !MODULE_ROOTS[module]) return;
+  const button = $(`[data-save-module="${module}"]`);
+  button.disabled = true;
+  button.textContent = "保存中…";
+  $("#error-box").hidden = true;
+  try {
+    if (module === "asr") {
+      const provider = $("#asr-provider").value;
+      const secretInput = $(`[data-path="asr.${provider}.api_key"]`);
+      const hasSavedSecret = Boolean(state.secretFields[`asr.${provider}.api_key`]);
+      if (!secretInput.value && !hasSavedSecret) {
+        throw new Error(`请先填写${$("#asr-provider").selectedOptions[0].textContent}的 API Key`);
+      }
+    }
+    const payload = await api("/api/config", {
+      method: "POST",
+      body: JSON.stringify({ patch: modulePatch(module) }),
+    });
+    refreshModuleFromSnapshot(module, payload);
+    clearDirty(module);
+    showToast(`${MODULE_LABELS[module]}模块已保存，重启主脑后生效`);
+  } catch (error) {
+    showErrors(error);
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "保存本模块";
+  }
+}
+
+function bindEvents() {
+  $$(".tab").forEach((tab) => tab.addEventListener("click", () => {
+    $$(".tab").forEach((item) => item.classList.toggle("active", item === tab));
+    $$(".panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === tab.dataset.tab));
+  }));
+  $$('[data-path]').forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
+    markDirty(input.closest("[data-module]")?.dataset.module);
+  }));
+  $("#asr-provider").addEventListener("change", (event) => {
+    if (state.config) state.config.asr.provider = event.target.value;
+    updateAsrProviderPanels(event.target.value);
+    markDirty("asr");
+  });
+  $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
+  $("#reload-button").addEventListener("click", loadConfig);
+  $("#access-token").addEventListener("change", () => {
+    sessionStorage.setItem("waliConfigToken", getToken());
+    loadConfig();
+  });
+  $("#add-servo").addEventListener("click", () => {
+    const servos = state.config.servos || (state.config.servos = []);
+    const ids = servos.map((item) => Number(item.id)).filter(Number.isFinite);
+    servos.push({ id: ids.length ? Math.max(...ids) + 1 : 0, name: "new_servo", limit_1: 2000, limit_2: 6000, init: 4000 });
+    renderServos();
+    markDirty("servos");
+  });
+  $("#add-motor").addEventListener("click", () => {
+    const motors = state.config.motors || (state.config.motors = []);
+    const ids = motors.map((item) => Number(item.id)).filter(Number.isFinite);
+    motors.push({ id: ids.length ? Math.max(...ids) + 1 : 0, name: "new_motor", max_speed: 100, neutral_speed: 0, invert_direction: false });
+    renderMotors();
+    markDirty("motors");
+  });
+  $("#close-error").addEventListener("click", () => { $("#error-box").hidden = true; });
+  window.addEventListener("beforeunload", (event) => {
+    if (!state.dirtyModules.size) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  $("#access-token").value = sessionStorage.getItem("waliConfigToken") || "";
+  bindEvents();
+  loadConfig();
+});

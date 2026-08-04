@@ -14,3 +14,4 @@ env/
 # ⚠️ 极其重要：忽略你的私密配置文件
 core/config.yaml
 core/config_old_backup.yaml
+core/config.yaml.tmp

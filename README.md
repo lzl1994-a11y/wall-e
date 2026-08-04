@@ -34,9 +34,49 @@ colcon build --packages-select wali_x3_brain
 source install/setup.bash
 ```
 
+选择百度实时语音识别时，需要安装其 WebSocket 客户端依赖：
+
+```bash
+pip install websocket-client
+```
+
 ## 🎮 启动指南
 
 系统的启动分为**“视觉感知端”**和**“瓦力大脑端”**两个独立的部分。
+
+### 配置网页
+
+项目内置了一个零额外依赖的 `config.yaml` 配置网页。默认只监听本机：
+
+```bash
+python services/web_server.py
+```
+
+浏览器访问 `http://127.0.0.1:8080`。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 可分别配置智谱、阿里云和百度智能云，切换厂商时只显示并提交该厂商字段。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。
+
+配置服务也会跟随日常使用的节点启动器自动启动，无需再单独运行一次：
+
+```bash
+python launch_nodes.py --real-stt
+```
+
+`launch_nodes.py` 会把同一个配置服务作为受管子进程启动，页面地址仍为 `http://127.0.0.1:8080`，主程序退出时网页服务也会一起停止。传入 `--no-web` 可以禁用。独立调试和主程序运行不要同时占用同一个端口；需要并行运行时，可给独立服务指定其他端口，例如 `python services/web_server.py --port 8765`。
+
+如果需要从局域网内的电脑或手机访问，必须设置访问令牌：
+
+```bash
+python services/web_server.py --host 0.0.0.0 --port 8080 --token "换成一个足够长的随机令牌"
+```
+
+让配置服务随主程序启动并开放到局域网：
+
+```bash
+export WALI_CONFIG_HOST=0.0.0.0
+export WALI_CONFIG_TOKEN="换成一个足够长的随机令牌"
+python launch_nodes.py --real-stt
+```
+
+打开 `http://<旭日派IP>:8080`，在页面右上角输入同一个令牌。大多数节点只在启动时读取配置，因此保存后需要在确保运动机构安全的前提下重启主脑。
 
 ### 第一步：启动视觉 AI 节点 (依赖地平线 BPU)
 旭日派强大的地方在于自带视觉算法包。打开终端，输入以下命令：
@@ -65,6 +105,7 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 - `--real-stt`：使用阿里云 Paraformer 语音转文字。
 - `--keyboard-stt`：使用键盘输入文字模拟语音识别（调试用）。
 - `--no-serial`：不启动串口硬件桥接节点（纯代码调试模式）。
+- `--no-web`：不启动 `config.yaml` 配置网页。
 
 ## 🧠 核心架构说明
 
