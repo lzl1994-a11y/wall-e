@@ -65,14 +65,17 @@ python launch_nodes.py --real-stt
 如果需要从局域网内的电脑或手机访问，必须设置访问令牌：
 
 ```bash
-python services/web_server.py --host 0.0.0.0 --port 8080 --token "换成一个足够长的随机令牌"
+WALI_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+echo "访问令牌: $WALI_TOKEN"
+python services/web_server.py --host 0.0.0.0 --port 8080 --token "$WALI_TOKEN"
 ```
 
 让配置服务随主程序启动并开放到局域网：
 
 ```bash
 export WALI_CONFIG_HOST=0.0.0.0
-export WALI_CONFIG_TOKEN="换成一个足够长的随机令牌"
+export WALI_CONFIG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+echo "访问令牌: $WALI_CONFIG_TOKEN"
 python launch_nodes.py --real-stt
 ```
 

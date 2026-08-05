@@ -246,6 +246,16 @@ class ConfigWebServerTests(unittest.TestCase):
                 static_dir=DEFAULT_STATIC_DIR,
             )
 
+    def test_non_ascii_token_is_rejected_with_clear_error(self):
+        with self.assertRaisesRegex(ValueError, "不能包含中文"):
+            create_server(
+                host="0.0.0.0",
+                port=0,
+                config_path=self.config_path,
+                static_dir=DEFAULT_STATIC_DIR,
+                token="换成一个足够长的随机令牌",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -427,7 +427,11 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         if not expected:
             return True
         supplied = self.headers.get("X-Wali-Token", "")
-        return hmac.compare_digest(supplied, expected)
+        try:
+            return hmac.compare_digest(supplied.encode("ascii"), expected.encode("ascii"))
+        except UnicodeEncodeError:
+            # HTTP header values are not a reliable transport for arbitrary Unicode.
+            return False
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -547,6 +551,11 @@ def create_server(
 ) -> ConfigWebServer:
     if not _is_loopback_host(host) and not token:
         raise ConfigError("监听局域网地址时必须通过 --token 或 WALI_CONFIG_TOKEN 设置访问令牌")
+    if token:
+        try:
+            token.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ConfigError("访问令牌只能使用 ASCII 字母、数字和符号，不能包含中文") from exc
     static_path = Path(static_dir).expanduser().resolve()
     for filename in ("index.html", "app.js", "styles.css"):
         if not (static_path / filename).is_file():
