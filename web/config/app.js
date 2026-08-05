@@ -137,6 +137,58 @@ function moduleContainer(module) {
   return $(`[data-module="${module}"]`);
 }
 
+function prepareModuleFeedbacks() {
+  $$('[data-save-module]').forEach((button) => {
+    const status = document.createElement("span");
+    status.className = "module-feedback";
+    status.dataset.feedbackModule = button.dataset.saveModule;
+    status.setAttribute("aria-live", "polite");
+    button.before(status);
+  });
+}
+
+function setModuleFeedback(module, message = "", kind = "") {
+  const status = $(`[data-feedback-module="${module}"]`);
+  if (!status) return;
+  status.textContent = message;
+  status.className = `module-feedback${kind ? ` ${kind}` : ""}`;
+}
+
+function clearModuleFeedbacks() {
+  $$('[data-feedback-module]').forEach((status) => {
+    status.textContent = "";
+    status.className = "module-feedback";
+  });
+}
+
+function setConfigControlsEnabled(enabled) {
+  $$('[data-module] [data-path]').forEach((input) => { input.disabled = !enabled; });
+  for (const id of ["#add-servo", "#add-motor"]) {
+    const button = $(id);
+    if (button) button.disabled = !enabled;
+  }
+}
+
+function clearConfigurationView() {
+  state.config = null;
+  state.secretFields = {};
+  $$('[data-path]').forEach((input) => {
+    if (input.type === "checkbox") input.checked = false;
+    else input.value = "";
+  });
+  $$('[data-secret-status]').forEach((status) => { status.textContent = "配置尚未读取"; });
+  $("#servo-table").replaceChildren();
+  $("#motor-table").replaceChildren();
+  $("#servo-count").textContent = "0 个舵机";
+  $("#motor-count").textContent = "0 个电机";
+  $("#config-path").textContent = "—";
+  $("#config-path").title = "";
+  $("#modified-at").textContent = "—";
+  updateAsrProviderPanels("");
+  clearAllDirty();
+  clearModuleFeedbacks();
+}
+
 function updateDirtyIndicator() {
   const count = state.dirtyModules.size;
   const indicator = $("#dirty-indicator");
@@ -150,6 +202,7 @@ function updateDirtyIndicator() {
 function markDirty(module) {
   if (!state.config || state.loading || !MODULE_ROOTS[module]) return;
   state.dirtyModules.add(module);
+  setModuleFeedback(module, "有未保存修改", "dirty");
   updateDirtyIndicator();
 }
 
@@ -333,6 +386,9 @@ async function loadConfig() {
   $("#reload-button").disabled = true;
   try {
     const payload = await api("/api/config");
+    if (!payload.config || typeof payload.config !== "object" || Array.isArray(payload.config)) {
+      throw new Error("配置服务没有返回有效的 config.yaml 内容");
+    }
     state.config = payload.config;
     state.secretFields = payload.secret_fields || {};
     ensureAsrProviderConfigs();
@@ -343,12 +399,24 @@ async function loadConfig() {
     $("#config-path").textContent = payload.config_path;
     $("#config-path").title = payload.config_path;
     $("#modified-at").textContent = `更新于 ${new Date(payload.modified_at).toLocaleString()}`;
-    setConnection(true, "配置服务在线");
+    setConfigControlsEnabled(true);
+    setConnection(true, "配置已读取");
     clearAllDirty();
+    clearModuleFeedbacks();
     $("#error-box").hidden = true;
+    showToast("已读取 config.yaml 当前配置");
   } catch (error) {
-    setConnection(false, error.status === 401 ? "需要访问令牌" : "配置服务不可用");
-    showToast(error.message, "error");
+    clearConfigurationView();
+    setConfigControlsEnabled(false);
+    if (error.status === 401) {
+      error.details = ["请输入页面右上角的访问令牌，然后按 Enter 或点击“重新读取全部”。"];
+      setConnection(false, "配置未读取：访问令牌无效或缺失");
+      $("#access-token").focus();
+    } else {
+      setConnection(false, "配置读取失败");
+    }
+    showErrors(error);
+    showToast(error.status === 401 ? "需要正确的访问令牌" : error.message, "error");
   } finally {
     state.loading = false;
     $("#reload-button").disabled = false;
@@ -356,10 +424,18 @@ async function loadConfig() {
 }
 
 async function saveModule(module) {
-  if (!state.config || !MODULE_ROOTS[module]) return;
+  if (!MODULE_ROOTS[module]) return;
   const button = $(`[data-save-module="${module}"]`);
+  if (!state.config) {
+    const error = new Error("配置尚未读取，不能保存。请先输入正确的访问令牌并重新读取配置。");
+    setModuleFeedback(module, "未保存：配置尚未读取", "error");
+    showErrors(error);
+    showToast(error.message, "error");
+    return;
+  }
   button.disabled = true;
   button.textContent = "保存中…";
+  setModuleFeedback(module, "正在写入 config.yaml", "saving");
   $("#error-box").hidden = true;
   try {
     if (module === "asr") {
@@ -376,8 +452,11 @@ async function saveModule(module) {
     });
     refreshModuleFromSnapshot(module, payload);
     clearDirty(module);
+    setConnection(true, "配置服务在线");
+    setModuleFeedback(module, `已保存 ${new Date().toLocaleTimeString()}`, "success");
     showToast(`${MODULE_LABELS[module]}模块已保存，重启主脑后生效`);
   } catch (error) {
+    setModuleFeedback(module, "保存失败", "error");
     showErrors(error);
     showToast(error.message, "error");
   } finally {
@@ -401,9 +480,17 @@ function bindEvents() {
   });
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);
-  $("#access-token").addEventListener("change", () => {
+  $("#access-token").addEventListener("input", () => {
     sessionStorage.setItem("waliConfigToken", getToken());
+  });
+  $("#access-token").addEventListener("change", () => {
     loadConfig();
+  });
+  $("#access-token").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      loadConfig();
+    }
   });
   $("#add-servo").addEventListener("click", () => {
     const servos = state.config.servos || (state.config.servos = []);
@@ -429,6 +516,8 @@ function bindEvents() {
 
 document.addEventListener("DOMContentLoaded", () => {
   $("#access-token").value = sessionStorage.getItem("waliConfigToken") || "";
+  prepareModuleFeedbacks();
+  setConfigControlsEnabled(false);
   bindEvents();
   loadConfig();
 });
