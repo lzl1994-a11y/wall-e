@@ -23,6 +23,8 @@ from std_msgs.msg import String
 import os
 import yaml
 
+from services.motor_control import apply_direction_inversion, motor_inversion_flags
+
 class HardwareBridgeNode(Node):
     def __init__(self):
         super().__init__('hardware_bridge_node')
@@ -42,6 +44,7 @@ class HardwareBridgeNode(Node):
             self._state[i] = int(self._DUTY_MIN + (self._DUTY_MAX - self._DUTY_MIN) * 90 / 180) # 默认备用值
             
         self._name_to_ch = {}
+        self._motor_inverted = {"left": False, "right": False}
         try:
             yaml_path = os.path.join(os.path.dirname(__file__), '../core/config.yaml')
             with open(yaml_path, 'r', encoding='utf-8') as f:
@@ -54,6 +57,7 @@ class HardwareBridgeNode(Node):
                         init_val = servo.get('init')
                         if init_val is not None and 0 <= idx < 15:
                             self._state[idx] = int(init_val)
+                self._motor_inverted = motor_inversion_flags(config_data.get('motors'))
         except Exception as e:
             self.get_logger().error(f'[Bridge] 读取 config.yaml 失败: {e}')
             
@@ -65,7 +69,10 @@ class HardwareBridgeNode(Node):
         self.create_subscription(String, '/motor_cmd', self._on_motor_cmd, 10)
         self._raw_pub = self.create_publisher(String, '/pca9685_raw', 10)
 
-        self.get_logger().info('硬件桥接节点上线，输出 -> /pca9685_raw')
+        self.get_logger().info(
+            '硬件桥接节点上线，输出 -> /pca9685_raw '
+            f'(电机反向: left={self._motor_inverted["left"]}, right={self._motor_inverted["right"]})'
+        )
 
     # ------------------------------------------------------------------
     # 角度换算 (与 ServoControl._angle_to_duty 完全一致)
@@ -120,8 +127,14 @@ class HardwareBridgeNode(Node):
         left = cmd.get('left', {})
         right = cmd.get('right', {})
 
-        self._apply_motor(9, left.get('action', 0), left.get('throttle', 0))
-        self._apply_motor(12, right.get('action', 0), right.get('throttle', 0))
+        left_action = apply_direction_inversion(
+            left.get('action', 0), self._motor_inverted['left']
+        )
+        right_action = apply_direction_inversion(
+            right.get('action', 0), self._motor_inverted['right']
+        )
+        self._apply_motor(9, left_action, left.get('throttle', 0))
+        self._apply_motor(12, right_action, right.get('throttle', 0))
         self._publish_state()
 
     def _apply_motor(self, base_ch: int, action: int, throttle: int):

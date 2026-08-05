@@ -13,6 +13,8 @@ from std_msgs.msg import String
 import evdev
 from evdev import ecodes
 
+from services.motor_control import mix_differential_drive
+
 # --- 按键/轴映射 ---
 AXIS_LX = 0  # 左摇杆 X
 AXIS_LY = 1  # 左摇杆 Y
@@ -165,15 +167,7 @@ class JoyControlNode(Node):
                 self._was_moving = False
         else:
             self._was_moving = True
-            left_speed = ly + lx
-            right_speed = ly - lx
-            left_speed = max(min(left_speed, 1.0), -1.0)
-            right_speed = max(min(right_speed, 1.0), -1.0)
-            
-            cmd_motor = {
-                "left": {"action": 1 if left_speed > 0 else (2 if left_speed < 0 else 0), "throttle": int(abs(left_speed) * 100)},
-                "right": {"action": 1 if right_speed > 0 else (2 if right_speed < 0 else 0), "throttle": int(abs(right_speed) * 100)}
-            }
+            cmd_motor = mix_differential_drive(ly, lx)
             msg_m = String()
             msg_m.data = json.dumps(cmd_motor)
             self.motor_pub.publish(msg_m)
