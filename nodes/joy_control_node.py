@@ -14,6 +14,7 @@ import evdev
 from evdev import ecodes
 
 from services.motor_control import mix_differential_drive
+from services.remote_control_config import load_remote_control_config
 
 # --- 按键/轴映射 ---
 AXIS_LX = 0  # 左摇杆 X
@@ -39,6 +40,10 @@ class JoyControlNode(Node):
     def __init__(self):
         super().__init__("joy_control_node")
 
+        remote_config = load_remote_control_config()
+        self.servo_step_size = remote_config["servo_step_size"]
+        self.update_rate_hz = remote_config["update_rate_hz"]
+
         self.action_pub = self.create_publisher(String, '/action_cmd', 10)
         self.motor_pub = self.create_publisher(String, '/motor_cmd', 10)
 
@@ -60,9 +65,12 @@ class JoyControlNode(Node):
             'eyebrow_l': 0.0, 'eyebrow_r': 0.0
         }
 
-        self._motor_publish_timer = self.create_timer(0.05, self._tick_loop) # 20Hz 极高频刷新
+        self._motor_publish_timer = self.create_timer(1.0 / self.update_rate_hz, self._tick_loop)
 
-        self.get_logger().info("手柄节点启动，等待手柄连接...")
+        self.get_logger().info(
+            f"手柄节点启动，等待手柄连接... "
+            f"(舵机步长={self.servo_step_size:g}, 更新频率={self.update_rate_hz:g}Hz)"
+        )
         self._start_scanning()
 
     def _start_scanning(self):
@@ -206,7 +214,7 @@ class JoyControlNode(Node):
         msg_s = String()
         msg_s.data = json.dumps({
             "name": "manual_servo", 
-            "arguments": {"targets": targets, "step_size": 40.0}
+            "arguments": {"targets": targets, "step_size": self.servo_step_size}
         }, ensure_ascii=False)
         self.action_pub.publish(msg_s)
 

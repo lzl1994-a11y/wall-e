@@ -280,6 +280,29 @@ def validate_config(config: Any) -> list[str]:
     for key in ("serial", "tracking"):
         _check_bool(launch, key, f"launch.{key}", errors)
 
+    remote_control = config.get("remote_control")
+    if remote_control is not None:
+        if not isinstance(remote_control, dict):
+            errors.append("remote_control 必须是配置对象")
+        else:
+            _check_number(
+                remote_control,
+                "servo_step_size",
+                "remote_control.servo_step_size",
+                errors,
+                0.1,
+                65535,
+            )
+            _check_number(
+                remote_control,
+                "update_rate_hz",
+                "remote_control.update_rate_hz",
+                errors,
+                1,
+                100,
+                integer=True,
+            )
+
     wake_word = _require_mapping(config, "wake_word", errors)
     _check_bool(wake_word, "enabled", "wake_word.enabled", errors)
     for key in ("keyword", "model_dir", "response_wav"):

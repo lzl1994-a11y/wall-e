@@ -171,6 +171,13 @@
               <label class="field"><span>PWM 频率</span><input data-path="i2c.pwm_frequency" data-type="integer" type="number" min="1" max="1600"></label>
             </div>
           </article>
+          <article class="card span-two" data-module="remote_control">
+            <div class="card-heading-row"><h3>手柄遥控</h3><button class="button secondary small module-save" data-save-module="remote_control" type="button">保存本模块</button></div>
+            <div class="form-grid">
+              <label class="field"><span>舵机步长（PWM）</span><input data-path="remote_control.servo_step_size" data-type="number" type="number" min="0.1" max="65535" step="0.1"></label>
+              <label class="field"><span>数据更新频率（Hz）</span><input data-path="remote_control.update_rate_hz" data-type="integer" type="number" min="1" max="100" step="1"></label>
+            </div>
+          </article>
           <article class="card span-two" data-module="vision">
             <div class="card-heading-row"><h3>视觉</h3><button class="button secondary small module-save" data-save-module="vision" type="button">保存本模块</button></div>
             <label class="switch-row compact"><span><strong>开机启用</strong></span><input data-path="vision.enabled_on_start" type="checkbox"><i></i></label>

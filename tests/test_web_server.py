@@ -34,6 +34,7 @@ def sample_config():
             "max_tokens": 2048,
         },
         "launch": {"serial": True, "tracking": False},
+        "remote_control": {"servo_step_size": 40.0, "update_rate_hz": 20},
         "wake_word": {
             "enabled": True,
             "keyword": "瓦力瓦力",
@@ -161,6 +162,49 @@ class ConfigWebServerTests(unittest.TestCase):
                 "/api/config",
                 method="POST",
                 payload={"patch": {"llm": {"temperature": 9}}},
+            )
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
+    def test_remote_control_patch_is_saved_independently(self):
+        before = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        status, result = self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"remote_control": {"servo_step_size": 55.5, "update_rate_hz": 30}}},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["remote_control"], {"servo_step_size": 55.5, "update_rate_hz": 30})
+        self.assertEqual(stored["servos"], before["servos"])
+        self.assertEqual(stored["motors"], before["motors"])
+
+    def test_legacy_config_without_remote_control_can_still_be_saved(self):
+        legacy = sample_config()
+        del legacy["remote_control"]
+        self.config_path.write_text(
+            yaml.safe_dump(legacy, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        status, result = self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"launch": {"tracking": True}}},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertNotIn("remote_control", stored)
+        self.assertTrue(stored["launch"]["tracking"])
+
+    def test_invalid_remote_control_rate_is_rejected(self):
+        before = self.config_path.read_text(encoding="utf-8")
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={"patch": {"remote_control": {"update_rate_hz": 0}}},
             )
         self.assertEqual(context.exception.code, 400)
         self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)

@@ -17,6 +17,7 @@ const MODULE_ROOTS = Object.freeze({
   system_prompt: "system_prompt",
   serial: "serial",
   i2c: "i2c",
+  remote_control: "remote_control",
   vision: "vision",
   servos: "servos",
   motors: "motors",
@@ -32,6 +33,7 @@ const MODULE_LABELS = Object.freeze({
   system_prompt: "系统提示词",
   serial: "串口",
   i2c: "I²C",
+  remote_control: "手柄遥控",
   vision: "视觉",
   servos: "舵机",
   motors: "电机",
@@ -101,6 +103,16 @@ function setPath(target, path, value) {
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function ensureRemoteControlConfig() {
+  const defaults = { servo_step_size: 40.0, update_rate_hz: 20 };
+  if (!state.config.remote_control || typeof state.config.remote_control !== "object") {
+    state.config.remote_control = {};
+  }
+  Object.entries(defaults).forEach(([key, value]) => {
+    if (state.config.remote_control[key] === undefined) state.config.remote_control[key] = value;
+  });
 }
 
 function ensureAsrProviderConfigs() {
@@ -391,6 +403,7 @@ async function loadConfig() {
     }
     state.config = payload.config;
     state.secretFields = payload.secret_fields || {};
+    ensureRemoteControlConfig();
     ensureAsrProviderConfigs();
     populateFields();
     updateAsrProviderPanels(state.config.asr.provider);
