@@ -80,6 +80,7 @@ h3 { margin-bottom: 20px; font-size: 17px; }
 .section-heading { margin: 0 2px 22px; display: flex; justify-content: space-between; align-items: flex-end; gap: 30px; }
 .section-heading > p { max-width: 520px; margin-bottom: 3px; color: var(--muted); font-size: 13px; text-align: right; }
 .card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.servo-settings { margin-bottom: 16px; }
 .card, .table-card { padding: 23px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
 .card.span-two { grid-column: 1 / -1; }
 .prompt-card textarea { min-height: 390px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; line-height: 1.7; }

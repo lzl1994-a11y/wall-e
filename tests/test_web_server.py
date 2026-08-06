@@ -114,6 +114,14 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"WALI", body)
 
+    def test_remote_control_settings_are_on_servo_page(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        servo_panel = html.split('data-panel="servos"', 1)[1].split('data-panel="motors"', 1)[0]
+        self.assertIn('data-module="remote_control"', servo_panel)
+        self.assertIn('data-path="remote_control.servo_step_size"', servo_panel)
+        self.assertIn('data-path="remote_control.update_rate_hz"', servo_panel)
+
     def test_api_requires_token(self):
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.request("/api/config", token=None)
