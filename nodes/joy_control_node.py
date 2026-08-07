@@ -14,7 +14,7 @@ import evdev
 from evdev import ecodes
 
 from services.motor_control import mix_differential_drive
-from services.remote_control_config import load_remote_control_config
+from services.remote_control_config import RemoteControlConfigWatcher
 
 # --- 按键/轴映射 ---
 AXIS_LX = 0  # 左摇杆 X
@@ -40,7 +40,10 @@ class JoyControlNode(Node):
     def __init__(self):
         super().__init__("joy_control_node")
 
-        remote_config = load_remote_control_config()
+        self._remote_config_watcher = RemoteControlConfigWatcher()
+        remote_config = self._remote_config_watcher.load_if_changed()
+        if remote_config is None:
+            raise RuntimeError("首次读取手柄遥控配置失败")
         self.servo_step_size = remote_config["servo_step_size"]
         self.update_rate_hz = remote_config["update_rate_hz"]
 
@@ -72,6 +75,32 @@ class JoyControlNode(Node):
             f"(舵机步长={self.servo_step_size:g}, 更新频率={self.update_rate_hz:g}Hz)"
         )
         self._start_scanning()
+
+    def _refresh_remote_config(self):
+        remote_config = self._remote_config_watcher.load_if_changed()
+        if remote_config is None:
+            return
+
+        new_step_size = remote_config["servo_step_size"]
+        new_update_rate_hz = remote_config["update_rate_hz"]
+        step_changed = new_step_size != self.servo_step_size
+        rate_changed = new_update_rate_hz != self.update_rate_hz
+        if not step_changed and not rate_changed:
+            return
+
+        self.servo_step_size = new_step_size
+        if rate_changed:
+            old_timer = self._motor_publish_timer
+            self.update_rate_hz = new_update_rate_hz
+            self._motor_publish_timer = self.create_timer(
+                1.0 / self.update_rate_hz, self._tick_loop
+            )
+            self.destroy_timer(old_timer)
+
+        self.get_logger().info(
+            f"手柄遥控配置已热更新 "
+            f"(舵机步长={self.servo_step_size:g}, 更新频率={self.update_rate_hz:g}Hz)"
+        )
 
     def _start_scanning(self):
         self.running = True
@@ -162,6 +191,7 @@ class JoyControlNode(Node):
             pass
 
     def _tick_loop(self):
+        self._refresh_remote_config()
         if self.device is None: return
         now = time.time()
 

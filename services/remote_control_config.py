@@ -9,6 +9,7 @@ import yaml
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "core" / "config.yaml"
 DEFAULT_SERVO_STEP_SIZE = 40.0
 DEFAULT_UPDATE_RATE_HZ = 20
+_UNSET = object()
 
 
 def _number_in_range(value: Any, minimum: float, maximum: float, default: float) -> float:
@@ -36,3 +37,27 @@ def load_remote_control_config(config_path: Path | str = DEFAULT_CONFIG_PATH) ->
             remote.get("update_rate_hz"), 1, 100, DEFAULT_UPDATE_RATE_HZ
         ),
     }
+
+
+class RemoteControlConfigWatcher:
+    """Check the config file on every control tick and parse only after a change."""
+
+    def __init__(self, config_path: Path | str = DEFAULT_CONFIG_PATH):
+        self.path = Path(config_path)
+        self._signature: object = _UNSET
+
+    def _file_signature(self) -> tuple[int, int] | None:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def load_if_changed(self) -> dict[str, float] | None:
+        """Return fresh settings after a file change, otherwise return ``None``."""
+        signature = self._file_signature()
+        if signature == self._signature:
+            return None
+        settings = load_remote_control_config(self.path)
+        self._signature = signature
+        return settings

@@ -467,7 +467,7 @@ async function saveModule(module) {
     clearDirty(module);
     setConnection(true, "配置服务在线");
     setModuleFeedback(module, `已保存 ${new Date().toLocaleTimeString()}`, "success");
-    showToast(`${MODULE_LABELS[module]}模块已保存，重启主脑后生效`);
+    showToast(payload.message || `${MODULE_LABELS[module]}模块已保存，重启主脑后生效`);
   } catch (error) {
     setModuleFeedback(module, "保存失败", "error");
     showErrors(error);

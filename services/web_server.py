@@ -550,11 +550,17 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "配置校验失败", "details": str(exc).splitlines()},
             )
             return
+        hot_reloaded = is_patch and set(incoming) == {"remote_control"}
         self._send_json(
             HTTPStatus.OK,
             {
                 "ok": True,
-                "message": ("模块已保存，重启主脑后生效" if is_patch else "配置已保存，重启主脑后生效"),
+                "message": (
+                    "手柄遥控配置已保存，将自动生效"
+                    if hot_reloaded
+                    else ("模块已保存，重启主脑后生效" if is_patch else "配置已保存，重启主脑后生效")
+                ),
+                "restart_required": not hot_reloaded,
                 **snapshot,
             },
         )
