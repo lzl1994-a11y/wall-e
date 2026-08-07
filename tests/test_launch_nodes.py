@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from argparse import Namespace
@@ -38,6 +39,19 @@ class LaunchNodesTests(unittest.TestCase):
         entries = launch_nodes.build_node_list(launcher_args(no_web=True))
 
         self.assertNotIn("config_web", [entry.name for entry in entries])
+
+    @patch("launch_nodes.subprocess.Popen")
+    def test_child_process_can_import_project_packages(self, popen):
+        entry = launch_nodes.NodeEntry("test", launch_nodes.ROOT / "launch_nodes.py")
+
+        with patch.dict(os.environ, {"PYTHONPATH": "existing-path"}):
+            launch_nodes.start_process(entry)
+
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(
+            child_env["PYTHONPATH"].split(os.pathsep),
+            [str(launch_nodes.ROOT), "existing-path"],
+        )
 
 
 if __name__ == "__main__":

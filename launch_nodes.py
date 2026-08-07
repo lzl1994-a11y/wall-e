@@ -110,8 +110,17 @@ def start_process(entry: NodeEntry):
         raise FileNotFoundError(f"Node script not found: {script}")
 
     cmd = [sys.executable, str(script)]
+    env = os.environ.copy()
+    root_path = str(ROOT)
+    existing_paths = [
+        path
+        for path in env.get("PYTHONPATH", "").split(os.pathsep)
+        if path and path != root_path
+    ]
+    env["PYTHONPATH"] = os.pathsep.join([root_path, *existing_paths])
     kwargs = {
         "cwd": str(ROOT),
+        "env": env,
         "stdin": None,
         "stdout": None,
         "stderr": None,
