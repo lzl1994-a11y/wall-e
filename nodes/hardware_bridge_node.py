@@ -26,6 +26,8 @@ import yaml
 from services.motor_control import apply_direction_inversion, motor_inversion_flags
 
 class HardwareBridgeNode(Node):
+    _PUBLISH_INTERVAL_SECONDS = 0.02
+
     def __init__(self):
         super().__init__('hardware_bridge_node')
 
@@ -68,6 +70,11 @@ class HardwareBridgeNode(Node):
         self.create_subscription(String, '/servo_cmd', self._on_servo_cmd, 10)
         self.create_subscription(String, '/motor_cmd', self._on_motor_cmd, 10)
         self._raw_pub = self.create_publisher(String, '/pca9685_raw', 10)
+        # Send config-derived servo positions and motor-stop values once at startup.
+        self._state_dirty = True
+        self._publish_timer = self.create_timer(
+            self._PUBLISH_INTERVAL_SECONDS, self._flush_state
+        )
 
         self.get_logger().info(
             '硬件桥接节点上线，输出 -> /pca9685_raw '
@@ -87,6 +94,22 @@ class HardwareBridgeNode(Node):
         msg = String()
         msg.data = 'pca9685:' + ','.join(str(v) for v in self._state)
         self._raw_pub.publish(msg)
+
+    def _flush_state(self):
+        """Publish at most one complete state packet per control frame."""
+        if not self._state_dirty:
+            return
+
+        self._publish_state()
+        self._state_dirty = False
+
+    def _set_channel(self, channel: int, value: int) -> bool:
+        value = int(value)
+        if self._state[channel] == value:
+            return False
+
+        self._state[channel] = value
+        return True
 
     # ------------------------------------------------------------------
     # 订阅回调
@@ -111,11 +134,13 @@ class HardwareBridgeNode(Node):
 
         if pwm >= 0:
             # 协议已统一为 16-bit 原始值，直接透传
-            self._state[ch] = int(pwm)
+            changed = self._set_channel(ch, pwm)
         elif angle >= 0:
-            self._state[ch] = self._angle_to_duty(angle)
-            
-        self._publish_state()
+            changed = self._set_channel(ch, self._angle_to_duty(angle))
+        else:
+            return
+
+        self._state_dirty = self._state_dirty or changed
 
     def _on_motor_cmd(self, msg):
         try:
@@ -133,26 +158,30 @@ class HardwareBridgeNode(Node):
         right_action = apply_direction_inversion(
             right.get('action', 0), self._motor_inverted['right']
         )
-        self._apply_motor(9, left_action, left.get('throttle', 0))
-        self._apply_motor(12, right_action, right.get('throttle', 0))
-        self._publish_state()
+        left_changed = self._apply_motor(9, left_action, left.get('throttle', 0))
+        right_changed = self._apply_motor(12, right_action, right.get('throttle', 0))
+        self._state_dirty = self._state_dirty or left_changed or right_changed
 
-    def _apply_motor(self, base_ch: int, action: int, throttle: int):
+    def _apply_motor(self, base_ch: int, action: int, throttle: int) -> bool:
         """将一路电机的 action/throttle 写入 _state 对应 3 个通道。"""
         in1_ch, in2_ch, pwm_ch = base_ch, base_ch + 1, base_ch + 2
 
         if action == 1:          # 正转
-            self._state[in1_ch] = self._MOTOR_HIGH
-            self._state[in2_ch] = self._MOTOR_LOW
+            in1 = self._MOTOR_HIGH
+            in2 = self._MOTOR_LOW
         elif action == 2:        # 反转
-            self._state[in1_ch] = self._MOTOR_LOW
-            self._state[in2_ch] = self._MOTOR_HIGH
+            in1 = self._MOTOR_LOW
+            in2 = self._MOTOR_HIGH
         else:                    # 停止
-            self._state[in1_ch] = self._MOTOR_LOW
-            self._state[in2_ch] = self._MOTOR_LOW
+            in1 = self._MOTOR_LOW
+            in2 = self._MOTOR_LOW
             throttle = 0
 
-        self._state[pwm_ch] = int(throttle / 100.0 * self._MOTOR_HIGH)
+        pwm = int(throttle / 100.0 * self._MOTOR_HIGH)
+        changed = self._set_channel(in1_ch, in1)
+        changed = self._set_channel(in2_ch, in2) or changed
+        changed = self._set_channel(pwm_ch, pwm) or changed
+        return changed
 
 
 def main(args=None):
