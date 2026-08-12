@@ -32,6 +32,9 @@ except ImportError:  # Supports: python services/web_server.py
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = ROOT / "core" / "config.yaml"
 DEFAULT_STATIC_DIR = ROOT / "web" / "config"
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8080
+DEFAULT_ACCESS_TOKEN = "lucky123"
 MAX_BODY_BYTES = 1024 * 1024
 SECRET_NAMES = {"key", "api_key", "token", "secret", "password"}
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -648,9 +651,9 @@ def create_server(
 def run_web_server(bus: object | None = None) -> None:
     """兼容旧 main.py 的阻塞式入口；bus 参数保留但不再使用。"""
     del bus
-    host = os.environ.get("WALI_CONFIG_HOST", "127.0.0.1")
-    port = int(os.environ.get("WALI_CONFIG_PORT", "8080"))
-    token = os.environ.get("WALI_CONFIG_TOKEN")
+    host = os.environ.get("WALI_CONFIG_HOST", DEFAULT_HOST)
+    port = int(os.environ.get("WALI_CONFIG_PORT", str(DEFAULT_PORT)))
+    token = os.environ.get("WALI_CONFIG_TOKEN", DEFAULT_ACCESS_TOKEN)
     server = create_server(host=host, port=port, token=token)
     print(f"[ConfigWeb] 配置页面已启动: http://{host}:{server.server_port}")
     try:
@@ -661,10 +664,14 @@ def run_web_server(bus: object | None = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Wali config.yaml 配置网页")
-    parser.add_argument("--host", default=os.environ.get("WALI_CONFIG_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("WALI_CONFIG_PORT", "8080")))
+    parser.add_argument("--host", default=os.environ.get("WALI_CONFIG_HOST", DEFAULT_HOST))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("WALI_CONFIG_PORT", str(DEFAULT_PORT))))
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="config.yaml 路径")
-    parser.add_argument("--token", default=os.environ.get("WALI_CONFIG_TOKEN"), help="局域网访问令牌")
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("WALI_CONFIG_TOKEN", DEFAULT_ACCESS_TOKEN),
+        help="局域网访问令牌",
+    )
     args = parser.parse_args()
 
     try:
