@@ -1,5 +1,7 @@
 "use strict";
 
+const DEFAULT_ACCESS_TOKEN = "123456";
+
 const state = {
   config: null,
   secretFields: {},
@@ -641,7 +643,7 @@ function bindEvents() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  $("#access-token").value = sessionStorage.getItem("waliConfigToken") || "";
+  $("#access-token").value = sessionStorage.getItem("waliConfigToken") || DEFAULT_ACCESS_TOKEN;
   prepareModuleFeedbacks();
   setConfigControlsEnabled(false);
   bindEvents();

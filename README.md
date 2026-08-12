@@ -52,7 +52,7 @@ pip install websocket-client
 python services/web_server.py
 ```
 
-浏览器访问 `http://<旭日派IP>:8080`（本机调试也可用 `http://127.0.0.1:8080`）。默认监听所有网络接口，固定访问令牌为 `lucky123`。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 可分别配置智谱、阿里云和百度智能云，切换厂商时只显示并提交该厂商字段。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。
+浏览器访问 `http://<旭日派IP>:8080`（本机调试也可用 `http://127.0.0.1:8080`）。默认监听所有网络接口，默认访问令牌为 `123456`。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 可分别配置智谱、阿里云和百度智能云，切换厂商时只显示并提交该厂商字段。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。
 
 “硬件”页面可以为三类物理 USB 分配角色：摄像头 USB、屏幕/运动 USB、语音 USB（麦克风、扬声器和声源定位）。点击“刷新设备”后选择当前设备并独立保存。配置使用 VID/PID 加序列号识别设备；没有序列号时使用物理 USB 端口路径，因此 `/dev/ttyACM*`、`/dev/video*` 或音频卡编号变化不会影响匹配。未配置某个角色时继续使用原有代码默认逻辑。运行中修改配置或拔插设备后，串口、DOA、音频和摄像头节点会自动重新发现并恢复，无需重启主程序。
 
@@ -82,7 +82,7 @@ python launch_nodes.py --real-stt
 
 `launch_nodes.py` 会把同一个配置服务作为受管子进程启动，页面地址为 `http://<旭日派IP>:8080`，主程序退出时网页服务也会一起停止。传入 `--no-web` 可以禁用。独立调试和主程序运行不要同时占用同一个端口；需要并行运行时，可给独立服务指定其他端口，例如 `python services/web_server.py --host 127.0.0.1 --port 8765`。
 
-默认局域网访问令牌为 `lucky123`。如果你想临时改成其他令牌，可以在启动前覆盖环境变量：
+默认局域网访问令牌为 `123456`。页面右上角可修改本次访问使用的令牌，并会在当前浏览器会话中记住。如果要修改服务端实际接受的令牌，在启动前覆盖环境变量：
 
 ```bash
 export WALI_CONFIG_HOST=0.0.0.0
@@ -94,7 +94,7 @@ python services/web_server.py
 
 ```bash
 export WALI_CONFIG_HOST=0.0.0.0
-export WALI_CONFIG_TOKEN=lucky123
+export WALI_CONFIG_TOKEN=123456
 python launch_nodes.py --real-stt
 ```
 
