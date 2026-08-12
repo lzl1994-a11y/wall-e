@@ -10,14 +10,19 @@ import queue
 import numpy as np
 import sounddevice as sd
 
+from services.usb_devices import DEFAULT_CONFIG_PATH, resolve_audio_device
+
 
 class PlaybackService:
     """音频播放器：后台线程顺序播放，支持 USB / 板载切换。"""
 
-    def __init__(self, mode="default", sample_rate=16000):
+    def __init__(self, mode="default", sample_rate=16000, config_path=DEFAULT_CONFIG_PATH):
         self.mode = mode
         self.sample_rate = sample_rate
-        self._device = self._select_device()
+        self.config_path = config_path
+        self._device = None
+        self._device_identity = ""
+        self._refresh_device()
 
         self._queue = queue.Queue()
         self._worker = threading.Thread(target=self._play_worker, daemon=True)
@@ -52,6 +57,18 @@ class PlaybackService:
         print("[Playback Service] 未找到音频设备，回退到 None")
         return None
 
+    def _refresh_device(self):
+        resolution = resolve_audio_device(
+            "output", self.config_path, sounddevice_module=sd
+        )
+        if resolution.configured:
+            self._device = resolution.index if resolution.available else None
+            self._device_identity = resolution.identity
+            return resolution.available
+        self._device = self._select_device()
+        self._device_identity = f"legacy:{self._device}"
+        return True
+
     def play(self, samples: np.ndarray):
         """入队播放 PCM int16 数组（16kHz mono）。"""
         if samples is None or len(samples) == 0:
@@ -63,6 +80,9 @@ class PlaybackService:
         while True:
             samples = self._queue.get()
             try:
+                if not self._refresh_device():
+                    print("[Playback Service] configured voice USB is offline; audio skipped")
+                    continue
                 audio = samples.astype(np.float32) / 32768.0
                 sd.play(audio, samplerate=self.sample_rate, device=self._device)
                 sd.wait()

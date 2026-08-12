@@ -19,6 +19,8 @@ import onnxruntime as ort
 import sounddevice as sd
 import yaml
 
+from services.usb_devices import resolve_audio_device
+
 
 class WakeWordDetector:
     """sherpa-onnx 唤醒词检测器。VAD 前置滤网 + 模型推理。"""
@@ -130,6 +132,7 @@ class AudioPipeline:
             config = yaml.safe_load(f)
 
         self._ww = WakeWordDetector(config)
+        self._config_path = config_path
         
         # 【替换为 WebRTC VAD】：专门抵抗机械噪音 + 无视直流偏置！
         try:
@@ -151,7 +154,10 @@ class AudioPipeline:
         self._is_paused = False
         self._paused_event = threading.Event()
         self._listen_thread = None
+        self._device_thread = None
         self._audio_stream = None
+        self._audio_stream_lock = threading.Lock()
+        self._audio_device_identity = ""
         self._awake = False  # 唤醒后才启动 VAD 断句
 
         self.on_sentence = None     # Callable[[bytes], None]
@@ -163,38 +169,18 @@ class AudioPipeline:
         self._paused_event.clear()
         self._listen_thread = threading.Thread(target=self._run, daemon=True)
         self._listen_thread.start()
-        
-        # 【核心修复】：防止双声道麦克风（如 I2S/USB 阵列）出现“左耳静音，右耳有声”导致的漏音问题。
-        # 改为尝试请求双声道并做平均混合，如果硬件不支持双声道，再退回到单声道。
-        try:
-            self._audio_stream = sd.InputStream(
-                channels=2,
-                dtype="float32",
-                samplerate=self.SAMPLE_RATE,
-                blocksize=self.FRAME_SIZE,
-                callback=self._audio_callback,
-            )
-        except Exception:
-            self._audio_stream = sd.InputStream(
-                channels=1,
-                dtype="float32",
-                samplerate=self.SAMPLE_RATE,
-                blocksize=self.FRAME_SIZE,
-                callback=self._audio_callback,
-            )
-            
-        self._audio_stream.start()
-        print(f"[AudioPipeline] 已启动 (唤醒词={'ON' if self._ww.enabled else 'OFF'})")
+        self._device_thread = threading.Thread(target=self._device_monitor, daemon=True)
+        self._device_thread.start()
+        print(f"[AudioPipeline] started (wake-word={'ON' if self._ww.enabled else 'OFF'})")
 
     def stop(self):
         self._is_running = False
         self._paused_event.set()
-        if self._audio_stream:
-            self._audio_stream.stop()
-            self._audio_stream.close()
-            self._audio_stream = None
+        self._close_audio_stream()
         if self._listen_thread and self._listen_thread.is_alive():
             self._listen_thread.join(timeout=2.0)
+        if self._device_thread and self._device_thread.is_alive():
+            self._device_thread.join(timeout=2.0)
         self._drain_queue()
         print("[AudioPipeline] 已停止")
 
@@ -217,6 +203,80 @@ class AudioPipeline:
         print("[AudioPipeline] 已恢复")
 
     # ── Internal ──
+    def _close_audio_stream(self):
+        with self._audio_stream_lock:
+            stream = self._audio_stream
+            self._audio_stream = None
+            self._audio_device_identity = ""
+        if stream:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def _open_audio_stream(self, device_index, identity):
+        for channels in (2, 1):
+            stream = None
+            try:
+                stream = sd.InputStream(
+                    device=device_index,
+                    channels=channels,
+                    dtype="float32",
+                    samplerate=self.SAMPLE_RATE,
+                    blocksize=self.FRAME_SIZE,
+                    callback=self._audio_callback,
+                )
+                stream.start()
+                with self._audio_stream_lock:
+                    self._audio_stream = stream
+                    self._audio_device_identity = identity
+                print(f"[AudioPipeline] microphone connected (device={device_index}, channels={channels})")
+                return True
+            except Exception:
+                if stream:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+        return False
+
+    def _device_monitor(self):
+        last_wait_message = 0.0
+        while self._is_running:
+            resolution = resolve_audio_device(
+                "input", self._config_path, sounddevice_module=sd
+            )
+            with self._audio_stream_lock:
+                stream = self._audio_stream
+                identity = self._audio_device_identity
+            active = False
+            if stream:
+                try:
+                    active = bool(stream.active)
+                except Exception:
+                    pass
+
+            if not resolution.available:
+                if stream:
+                    self._close_audio_stream()
+                now = time.monotonic()
+                if now - last_wait_message >= 10.0:
+                    print("[AudioPipeline] waiting for configured voice USB")
+                    last_wait_message = now
+            elif not active or identity != resolution.identity:
+                if stream:
+                    self._close_audio_stream()
+                if not self._open_audio_stream(resolution.index, resolution.identity):
+                    now = time.monotonic()
+                    if now - last_wait_message >= 10.0:
+                        print("[AudioPipeline] microphone unavailable; retrying")
+                        last_wait_message = now
+            time.sleep(1.0)
+
     def _drain_queue(self):
         while not self.audio_queue.empty():
             try:

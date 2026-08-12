@@ -54,6 +54,26 @@ python services/web_server.py
 
 浏览器访问 `http://127.0.0.1:8080`。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 可分别配置智谱、阿里云和百度智能云，切换厂商时只显示并提交该厂商字段。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。
 
+“硬件”页面可以为三类物理 USB 分配角色：摄像头 USB、屏幕/运动 USB、语音 USB（麦克风、扬声器和声源定位）。点击“刷新设备”后选择当前设备并独立保存。配置使用 VID/PID 加序列号识别设备；没有序列号时使用物理 USB 端口路径，因此 `/dev/ttyACM*`、`/dev/video*` 或音频卡编号变化不会影响匹配。未配置某个角色时继续使用原有代码默认逻辑。运行中修改配置或拔插设备后，串口、DOA、音频和摄像头节点会自动重新发现并恢复，无需重启主程序。
+
+网页保存后的配置结构示例：
+
+```yaml
+usb_devices:
+  camera:
+    vendor_id: "1234"
+    product_id: "5678"
+    serial_number: camera-001
+  screen_motion:
+    vendor_id: "303a"
+    product_id: "1001"
+    serial_number: screen-001
+  voice:
+    vendor_id: "abcd"
+    product_id: "0001"
+    port_path: 1-2
+```
+
 配置服务也会跟随日常使用的节点启动器自动启动，无需再单独运行一次：
 
 ```bash

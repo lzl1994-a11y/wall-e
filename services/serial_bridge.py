@@ -2,18 +2,21 @@
 import serial
 import time
 from services.serial_broker import SerialBroker
+from services.usb_devices import DEFAULT_CONFIG_PATH, serial_ports_for_role
 
 class SerialBridge:
     """
     瓦力纯净硬件网桥服务 (完全解耦 ROS)
     职责：连接下位机，提供最基础的发送接口，并自动管理屏幕的唤醒状态。
     """
-    def __init__(self, device_name="WALL_E_TFT", timeout_seconds=30.0):
+    def __init__(self, device_name="WALL_E_TFT", timeout_seconds=30.0, config_path=DEFAULT_CONFIG_PATH):
         self.device_name = device_name
         self.timeout_seconds = timeout_seconds
         
         self.ser = None
-        self.broker = SerialBroker()
+        self.broker = SerialBroker(config_path=config_path)
+        self._next_reconnect_at = 0.0
+        self._next_selection_check_at = 0.0
         
         # 🌟 新增：状态机与时间戳管理
         self.last_send_time = 0.0      # 上次成功发送数据的时间戳
@@ -24,7 +27,7 @@ class SerialBridge:
     def _connect(self):
         """内部方法：通过 Broker 获取端口并连接"""
         print(f"🔌 [Serial Bridge] 正在请求挂载设备: {self.device_name}...")
-        self.broker.scan_and_identify()
+        self.broker.scan_and_identify(usb_role="screen_motion")
         port_path = self.broker.get_port_for(self.device_name)
         
         if port_path:
@@ -37,6 +40,27 @@ class SerialBridge:
         else:
             print(f"🔴 [Serial Bridge] 未能在物理总线上找到设备 '{self.device_name}'")
             self.ser = None
+
+    def _ensure_connected(self):
+        now = time.monotonic()
+        if now >= self._next_selection_check_at:
+            self._next_selection_check_at = now + 1.0
+            selected_ports, configured = serial_ports_for_role(
+                "screen_motion", self.broker.config_path
+            )
+            if configured and self.ser and self.ser.port not in selected_ports:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
+        if self.ser and self.ser.is_open:
+            return True
+        if now < self._next_reconnect_at:
+            return False
+        self._next_reconnect_at = now + 1.0
+        self._connect()
+        return bool(self.ser and self.ser.is_open)
 
     def _check_and_wake_screen(self):
         """
@@ -58,7 +82,7 @@ class SerialBridge:
         核心发送方法：外部只需传入组装好的字符串 (如 'you:xxx\\n')。
         内部会自动判断是否需要先发送唤醒指令。
         """
-        if self.ser and self.ser.is_open:
+        if self._ensure_connected():
             try:
                 current_time = time.time()
                 
@@ -79,7 +103,12 @@ class SerialBridge:
             except Exception as e:
                 print(f"⚠️ [Serial Bridge] 发送失败: {e}")
                 # 发送失败的话，认为屏幕可能没收到，重置唤醒状态
-                self.is_screen_awake = False 
+                self.is_screen_awake = False
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
                 return False
         else:
             print("⚠️ [Serial Bridge] 串口未连接，指令丢弃。")

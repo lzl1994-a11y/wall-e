@@ -6,6 +6,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -122,6 +123,14 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('data-path="remote_control.servo_step_size"', servo_panel)
         self.assertIn('data-path="remote_control.update_rate_hz"', servo_panel)
 
+    def test_usb_role_selectors_are_on_hardware_page(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('data-module="usb_devices"', html)
+        self.assertIn('data-usb-role="camera"', html)
+        self.assertIn('data-usb-role="screen_motion"', html)
+        self.assertIn('data-usb-role="voice"', html)
+
     def test_api_requires_token(self):
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.request("/api/config", token=None)
@@ -216,6 +225,65 @@ class ConfigWebServerTests(unittest.TestCase):
                 "/api/config",
                 method="POST",
                 payload={"patch": {"remote_control": {"update_rate_hz": 0}}},
+            )
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
+    @patch("services.web_server.list_usb_devices")
+    def test_usb_scan_returns_current_physical_devices(self, list_devices):
+        list_devices.return_value = [
+            {
+                "id": "303a:1001:abc",
+                "label": "WALL-E USB (303a:1001, SN abc)",
+                "selector": {
+                    "vendor_id": "303a",
+                    "product_id": "1001",
+                    "serial_number": "abc",
+                },
+                "interfaces": {"serial": ["/dev/ttyACM0"], "video": [], "audio_cards": []},
+            }
+        ]
+        status, body = self.request("/api/usb-devices")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["devices"][0]["selector"]["serial_number"], "abc")
+
+    def test_usb_roles_save_without_restart_and_can_be_cleared(self):
+        selector = {
+            "vendor_id": "303a",
+            "product_id": "1001",
+            "serial_number": "screen-1",
+        }
+        status, result = self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"usb_devices": {"screen_motion": selector}}},
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(result["restart_required"])
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["usb_devices"]["screen_motion"], selector)
+
+        self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"usb_devices": {}}},
+        )
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["usb_devices"], {})
+
+    def test_invalid_usb_selector_is_rejected(self):
+        before = self.config_path.read_text(encoding="utf-8")
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "usb_devices": {
+                            "camera": {"vendor_id": "bad", "product_id": "0001"}
+                        }
+                    }
+                },
             )
         self.assertEqual(context.exception.code, 400)
         self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)

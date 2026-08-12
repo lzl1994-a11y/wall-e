@@ -13,6 +13,9 @@ import time
 import shlex
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from services.usb_devices import resolve_camera_device
+
 
 def cleanup_old_processes():
     process_names = [
@@ -41,7 +44,7 @@ def cleanup_old_processes():
             stderr=subprocess.DEVNULL,
         )
 
-def main():
+def _start_pipeline(video_device):
     env = os.environ.copy()
     env["CAM_TYPE"] = "usb"
     node_dir = Path(__file__).resolve().parent
@@ -69,7 +72,7 @@ def main():
     cmd = [
         "bash", "-c",
         "source /opt/tros/humble/setup.bash && "
-        "ros2 run hobot_usb_cam hobot_usb_cam --ros-args --log-level WARN -p video_device:=/dev/video0 -p image_width:=640 -p image_height:=480 & "
+        f"ros2 run hobot_usb_cam hobot_usb_cam --ros-args --log-level WARN -p video_device:={shlex.quote(video_device)} -p image_width:=640 -p image_height:=480 & "
         "ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:=/image -p pub_topic:=/image_nv12 & "
         f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=true -p flip_horizontal:=true & "
         "ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_encode --log-level WARN -p channel:=2 -p in_mode:=ros -p in_format:=nv12 -p out_mode:=ros -p out_format:=jpeg -p sub_topic:=/image_padded_nv12 -p pub_topic:=/image_padded_jpeg & "
@@ -79,29 +82,68 @@ def main():
         "wait"
     ]
     
-    print("[hobot_vision_node] Starting padded vision pipeline with fast NV12 padder...")
-    
+    print(f"[hobot_vision_node] Starting vision pipeline with {video_device}...")
     try:
-        # 使用 preexec_fn=os.setsid 将进程组分离，这样可以通过 killpg 一键杀掉全部后台 & 进程
-        proc = subprocess.Popen(cmd, env=env, preexec_fn=os.setsid)
+        return subprocess.Popen(cmd, env=env, preexec_fn=os.setsid)
     except FileNotFoundError:
         print("[hobot_vision_node] Error: 'bash' command not found.")
-        sys.exit(1)
+        return None
 
-    # 捕获退出信号，优雅地关闭所有后台子进程
-    def handler(signum, frame):
-        print("\n[hobot_vision_node] Stopping vision pipeline...")
+
+def _stop_pipeline(proc):
+    if not proc or proc.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        proc.wait(timeout=5.0)
+    except Exception:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
-        sys.exit(0)
+
+
+def main():
+    stopping = False
+    proc = None
+    active_device = None
+
+    def handler(signum, frame):
+        nonlocal stopping
+        stopping = True
         
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
     
-    # 阻塞等待
-    proc.wait()
+    cleanup_old_processes()
+    while not stopping:
+        video_device = resolve_camera_device()
+        if not video_device:
+            if proc:
+                print("[hobot_vision_node] Camera disconnected; stopping vision pipeline")
+                _stop_pipeline(proc)
+                proc = None
+                active_device = None
+            time.sleep(1.0)
+            continue
+
+        if proc and proc.poll() is not None:
+            cleanup_old_processes()
+            proc = None
+            active_device = None
+
+        if proc and video_device != active_device:
+            _stop_pipeline(proc)
+            proc = None
+            active_device = None
+
+        if proc is None:
+            proc = _start_pipeline(video_device)
+            active_device = video_device if proc else None
+        time.sleep(1.0)
+
+    print("\n[hobot_vision_node] Stopping vision pipeline...")
+    _stop_pipeline(proc)
 
 if __name__ == '__main__':
     main()

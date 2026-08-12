@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
 from services.tool_dispatcher import build_action_cmd
+from services.usb_devices import resolve_audio_device
 
 # 去掉 TTS 不需要的符号（保留中文标点和空格）
 TTS_CLEAN_RE = re.compile(r'[*#_~`>\[\]\(\)\{\}]')
@@ -102,7 +103,11 @@ class VoiceChatNode(Node):
 
                 import numpy as np
                 samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
-                sd.play(samples, samplerate=sample_rate)
+                resolution = resolve_audio_device("output", sounddevice_module=sd)
+                if resolution.configured and not resolution.available:
+                    self.get_logger().warn("voice USB offline; wake response skipped")
+                    return
+                sd.play(samples, samplerate=sample_rate, device=resolution.index)
                 sd.wait()
                 self.get_logger().info("唤醒应答播放完毕")
             except ImportError:

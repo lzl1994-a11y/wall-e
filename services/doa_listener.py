@@ -57,13 +57,19 @@ class DOAListener:
                             if match and self.on_angle_received:
                                 self.on_angle_received(int(match.group(1)))
                 except Exception:
-                    time.sleep(0.1)
+                    self.is_running = False
+                    try:
+                        self.ser.close()
+                    except Exception:
+                        pass
+                    self.ser = None
+                    break
             else:
                 time.sleep(0.1)
 
     def stop(self):
         self.is_running = False
-        if self._listen_thread:
+        if self._listen_thread and self._listen_thread is not threading.current_thread():
             self._listen_thread.join(timeout=1.0)
         if self.ser and self.ser.is_open:
             self.ser.close()

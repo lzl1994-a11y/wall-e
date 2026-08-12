@@ -2,18 +2,29 @@ import serial
 import serial.tools.list_ports
 import time
 
+from services.usb_devices import DEFAULT_CONFIG_PATH, serial_ports_for_role
+
 class SerialBroker:
     """
     瓦力硬件串口发现与仲裁服务
     """
     
-    def __init__(self):
-        self.device_map = {"walle_doa1": "COM13"}  # 存储设备身份和串口路径的映射，如 {"walle_doa": "/dev/ttyACM1"}
+    def __init__(self, config_path=DEFAULT_CONFIG_PATH):
+        self.config_path = config_path
+        self.device_map = {}
 
-    def scan_and_identify(self):
+    def scan_and_identify(self, usb_role=None):
         """开机点名：遍历所有串口，发送握手暗号"""
         print("🔍 开始硬件全盘扫描...")
         ports = serial.tools.list_ports.comports()
+        if usb_role:
+            selected_ports, configured = serial_ports_for_role(usb_role, self.config_path)
+            if configured:
+                selected_paths = set(selected_ports)
+                ports = [port for port in ports if port.device in selected_paths]
+                if not ports:
+                    print(f"  -> 已配置的 {usb_role} USB 当前离线或没有串口接口")
+        self.device_map = {}
         
         for port in ports:
             port_path = port.device

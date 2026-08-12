@@ -155,6 +155,33 @@
           <p>每个硬件模块单独保存，修改端口前请先确认真实接线。</p>
         </div>
         <div class="card-grid">
+          <article class="card span-two usb-config-card" data-module="usb_devices">
+            <div class="card-heading-row">
+              <div><h3>USB 设备分配</h3><p class="card-subtitle">按物理 USB 身份绑定，设备编号变化后仍可识别，并支持运行中热插拔。</p></div>
+              <div class="usb-card-actions">
+                <button id="refresh-usb-devices" class="button secondary small" type="button">刷新设备</button>
+                <button class="button secondary small module-save" data-save-module="usb_devices" type="button">保存本模块</button>
+              </div>
+            </div>
+            <div class="usb-role-grid">
+              <label class="field usb-role">
+                <span>摄像头 USB</span>
+                <select id="usb-camera" data-usb-role="camera"></select>
+                <small data-usb-detail="camera">使用代码默认设备</small>
+              </label>
+              <label class="field usb-role">
+                <span>屏幕/运动 USB</span>
+                <select id="usb-screen-motion" data-usb-role="screen_motion"></select>
+                <small data-usb-detail="screen_motion">使用代码默认串口握手</small>
+              </label>
+              <label class="field usb-role">
+                <span>语音 USB</span>
+                <select id="usb-voice" data-usb-role="voice"></select>
+                <small data-usb-detail="voice">麦克风、扬声器和声源定位共用</small>
+              </label>
+            </div>
+            <p id="usb-scan-status" class="usb-scan-status" aria-live="polite">尚未扫描</p>
+          </article>
           <article class="card" data-module="serial">
             <div class="card-heading-row"><h3>串口</h3><button class="button secondary small module-save" data-save-module="serial" type="button">保存本模块</button></div>
             <div class="form-grid">

@@ -5,6 +5,8 @@ const state = {
   secretFields: {},
   dirtyModules: new Set(),
   loading: false,
+  usbDevices: [],
+  usbLoading: false,
 };
 
 const MODULE_ROOTS = Object.freeze({
@@ -21,6 +23,7 @@ const MODULE_ROOTS = Object.freeze({
   vision: "vision",
   servos: "servos",
   motors: "motors",
+  usb_devices: "usb_devices",
 });
 
 const MODULE_LABELS = Object.freeze({
@@ -37,6 +40,7 @@ const MODULE_LABELS = Object.freeze({
   vision: "视觉",
   servos: "舵机",
   motors: "电机",
+  usb_devices: "USB 设备",
 });
 
 const ASR_DEFAULTS = Object.freeze({
@@ -115,6 +119,93 @@ function ensureRemoteControlConfig() {
   });
 }
 
+function ensureUsbDeviceConfig() {
+  if (!state.config.usb_devices || typeof state.config.usb_devices !== "object") {
+    state.config.usb_devices = {};
+  }
+}
+
+function selectorKey(selector) {
+  if (!selector || typeof selector !== "object") return "";
+  return JSON.stringify({
+    vendor_id: String(selector.vendor_id || "").toLowerCase(),
+    product_id: String(selector.product_id || "").toLowerCase(),
+    ...(selector.serial_number ? { serial_number: selector.serial_number } : {}),
+    ...(!selector.serial_number && selector.port_path ? { port_path: selector.port_path } : {}),
+  });
+}
+
+function usbInterfaceSummary(device) {
+  const interfaces = device.interfaces || {};
+  const parts = [];
+  if (interfaces.video?.length) parts.push(interfaces.video.join(", "));
+  if (interfaces.serial?.length) parts.push(interfaces.serial.join(", "));
+  if (interfaces.audio_cards?.length) parts.push(`audio card ${interfaces.audio_cards.join(", ")}`);
+  return parts.join(" | ") || "USB 设备已连接，未发现可用接口";
+}
+
+function renderUsbSelectors() {
+  if (!state.config) return;
+  $$('[data-usb-role]').forEach((select) => {
+    const role = select.dataset.usbRole;
+    const saved = state.config.usb_devices?.[role] || null;
+    const savedKey = selectorKey(saved);
+    const options = [];
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "使用代码默认识别";
+    options.push(defaultOption);
+
+    state.usbDevices.forEach((device) => {
+      const option = document.createElement("option");
+      option.value = selectorKey(device.selector);
+      option.textContent = `${device.label} - ${usbInterfaceSummary(device)}`;
+      options.push(option);
+    });
+
+    if (savedKey && !options.some((option) => option.value === savedKey)) {
+      const offlineOption = document.createElement("option");
+      offlineOption.value = savedKey;
+      offlineOption.textContent = `${saved.vendor_id}:${saved.product_id}（已保存，当前离线）`;
+      options.push(offlineOption);
+    }
+    select.replaceChildren(...options);
+    select.value = savedKey;
+
+    const selectedDevice = state.usbDevices.find((device) => selectorKey(device.selector) === savedKey);
+    const detail = $(`[data-usb-detail="${role}"]`);
+    if (detail) {
+      detail.textContent = selectedDevice
+        ? usbInterfaceSummary(selectedDevice)
+        : savedKey ? "设备当前离线，插回后会自动恢复" : "未绑定，使用代码默认识别逻辑";
+    }
+  });
+}
+
+async function loadUsbDevices({ quiet = false } = {}) {
+  if (!state.config || state.usbLoading) return;
+  state.usbLoading = true;
+  const button = $("#refresh-usb-devices");
+  if (button) button.disabled = true;
+  $("#usb-scan-status").textContent = "正在扫描 USB 设备...";
+  try {
+    const payload = await api("/api/usb-devices");
+    state.usbDevices = payload.devices || [];
+    renderUsbSelectors();
+    $("#usb-scan-status").textContent = `发现 ${state.usbDevices.length} 个物理 USB 设备，更新于 ${new Date().toLocaleTimeString()}`;
+    if (!quiet) showToast(`已发现 ${state.usbDevices.length} 个 USB 设备`);
+  } catch (error) {
+    $("#usb-scan-status").textContent = "USB 扫描失败";
+    if (!quiet) {
+      showErrors(error);
+      showToast(error.message, "error");
+    }
+  } finally {
+    state.usbLoading = false;
+    if (button) button.disabled = false;
+  }
+}
+
 function ensureAsrProviderConfigs() {
   const asr = state.config.asr || (state.config.asr = {});
   const provider = Object.hasOwn(ASR_DEFAULTS, asr.provider) ? asr.provider : "zhipu";
@@ -179,6 +270,8 @@ function setConfigControlsEnabled(enabled) {
     const button = $(id);
     if (button) button.disabled = !enabled;
   }
+  $$('[data-usb-role]').forEach((select) => { select.disabled = !enabled; });
+  if ($("#refresh-usb-devices")) $("#refresh-usb-devices").disabled = !enabled;
 }
 
 function clearConfigurationView() {
@@ -197,6 +290,8 @@ function clearConfigurationView() {
   $("#config-path").title = "";
   $("#modified-at").textContent = "—";
   updateAsrProviderPanels("");
+  state.usbDevices = [];
+  renderUsbSelectors();
   clearAllDirty();
   clearModuleFeedbacks();
 }
@@ -359,6 +454,10 @@ function modulePatch(module) {
     return { [MODULE_ROOTS[module]]: deepClone(state.config[MODULE_ROOTS[module]] || []) };
   }
 
+  if (module === "usb_devices") {
+    return { usb_devices: deepClone(state.config.usb_devices || {}) };
+  }
+
   if (module === "asr") {
     const container = moduleContainer(module);
     const provider = $("#asr-provider").value;
@@ -389,6 +488,7 @@ function refreshModuleFromSnapshot(module, payload) {
   if (module === "asr") updateAsrProviderPanels(state.config.asr.provider);
   if (module === "servos") renderServos();
   if (module === "motors") renderMotors();
+  if (module === "usb_devices") renderUsbSelectors();
   $("#modified-at").textContent = `更新于 ${new Date(payload.modified_at).toLocaleString()}`;
 }
 
@@ -404,6 +504,7 @@ async function loadConfig() {
     state.config = payload.config;
     state.secretFields = payload.secret_fields || {};
     ensureRemoteControlConfig();
+    ensureUsbDeviceConfig();
     ensureAsrProviderConfigs();
     populateFields();
     updateAsrProviderPanels(state.config.asr.provider);
@@ -418,6 +519,7 @@ async function loadConfig() {
     clearModuleFeedbacks();
     $("#error-box").hidden = true;
     showToast("已读取 config.yaml 当前配置");
+    loadUsbDevices({ quiet: true });
   } catch (error) {
     clearConfigurationView();
     setConfigControlsEnabled(false);
@@ -491,6 +593,17 @@ function bindEvents() {
     updateAsrProviderPanels(event.target.value);
     markDirty("asr");
   });
+  $$('[data-usb-role]').forEach((select) => {
+    select.addEventListener("focus", () => loadUsbDevices({ quiet: true }));
+    select.addEventListener("change", () => {
+      const role = select.dataset.usbRole;
+      if (select.value) state.config.usb_devices[role] = JSON.parse(select.value);
+      else delete state.config.usb_devices[role];
+      renderUsbSelectors();
+      markDirty("usb_devices");
+    });
+  });
+  $("#refresh-usb-devices").addEventListener("click", () => loadUsbDevices());
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);
   $("#access-token").addEventListener("input", () => {

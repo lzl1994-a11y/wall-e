@@ -23,6 +23,11 @@ from urllib.parse import urlsplit
 
 import yaml
 
+try:
+    from services.usb_devices import USB_ROLES, list_usb_devices
+except ImportError:  # Supports: python services/web_server.py
+    from usb_devices import USB_ROLES, list_usb_devices
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = ROOT / "core" / "config.yaml"
@@ -303,6 +308,33 @@ def validate_config(config: Any) -> list[str]:
                 integer=True,
             )
 
+    usb_devices = config.get("usb_devices")
+    if usb_devices is not None:
+        if not isinstance(usb_devices, dict):
+            errors.append("usb_devices 必须是配置对象")
+        else:
+            unknown_roles = set(usb_devices) - set(USB_ROLES)
+            for role in sorted(unknown_roles):
+                errors.append(f"usb_devices.{role} 不是支持的 USB 角色")
+            for role in USB_ROLES:
+                selector = usb_devices.get(role)
+                if selector in (None, {}):
+                    continue
+                prefix = f"usb_devices.{role}"
+                if not isinstance(selector, dict):
+                    errors.append(f"{prefix} 必须是配置对象")
+                    continue
+                vendor_id = selector.get("vendor_id")
+                product_id = selector.get("product_id")
+                for key, value in (("vendor_id", vendor_id), ("product_id", product_id)):
+                    if not isinstance(value, str) or not re.fullmatch(r"[0-9A-Fa-f]{4}", value):
+                        errors.append(f"{prefix}.{key} 必须是 4 位十六进制 USB ID")
+                serial_number = selector.get("serial_number")
+                port_path = selector.get("port_path")
+                if serial_number is not None and not isinstance(serial_number, str):
+                    errors.append(f"{prefix}.serial_number 必须是字符串")
+                if port_path is not None and not isinstance(port_path, str):
+                    errors.append(f"{prefix}.port_path 必须是字符串")
     wake_word = _require_mapping(config, "wake_word", errors)
     _check_bool(wake_word, "enabled", "wake_word.enabled", errors)
     for key in ("keyword", "model_dir", "response_wav"):
@@ -375,6 +407,8 @@ class ConfigStore:
 
     def _save_merged(self, current: dict[str, Any], incoming: Any) -> dict[str, Any]:
         merged = _merge_preserving_secrets(current, incoming)
+        if isinstance(incoming, dict) and isinstance(incoming.get("usb_devices"), dict):
+            merged["usb_devices"] = copy.deepcopy(incoming["usb_devices"])
         errors = validate_config(merged)
         if errors:
             raise ConfigError("\n".join(errors))
@@ -513,6 +547,19 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, {"ok": True, **snapshot})
             return
+        if route == "/api/usb-devices":
+            if not self._require_api_auth():
+                return
+            try:
+                devices = list_usb_devices()
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": f"USB 设备扫描失败: {exc}"},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, "devices": devices})
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -550,13 +597,13 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "配置校验失败", "details": str(exc).splitlines()},
             )
             return
-        hot_reloaded = is_patch and set(incoming) == {"remote_control"}
+        hot_reloaded = is_patch and set(incoming).issubset({"remote_control", "usb_devices"})
         self._send_json(
             HTTPStatus.OK,
             {
                 "ok": True,
                 "message": (
-                    "手柄遥控配置已保存，将自动生效"
+                    "配置已保存，将自动生效"
                     if hot_reloaded
                     else ("模块已保存，重启主脑后生效" if is_patch else "配置已保存，重启主脑后生效")
                 ),
