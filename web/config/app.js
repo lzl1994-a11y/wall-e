@@ -93,6 +93,34 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function changeAccessToken() {
+  const input = $("#new-access-token");
+  const newToken = input.value.trim();
+  if (!newToken) {
+    showToast("请输入新的访问令牌", "error");
+    input.focus();
+    return;
+  }
+  const button = $("#change-token-button");
+  button.disabled = true;
+  try {
+    const payload = await api("/api/access-token", {
+      method: "POST",
+      body: JSON.stringify({ new_token: newToken }),
+    });
+    $("#access-token").value = newToken;
+    sessionStorage.setItem("waliConfigToken", newToken);
+    input.value = "";
+    showToast(payload.message || "访问令牌已修改");
+    setConnection(true, "访问令牌已更新");
+  } catch (error) {
+    showErrors(error);
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function getPath(target, path) {
   return path.split(".").reduce((value, key) => value == null ? undefined : value[key], target);
 }
@@ -606,6 +634,7 @@ function bindEvents() {
     });
   });
   $("#refresh-usb-devices").addEventListener("click", () => loadUsbDevices());
+  $("#change-token-button").addEventListener("click", changeAccessToken);
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);
   $("#access-token").addEventListener("input", () => {

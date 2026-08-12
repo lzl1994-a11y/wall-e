@@ -18,10 +18,17 @@
         </div>
       </div>
       <div class="top-actions">
-        <label class="token-field">
-          <span>访问令牌</span>
-          <input id="access-token" type="password" autocomplete="off" value="123456" placeholder="请输入服务端访问令牌">
-        </label>
+        <div class="token-settings">
+          <label class="token-field">
+            <span>当前访问令牌</span>
+            <input id="access-token" type="password" autocomplete="off" value="123456" placeholder="请输入当前令牌">
+          </label>
+          <label class="token-field">
+            <span>修改为</span>
+            <input id="new-access-token" type="password" autocomplete="new-password" placeholder="输入新令牌">
+          </label>
+          <button id="change-token-button" class="button secondary" type="button">修改令牌</button>
+        </div>
         <button id="reload-button" class="button secondary" type="button">重新读取全部</button>
       </div>
     </header>

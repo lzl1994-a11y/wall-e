@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Wali 本地配置网页服务。
 
-只依赖 Python 标准库和项目已经使用的 PyYAML。服务默认仅监听
-127.0.0.1；如果开放到局域网，必须配置访问令牌。
+只依赖 Python 标准库和项目已经使用的 PyYAML。服务默认监听所有网络接口，
+并使用默认访问令牌 123456；令牌可以在网页中修改。
 """
 
 from __future__ import annotations
@@ -35,8 +35,9 @@ DEFAULT_STATIC_DIR = ROOT / "web" / "config"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
 DEFAULT_ACCESS_TOKEN = "123456"
+_TOKEN_UNSET = object()
 MAX_BODY_BYTES = 1024 * 1024
-SECRET_NAMES = {"key", "api_key", "token", "secret", "password"}
+SECRET_NAMES = {"key", "api_key", "token", "access_token", "secret", "password"}
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 BAIDU_CUID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 BAIDU_DEV_PIDS = {1537, 15372, 15376, 1737, 17372}
@@ -264,6 +265,26 @@ def _validate_motors(motors: Any, errors: list[str]) -> None:
             names.add(name)
 
 
+def _validate_web(web: Any, errors: list[str]) -> None:
+    if web is None:
+        return
+    if not isinstance(web, dict):
+        errors.append("web 必须是配置对象")
+        return
+    access_token = web.get("access_token")
+    if access_token is None:
+        return
+    if not isinstance(access_token, str) or not access_token:
+        errors.append("web.access_token 必须是非空字符串")
+        return
+    if len(access_token) > 256:
+        errors.append("web.access_token 不能超过 256 个字符")
+    try:
+        access_token.encode("ascii")
+    except UnicodeEncodeError:
+        errors.append("web.access_token 只能使用 ASCII 字母、数字和符号，不能包含中文")
+
+
 def validate_config(config: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(config, dict):
@@ -377,6 +398,7 @@ def validate_config(config: Any) -> list[str]:
 
     _validate_servos(config.get("servos"), errors)
     _validate_motors(config.get("motors"), errors)
+    _validate_web(config.get("web"), errors)
     return errors
 
 
@@ -448,6 +470,25 @@ class ConfigStore:
             raise ConfigError("配置补丁必须是非空对象")
         with self._lock:
             return self._save_merged(self.load(), patch)
+
+    def save_access_token(self, access_token: str) -> dict[str, Any]:
+        """Persist the web access token without exposing it in the response."""
+        if not isinstance(access_token, str) or not access_token:
+            raise ConfigError("新访问令牌不能为空")
+        try:
+            access_token.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ConfigError("访问令牌只能使用 ASCII 字母、数字和符号，不能包含中文") from exc
+        if len(access_token) > 256:
+            raise ConfigError("访问令牌不能超过 256 个字符")
+        with self._lock:
+            current = self.load()
+            web = current.get("web")
+            if not isinstance(web, dict):
+                web = {}
+            web["access_token"] = access_token
+            current["web"] = web
+            return self._save_merged(current, {})
 
 
 class ConfigWebServer(ThreadingHTTPServer):
@@ -567,7 +608,7 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         route = urlsplit(self.path).path
-        if route != "/api/config":
+        if route not in {"/api/config", "/api/access-token"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if not self._require_api_auth():
@@ -590,6 +631,29 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "JSON 格式错误"})
             return
+
+        if route == "/api/access-token":
+            new_token = payload.get("new_token") if isinstance(payload, dict) else None
+            try:
+                snapshot = self.server.store.save_access_token(new_token)
+            except ConfigError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(exc)},
+                )
+                return
+            self.server.access_token = new_token
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "message": "访问令牌已修改并立即生效",
+                    "restart_required": False,
+                    **snapshot,
+                },
+            )
+            return
+
         is_patch = isinstance(payload, dict) and "patch" in payload
         incoming = payload.get("patch" if is_patch else "config") if isinstance(payload, dict) else None
         try:
@@ -620,14 +684,26 @@ def _is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
+def _config_access_token(config_path: Path | str) -> str | None:
+    try:
+        config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    web = config.get("web")
+    token = web.get("access_token") if isinstance(web, dict) else None
+    return token if isinstance(token, str) and token else None
+
+
 def create_server(
     *,
     host: str = "127.0.0.1",
     port: int = 8080,
     config_path: Path | str = DEFAULT_CONFIG_PATH,
     static_dir: Path | str = DEFAULT_STATIC_DIR,
-    token: str | None = None,
+    token: str | None | object = _TOKEN_UNSET,
 ) -> ConfigWebServer:
+    if token is _TOKEN_UNSET:
+        token = _config_access_token(config_path) or DEFAULT_ACCESS_TOKEN
     if not _is_loopback_host(host) and not token:
         raise ConfigError("监听局域网地址时必须通过 --token 或 WALI_CONFIG_TOKEN 设置访问令牌")
     if token:
@@ -653,7 +729,7 @@ def run_web_server(bus: object | None = None) -> None:
     del bus
     host = os.environ.get("WALI_CONFIG_HOST", DEFAULT_HOST)
     port = int(os.environ.get("WALI_CONFIG_PORT", str(DEFAULT_PORT)))
-    token = os.environ.get("WALI_CONFIG_TOKEN", DEFAULT_ACCESS_TOKEN)
+    token = os.environ.get("WALI_CONFIG_TOKEN") or _config_access_token(DEFAULT_CONFIG_PATH) or DEFAULT_ACCESS_TOKEN
     server = create_server(host=host, port=port, token=token)
     print(f"[ConfigWeb] 配置页面已启动: http://{host}:{server.server_port}")
     try:
@@ -669,13 +745,14 @@ def main() -> None:
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="config.yaml 路径")
     parser.add_argument(
         "--token",
-        default=os.environ.get("WALI_CONFIG_TOKEN", DEFAULT_ACCESS_TOKEN),
+        default=os.environ.get("WALI_CONFIG_TOKEN"),
         help="局域网访问令牌",
     )
     args = parser.parse_args()
+    token = args.token or _config_access_token(args.config) or DEFAULT_ACCESS_TOKEN
 
     try:
-        server = create_server(host=args.host, port=args.port, config_path=args.config, token=args.token)
+        server = create_server(host=args.host, port=args.port, config_path=args.config, token=token)
     except ConfigError as exc:
         parser.error(str(exc))
         return

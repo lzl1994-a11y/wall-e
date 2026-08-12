@@ -131,10 +131,50 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('data-usb-role="screen_motion"', html)
         self.assertIn('data-usb-role="voice"', html)
 
+    def test_access_token_change_controls_are_visible(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('id="new-access-token"', html)
+        self.assertIn('id="change-token-button"', html)
+        self.assertIn("修改令牌", html)
+
     def test_api_requires_token(self):
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.request("/api/config", token=None)
         self.assertEqual(context.exception.code, 401)
+
+    def test_access_token_can_be_changed_and_is_persisted(self):
+        status, result = self.request(
+            "/api/access-token",
+            method="POST",
+            payload={"new_token": "updated-token"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["restart_required"])
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/config", token="test-token")
+        self.assertEqual(context.exception.code, 401)
+
+        status, result = self.request("/api/config", token="updated-token")
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["config"]["web"]["access_token"], "")
+        self.assertTrue(result["secret_fields"]["web.access_token"])
+
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["web"]["access_token"], "updated-token")
+
+    def test_access_token_rejects_blank_or_non_ascii(self):
+        for value in ("", "新的令牌"):
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self.request(
+                    "/api/access-token",
+                    method="POST",
+                    payload={"new_token": value},
+                )
+            self.assertEqual(context.exception.code, 400)
 
     def test_get_redacts_secrets(self):
         status, body = self.request("/api/config")
