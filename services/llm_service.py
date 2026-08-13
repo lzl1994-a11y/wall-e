@@ -2,6 +2,7 @@
 import json
 import yaml
 from openai import OpenAI
+from services.llm_output_filter import VisibleAnswerFilter
 from services.llm_prompt import with_direct_speech_policy
 from services.llm_request_options import reasoning_request_options
 from services.tool_dispatcher import get_tools, ToolCallAccumulator
@@ -83,6 +84,7 @@ class LLMService:
         response = self.client.chat.completions.create(**request_kwargs)
 
         acc = ToolCallAccumulator()
+        answer_filter = VisibleAnswerFilter()
 
         for chunk in response:
             if not chunk.choices:
@@ -92,7 +94,13 @@ class LLMService:
             acc.feed(delta)
 
             if delta.content:
-                yield {"type": "text", "content": delta.content}
+                visible = answer_filter.feed(delta.content)
+                if visible:
+                    yield {"type": "text", "content": visible}
+
+        visible_tail = answer_filter.flush()
+        if visible_tail:
+            yield {"type": "text", "content": visible_tail}
 
         for tc in acc.flush():
             yield {

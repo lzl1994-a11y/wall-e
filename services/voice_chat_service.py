@@ -21,6 +21,7 @@ from collections import deque
 from enum import Enum, auto
 
 from openai import OpenAI
+from services.llm_output_filter import VisibleAnswerFilter
 from services.llm_prompt import with_direct_speech_policy
 from services.llm_request_options import reasoning_request_options
 from services.tool_dispatcher import get_tools, ToolCallAccumulator, build_action_cmd
@@ -252,6 +253,7 @@ class VoiceChatService:
 
             acc = ToolCallAccumulator()
             chunks = []
+            answer_filter = VisibleAnswerFilter()
 
             for chunk in response:
                 if self._cancel_llm.is_set():
@@ -268,10 +270,17 @@ class VoiceChatService:
                     delta = chunk.choices[0].delta
                     acc.feed(delta)
                     if hasattr(delta, "content") and delta.content:
-                        text = delta.content
-                        chunks.append(text)
-                        if self.on_llm_chunk:
-                            self.on_llm_chunk(text)
+                        visible = answer_filter.feed(delta.content)
+                        if visible:
+                            chunks.append(visible)
+                            if self.on_llm_chunk:
+                                self.on_llm_chunk(visible)
+
+            visible_tail = answer_filter.flush()
+            if visible_tail:
+                chunks.append(visible_tail)
+                if self.on_llm_chunk:
+                    self.on_llm_chunk(visible_tail)
 
             elapsed = time.time() - t0
             reply = "".join(chunks).strip()

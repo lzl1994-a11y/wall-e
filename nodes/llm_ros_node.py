@@ -29,6 +29,10 @@ class LLMBrainNode(Node):
     TTS_CLEAN_RE = re.compile(
         "[^\\w\\s\u4e00-\u9fa5\uff0c\u3002\uff1f\uff01\u3001\uff1a\uff1b\u201c\u201d\uff08\uff09\u300a\u300b.,?!]"
     )
+    OUTPUT_LINE_PREFIX_RE = re.compile(
+        r"^\s*(?:\u7b2c\u4e8c\u884c|\u6700\u7ec8\u56de\u7b54|\u6700\u7ec8\u7b54\u6848|\u56de\u7b54|\u56de\u590d)\s*[:\uff1a]\s*",
+        re.IGNORECASE,
+    )
 
     def __init__(self):
         super().__init__('walle_llm_brain')
@@ -132,11 +136,12 @@ class LLMBrainNode(Node):
         augmented_prompt = (
             f"\u539f\u59cb ASR \u6587\u672c\uff1a{user_prompt}\n"
             f"\u62fc\u97f3\u53c2\u8003\uff1a{py_str}\n\n"
-            "\u4e25\u683c\u6309\u4ee5\u4e0b\u683c\u5f0f\u8f93\u51fa\uff0c\u4e0d\u5f97\u589e\u52a0\u5176\u4ed6\u5185\u5bb9\uff1a\n"
-            "\u7b2c\u4e00\u884c\uff1a\u3010\u4fee\u6b63\u6587\u672c\u3011: <\u6839\u636e\u4e0a\u4e0b\u6587\u548c\u62fc\u97f3\u7ea0\u6b63\u540e\u7684\u5b8c\u6574\u53e5\u5b50>\n"
-            "\u7b2c\u4e8c\u884c\uff1a<\u53ef\u76f4\u63a5\u901a\u8fc7\u626c\u58f0\u5668\u64ad\u653e\u7684\u6700\u7ec8\u56de\u590d>\n\n"
+            "\u4e25\u683c\u6309\u4ee5\u4e0b\u4e24\u884c\u683c\u5f0f\u8f93\u51fa\uff0c\u4e0d\u5f97\u589e\u52a0\u5176\u4ed6\u5185\u5bb9\uff1a\n"
+            "\u3010\u4fee\u6b63\u6587\u672c\u3011: <\u6839\u636e\u4e0a\u4e0b\u6587\u548c\u62fc\u97f3\u7ea0\u6b63\u540e\u7684\u5b8c\u6574\u53e5\u5b50>\n"
+            "<\u53ef\u76f4\u63a5\u901a\u8fc7\u626c\u58f0\u5668\u64ad\u653e\u7684\u6700\u7ec8\u56de\u590d>\n\n"
             "\u7b2c\u4e8c\u884c\u6700\u591a\u4e24\u53e5\uff0c\u7b80\u77ed\u81ea\u7136\u3002\u4e0d\u8981\u8f93\u51fa\u5206\u6790\u3001\u601d\u8003\u3001\u8ba1\u5212\u3001\u89c4\u5219\u590d\u8ff0\u3001\u793a\u4f8b\u3001\u5217\u8868\u3001Markdown\u3001"
             "\u62ec\u53f7\u8bf4\u660e\u3001Function Calling \u5b57\u6837\u3001\u5de5\u5177\u540d\u6216\u5de5\u5177\u53c2\u6570\u3002"
+            "\u4e0d\u8981\u8f93\u51fa\u201c\u7b2c\u4e00\u884c\u201d\u6216\u201c\u7b2c\u4e8c\u884c\u201d\u524d\u7f00\u3002"
             "\u9700\u8981\u52a8\u4f5c\u65f6\u53ea\u4f7f\u7528\u539f\u751f\u5de5\u5177\u8c03\u7528\uff0c\u4e0d\u8981\u5728\u6587\u5b57\u4e2d\u63cf\u8ff0\u8c03\u7528\u8fc7\u7a0b\u3002"
             "\u76f4\u63a5\u7ed9\u51fa\u4e24\u884c\u7ed3\u679c\u3002"
         )
@@ -182,7 +187,9 @@ class LLMBrainNode(Node):
 
                             if extracted:
                                 publish_corrected(extracted)
-                                sentence_buffer = parts[1] if len(parts) > 1 else ''
+                                sentence_buffer = self._strip_answer_prefix(
+                                    parts[1] if len(parts) > 1 else ''
+                                )
                             else:
                                 publish_corrected(user_prompt)
 
@@ -394,6 +401,12 @@ class LLMBrainNode(Node):
             return None
 
         cleaned = first_line.lstrip(' \t>*-#')
+        cleaned = re.sub(
+            r"^\s*\u7b2c\u4e00\u884c\s*[:\uff1a]\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
 
         label = ''
         value = ''
@@ -431,8 +444,12 @@ class LLMBrainNode(Node):
             return text
         first_line, rest = text.split('\n', 1)
         if self._extract_corrected_text(first_line):
-            return rest
+            return self._strip_answer_prefix(rest)
         return text
+
+    @classmethod
+    def _strip_answer_prefix(cls, text):
+        return cls.OUTPUT_LINE_PREFIX_RE.sub('', text or '', count=1)
 
     def _publish_screen_dialog(self, turn_id, corrected_text, ai_text, actions, error=None):
         payload = {
