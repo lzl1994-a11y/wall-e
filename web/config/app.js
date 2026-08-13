@@ -180,6 +180,15 @@ function ensureVadConfig() {
   }
 }
 
+function ensureLlmConfig() {
+  if (!state.config.llm || typeof state.config.llm !== "object") {
+    state.config.llm = {};
+  }
+  if (!["fast", "default"].includes(state.config.llm.reasoning_effort)) {
+    state.config.llm.reasoning_effort = "fast";
+  }
+}
+
 function ensureUsbDeviceConfig() {
   if (!state.config.usb_devices || typeof state.config.usb_devices !== "object") {
     state.config.usb_devices = {};
@@ -560,6 +569,7 @@ function refreshModuleFromSnapshot(module, payload) {
   state.secretFields = payload.secret_fields || {};
   if (module === "asr") ensureAsrProviderConfigs();
   if (module === "vad") ensureVadConfig();
+  if (module === "llm") ensureLlmConfig();
   if (module === "hardware") ensureHardwareConfig();
   populateFields(moduleContainer(module));
   if (module === "asr") updateAsrProviderPanels(state.config.asr.provider);
@@ -585,6 +595,7 @@ async function loadConfig() {
     ensureRemoteControlConfig();
     ensureHardwareConfig();
     ensureVadConfig();
+    ensureLlmConfig();
     ensureUsbDeviceConfig();
     ensureAsrProviderConfigs();
     populateFields();

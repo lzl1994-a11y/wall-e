@@ -33,6 +33,7 @@ def sample_config():
             "key": "llm-secret",
             "temperature": 0.4,
             "max_tokens": 2048,
+            "reasoning_effort": "fast",
         },
         "launch": {"serial": True, "tracking": False},
         "hardware": {"backend": "serial_mcu"},
@@ -309,6 +310,15 @@ class ConfigWebServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 400)
         self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
+    def test_invalid_reasoning_effort_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={"patch": {"llm": {"reasoning_effort": "ultra"}}},
+            )
+        self.assertEqual(context.exception.code, 400)
 
     def test_remote_control_patch_is_saved_independently(self):
         before = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))

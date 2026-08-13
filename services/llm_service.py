@@ -2,6 +2,8 @@
 import json
 import yaml
 from openai import OpenAI
+from services.llm_prompt import with_direct_speech_policy
+from services.llm_request_options import reasoning_request_options
 from services.tool_dispatcher import get_tools, ToolCallAccumulator
 
 
@@ -42,9 +44,12 @@ class LLMService:
 
         # [ZH] 构建消息上下文
         # [EN] Build message context
+        selected_system_prompt = (
+            self.system_prompt if system_prompt is None else system_prompt
+        )
         messages = [{
             "role": "system",
-            "content": self.system_prompt if system_prompt is None else system_prompt,
+            "content": with_direct_speech_policy(selected_system_prompt),
         }]
         messages.extend(chat_history)
         if image_base64:
@@ -74,8 +79,7 @@ class LLMService:
             if tools:
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = "auto"
-        if str(self.settings.get("provider", "")).lower() in {"aliyun", "qwen"}:
-            request_kwargs["extra_body"] = {"enable_thinking": False}
+        request_kwargs.update(reasoning_request_options(self.settings))
         response = self.client.chat.completions.create(**request_kwargs)
 
         acc = ToolCallAccumulator()

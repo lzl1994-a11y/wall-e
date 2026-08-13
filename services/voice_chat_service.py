@@ -21,6 +21,8 @@ from collections import deque
 from enum import Enum, auto
 
 from openai import OpenAI
+from services.llm_prompt import with_direct_speech_policy
+from services.llm_request_options import reasoning_request_options
 from services.tool_dispatcher import get_tools, ToolCallAccumulator, build_action_cmd
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
@@ -58,7 +60,8 @@ class VoiceChatService:
         self.multimodal = create_multimodal(config_path)
         self.model = llm_cfg["model"]
         self.max_tokens = llm_cfg.get("max_tokens", 1024)
-        self.system_prompt = config.get("system_prompt", "")
+        self.llm_settings = llm_cfg
+        self.system_prompt = with_direct_speech_policy(config.get("system_prompt", ""))
 
         # 对话历史（最近20轮）
         self._chat_history: deque = deque(maxlen=40)
@@ -231,19 +234,21 @@ class VoiceChatService:
         t0 = time.time()
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                modalities=["text"],
-                tools=get_tools(),
-                tool_choice="auto",
-                stream=True,
-                stream_options={"include_usage": True},
-                timeout=self.API_TIMEOUT,
-                max_tokens=self.max_tokens,
-                frequency_penalty=0.3,
-                presence_penalty=0.3,
-            )
+            request_kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "modalities": ["text"],
+                "tools": get_tools(),
+                "tool_choice": "auto",
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "timeout": self.API_TIMEOUT,
+                "max_tokens": self.max_tokens,
+                "frequency_penalty": 0.3,
+                "presence_penalty": 0.3,
+            }
+            request_kwargs.update(reasoning_request_options(self.llm_settings))
+            response = self.client.chat.completions.create(**request_kwargs)
 
             acc = ToolCallAccumulator()
             chunks = []

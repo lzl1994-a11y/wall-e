@@ -304,6 +304,9 @@ def validate_config(config: Any) -> list[str]:
     _check_string(llm, "key", "llm.key", errors, allow_empty=True, max_length=8192)
     _check_number(llm, "temperature", "llm.temperature", errors, 0, 2)
     _check_number(llm, "max_tokens", "llm.max_tokens", errors, 1, 131072, integer=True)
+    reasoning_effort = llm.get("reasoning_effort", "fast")
+    if reasoning_effort not in {"fast", "default"}:
+        errors.append("llm.reasoning_effort 只能是 fast 或 default")
 
     launch = _require_mapping(config, "launch", errors)
     for key in ("serial", "tracking"):

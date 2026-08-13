@@ -49,6 +49,7 @@ class LLMServiceVisionTests(unittest.TestCase):
 
         kwargs = service.client.chat.completions.create.call_args.kwargs
         user_message = kwargs["messages"][-1]
+        self.assertIn("只给最终台词", kwargs["messages"][0]["content"])
         self.assertEqual(user_message["content"][0]["text"], "这是什么？")
         self.assertEqual(
             user_message["content"][1]["image_url"]["url"],
@@ -59,6 +60,89 @@ class LLMServiceVisionTests(unittest.TestCase):
         self.assertNotIn("extra_body", kwargs)
         self.assertEqual(result[0]["content"], "看起来是一只杯子。")
         sys.modules.pop("services.llm_service", None)
+
+    def test_aliyun_fast_mode_disables_thinking(self):
+        fake_dispatcher = types.ModuleType("services.tool_dispatcher")
+        fake_dispatcher.get_tools = lambda: []
+
+        class FakeAccumulator:
+            def feed(self, _delta):
+                pass
+
+            def flush(self):
+                return []
+
+        fake_dispatcher.ToolCallAccumulator = FakeAccumulator
+        with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
+            sys.modules.pop("services.llm_service", None)
+            from services.llm_service import LLMService
+
+        service = object.__new__(LLMService)
+        service.settings = {
+            "provider": "aliyun",
+            "reasoning_effort": "fast",
+            "temperature": 0.2,
+            "max_tokens": 256,
+        }
+        service.system_prompt = "你是瓦力。"
+        service.model = "qwen3.6-35b-a3b"
+        service.client = MagicMock()
+        service.client.chat.completions.create.return_value = _FakeResponse()
+
+        list(service.chat_stream("你好", tools_enabled=False))
+
+        kwargs = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(kwargs["max_tokens"], 256)
+        self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
+        sys.modules.pop("services.llm_service", None)
+
+    def test_zhipu_toggle_model_fast_mode_disables_thinking(self):
+        fake_dispatcher = types.ModuleType("services.tool_dispatcher")
+        fake_dispatcher.get_tools = lambda: []
+
+        class FakeAccumulator:
+            def feed(self, _delta):
+                pass
+
+            def flush(self):
+                return []
+
+        fake_dispatcher.ToolCallAccumulator = FakeAccumulator
+        with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
+            sys.modules.pop("services.llm_service", None)
+            from services.llm_service import LLMService
+
+        service = object.__new__(LLMService)
+        service.settings = {
+            "provider": "zhipu",
+            "reasoning_effort": "fast",
+            "temperature": 0.2,
+            "max_tokens": 256,
+        }
+        service.system_prompt = "你是瓦力。"
+        service.settings["model"] = "glm-4.7"
+        service.model = "glm-4.7"
+        service.client = MagicMock()
+        service.client.chat.completions.create.return_value = _FakeResponse()
+
+        list(service.chat_stream("你好", tools_enabled=False))
+
+        kwargs = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(
+            kwargs["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
+        sys.modules.pop("services.llm_service", None)
+
+    def test_zhipu_fixed_thinking_model_keeps_supported_request_shape(self):
+        from services.llm_request_options import reasoning_request_options
+
+        options = reasoning_request_options({
+            "provider": "zhipu",
+            "model": "glm-4.1v-thinking-flashx",
+            "reasoning_effort": "fast",
+        })
+        self.assertEqual(options, {})
 
 
 class CameraIntentTests(unittest.TestCase):
