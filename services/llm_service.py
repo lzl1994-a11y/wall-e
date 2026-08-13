@@ -23,7 +23,14 @@ class LLMService:
         )
         self.model = self.settings['model']
 
-    def chat_stream(self, user_text, chat_history=None):
+    def chat_stream(
+        self,
+        user_text,
+        chat_history=None,
+        image_base64=None,
+        tools_enabled=True,
+        system_prompt=None,
+    ):
         """
         [ZH] 发起流式对话 (Generator)。
              yield 两种数据: "text" (供 TTS 播报) 和 "tool_call" (供硬件执行)。
@@ -35,27 +42,41 @@ class LLMService:
 
         # [ZH] 构建消息上下文
         # [EN] Build message context
-        messages = [{"role": "system", "content": self.system_prompt}]
+        messages = [{
+            "role": "system",
+            "content": self.system_prompt if system_prompt is None else system_prompt,
+        }]
         messages.extend(chat_history)
-        messages.append({"role": "user", "content": user_text})
+        if image_base64:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64}"
+                    }},
+                ],
+            })
+        else:
+            messages.append({"role": "user", "content": user_text})
 
         # [ZH] 发起长连接流式请求
         # [EN] Send long-connection streaming request
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            
-            # [ZH] 挂载 FastMCP 自动生成的工具表
-            # [EN] Mount auto-generated tools from FastMCP
-            tools=get_tools(), 
-            
-            tool_choice="auto",
-            temperature=self.settings.get('temperature', 0.3),
-            max_tokens=self.settings.get('max_tokens', 1024),
-            
-            stream=True,
-            extra_body={"enable_thinking": False}
-        )
+        request_kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.settings.get('temperature', 0.3),
+            "max_tokens": self.settings.get('max_tokens', 1024),
+            "stream": True,
+        }
+        if tools_enabled:
+            tools = get_tools()
+            if tools:
+                request_kwargs["tools"] = tools
+                request_kwargs["tool_choice"] = "auto"
+        if str(self.settings.get("provider", "")).lower() in {"aliyun", "qwen"}:
+            request_kwargs["extra_body"] = {"enable_thinking": False}
+        response = self.client.chat.completions.create(**request_kwargs)
 
         acc = ToolCallAccumulator()
 

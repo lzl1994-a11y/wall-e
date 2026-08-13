@@ -15,7 +15,6 @@ import threading
 import time
 
 import numpy as np
-import onnxruntime as ort
 import sounddevice as sd
 import yaml
 
@@ -134,20 +133,20 @@ class AudioPipeline:
         self._ww = WakeWordDetector(config)
         self._config_path = config_path
         
-        # 【替换为 WebRTC VAD】：专门抵抗机械噪音 + 无视直流偏置！
-        try:
-            import webrtcvad
-            self._vad = webrtcvad.Vad(3)  # 等级 3：最严格过滤模式，最不容易被履带噪音误触发
-            self._has_webrtc = True
-            print("[AudioPipeline] 加载 WebRTC VAD 成功 (Aggressiveness=3)")
-        except ImportError:
-            self._has_webrtc = False
-            print("[AudioPipeline] 未安装 webrtcvad，请执行: pip install webrtcvad")
+        self._vad_cfg = config.get("vad", {})
+        if not isinstance(self._vad_cfg, dict):
+            self._vad_cfg = {}
+        self._vad_backend = "none"
+        self._vad = None
+        self._has_webrtc = False
+        self._silero_session = None
+        self._silero_state = None
+        self._init_vad()
             
         self._vad_lock = threading.Lock()
         self._vad_err_count = 0
         # 断句 VAD 阈值
-        self._vad_thresh = 0.5
+        self._vad_thresh = float(self._vad_cfg.get("threshold", 0.5))
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
@@ -198,9 +197,82 @@ class AudioPipeline:
         self._drain_queue()
         self._is_paused = False
         self._paused_event.clear()
-        with self._vad_lock:
-            self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._reset_vad_state()
         print("[AudioPipeline] 已恢复")
+
+    def _init_vad(self):
+        """按配置加载 VAD；依赖缺失时回退到另一个可用后端。"""
+        requested = str(self._vad_cfg.get("provider", "webrtc")).strip().lower()
+        if requested in {"webrtcvad", "webrtc_vad"}:
+            requested = "webrtc"
+        if requested in {"silero_vad", "silero-onnx"}:
+            requested = "silero"
+        if requested not in {"webrtc", "silero"}:
+            print(f"[AudioPipeline] 未知 VAD provider={requested!r}，回退 WebRTC")
+            requested = "webrtc"
+
+        if requested == "silero":
+            if self._init_silero_vad():
+                return
+            print("[AudioPipeline] Silero VAD 不可用，回退 WebRTC VAD")
+            if self._init_webrtc_vad():
+                return
+        else:
+            if self._init_webrtc_vad():
+                return
+            print("[AudioPipeline] WebRTC VAD 不可用，回退 Silero VAD")
+            if self._init_silero_vad():
+                return
+        self._vad_backend = "none"
+        print("[AudioPipeline] 没有可用的 VAD 后端，语音断句将保持关闭")
+
+    def _init_webrtc_vad(self):
+        try:
+            import webrtcvad
+            aggressiveness = int(self._vad_cfg.get("aggressiveness", 3))
+            aggressiveness = max(0, min(3, aggressiveness))
+            self._vad = webrtcvad.Vad(aggressiveness)
+            self._has_webrtc = True
+            self._vad_backend = "webrtc"
+            print(
+                f"[AudioPipeline] 加载 WebRTC VAD 成功 "
+                f"(Aggressiveness={aggressiveness})"
+            )
+            return True
+        except (ImportError, ValueError, TypeError) as exc:
+            self._has_webrtc = False
+            self._vad = None
+            print(f"[AudioPipeline] WebRTC VAD 不可用: {exc}")
+            return False
+
+    def _init_silero_vad(self):
+        model_path = str(self._vad_cfg.get("model_path", "models/silero_vad.onnx"))
+        if not os.path.isabs(model_path):
+            model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), model_path)
+        try:
+            import onnxruntime as ort
+            if not os.path.isfile(model_path):
+                raise FileNotFoundError(model_path)
+            self._silero_session = ort.InferenceSession(
+                model_path, providers=["CPUExecutionProvider"]
+            )
+            self._silero_state = np.zeros((2, 1, 128), dtype=np.float32)
+            self._vad_backend = "silero"
+            print(
+                f"[AudioPipeline] 加载 Silero VAD 成功 "
+                f"(threshold={self._vad_cfg.get('threshold', 0.5)}, model={model_path})"
+            )
+            return True
+        except (ImportError, FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            self._silero_session = None
+            self._silero_state = None
+            print(f"[AudioPipeline] Silero VAD 不可用: {exc}")
+            return False
+
+    def _reset_vad_state(self):
+        with self._vad_lock:
+            if self._vad_backend == "silero":
+                self._silero_state = np.zeros((2, 1, 128), dtype=np.float32)
 
     # ── Internal ──
     def _close_audio_stream(self):
@@ -336,6 +408,7 @@ class AudioPipeline:
                     if self._ww.check(frame):
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
                         self._awake = True
+                        self._reset_vad_state()
                         speech_frames.clear()
                         in_speech = False
                         silence_count = 0
@@ -390,25 +463,34 @@ class AudioPipeline:
 
     def _vad_prob(self, frame: bytes) -> float:
         """
-        WebRTC VAD: 基于高斯混合模型 (GMM) 的频域分析。
-        能极其有效地分辨【人类语音】和【机械噪音】。
-        返回 1.0 (是人声) 或 0.0 (非人声)。
+        使用配置的 VAD 后端返回 0~1 的人声概率。
         """
-        if not getattr(self, '_has_webrtc', False):
+        if self._vad_backend == "none":
             return 0.0
-            
         try:
-            # frame 恰好是 30ms (960 bytes) 的 16kHz PCM，完全契合 WebRTC 的胃口
-            is_speech = self._vad.is_speech(frame, self.SAMPLE_RATE)
-            prob = 1.0 if is_speech else 0.0
-            
+            if self._vad_backend == "webrtc":
+                is_speech = self._vad.is_speech(frame, self.SAMPLE_RATE)
+                prob = 1.0 if is_speech else 0.0
+            else:
+                samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+                with self._vad_lock:
+                    output, state = self._silero_session.run(
+                        None,
+                        {
+                            "input": samples.reshape(1, -1),
+                            "state": self._silero_state,
+                            "sr": np.array(self.SAMPLE_RATE, dtype=np.int64),
+                        },
+                    )
+                    self._silero_state = state
+                prob = float(output[0][0])
+
             self._vad_err_count += 1
             if self._vad_err_count % 10 == 0:
-                status = "🗣️ 人声" if is_speech else "🔇 噪音/静音"
-                print(f"  [WebRTC VAD] 状态: {status}")
-                
+                status = "人声" if prob > self._vad_thresh else "噪音/静音"
+                print(f"  [{self._vad_backend.upper()} VAD] 状态: {status} ({prob:.2f})")
             return prob
-        except Exception as e:
+        except Exception:
             return 0.0
 
     def _emit_sentence(self, frames):

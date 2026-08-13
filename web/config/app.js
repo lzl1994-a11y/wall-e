@@ -16,6 +16,7 @@ const MODULE_ROOTS = Object.freeze({
   pipeline: "pipeline",
   asr: "asr",
   wake_word: "wake_word",
+  vad: "vad",
   tts: "tts",
   llm: "llm",
   system_prompt: "system_prompt",
@@ -33,6 +34,7 @@ const MODULE_LABELS = Object.freeze({
   pipeline: "对话链路",
   asr: "ASR",
   wake_word: "唤醒词",
+  vad: "VAD",
   tts: "TTS",
   llm: "LLM",
   system_prompt: "系统提示词",
@@ -147,6 +149,24 @@ function ensureRemoteControlConfig() {
   Object.entries(defaults).forEach(([key, value]) => {
     if (state.config.remote_control[key] === undefined) state.config.remote_control[key] = value;
   });
+}
+
+function ensureVadConfig() {
+  const defaults = {
+    provider: "webrtc",
+    aggressiveness: 3,
+    model_path: "models/silero_vad.onnx",
+    threshold: 0.5,
+  };
+  if (!state.config.vad || typeof state.config.vad !== "object") {
+    state.config.vad = {};
+  }
+  Object.entries(defaults).forEach(([key, value]) => {
+    if (state.config.vad[key] === undefined) state.config.vad[key] = value;
+  });
+  if (!["webrtc", "silero"].includes(state.config.vad.provider)) {
+    state.config.vad.provider = "webrtc";
+  }
 }
 
 function ensureUsbDeviceConfig() {
@@ -266,6 +286,12 @@ function updateAsrProviderPanels(provider = $("#asr-provider")?.value) {
   });
 }
 
+function updateVadProviderPanels(provider = $("#vad-provider")?.value) {
+  $$('[data-vad-provider-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.vadProviderPanel !== provider;
+  });
+}
+
 function moduleContainer(module) {
   return $(`[data-module="${module}"]`);
 }
@@ -320,6 +346,7 @@ function clearConfigurationView() {
   $("#config-path").title = "";
   $("#modified-at").textContent = "—";
   updateAsrProviderPanels("");
+  updateVadProviderPanels("");
   state.usbDevices = [];
   renderUsbSelectors();
   clearAllDirty();
@@ -514,8 +541,10 @@ function refreshModuleFromSnapshot(module, payload) {
   setPath(state.config, root, deepClone(getPath(payload.config, root)));
   state.secretFields = payload.secret_fields || {};
   if (module === "asr") ensureAsrProviderConfigs();
+  if (module === "vad") ensureVadConfig();
   populateFields(moduleContainer(module));
   if (module === "asr") updateAsrProviderPanels(state.config.asr.provider);
+  if (module === "vad") updateVadProviderPanels(state.config.vad.provider);
   if (module === "servos") renderServos();
   if (module === "motors") renderMotors();
   if (module === "usb_devices") renderUsbSelectors();
@@ -534,10 +563,12 @@ async function loadConfig() {
     state.config = payload.config;
     state.secretFields = payload.secret_fields || {};
     ensureRemoteControlConfig();
+    ensureVadConfig();
     ensureUsbDeviceConfig();
     ensureAsrProviderConfigs();
     populateFields();
     updateAsrProviderPanels(state.config.asr.provider);
+    updateVadProviderPanels(state.config.vad.provider);
     renderServos();
     renderMotors();
     $("#config-path").textContent = payload.config_path;
@@ -622,6 +653,11 @@ function bindEvents() {
     if (state.config) state.config.asr.provider = event.target.value;
     updateAsrProviderPanels(event.target.value);
     markDirty("asr");
+  });
+  $("#vad-provider").addEventListener("change", (event) => {
+    if (state.config) state.config.vad.provider = event.target.value;
+    updateVadProviderPanels(event.target.value);
+    markDirty("vad");
   });
   $$('[data-usb-role]').forEach((select) => {
     select.addEventListener("focus", () => loadUsbDevices({ quiet: true }));

@@ -366,6 +366,19 @@ def validate_config(config: Any) -> list[str]:
     _check_number(wake_word, "threshold", "wake_word.threshold", errors, 0, 1)
     _check_number(wake_word, "awake_timeout", "wake_word.awake_timeout", errors, 1, 300)
 
+    vad = config.get("vad")
+    if vad is not None:
+        if not isinstance(vad, dict):
+            errors.append("vad 必须是配置对象")
+        else:
+            if vad.get("provider") not in {"webrtc", "silero"}:
+                errors.append("vad.provider 只能是 webrtc 或 silero")
+            _check_number(
+                vad, "aggressiveness", "vad.aggressiveness", errors, 0, 3, integer=True
+            )
+            _check_string(vad, "model_path", "vad.model_path", errors)
+            _check_number(vad, "threshold", "vad.threshold", errors, 0, 1)
+
     if not isinstance(config.get("system_prompt"), str) or not config.get("system_prompt", "").strip():
         errors.append("system_prompt 不能为空")
     elif len(config["system_prompt"]) > 100000:

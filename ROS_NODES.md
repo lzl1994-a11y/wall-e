@@ -107,6 +107,7 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | 文件 | 作用 |
 | --- | --- |
 | `services/llm_service.py` | 封装 OpenAI/Kimi 兼容接口，提供流式大模型回复和工具调用结果。 |
+| `services/camera_frame.py` | 缓存 `/image_padded_jpeg`/`/image` 最新帧；视觉管线未启动时从配置的 USB 摄像头临时抓取一帧。 |
 | `services/mcp_service.py` | 注册可给 LLM 调用的工具，目前包括 `express_emotion`、`perform_action`、`move_chassis`。 |
 | `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
 | `services/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |

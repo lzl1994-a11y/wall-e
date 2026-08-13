@@ -44,6 +44,12 @@ def sample_config():
             "awake_timeout": 8.0,
             "response_wav": "assets/wake_response.wav",
         },
+        "vad": {
+            "provider": "webrtc",
+            "aggressiveness": 3,
+            "model_path": "models/silero_vad.onnx",
+            "threshold": 0.5,
+        },
         "system_prompt": "你是瓦力。",
         "tts": {"engine": "edge-tts", "voice": "zh-CN-XiaoxiaoNeural", "output_device": "default"},
         "serial": {"doa_port": "COM1", "lower_board_port": "COM2", "baudrate": 115200},
@@ -137,6 +143,55 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('id="new-access-token"', html)
         self.assertIn('id="change-token-button"', html)
         self.assertIn("修改令牌", html)
+
+    def test_vad_configuration_controls_are_visible(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('data-module="vad"', html)
+        self.assertIn('data-path="vad.provider"', html)
+        self.assertIn('data-path="vad.aggressiveness"', html)
+        self.assertIn('data-path="vad.model_path"', html)
+        self.assertIn('data-path="vad.threshold"', html)
+
+    def test_vad_patch_is_saved_independently(self):
+        before = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        _, body = self.request(
+            "/api/config",
+            method="POST",
+            payload={
+                "patch": {
+                    "vad": {
+                        "provider": "silero",
+                        "aggressiveness": 2,
+                        "model_path": "models/silero_vad.onnx",
+                        "threshold": 0.62,
+                    }
+                }
+            },
+        )
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertTrue(body["ok"])
+        self.assertEqual(stored["vad"]["provider"], "silero")
+        self.assertEqual(stored["vad"]["threshold"], 0.62)
+        self.assertEqual(stored["llm"], before["llm"])
+
+    def test_invalid_vad_provider_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "vad": {
+                            "provider": "unknown",
+                            "aggressiveness": 3,
+                            "model_path": "models/silero_vad.onnx",
+                            "threshold": 0.5,
+                        }
+                    }
+                },
+            )
+        self.assertEqual(context.exception.code, 400)
 
     def test_api_requires_token(self):
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -407,6 +462,7 @@ class ConfigWebServerTests(unittest.TestCase):
                 port=0,
                 config_path=self.config_path,
                 static_dir=DEFAULT_STATIC_DIR,
+                token=None,
             )
 
     def test_non_ascii_token_is_rejected_with_clear_error(self):

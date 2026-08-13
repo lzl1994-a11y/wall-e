@@ -13,6 +13,7 @@ from std_msgs.msg import String
 from pypinyin import Style, pinyin
 
 from services.llm_service import LLMService
+from services.camera_frame import CameraFrameProvider, is_camera_inspection_request
 
 
 class LLMBrainNode(Node):
@@ -52,6 +53,7 @@ class LLMBrainNode(Node):
         self.full_ai_publisher = self.create_publisher(String, 'full_ai_text', 10)
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
         self.busy_publisher = self.create_publisher(String, 'llm_busy', 10)
+        self.camera_frames = CameraFrameProvider(self)
 
         try:
             self.llm = LLMService()
@@ -117,6 +119,12 @@ class LLMBrainNode(Node):
         busy_msg = String()
         busy_msg.data = "busy"
         self.busy_publisher.publish(busy_msg)
+
+        # 视觉查看是一个两阶段技能：先立即确认，再抓取一帧交给视觉模型。
+        # 这样用户不会等待摄像头和第二次 LLM 请求时陷入沉默。
+        if is_camera_inspection_request(user_prompt):
+            self._process_camera_inspection(turn_id, user_prompt)
+            return
 
         py_list = pinyin(user_prompt, style=Style.NORMAL)
         py_str = ' '.join([item[0] for item in py_list])
@@ -204,6 +212,10 @@ class LLMBrainNode(Node):
                             punc_count = 0
 
                 elif data_type == 'tool_call':
+                    if data.get('name') == 'inspect_camera':
+                        self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
+                        self._process_camera_inspection(turn_id, user_prompt)
+                        return
                     action_payload = {
                         'turn_id': turn_id,
                         'name': data.get('name'),
@@ -288,6 +300,91 @@ class LLMBrainNode(Node):
         idle_msg = String()
         idle_msg.data = "idle"
         self.busy_publisher.publish(idle_msg)
+
+    def _process_camera_inspection(self, turn_id, user_prompt):
+        """确认 → 抓帧 → 视觉 LLM → 播报结果。"""
+        confirmation = '好的，我看一下。'
+        self._publish_tts(confirmation, turn_id)
+        self._publish_screen_dialog(turn_id, user_prompt, confirmation, [])
+
+        frame = self.camera_frames.capture(timeout=1.5)
+        if not frame:
+            failure = '我现在看不到画面，检查一下摄像头连接。'
+            self._publish_tts(failure, turn_id)
+            self._publish_screen_dialog(
+                turn_id, user_prompt, failure, [], error='camera_frame_unavailable'
+            )
+            self._set_llm_idle()
+            return
+
+        import base64
+        image_b64 = base64.b64encode(frame).decode('ascii')
+        visual_prompt = (
+            '请根据我附带的摄像头画面回答用户的问题。只输出简短、自然、可直接播报的中文答案，'
+            '不要输出修正文本标签、分析过程、工具调用或括号说明。\n'
+            f'用户问题：{user_prompt}'
+        )
+        try:
+            chunks = []
+            for data in self.llm.chat_stream(
+                visual_prompt,
+                self._visual_history(),
+                image_base64=image_b64,
+                tools_enabled=False,
+                system_prompt=(
+                    '你是瓦力的视觉。只依据当前摄像头图片回答问题；看不清时明确说看不清，'
+                    '不要猜测。答案使用简短自然的中文，不能输出分析过程或任何标签。'
+                ),
+            ):
+                if data.get('type') == 'text' and data.get('content'):
+                    chunks.append(data['content'])
+            answer = self._clean_visual_answer(''.join(chunks))
+            if not answer:
+                raise RuntimeError('视觉模型返回空答案')
+
+            self._publish_tts(answer, turn_id)
+            self.chat_history.append({'role': 'user', 'content': user_prompt})
+            self.chat_history.append({'role': 'assistant', 'content': answer})
+            self.full_ai_publisher.publish(String(data=answer))
+            self._publish_screen_dialog(turn_id, user_prompt, answer, [])
+        except Exception as exc:
+            self.get_logger().error(f'[{turn_id}] Vision request failed: {exc}\n{traceback.format_exc()}')
+            failure = '这张图我没分析出来，你换个角度再让我看看。'
+            self._publish_tts(failure, turn_id)
+            self._publish_screen_dialog(turn_id, user_prompt, failure, [], error=str(exc))
+        finally:
+            self._set_llm_idle()
+
+    def _visual_history(self):
+        """只保留文本形式的最近上下文，避免把旧 tool 消息传给视觉模型。"""
+        history = []
+        for item in list(self.chat_history)[-8:]:
+            if item.get('role') not in {'user', 'assistant'}:
+                continue
+            if isinstance(item.get('content'), str) and item['content'].strip():
+                history.append({'role': item['role'], 'content': item['content']})
+        return history
+
+    @staticmethod
+    def _clean_visual_answer(text):
+        text = (text or '').strip()
+        if text.startswith('```'):
+            text = text.strip('`').strip()
+        # 防止兼容模型仍然套用本项目普通对话的标签格式。
+        for prefix in ('【修正文本】', '修正文本:', '修正文本：', 'ai:', 'AI:'):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip(' ：:')
+        return LLMBrainNode.TTS_CLEAN_RE.sub('', text).strip()
+
+    def _publish_tts(self, text, turn_id=''):
+        safe = self.TTS_CLEAN_RE.sub('', (text or '').strip())
+        if not safe:
+            return
+        self.tts_publisher.publish(String(data=safe))
+        self.get_logger().info(f'[{turn_id}] Published TTS sentence: {safe}')
+
+    def _set_llm_idle(self):
+        self.busy_publisher.publish(String(data='idle'))
 
     def _extract_corrected_text(self, first_line):
         first_line = (first_line or '').strip()
