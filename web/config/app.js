@@ -20,6 +20,7 @@ const MODULE_ROOTS = Object.freeze({
   tts: "tts",
   llm: "llm",
   system_prompt: "system_prompt",
+  hardware: "hardware",
   serial: "serial",
   i2c: "i2c",
   remote_control: "remote_control",
@@ -38,6 +39,7 @@ const MODULE_LABELS = Object.freeze({
   tts: "TTS",
   llm: "LLM",
   system_prompt: "系统提示词",
+  hardware: "运动硬件后端",
   serial: "串口",
   i2c: "I²C",
   remote_control: "手柄遥控",
@@ -149,6 +151,15 @@ function ensureRemoteControlConfig() {
   Object.entries(defaults).forEach(([key, value]) => {
     if (state.config.remote_control[key] === undefined) state.config.remote_control[key] = value;
   });
+}
+
+function ensureHardwareConfig() {
+  if (!state.config.hardware || typeof state.config.hardware !== "object") {
+    state.config.hardware = {};
+  }
+  if (!["serial_mcu", "ubuntu_i2c"].includes(state.config.hardware.backend)) {
+    state.config.hardware.backend = "serial_mcu";
+  }
 }
 
 function ensureVadConfig() {
@@ -292,6 +303,12 @@ function updateVadProviderPanels(provider = $("#vad-provider")?.value) {
   });
 }
 
+function updateHardwareBackendPanels(backend = $("#hardware-backend")?.value) {
+  $$('[data-hardware-backend-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.hardwareBackendPanel !== backend;
+  });
+}
+
 function moduleContainer(module) {
   return $(`[data-module="${module}"]`);
 }
@@ -347,6 +364,7 @@ function clearConfigurationView() {
   $("#modified-at").textContent = "—";
   updateAsrProviderPanels("");
   updateVadProviderPanels("");
+  updateHardwareBackendPanels("");
   state.usbDevices = [];
   renderUsbSelectors();
   clearAllDirty();
@@ -542,9 +560,11 @@ function refreshModuleFromSnapshot(module, payload) {
   state.secretFields = payload.secret_fields || {};
   if (module === "asr") ensureAsrProviderConfigs();
   if (module === "vad") ensureVadConfig();
+  if (module === "hardware") ensureHardwareConfig();
   populateFields(moduleContainer(module));
   if (module === "asr") updateAsrProviderPanels(state.config.asr.provider);
   if (module === "vad") updateVadProviderPanels(state.config.vad.provider);
+  if (module === "hardware") updateHardwareBackendPanels(state.config.hardware.backend);
   if (module === "servos") renderServos();
   if (module === "motors") renderMotors();
   if (module === "usb_devices") renderUsbSelectors();
@@ -563,12 +583,14 @@ async function loadConfig() {
     state.config = payload.config;
     state.secretFields = payload.secret_fields || {};
     ensureRemoteControlConfig();
+    ensureHardwareConfig();
     ensureVadConfig();
     ensureUsbDeviceConfig();
     ensureAsrProviderConfigs();
     populateFields();
     updateAsrProviderPanels(state.config.asr.provider);
     updateVadProviderPanels(state.config.vad.provider);
+    updateHardwareBackendPanels(state.config.hardware.backend);
     renderServos();
     renderMotors();
     $("#config-path").textContent = payload.config_path;
@@ -658,6 +680,11 @@ function bindEvents() {
     if (state.config) state.config.vad.provider = event.target.value;
     updateVadProviderPanels(event.target.value);
     markDirty("vad");
+  });
+  $("#hardware-backend").addEventListener("change", (event) => {
+    if (state.config) state.config.hardware.backend = event.target.value;
+    updateHardwareBackendPanels(event.target.value);
+    markDirty("hardware");
   });
   $$('[data-usb-role]').forEach((select) => {
     select.addEventListener("focus", () => loadUsbDevices({ quiet: true }));

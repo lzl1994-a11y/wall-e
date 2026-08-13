@@ -49,6 +49,12 @@ class NodeEntry:
 def build_node_list(args):
     config = load_config()
     launch_cfg = config.get("launch", {})
+    hardware_cfg = config.get("hardware", {})
+    if not isinstance(hardware_cfg, dict):
+        hardware_cfg = {}
+    hardware_backend = hardware_cfg.get("backend", "serial_mcu")
+    if hardware_backend not in {"serial_mcu", "ubuntu_i2c"}:
+        hardware_backend = "serial_mcu"
 
     # pipeline mode: CLI 优先 → config → keyboard
     if args.voice_chat:
@@ -70,12 +76,17 @@ def build_node_list(args):
     nodes.append(NodeEntry("tts_play", ROOT / "nodes" / "tts_play_node.py"))
     nodes.append(NodeEntry("audio_playback", ROOT / "nodes" / "audio_playback_node.py"))
 
-    # serial: CLI --no-serial 覆盖 config
-    if not args.no_serial and launch_cfg.get("serial", True):
-        nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
+    # Screen/motion control cluster. The selected hardware backend has one owner.
+    if launch_cfg.get("serial", True):
+        if not args.no_serial:
+            nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
         nodes.append(NodeEntry("action", ROOT / "nodes" / "sequence_ros_node.py"))
-        nodes.append(NodeEntry("hardware_bridge", ROOT / "nodes" / "hardware_bridge_node.py"))
         nodes.append(NodeEntry("joy_control", ROOT / "nodes" / "joy_control_node.py"))
+        if not args.no_hardware:
+            if hardware_backend == "ubuntu_i2c":
+                nodes.append(NodeEntry("i2c_hardware", ROOT / "nodes" / "i2c_hardware_node.py"))
+            elif not args.no_serial:
+                nodes.append(NodeEntry("hardware_bridge", ROOT / "nodes" / "hardware_bridge_node.py"))
 
     if pipeline == "multimodal":
         nodes.append(NodeEntry("voice_chat", ROOT / "nodes" / "voice_chat_ros_node.py"))
@@ -207,7 +218,7 @@ def main():
     parser.add_argument(
         "--no-hardware",
         action="store_true",
-        help="When tracking is active, skip servo_ros and motor_ros.",
+        help="Do not start the configured servo/motor hardware backend.",
     )
     parser.add_argument(
         "--no-web",

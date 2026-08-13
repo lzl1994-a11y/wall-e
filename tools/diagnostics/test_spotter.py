@@ -2,8 +2,10 @@ import sys
 import sherpa_onnx
 import glob
 import os
+from pathlib import Path
 
-model_dir = "models/sherpa-onnx"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+model_dir = str(PROJECT_ROOT / "models" / "sherpa-onnx")
 
 def _pick(pattern):
     files = glob.glob(pattern)

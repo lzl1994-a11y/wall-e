@@ -1,7 +1,9 @@
 import numpy as np
 import onnxruntime as ort
+from pathlib import Path
 
-model_path = "models/silero_vad.onnx"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+model_path = PROJECT_ROOT / "models" / "silero_vad.onnx"
 vad = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
 
 def get_prob(samples):

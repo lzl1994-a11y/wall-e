@@ -35,6 +35,7 @@ def sample_config():
             "max_tokens": 2048,
         },
         "launch": {"serial": True, "tracking": False},
+        "hardware": {"backend": "serial_mcu"},
         "remote_control": {"servo_step_size": 40.0, "update_rate_hz": 20},
         "wake_word": {
             "enabled": True,
@@ -136,6 +137,36 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('data-usb-role="camera"', html)
         self.assertIn('data-usb-role="screen_motion"', html)
         self.assertIn('data-usb-role="voice"', html)
+
+    def test_hardware_backend_controls_are_visible(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('data-module="hardware"', html)
+        self.assertIn('data-path="hardware.backend"', html)
+        self.assertIn('value="serial_mcu"', html)
+        self.assertIn('value="ubuntu_i2c"', html)
+        self.assertIn('data-hardware-backend-panel="ubuntu_i2c"', html)
+
+    def test_hardware_backend_patch_is_saved_independently(self):
+        before = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        _, body = self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"hardware": {"backend": "ubuntu_i2c"}}},
+        )
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertTrue(body["ok"])
+        self.assertEqual(stored["hardware"]["backend"], "ubuntu_i2c")
+        self.assertEqual(stored["i2c"], before["i2c"])
+
+    def test_invalid_hardware_backend_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={"patch": {"hardware": {"backend": "gpio"}}},
+            )
+        self.assertEqual(context.exception.code, 400)
 
     def test_access_token_change_controls_are_visible(self):
         _, body = self.request("/", token=None)

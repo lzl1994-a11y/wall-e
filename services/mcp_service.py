@@ -66,7 +66,7 @@ _play_sequence_doc = _build_sequence_prompt()
 
 
 # ==========================================
-# 表情 / 动作类（躯干表演，由 servo_ros_node 执行）
+# 表情 / 动作类（躯干表演，由 sequence_ros_node 执行）
 # ==========================================
 
 @mcp.tool()
@@ -82,7 +82,7 @@ def express_emotion(emotion: str) -> str:
       - "disdain"  : 鄙视/翻白眼
       - "angry"    : 生气
     
-    通过 ROS /action_cmd 下发，由 servo_ros_node 执行。
+    通过 ROS /action_cmd 下发，由 sequence_ros_node 执行。
     """
     return "ok"
 
@@ -93,7 +93,7 @@ def play_sequence(sequence_name: str) -> str:
 
 
 # ==========================================
-# 底盘类（由 motor_ros_node 执行）
+# 底盘类（由 sequence_ros_node 分发到所选硬件后端）
 # ==========================================
 
 @mcp.tool()
@@ -112,7 +112,7 @@ def move_chassis(direction: str, duration: int = 1) -> str:
     
     duration: 持续秒数，默认 1 秒，建议 1~3 秒。
     
-    通过 ROS /action_cmd 下发，由 motor_ros_node 执行。
+    通过 ROS /action_cmd 下发，由 sequence_ros_node 执行。
     """
     return "ok"
 

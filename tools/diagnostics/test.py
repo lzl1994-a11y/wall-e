@@ -3,6 +3,11 @@ import sys
 import json
 import queue  # 新增：引入线程安全的队列模块
 import re     # 🚀 新增：引入正则表达式模块，用于文本清洗
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.llm_service import LLMService
 from services.tts_service import TTSService

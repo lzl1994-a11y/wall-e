@@ -38,7 +38,6 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `nodes/stt_ros_node.py` | `walle_ear_node` | 否，使用 `--real-stt` 时启动 | 无 | `voice_text` | 真实语音识别节点。调用 `services/stt_service.py`，识别到一句话后发布到 `voice_text`。 |
 | `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `action_cmd`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
 | `nodes/serial_ros_node.py` | `walle_serial_node` | 是，除非加 `--no-serial` | `screen_dialog` | 无 | 串口/屏幕输出节点。接收完整对话包，把用户文本、AI 回复和动作命令写给下位机或屏幕。 |
-| `nodes/yolo_node.py` | `yolo_brain_node` | 否 | 无 | `/wall_e/vision` | 视觉演示节点。定时发布模拟视觉识别结果，目前不在 `launch_nodes.py` 默认链路里。 |
 
 ## 关键话题说明
 
@@ -63,8 +62,10 @@ python launch_nodes.py --tracking
 此时在默认链路基础上附加:
 
 ```text
-wali_tracking_node  -> /servo_cmd -> servo_ros_node  -> ServoControl (舵机PCA9685)
-                    -> /motor_cmd -> motor_ros_node  -> ServoControl (电机TB6612)
+wali_tracking_node  -> /servo_cmd ┐
+                    -> /motor_cmd ┴-> 当前硬件后端
+                                      ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
+                                      └─ ubuntu_i2c: i2c_hardware_node -> 板载 I2C -> PCA9685
         ^
         ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
         ├─ /action_cmd                    (LLM 模式切换)
@@ -76,16 +77,16 @@ wali_tracking_node  -> /servo_cmd -> servo_ros_node  -> ServoControl (舵机PCA9
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
 | `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机和电机控制指令。 |
-| `nodes/servo_ros_node.py` | `servo_ros_node` | `--tracking` | `/servo_cmd` | 无 | 舵机桥接节点，将 ROS 指令转发给 ServoControl.set_angle() 驱动 PCA9685 舵机。 |
-| `nodes/motor_ros_node.py` | `motor_ros_node` | `--tracking` | `/motor_cmd` | 无 | 电机桥接节点，将 ROS 指令转发给 ServoControl.set_motor() 驱动 TB6612FNG 电机。 |
+| `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机。 |
+| `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685。 |
 | `nodes/doa_ros_node.py` | `doa_ros_node` | `--tracking` (除非 `--no-doa`) | 无(串口直读) | `/doa_angle` | DOA 声源定位桥接节点，对接 D-DOA TDOA 模块串口，发布声源角度。 |
 
 ### 视觉跟踪话题
 
 | 话题 | 发布者 | 订阅者 | 作用 |
 | --- | --- | --- | --- |
-| `/servo_cmd` | `wali_tracking_node` | `servo_ros_node` | JSON: `{"name":"head_yaw","angle":110}` |
-| `/motor_cmd` | `wali_tracking_node` | `motor_ros_node` | JSON: `{"left":{"action":1,"throttle":30},"right":{...}}` |
+| `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
+| `/motor_cmd` | `sequence_ros_node`, `joy_control_node` | 当前硬件后端 | JSON: `{"left":{"action":1,"throttle":30},"right":{...}}` |
 | `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
 | `/hobot_mono2d_body_detection` | RDK X3 `mono2d_body_detection` | `wali_tracking_node` | `ai_msgs/PerceptionTargets`，BPU 检测结果（body/face/head/hand 框 + track_id） |
 

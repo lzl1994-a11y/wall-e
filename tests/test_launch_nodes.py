@@ -12,20 +12,74 @@ if str(ROOT) not in sys.path:
 import launch_nodes
 
 
-def launcher_args(*, no_web=False):
+def launcher_args(*, no_web=False, no_serial=True, no_hardware=False):
     return Namespace(
         voice_chat=False,
         real_stt=False,
         keyboard_stt=False,
-        no_serial=True,
+        no_serial=no_serial,
         tracking=False,
         no_doa=False,
-        no_hardware=False,
+        no_hardware=no_hardware,
         no_web=no_web,
     )
 
 
 class LaunchNodesTests(unittest.TestCase):
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "asr_llm"},
+            "launch": {"serial": True, "tracking": False},
+            "hardware": {"backend": "serial_mcu"},
+        },
+    )
+    def test_serial_mcu_backend_starts_serial_bridge(self, _load_config):
+        names = [
+            entry.name
+            for entry in launch_nodes.build_node_list(launcher_args(no_serial=False))
+        ]
+        self.assertIn("serial", names)
+        self.assertIn("hardware_bridge", names)
+        self.assertNotIn("i2c_hardware", names)
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "asr_llm"},
+            "launch": {"serial": True, "tracking": False},
+            "hardware": {"backend": "ubuntu_i2c"},
+        },
+    )
+    def test_ubuntu_i2c_backend_starts_single_i2c_owner(self, _load_config):
+        names = [
+            entry.name
+            for entry in launch_nodes.build_node_list(launcher_args(no_serial=False))
+        ]
+        self.assertIn("serial", names)
+        self.assertIn("i2c_hardware", names)
+        self.assertNotIn("hardware_bridge", names)
+        self.assertNotIn("servo", names)
+        self.assertNotIn("motor", names)
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "asr_llm"},
+            "launch": {"serial": True, "tracking": False},
+            "hardware": {"backend": "ubuntu_i2c"},
+        },
+    )
+    def test_no_hardware_skips_selected_backend(self, _load_config):
+        names = [
+            entry.name
+            for entry in launch_nodes.build_node_list(
+                launcher_args(no_serial=False, no_hardware=True)
+            )
+        ]
+        self.assertNotIn("i2c_hardware", names)
+        self.assertNotIn("hardware_bridge", names)
+
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_config_web_follows_main_launcher(self, _load_config):
         entries = launch_nodes.build_node_list(launcher_args())

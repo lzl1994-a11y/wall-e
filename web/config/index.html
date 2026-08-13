@@ -62,7 +62,7 @@
           <article class="card span-two" data-module="runtime">
             <div class="card-heading-row"><h3>启动开关</h3><button class="button secondary small module-save" data-save-module="runtime" type="button">保存本模块</button></div>
             <div class="switch-grid">
-              <label class="switch-row"><span><strong>串口与运动节点</strong><small>屏幕、舵机和履带下位机</small></span><input data-path="launch.serial" type="checkbox"><i></i></label>
+              <label class="switch-row"><span><strong>屏幕与运动控制</strong><small>启动屏幕通信、动作编排和所选硬件后端</small></span><input data-path="launch.serial" type="checkbox"><i></i></label>
               <label class="switch-row"><span><strong>视觉跟踪</strong><small>启动看着我、跟着我相关节点</small></span><input data-path="launch.tracking" type="checkbox"><i></i></label>
             </div>
           </article>
@@ -178,6 +178,14 @@
           <p>每个硬件模块单独保存，修改端口前请先确认真实接线。</p>
         </div>
         <div class="card-grid">
+          <article class="card span-two mode-card" data-module="hardware">
+            <div class="card-heading-row"><h3>运动硬件后端</h3><button class="button secondary small module-save" data-save-module="hardware" type="button">保存本模块</button></div>
+            <label class="field provider-select"><span>控制方式</span><select id="hardware-backend" data-path="hardware.backend"><option value="serial_mcu">下位机串口控制（当前模式）</option><option value="ubuntu_i2c">Ubuntu 板载 I²C 直连 PCA9685</option></select></label>
+            <div class="mode-guide">
+              <div class="mode-guide-item asr"><strong>下位机串口</strong><span>旭日派发送运动数据，由 ESP32 控制 PCA9685</span></div>
+              <div class="mode-guide-item multimodal"><strong>板载 I²C</strong><span>旭日派独占 I²C 总线，直接控制 PCA9685</span></div>
+            </div>
+          </article>
           <article class="card span-two usb-config-card" data-module="usb_devices">
             <div class="card-heading-row">
               <div><h3>USB 设备分配</h3><p class="card-subtitle">按物理 USB 身份绑定，设备编号变化后仍可识别，并支持运行中热插拔。</p></div>
@@ -213,12 +221,12 @@
               <label class="field full"><span>波特率</span><input data-path="serial.baudrate" data-type="integer" type="number" min="1200" max="4000000"></label>
             </div>
           </article>
-          <article class="card" data-module="i2c">
+          <article class="card" data-module="i2c" data-hardware-backend-panel="ubuntu_i2c" hidden>
             <div class="card-heading-row"><h3>I²C / PCA9685</h3><button class="button secondary small module-save" data-save-module="i2c" type="button">保存本模块</button></div>
             <div class="form-grid three">
               <label class="field"><span>总线</span><input data-path="i2c.bus" data-type="integer" type="number" min="0" max="32"></label>
               <label class="field"><span>地址（十进制）</span><input data-path="i2c.pca9685_address" data-type="integer" type="number" min="0" max="127"></label>
-              <label class="field"><span>PWM 频率</span><input data-path="i2c.pwm_frequency" data-type="integer" type="number" min="1" max="1600"></label>
+              <label class="field"><span>PWM 频率</span><input data-path="i2c.pwm_frequency" data-type="integer" type="number" min="24" max="1526"></label>
             </div>
           </article>
           <article class="card span-two" data-module="vision">

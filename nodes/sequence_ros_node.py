@@ -57,7 +57,7 @@ class SequenceRosNode(Node):
         # 4. 核心 50Hz 插值定时器
         self.create_timer(0.02, self._tick)
 
-        # 统一订阅 /action_cmd (接管之前 action_ros_node 的职责)
+        # 统一订阅 /action_cmd，负责动作编排和运动指令分发
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
         
         self._first_tick = True

@@ -309,6 +309,13 @@ def validate_config(config: Any) -> list[str]:
     for key in ("serial", "tracking"):
         _check_bool(launch, key, f"launch.{key}", errors)
 
+    hardware = config.get("hardware")
+    if hardware is not None:
+        if not isinstance(hardware, dict):
+            errors.append("hardware 必须是配置对象")
+        elif hardware.get("backend") not in {"serial_mcu", "ubuntu_i2c"}:
+            errors.append("hardware.backend 只能是 serial_mcu 或 ubuntu_i2c")
+
     remote_control = config.get("remote_control")
     if remote_control is not None:
         if not isinstance(remote_control, dict):
@@ -396,7 +403,7 @@ def validate_config(config: Any) -> list[str]:
     i2c = _require_mapping(config, "i2c", errors)
     _check_number(i2c, "bus", "i2c.bus", errors, 0, 32, integer=True)
     _check_number(i2c, "pca9685_address", "i2c.pca9685_address", errors, 0, 127, integer=True)
-    _check_number(i2c, "pwm_frequency", "i2c.pwm_frequency", errors, 1, 1600, integer=True)
+    _check_number(i2c, "pwm_frequency", "i2c.pwm_frequency", errors, 24, 1526, integer=True)
 
     vision = _require_mapping(config, "vision", errors)
     _check_number(vision, "camera_index", "vision.camera_index", errors, 0, 32, integer=True)
@@ -738,7 +745,7 @@ def create_server(
 
 
 def run_web_server(bus: object | None = None) -> None:
-    """兼容旧 main.py 的阻塞式入口；bus 参数保留但不再使用。"""
+    """阻塞式启动配置服务；bus 参数保留用于兼容现有调用方。"""
     del bus
     host = os.environ.get("WALI_CONFIG_HOST", DEFAULT_HOST)
     port = int(os.environ.get("WALI_CONFIG_PORT", str(DEFAULT_PORT)))

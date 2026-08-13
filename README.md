@@ -126,8 +126,14 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 - `--voice-chat`：使用大模型端到端语音交互（Qwen-Omni）。
 - `--real-stt`：使用阿里云 Paraformer 语音转文字。
 - `--keyboard-stt`：使用键盘输入文字模拟语音识别（调试用）。
-- `--no-serial`：不启动串口硬件桥接节点（纯代码调试模式）。
+- `--no-serial`：不启动屏幕/下位机串口节点；板载 I²C 后端仍可运行。
+- `--no-hardware`：不启动舵机/电机硬件后端，保留其他节点用于调试。
 - `--no-web`：不启动 `config.yaml` 配置网页。
+
+舵机和履带的硬件后端在配置网页“硬件 → 运动硬件后端”中选择：
+
+- `serial_mcu`：默认模式，通过 USB 串口把 PCA9685 数据发送给 ESP32 下位机。
+- `ubuntu_i2c`：由旭日派 Ubuntu 通过板载 I²C 直接控制 PCA9685。该模式需要启用对应 I²C 总线，并安装 `smbus2` 与 `adafruit-circuitpython-pca9685`。
 
 ## 🧠 核心架构说明
 

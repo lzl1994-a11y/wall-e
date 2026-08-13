@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """硬件桥接节点：合并舵机与电机订阅，计算 PCA9685 原始值发布到 /pca9685_raw。
 
-替换 servo_ros_node + motor_ros_node。不再直接持有串口——串口由 serial_ros_node 独占，
-本节点只把算好的 15 通道值通过 ROS Topic 交给 serial_ros_node 透传 ESP32-S3。
+本节点不直接持有串口；串口由 serial_ros_node 独占。它只把算好的 15 通道值
+通过 ROS Topic 交给 serial_ros_node 透传 ESP32-S3。
 
 协议格式（/pca9685_raw 内 payload）：
   ch0,ch1,...,ch8, ch9,ch10,ch11, ch12,ch13,ch14

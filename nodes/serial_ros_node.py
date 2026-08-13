@@ -6,7 +6,8 @@
   /tft_cmd       → TFT 控制指令（eyeaction:...）
   /pca9685_raw   → PCA9685 15 通道原始值（由 hardware_bridge_node 产出）
 
-动作分发由 action_ros_node 负责，硬件驱动由 hardware_bridge_node 负责。
+动作分发由 sequence_ros_node 负责。serial_mcu 模式下运动数据由
+hardware_bridge_node 发送；ubuntu_i2c 模式下本节点只负责屏幕通信。
 本节点只做串口透传，不做任何业务解析。
 """
 
@@ -77,7 +78,7 @@ class SerialNode(Node):
             self.get_logger().info(f'Sent AI text -> {payload.strip()}')
 
     # ------------------------------------------------------------------
-    # tft_cmd: 表情控制指令（原 action_ros_node 直接写串口）
+    # tft_cmd: 表情控制指令
     # ------------------------------------------------------------------
     def tft_cmd_callback(self, msg):
         if self.bridge.send_raw(msg.data):

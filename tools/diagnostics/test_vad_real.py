@@ -1,8 +1,11 @@
 import wave
 import numpy as np
 import onnxruntime as ort
+from pathlib import Path
 
-model_path = "models/silero_vad.onnx"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTICS_DIR = Path(__file__).resolve().parent
+model_path = PROJECT_ROOT / "models" / "silero_vad.onnx"
 vad = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
 
 def run_vad_on_file(wav_path, chunk_size):
@@ -30,8 +33,9 @@ def run_vad_on_file(wav_path, chunk_size):
         
     return probs
 
-probs_480 = run_vad_on_file("test_transcription_sync.wav", 480)
-probs_512 = run_vad_on_file("test_transcription_sync.wav", 512)
+sample_path = DIAGNOSTICS_DIR / "test_transcription_sync.wav"
+probs_480 = run_vad_on_file(str(sample_path), 480)
+probs_512 = run_vad_on_file(str(sample_path), 512)
 
 print("480 chunk max prob:", np.max(probs_480))
 print("480 chunk mean prob:", np.mean(probs_480))

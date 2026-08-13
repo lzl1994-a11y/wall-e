@@ -3,10 +3,13 @@ import yaml
 from openai import OpenAI
 import sys
 import io
+from pathlib import Path
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf8')
 
-with open('core/config.yaml', 'r', encoding='utf-8') as f:
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+with (PROJECT_ROOT / 'core' / 'config.yaml').open('r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
 
 client = OpenAI(

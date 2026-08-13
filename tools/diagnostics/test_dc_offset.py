@@ -1,8 +1,10 @@
 import numpy as np
-import wave
 import onnxruntime as ort
+from pathlib import Path
 
-model_path = "models/silero_vad.onnx"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTICS_DIR = Path(__file__).resolve().parent
+model_path = PROJECT_ROOT / "models" / "silero_vad.onnx"
 vad = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
 
 def test_vad(audio, name):
@@ -10,11 +12,7 @@ def test_vad(audio, name):
     chunk_size = 512
     probs = []
     for i in range(0, len(audio) - chunk_size, chunk_size):
-        chunk = audio[i:i+chunk_size]
-        # Remove DC offset!
-        chunk = chunk - np.mean(chunk)
-        chunk = chunk.reshape(1, -1)
-        
+        chunk = audio[i:i+chunk_size].reshape(1, -1)
         out_prob, out_state = vad.run(None, {
             "input": chunk,
             "state": state,
@@ -24,9 +22,18 @@ def test_vad(audio, name):
         probs.append(out_prob[0][0])
     print(f"{name} -> Max: {np.max(probs):.6f}, Mean: {np.mean(probs):.6f}")
 
-with wave.open("test_transcription_sync.wav", "rb") as wf:
+# 1. Real voice from test_transcription_sync.wav
+import wave
+with wave.open(str(DIAGNOSTICS_DIR / "test_transcription_sync.wav"), "rb") as wf:
     data = wf.readframes(wf.getnframes())
 real_audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
+test_vad(real_audio, "Normal Real Voice")
+
+# 2. Real voice with severe DC offset (e.g. +0.5)
 dc_audio = np.clip(real_audio + 0.5, -1.0, 1.0)
-test_vad(dc_audio, "Voice with +0.5 DC Offset (Fixed by mean subtraction)")
+test_vad(dc_audio, "Voice with +0.5 DC Offset")
+
+# 3. Real voice with slight DC offset (e.g. +0.1)
+dc_slight = np.clip(real_audio + 0.1, -1.0, 1.0)
+test_vad(dc_slight, "Voice with +0.1 DC Offset")
