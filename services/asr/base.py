@@ -3,9 +3,9 @@ from abc import ABC, abstractmethod
 
 
 class AbstractASR(ABC):
-    """wav 文件 → 识别文本"""
+    """统一的 WAV 文件到识别文本接口。"""
 
     @abstractmethod
     def recognize(self, wav_path: str, sample_rate: int = 16000) -> str:
-        """上传 wav 到云端 ASR，返回识别文本。失败返回空字符串。"""
+        """识别单声道 PCM WAV，返回文本；运行时失败返回空字符串。"""
         ...

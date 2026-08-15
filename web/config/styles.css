@@ -111,6 +111,9 @@ h3 { margin-bottom: 20px; font-size: 17px; }
 .form-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .form-grid.five { grid-template-columns: .7fr 2fr repeat(3, .7fr); }
 .provider-select { width: min(360px, 100%); margin-bottom: 18px; }
+.asr-mode-panel { padding-top: 18px; border-top: 1px solid var(--line); }
+.asr-mode-panel[hidden] { display: none; }
+.asr-mode-panel > .provider-select { margin-bottom: 18px; }
 .provider-panel { padding-top: 18px; border-top: 1px solid var(--line); }
 .provider-panel[hidden] { display: none; }
 .provider-panel-title { margin-bottom: 15px; color: var(--text); font-size: 13px; font-weight: 800; }

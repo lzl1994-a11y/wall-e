@@ -1,4 +1,4 @@
-"""智谱 ASR 适配器：GLM-ASR-2512 语音识别。"""
+"""智谱 ASR 适配器。"""
 import requests
 from .base import AbstractASR
 
@@ -6,17 +6,18 @@ from .base import AbstractASR
 class ZhipuASR(AbstractASR):
     """智谱语音识别，调用 open.bigmodel.cn 音频转录 API。
 
-    构造时接收 config.yaml asr 节点的 key / url / model，
-    url 默认为智谱官方端点，model 默认为 glm-asr-2512。
+    构造时接收 config.yaml asr 节点的 key / url / model。
+    模型名必须由配置提供，不在代码中选择默认模型。
     """
 
     _DEFAULT_URL = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
-    _DEFAULT_MODEL = "glm-asr-2512"
 
     def __init__(self, api_key: str, url: str, model: str):
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("Zhipu ASR model must be configured in config.yaml")
         self.api_key = api_key
         self.url = url or self._DEFAULT_URL
-        self.model = model or self._DEFAULT_MODEL
+        self.model = model.strip()
 
     def recognize(self, wav_path: str, sample_rate: int = 16000) -> str:
         try:

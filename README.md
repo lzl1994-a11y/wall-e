@@ -40,6 +40,18 @@ source install/setup.bash
 pip install websocket-client
 ```
 
+选择本地 ASR 时，只需要安装当前模型引擎对应的可选依赖：
+
+```bash
+# Sherpa-ONNX Zipformer / Paraformer / SenseVoice / Whisper
+pip install sherpa-onnx
+
+# Faster-Whisper
+pip install faster-whisper
+```
+
+本地 ASR 模型文件不随项目默认提供。请在配置网页中选择模型引擎，并填写该引擎要求的模型文件或目录路径。Sherpa 引擎需要使用与 `OfflineRecognizer` 兼容的模型。`models/sherpa-onnx` 中现有文件属于唤醒词检测模型，不应作为通用 ASR 模型使用。
+
 ## 🎮 启动指南
 
 系统的启动分为**“视觉感知端”**和**“瓦力大脑端”**两个独立的部分。
@@ -52,7 +64,7 @@ pip install websocket-client
 python services/web_server.py
 ```
 
-浏览器访问 `http://<旭日派IP>:8080`（本机调试也可用 `http://127.0.0.1:8080`）。默认监听所有网络接口，默认访问令牌为 `123456`。页面右上角提供“修改令牌”按钮，修改后立即生效并写入 `config.yaml`，重启后仍然有效。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 可分别配置智谱、阿里云和百度智能云，切换厂商时只显示并提交该厂商字段。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。
+浏览器访问 `http://<旭日派IP>:8080`（本机调试也可用 `http://127.0.0.1:8080`）。默认监听所有网络接口，默认访问令牌为 `123456`。页面右上角提供“修改令牌”按钮，修改后立即生效并写入 `config.yaml`，重启后仍然有效。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 可以选择云端服务或本地离线模型。云端模式支持智谱、阿里云和百度智能云，本地模式会根据 Zipformer、Paraformer、SenseVoice、Sherpa Whisper 或 Faster-Whisper 显示对应的模型文件字段。切换选项时只显示并提交当前选项的字段。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。ASR 配置在重启主脑后生效。
 
 “硬件”页面可以为三类物理 USB 分配角色：摄像头 USB、屏幕/运动 USB、语音 USB（麦克风、扬声器和声源定位）。点击“刷新设备”后选择当前设备并独立保存。配置使用 VID/PID 加序列号识别设备；没有序列号时使用物理 USB 端口路径，因此 `/dev/ttyACM*`、`/dev/video*` 或音频卡编号变化不会影响匹配。未配置某个角色时继续使用原有代码默认逻辑。运行中修改配置或拔插设备后，串口、DOA、音频和摄像头节点会自动重新发现并恢复，无需重启主程序。
 

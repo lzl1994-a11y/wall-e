@@ -83,35 +83,95 @@
 
           <article class="card span-two" data-module="asr">
             <div class="card-heading-row"><h3>ASR 语音识别</h3><button class="button secondary small module-save" data-save-module="asr" type="button">保存本模块</button></div>
-            <label class="field provider-select"><span>服务商</span><select id="asr-provider" data-path="asr.provider"><option value="zhipu">智谱 AI</option><option value="aliyun">阿里云</option><option value="baidu">百度智能云</option></select></label>
+            <label class="field provider-select"><span>识别方式</span><select id="asr-mode" data-path="asr.mode"><option value="cloud">云端服务</option><option value="local">本地离线模型</option></select></label>
 
-            <div class="provider-panel" data-asr-provider-panel="zhipu">
-              <div class="provider-panel-title">智谱语音识别</div>
-              <div class="form-grid">
-                <label class="field"><span>模型</span><input data-path="asr.zhipu.model" type="text"></label>
-                <label class="field secret"><span>API Key</span><input data-path="asr.zhipu.api_key" data-secret="true" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"><small data-secret-status="asr.zhipu.api_key"></small></label>
-                <label class="field full"><span>HTTP 接口地址</span><input data-path="asr.zhipu.url" type="url"></label>
+            <div class="asr-mode-panel" data-asr-mode-panel="cloud">
+              <label class="field provider-select"><span>云端服务商</span><select id="asr-provider" data-path="asr.provider"><option value="zhipu">智谱 AI</option><option value="aliyun">阿里云</option><option value="baidu">百度智能云</option></select></label>
+
+              <div class="provider-panel" data-asr-provider-panel="zhipu">
+                <div class="provider-panel-title">智谱语音识别</div>
+                <div class="form-grid">
+                  <label class="field"><span>模型</span><input data-path="asr.zhipu.model" type="text" required placeholder="请输入模型名称"></label>
+                  <label class="field secret"><span>API Key</span><input data-path="asr.zhipu.api_key" data-secret="true" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"><small data-secret-status="asr.zhipu.api_key"></small></label>
+                  <label class="field full"><span>HTTP 接口地址</span><input data-path="asr.zhipu.url" type="url"></label>
+                </div>
+              </div>
+
+              <div class="provider-panel" data-asr-provider-panel="aliyun" hidden>
+                <div class="provider-panel-title">阿里云 Paraformer</div>
+                <div class="form-grid">
+                  <label class="field"><span>模型</span><input data-path="asr.aliyun.model" type="text" required placeholder="请输入模型名称"></label>
+                  <label class="field secret"><span>API Key</span><input data-path="asr.aliyun.api_key" data-secret="true" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"><small data-secret-status="asr.aliyun.api_key"></small></label>
+                </div>
+              </div>
+
+              <div class="provider-panel" data-asr-provider-panel="baidu" hidden>
+                <div class="provider-panel-title">百度实时语音识别</div>
+                <div class="form-grid three">
+                  <label class="field"><span>AppID</span><input data-path="asr.baidu.app_id" data-type="integer" type="number" min="1" step="1"></label>
+                  <label class="field"><span>模型 PID</span><select data-path="asr.baidu.dev_pid" data-type="integer"><option value="15372">15372 普通话（加强标点）</option><option value="1537">1537 普通话</option><option value="15376">15376 中文方言</option><option value="17372">17372 英语（加强标点）</option><option value="1737">1737 英语</option></select></label>
+                  <label class="field"><span>CUID</span><input data-path="asr.baidu.cuid" type="text"></label>
+                  <label class="field secret"><span>API Key</span><input data-path="asr.baidu.api_key" data-secret="true" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"><small data-secret-status="asr.baidu.api_key"></small></label>
+                  <label class="field"><span>自训练平台模型 ID（可选）</span><input data-path="asr.baidu.lm_id" data-type="integer" data-optional="true" type="number" min="1" step="1"></label>
+                  <label class="field"><span>方言用户标识（PID 15376 必填）</span><input data-path="asr.baidu.user" data-optional="true" type="text"></label>
+                  <label class="field full"><span>WebSocket 接口地址</span><input data-path="asr.baidu.url" type="url"></label>
+                </div>
               </div>
             </div>
 
-            <div class="provider-panel" data-asr-provider-panel="aliyun" hidden>
-              <div class="provider-panel-title">阿里云 Paraformer</div>
-              <div class="form-grid">
-                <label class="field"><span>模型</span><input data-path="asr.aliyun.model" type="text"></label>
-                <label class="field secret"><span>API Key</span><input data-path="asr.aliyun.api_key" data-secret="true" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"><small data-secret-status="asr.aliyun.api_key"></small></label>
-              </div>
-            </div>
+            <div class="asr-mode-panel" data-asr-mode-panel="local" hidden>
+              <label class="field provider-select"><span>本地模型引擎</span><select id="asr-engine" data-path="asr.engine"><option value="sherpa_onnx_zipformer">Sherpa-ONNX Zipformer</option><option value="sherpa_onnx_paraformer">Sherpa-ONNX Paraformer</option><option value="sherpa_onnx_sensevoice">Sherpa-ONNX SenseVoice</option><option value="sherpa_onnx_whisper">Sherpa-ONNX Whisper</option><option value="faster_whisper">Faster-Whisper</option></select></label>
 
-            <div class="provider-panel" data-asr-provider-panel="baidu" hidden>
-              <div class="provider-panel-title">百度实时语音识别</div>
-              <div class="form-grid three">
-                <label class="field"><span>AppID</span><input data-path="asr.baidu.app_id" data-type="integer" type="number" min="1" step="1"></label>
-                <label class="field"><span>模型 PID</span><select data-path="asr.baidu.dev_pid" data-type="integer"><option value="15372">15372 普通话（加强标点）</option><option value="1537">1537 普通话</option><option value="15376">15376 中文方言</option><option value="17372">17372 英语（加强标点）</option><option value="1737">1737 英语</option></select></label>
-                <label class="field"><span>CUID</span><input data-path="asr.baidu.cuid" type="text"></label>
-                <label class="field secret"><span>API Key</span><input data-path="asr.baidu.api_key" data-secret="true" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"><small data-secret-status="asr.baidu.api_key"></small></label>
-                <label class="field"><span>自训练平台模型 ID（可选）</span><input data-path="asr.baidu.lm_id" data-type="integer" data-optional="true" type="number" min="1" step="1"></label>
-                <label class="field"><span>方言用户标识（PID 15376 必填）</span><input data-path="asr.baidu.user" data-optional="true" type="text"></label>
-                <label class="field full"><span>WebSocket 接口地址</span><input data-path="asr.baidu.url" type="url"></label>
+              <div class="provider-panel" data-local-asr-engine-panel="sherpa_onnx_zipformer">
+                <div class="provider-panel-title">Zipformer Transducer 模型文件</div>
+                <div class="form-grid">
+                  <label class="field"><span>Encoder</span><input data-path="asr.sherpa_onnx_zipformer.encoder" type="text" required placeholder="models/asr/zipformer/encoder.onnx"></label>
+                  <label class="field"><span>Decoder</span><input data-path="asr.sherpa_onnx_zipformer.decoder" type="text" required placeholder="models/asr/zipformer/decoder.onnx"></label>
+                  <label class="field"><span>Joiner</span><input data-path="asr.sherpa_onnx_zipformer.joiner" type="text" required placeholder="models/asr/zipformer/joiner.onnx"></label>
+                  <label class="field"><span>Tokens</span><input data-path="asr.sherpa_onnx_zipformer.tokens" type="text" required placeholder="models/asr/zipformer/tokens.txt"></label>
+                  <label class="field"><span>推理线程</span><input data-path="asr.sherpa_onnx_zipformer.num_threads" data-type="integer" type="number" min="1" max="64" step="1"></label>
+                </div>
+              </div>
+
+              <div class="provider-panel" data-local-asr-engine-panel="sherpa_onnx_paraformer" hidden>
+                <div class="provider-panel-title">Paraformer 模型文件</div>
+                <div class="form-grid">
+                  <label class="field"><span>Model</span><input data-path="asr.sherpa_onnx_paraformer.model" type="text" required placeholder="models/asr/paraformer/model.onnx"></label>
+                  <label class="field"><span>Tokens</span><input data-path="asr.sherpa_onnx_paraformer.tokens" type="text" required placeholder="models/asr/paraformer/tokens.txt"></label>
+                  <label class="field"><span>推理线程</span><input data-path="asr.sherpa_onnx_paraformer.num_threads" data-type="integer" type="number" min="1" max="64" step="1"></label>
+                </div>
+              </div>
+
+              <div class="provider-panel" data-local-asr-engine-panel="sherpa_onnx_sensevoice" hidden>
+                <div class="provider-panel-title">SenseVoice 模型文件</div>
+                <div class="form-grid">
+                  <label class="field"><span>Model</span><input data-path="asr.sherpa_onnx_sensevoice.model" type="text" required placeholder="models/asr/sensevoice/model.onnx"></label>
+                  <label class="field"><span>Tokens</span><input data-path="asr.sherpa_onnx_sensevoice.tokens" type="text" required placeholder="models/asr/sensevoice/tokens.txt"></label>
+                  <label class="field"><span>语言</span><select data-path="asr.sherpa_onnx_sensevoice.language"><option value="auto">自动</option><option value="zh">中文</option><option value="en">英语</option><option value="ja">日语</option><option value="ko">韩语</option><option value="yue">粤语</option></select></label>
+                  <label class="field"><span>推理线程</span><input data-path="asr.sherpa_onnx_sensevoice.num_threads" data-type="integer" type="number" min="1" max="64" step="1"></label>
+                  <label class="switch-row compact field full"><span><strong>启用文本规范化（ITN）</strong></span><input data-path="asr.sherpa_onnx_sensevoice.use_itn" type="checkbox"><i></i></label>
+                </div>
+              </div>
+
+              <div class="provider-panel" data-local-asr-engine-panel="sherpa_onnx_whisper" hidden>
+                <div class="provider-panel-title">Sherpa Whisper 模型文件</div>
+                <div class="form-grid">
+                  <label class="field"><span>Encoder</span><input data-path="asr.sherpa_onnx_whisper.encoder" type="text" required placeholder="models/asr/whisper/encoder.onnx"></label>
+                  <label class="field"><span>Decoder</span><input data-path="asr.sherpa_onnx_whisper.decoder" type="text" required placeholder="models/asr/whisper/decoder.onnx"></label>
+                  <label class="field"><span>Tokens</span><input data-path="asr.sherpa_onnx_whisper.tokens" type="text" required placeholder="models/asr/whisper/tokens.txt"></label>
+                  <label class="field"><span>语言</span><select data-path="asr.sherpa_onnx_whisper.language"><option value="zh">中文</option><option value="en">英语</option><option value="ja">日语</option><option value="ko">韩语</option></select></label>
+                  <label class="field"><span>推理线程</span><input data-path="asr.sherpa_onnx_whisper.num_threads" data-type="integer" type="number" min="1" max="64" step="1"></label>
+                </div>
+              </div>
+
+              <div class="provider-panel" data-local-asr-engine-panel="faster_whisper" hidden>
+                <div class="provider-panel-title">Faster-Whisper 本地模型</div>
+                <div class="form-grid">
+                  <label class="field full"><span>模型目录</span><input data-path="asr.faster_whisper.model_path" type="text" required placeholder="models/asr/faster-whisper"></label>
+                  <label class="field"><span>语言</span><select data-path="asr.faster_whisper.language"><option value="auto">自动</option><option value="zh">中文</option><option value="en">英语</option><option value="ja">日语</option><option value="ko">韩语</option></select></label>
+                  <label class="field"><span>运行设备</span><select data-path="asr.faster_whisper.device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="auto">自动</option></select></label>
+                  <label class="field"><span>计算精度</span><select data-path="asr.faster_whisper.compute_type"><option value="int8">INT8</option><option value="float32">Float32</option><option value="float16">Float16</option><option value="int8_float16">INT8 / Float16</option><option value="int8_float32">INT8 / Float32</option><option value="default">默认</option></select></label>
+                </div>
               </div>
             </div>
           </article>

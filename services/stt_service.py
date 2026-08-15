@@ -143,17 +143,17 @@ class STTService:
             shutil.copy2(wav_path, debug_path)
             print(f"[STT] 调试音频: {debug_path} ({duration_ms}ms)")
 
-            print(f"[STT] 上传语音 {duration_ms}ms 至云端...")
+            print(f"[STT] 提交语音 {duration_ms}ms 至 ASR...")
             text = self.asr_adapter.recognize(wav_path, self.SAMPLE_RATE)
 
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")
                 self.on_sentence_received(text)
             else:
-                print("[STT] 云端未识别出文字")
+                print("[STT] ASR 未识别出文字")
 
         except Exception as e:
-            print(f"[STT] 云端识别失败: {e}")
+            print(f"[STT] ASR 识别失败: {e}")
         finally:
             if wav_path and os.path.exists(wav_path):
                 try:

@@ -75,7 +75,6 @@ class ConfigWebServerTests(unittest.TestCase):
         "cuid": "wali-x3",
         "url": "wss://vop.baidu.com/realtime_asr",
     }
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="wali-config-web-")
         self.config_path = Path(self.temp_dir.name) / "config.yaml"
@@ -93,6 +92,13 @@ class ConfigWebServerTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def local_paraformer_config(self):
+        model = Path(self.temp_dir.name) / "paraformer.onnx"
+        tokens = Path(self.temp_dir.name) / "tokens.txt"
+        model.write_bytes(b"model")
+        tokens.write_text("<blk> 0\n", encoding="utf-8")
+        return {"model": str(model), "tokens": str(tokens), "num_threads": 2}
 
     def tearDown(self):
         self.server.shutdown()
@@ -147,6 +153,111 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('value="serial_mcu"', html)
         self.assertIn('value="ubuntu_i2c"', html)
         self.assertIn('data-hardware-backend-panel="ubuntu_i2c"', html)
+
+    def test_asr_model_must_be_entered_in_web_config(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn(
+            'data-path="asr.zhipu.model" type="text" required',
+            html,
+        )
+        self.assertIn(
+            'data-path="asr.aliyun.model" type="text" required',
+            html,
+        )
+
+        app_js = (DEFAULT_STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('model: "GLM-ASR-2512"', app_js)
+        self.assertNotIn('model: "paraformer-v1"', app_js)
+
+    def test_local_asr_engine_controls_are_visible(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('data-path="asr.mode"', html)
+        self.assertIn('data-path="asr.engine"', html)
+        self.assertIn('data-local-asr-engine-panel="sherpa_onnx_zipformer"', html)
+        self.assertIn('data-path="asr.sherpa_onnx_zipformer.joiner"', html)
+        self.assertIn('data-local-asr-engine-panel="faster_whisper"', html)
+        self.assertIn('data-path="asr.faster_whisper.model_path"', html)
+
+    def test_local_asr_patch_does_not_require_cloud_credentials(self):
+        local_config = self.local_paraformer_config()
+        status, result = self.request(
+            "/api/config",
+            method="POST",
+            payload={
+                "patch": {
+                    "asr": {
+                        "mode": "local",
+                        "engine": "sherpa_onnx_paraformer",
+                        "sherpa_onnx_paraformer": local_config,
+                    }
+                }
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(result["restart_required"])
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["asr"]["mode"], "local")
+        self.assertEqual(stored["asr"]["engine"], "sherpa_onnx_paraformer")
+        self.assertEqual(
+            stored["asr"]["sherpa_onnx_paraformer"],
+            local_config,
+        )
+        self.assertEqual(stored["asr"]["key"], "asr-secret")
+
+    def test_local_asr_missing_required_model_path_is_rejected(self):
+        before = self.config_path.read_text(encoding="utf-8")
+        invalid = self.local_paraformer_config()
+        del invalid["tokens"]
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "asr": {
+                            "mode": "local",
+                            "engine": "sherpa_onnx_paraformer",
+                            "sherpa_onnx_paraformer": invalid,
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
+    def test_local_asr_nonexistent_model_path_is_rejected(self):
+        invalid = self.local_paraformer_config()
+        invalid["model"] = str(Path(self.temp_dir.name) / "missing.onnx")
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "asr": {
+                            "mode": "local",
+                            "engine": "sherpa_onnx_paraformer",
+                            "sherpa_onnx_paraformer": invalid,
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(context.exception.code, 400)
+
+    def test_invalid_local_asr_engine_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={"patch": {"asr": {"mode": "local", "engine": "unknown"}}},
+            )
+        self.assertEqual(context.exception.code, 400)
 
     def test_hardware_backend_patch_is_saved_independently(self):
         before = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))

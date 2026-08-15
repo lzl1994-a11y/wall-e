@@ -41,6 +41,20 @@ SECRET_NAMES = {"key", "api_key", "token", "access_token", "secret", "password"}
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 BAIDU_CUID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 BAIDU_DEV_PIDS = {1537, 15372, 15376, 1737, 17372}
+LOCAL_ASR_ENGINES = {
+    "sherpa_onnx_zipformer",
+    "sherpa_onnx_paraformer",
+    "sherpa_onnx_sensevoice",
+    "sherpa_onnx_whisper",
+    "faster_whisper",
+}
+LOCAL_ASR_FILE_FIELDS = {
+    "sherpa_onnx_zipformer": ("encoder", "decoder", "joiner", "tokens"),
+    "sherpa_onnx_paraformer": ("model", "tokens"),
+    "sherpa_onnx_sensevoice": ("model", "tokens"),
+    "sherpa_onnx_whisper": ("encoder", "decoder", "tokens"),
+    "faster_whisper": ("model_path",),
+}
 
 
 class ConfigError(ValueError):
@@ -120,6 +134,27 @@ def _check_string(
         errors.append(f"{path} 不能超过 {max_length} 个字符")
 
 
+def _check_local_model_path(
+    mapping: dict[str, Any],
+    key: str,
+    path: str,
+    errors: list[str],
+    *,
+    directory: bool = False,
+) -> None:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return
+    model_path = Path(value.strip()).expanduser()
+    if not model_path.is_absolute():
+        model_path = ROOT / model_path
+    model_path = model_path.resolve()
+    exists = model_path.is_dir() if directory else model_path.is_file()
+    if not exists:
+        kind = "目录" if directory else "文件"
+        errors.append(f"{path} {kind}不存在: {model_path}")
+
+
 def _check_bool(mapping: dict[str, Any], key: str, path: str, errors: list[str]) -> None:
     if not isinstance(mapping.get(key), bool):
         errors.append(f"{path} 必须是布尔值")
@@ -151,6 +186,64 @@ def _check_url(mapping: dict[str, Any], key: str, path: str, errors: list[str]) 
 
 
 def _validate_asr(asr: dict[str, Any], errors: list[str]) -> None:
+    mode = asr.get("mode", asr.get("type", "cloud"))
+    if mode not in {"cloud", "local"}:
+        errors.append("asr.mode 只能是 cloud 或 local")
+        return
+
+    if mode == "local":
+        engine = asr.get("engine")
+        if engine not in LOCAL_ASR_ENGINES:
+            errors.append(
+                "asr.engine 只能是 sherpa_onnx_zipformer、sherpa_onnx_paraformer、"
+                "sherpa_onnx_sensevoice、sherpa_onnx_whisper 或 faster_whisper"
+            )
+            return
+        settings = asr.get(engine)
+        if not isinstance(settings, dict):
+            errors.append(f"asr.{engine} 必须是配置对象")
+            return
+        prefix = f"asr.{engine}"
+        for field in LOCAL_ASR_FILE_FIELDS[engine]:
+            _check_string(settings, field, f"{prefix}.{field}", errors)
+            _check_local_model_path(
+                settings,
+                field,
+                f"{prefix}.{field}",
+                errors,
+                directory=engine == "faster_whisper" and field == "model_path",
+            )
+
+        if engine.startswith("sherpa_onnx_"):
+            _check_number(
+                settings,
+                "num_threads",
+                f"{prefix}.num_threads",
+                errors,
+                1,
+                64,
+                integer=True,
+            )
+        if engine == "sherpa_onnx_sensevoice":
+            _check_string(settings, "language", f"{prefix}.language", errors, max_length=32)
+            _check_bool(settings, "use_itn", f"{prefix}.use_itn", errors)
+        elif engine == "sherpa_onnx_whisper":
+            _check_string(settings, "language", f"{prefix}.language", errors, max_length=32)
+        elif engine == "faster_whisper":
+            _check_string(settings, "language", f"{prefix}.language", errors, max_length=32)
+            if settings.get("device") not in {"cpu", "cuda", "auto"}:
+                errors.append(f"{prefix}.device 只能是 cpu、cuda 或 auto")
+            if settings.get("compute_type") not in {
+                "default",
+                "int8",
+                "int8_float16",
+                "int8_float32",
+                "float16",
+                "float32",
+            }:
+                errors.append(f"{prefix}.compute_type 不是支持的计算精度")
+        return
+
     provider = asr.get("provider")
     if provider not in {"aliyun", "zhipu", "baidu"}:
         errors.append("asr.provider 只能是 aliyun、zhipu 或 baidu")

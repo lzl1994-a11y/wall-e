@@ -51,17 +51,52 @@ const MODULE_LABELS = Object.freeze({
 
 const ASR_DEFAULTS = Object.freeze({
   zhipu: {
-    model: "GLM-ASR-2512",
+    model: "",
     url: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
     api_key: "",
   },
-  aliyun: { model: "paraformer-v1", api_key: "" },
+  aliyun: { model: "", api_key: "" },
   baidu: {
     app_id: "",
     api_key: "",
     dev_pid: 15372,
     cuid: "wali-x3",
     url: "wss://vop.baidu.com/realtime_asr",
+  },
+});
+
+const LOCAL_ASR_DEFAULTS = Object.freeze({
+  sherpa_onnx_zipformer: {
+    encoder: "",
+    decoder: "",
+    joiner: "",
+    tokens: "",
+    num_threads: 2,
+  },
+  sherpa_onnx_paraformer: {
+    model: "",
+    tokens: "",
+    num_threads: 2,
+  },
+  sherpa_onnx_sensevoice: {
+    model: "",
+    tokens: "",
+    language: "auto",
+    use_itn: true,
+    num_threads: 2,
+  },
+  sherpa_onnx_whisper: {
+    encoder: "",
+    decoder: "",
+    tokens: "",
+    language: "zh",
+    num_threads: 2,
+  },
+  faster_whisper: {
+    model_path: "",
+    language: "zh",
+    device: "cpu",
+    compute_type: "int8",
   },
 });
 
@@ -276,10 +311,16 @@ async function loadUsbDevices({ quiet = false } = {}) {
   }
 }
 
-function ensureAsrProviderConfigs() {
+function ensureAsrConfigs() {
   const asr = state.config.asr || (state.config.asr = {});
+  const configuredMode = asr.mode ?? asr.type;
+  asr.mode = ["cloud", "local"].includes(configuredMode) ? configuredMode : "cloud";
   const provider = Object.hasOwn(ASR_DEFAULTS, asr.provider) ? asr.provider : "zhipu";
   asr.provider = provider;
+  const engine = Object.hasOwn(LOCAL_ASR_DEFAULTS, asr.engine)
+    ? asr.engine
+    : "sherpa_onnx_zipformer";
+  asr.engine = engine;
 
   const hadProviderConfig = asr[provider] && typeof asr[provider] === "object";
 
@@ -294,15 +335,34 @@ function ensureAsrProviderConfigs() {
     });
   });
 
+  Object.entries(LOCAL_ASR_DEFAULTS).forEach(([name, defaults]) => {
+    if (!asr[name] || typeof asr[name] !== "object") asr[name] = {};
+    Object.entries(defaults).forEach(([key, value]) => {
+      if (asr[name][key] === undefined) asr[name][key] = value;
+    });
+  });
+
   // A legacy flat secret belongs to the provider that was active in that file.
   if (state.secretFields["asr.key"] && state.secretFields[`asr.${provider}.api_key`] === undefined) {
     state.secretFields[`asr.${provider}.api_key`] = true;
   }
 }
 
+function updateAsrModePanels(mode = $("#asr-mode")?.value) {
+  $$('[data-asr-mode-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.asrModePanel !== mode;
+  });
+}
+
 function updateAsrProviderPanels(provider = $("#asr-provider")?.value) {
   $$('[data-asr-provider-panel]').forEach((panel) => {
     panel.hidden = panel.dataset.asrProviderPanel !== provider;
+  });
+}
+
+function updateLocalAsrEnginePanels(engine = $("#asr-engine")?.value) {
+  $$('[data-local-asr-engine-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.localAsrEnginePanel !== engine;
   });
 }
 
@@ -544,9 +604,18 @@ function modulePatch(module) {
 
   if (module === "asr") {
     const container = moduleContainer(module);
-    const provider = $("#asr-provider").value;
-    const patch = { asr: { provider, [provider]: {} } };
-    $$(`[data-asr-provider-panel="${provider}"] [data-path]`, container).forEach((input) => {
+    const mode = $("#asr-mode").value;
+    const selector = mode === "cloud" ? $("#asr-provider") : $("#asr-engine");
+    const selected = selector.value;
+    const patch = {
+      asr: mode === "cloud"
+        ? { mode, provider: selected, [selected]: {} }
+        : { mode, engine: selected, [selected]: {} },
+    };
+    const panelSelector = mode === "cloud"
+      ? `[data-asr-provider-panel="${selected}"]`
+      : `[data-local-asr-engine-panel="${selected}"]`;
+    $$(`${panelSelector} [data-path]`, container).forEach((input) => {
       if (input.dataset.secret === "true" && !input.value) return;
       if (input.dataset.optional === "true" && !input.value.trim()) return;
       setPath(patch, input.dataset.path, inputValue(input));
@@ -567,12 +636,16 @@ function refreshModuleFromSnapshot(module, payload) {
   const root = MODULE_ROOTS[module];
   setPath(state.config, root, deepClone(getPath(payload.config, root)));
   state.secretFields = payload.secret_fields || {};
-  if (module === "asr") ensureAsrProviderConfigs();
+  if (module === "asr") ensureAsrConfigs();
   if (module === "vad") ensureVadConfig();
   if (module === "llm") ensureLlmConfig();
   if (module === "hardware") ensureHardwareConfig();
   populateFields(moduleContainer(module));
-  if (module === "asr") updateAsrProviderPanels(state.config.asr.provider);
+  if (module === "asr") {
+    updateAsrModePanels(state.config.asr.mode);
+    updateAsrProviderPanels(state.config.asr.provider);
+    updateLocalAsrEnginePanels(state.config.asr.engine);
+  }
   if (module === "vad") updateVadProviderPanels(state.config.vad.provider);
   if (module === "hardware") updateHardwareBackendPanels(state.config.hardware.backend);
   if (module === "servos") renderServos();
@@ -597,9 +670,11 @@ async function loadConfig() {
     ensureVadConfig();
     ensureLlmConfig();
     ensureUsbDeviceConfig();
-    ensureAsrProviderConfigs();
+    ensureAsrConfigs();
     populateFields();
+    updateAsrModePanels(state.config.asr.mode);
     updateAsrProviderPanels(state.config.asr.provider);
+    updateLocalAsrEnginePanels(state.config.asr.engine);
     updateVadProviderPanels(state.config.vad.provider);
     updateHardwareBackendPanels(state.config.hardware.backend);
     renderServos();
@@ -648,11 +723,21 @@ async function saveModule(module) {
   $("#error-box").hidden = true;
   try {
     if (module === "asr") {
-      const provider = $("#asr-provider").value;
-      const secretInput = $(`[data-path="asr.${provider}.api_key"]`);
-      const hasSavedSecret = Boolean(state.secretFields[`asr.${provider}.api_key`]);
-      if (!secretInput.value && !hasSavedSecret) {
-        throw new Error(`请先填写${$("#asr-provider").selectedOptions[0].textContent}的 API Key`);
+      const mode = $("#asr-mode").value;
+      const selected = mode === "cloud" ? $("#asr-provider").value : $("#asr-engine").value;
+      const panelSelector = mode === "cloud"
+        ? `[data-asr-provider-panel="${selected}"]`
+        : `[data-local-asr-engine-panel="${selected}"]`;
+      const missingInput = $$(`${panelSelector} [required]`).find((input) => !input.value.trim());
+      if (missingInput) {
+        throw new Error(`请先填写${missingInput.closest("label")?.querySelector("span")?.textContent || "必填配置"}`);
+      }
+      if (mode === "cloud") {
+        const secretInput = $(`[data-path="asr.${selected}.api_key"]`);
+        const hasSavedSecret = Boolean(state.secretFields[`asr.${selected}.api_key`]);
+        if (!secretInput.value && !hasSavedSecret) {
+          throw new Error(`请先填写${$("#asr-provider").selectedOptions[0].textContent}的 API Key`);
+        }
       }
     }
     const payload = await api("/api/config", {
@@ -682,9 +767,19 @@ function bindEvents() {
   $$('[data-path]').forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
     markDirty(input.closest("[data-module]")?.dataset.module);
   }));
+  $("#asr-mode").addEventListener("change", (event) => {
+    if (state.config) state.config.asr.mode = event.target.value;
+    updateAsrModePanels(event.target.value);
+    markDirty("asr");
+  });
   $("#asr-provider").addEventListener("change", (event) => {
     if (state.config) state.config.asr.provider = event.target.value;
     updateAsrProviderPanels(event.target.value);
+    markDirty("asr");
+  });
+  $("#asr-engine").addEventListener("change", (event) => {
+    if (state.config) state.config.asr.engine = event.target.value;
+    updateLocalAsrEnginePanels(event.target.value);
     markDirty("asr");
   });
   $("#vad-provider").addEventListener("change", (event) => {
