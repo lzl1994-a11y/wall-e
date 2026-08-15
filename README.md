@@ -52,6 +52,8 @@ pip install faster-whisper
 
 本地 ASR 模型文件不随项目默认提供。请在配置网页中选择模型引擎，并填写该引擎要求的模型文件或目录路径。Sherpa 引擎需要使用与 `OfflineRecognizer` 兼容的模型。`models/sherpa-onnx` 中现有文件属于唤醒词检测模型，不应作为通用 ASR 模型使用。
 
+音频方向使用不同采样率：ESP32-S3 上传到主脑的麦克风 PCM 为 16 kHz，供 VAD、唤醒词和 ASR 使用；主脑下发给 ESP32-S3 的 TTS 与提示音 PCM 为 48 kHz、16-bit、单声道。
+
 ## 🎮 启动指南
 
 系统的启动分为**“视觉感知端”**和**“瓦力大脑端”**两个独立的部分。

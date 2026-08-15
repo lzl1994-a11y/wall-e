@@ -10,13 +10,19 @@ import queue
 import numpy as np
 import sounddevice as sd
 
+from services.audio_output import OUTPUT_SAMPLE_RATE
 from services.usb_devices import DEFAULT_CONFIG_PATH, resolve_audio_device
 
 
 class PlaybackService:
     """音频播放器：后台线程顺序播放，支持 USB / 板载切换。"""
 
-    def __init__(self, mode="default", sample_rate=16000, config_path=DEFAULT_CONFIG_PATH):
+    def __init__(
+        self,
+        mode="default",
+        sample_rate=OUTPUT_SAMPLE_RATE,
+        config_path=DEFAULT_CONFIG_PATH,
+    ):
         self.mode = mode
         self.sample_rate = sample_rate
         self.config_path = config_path
@@ -70,7 +76,7 @@ class PlaybackService:
         return True
 
     def play(self, samples: np.ndarray):
-        """入队播放 PCM int16 数组（16kHz mono）。"""
+        """入队播放 PCM int16 数组（48kHz mono）。"""
         if samples is None or len(samples) == 0:
             return
         self._queue.put(samples)

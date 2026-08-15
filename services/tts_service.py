@@ -11,24 +11,40 @@ import threading
 import edge_tts
 import numpy as np
 
+from services.audio_output import (
+    OUTPUT_CHANNELS,
+    OUTPUT_SAMPLE_RATE,
+    OUTPUT_SAMPLE_WIDTH,
+)
+
 
 class TTSService:
-    """Edge-TTS 合成器：文本 → PCM int16 16kHz mono。"""
+    """Edge-TTS 合成器：文本 → PCM int16 48kHz mono。"""
 
-    def __init__(self, voice="zh-CN-YunxiaNeural", rate="+20%", pitch="+5Hz"):
+    def __init__(
+        self,
+        voice="zh-CN-YunxiaNeural",
+        rate="+20%",
+        pitch="+5Hz",
+        sample_rate=OUTPUT_SAMPLE_RATE,
+    ):
         self.voice = voice
         self.rate = rate
         self.pitch = pitch
+        self.sample_rate = sample_rate
 
         # 后台 event loop（edge-tts 需要异步调用）
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
 
-        print(f"[TTS Service] 合成器就绪 (voice={voice}, rate={rate}, pitch={pitch})")
+        print(
+            f"[TTS Service] 合成器就绪 "
+            f"(voice={voice}, rate={rate}, pitch={pitch}, sr={sample_rate})"
+        )
 
     def synthesize(self, text: str) -> np.ndarray:
-        """同步接口：文本 → PCM int16 数组（16kHz mono）。"""
+        """同步接口：文本 → PCM int16 数组（48kHz mono）。"""
         if not text or not text.strip():
             raise ValueError("text is empty")
 
@@ -38,7 +54,7 @@ class TTSService:
         return future.result()
 
     async def _download(self, text: str) -> np.ndarray:
-        """异步下载 MP3 → pydub 解码 → PCM int16 16kHz mono。"""
+        """异步下载 MP3 → pydub 解码 → PCM int16 48kHz mono。"""
         communicate = edge_tts.Communicate(
             text, self.voice, rate=self.rate, pitch=self.pitch
         )
@@ -52,7 +68,11 @@ class TTSService:
 
         from pydub import AudioSegment
         seg = AudioSegment.from_mp3(io.BytesIO(mp3_data))
-        pcm = seg.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        pcm = (
+            seg.set_frame_rate(self.sample_rate)
+            .set_channels(OUTPUT_CHANNELS)
+            .set_sample_width(OUTPUT_SAMPLE_WIDTH)
+        )
         return np.array(pcm.get_array_of_samples(), dtype=np.int16)
 
     def shutdown(self):

@@ -26,6 +26,11 @@ from std_msgs.msg import String
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
+from services.audio_output import (
+    OUTPUT_CHANNELS,
+    OUTPUT_SAMPLE_RATE,
+    OUTPUT_SAMPLE_WIDTH,
+)
 from services.tool_dispatcher import build_action_cmd
 from services.usb_devices import resolve_audio_device
 
@@ -91,27 +96,35 @@ class VoiceChatNode(Node):
                 return
 
             try:
-                import wave
                 import sounddevice as sd
-
-                with wave.open(self._wake_wav, "rb") as wf:
-                    sample_rate = wf.getframerate()
-                    n_frames = wf.getnframes()
-                    if n_frames == 0:
-                        return
-                    audio = wf.readframes(n_frames)
-
                 import numpy as np
-                samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+                from pydub import AudioSegment
+
+                audio = (
+                    AudioSegment.from_wav(self._wake_wav)
+                    .set_frame_rate(OUTPUT_SAMPLE_RATE)
+                    .set_channels(OUTPUT_CHANNELS)
+                    .set_sample_width(OUTPUT_SAMPLE_WIDTH)
+                )
+                if not len(audio):
+                    return
+                samples = np.array(audio.get_array_of_samples(), dtype=np.int16)
+                samples = samples.astype(np.float32) / 32768.0
                 resolution = resolve_audio_device("output", sounddevice_module=sd)
                 if resolution.configured and not resolution.available:
                     self.get_logger().warn("voice USB offline; wake response skipped")
                     return
-                sd.play(samples, samplerate=sample_rate, device=resolution.index)
+                sd.play(
+                    samples,
+                    samplerate=OUTPUT_SAMPLE_RATE,
+                    device=resolution.index,
+                )
                 sd.wait()
-                self.get_logger().info("唤醒应答播放完毕")
+                self.get_logger().info(
+                    f"唤醒应答播放完毕 (sr={OUTPUT_SAMPLE_RATE})"
+                )
             except ImportError:
-                self.get_logger().error("缺少 sounddevice 库，无法播放唤醒应答")
+                self.get_logger().error("缺少音频播放依赖，无法播放唤醒应答")
             except Exception as e:
                 self.get_logger().error(f"播放唤醒应答失败: {e}")
 

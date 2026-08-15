@@ -15,6 +15,7 @@ from rclpy.node import Node
 from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from services.audio_output import OUTPUT_SAMPLE_RATE
 from services.tts_service import TTSService
 
 
@@ -28,18 +29,26 @@ class TTSPlayNode(Node):
         self.declare_parameter("voice", "zh-CN-YunxiaNeural")
         self.declare_parameter("rate", "+20%")
         self.declare_parameter("pitch", "+5Hz")
+        self.declare_parameter("sample_rate", OUTPUT_SAMPLE_RATE)
         self.voice = self.get_parameter("voice").value
         self.rate = self.get_parameter("rate").value
         self.pitch = self.get_parameter("pitch").value
+        self.sample_rate = self.get_parameter("sample_rate").value
 
-        self._tts = TTSService(voice=self.voice, rate=self.rate, pitch=self.pitch)
+        self._tts = TTSService(
+            voice=self.voice,
+            rate=self.rate,
+            pitch=self.pitch,
+            sample_rate=self.sample_rate,
+        )
 
         self._text_queue = queue.Queue()
         self._worker = threading.Thread(target=self._synthesis_worker, daemon=True)
         self._worker.start()
 
         self.get_logger().info(
-            f"TTS 播放节点上线 (voice={self.voice}, rate={self.rate}, pitch={self.pitch})"
+            f"TTS 播放节点上线 "
+            f"(voice={self.voice}, rate={self.rate}, pitch={self.pitch}, sr={self.sample_rate})"
         )
 
     def _on_tts_text(self, msg):

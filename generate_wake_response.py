@@ -13,6 +13,12 @@ from pathlib import Path
 import edge_tts
 import pydub  # pip install pydub
 
+from services.audio_output import (
+    OUTPUT_CHANNELS,
+    OUTPUT_SAMPLE_RATE,
+    OUTPUT_SAMPLE_WIDTH,
+)
+
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "assets" / "wake_response.wav"
 
@@ -37,8 +43,12 @@ async def synthesize():
     # MP3 → WAV (pydub)
     import io
     audio = pydub.AudioSegment.from_mp3(io.BytesIO(mp3_data))
-    # 转 16kHz 16-bit mono，与机器人音频管线一致
-    audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+    # 播放输出固定为 48kHz 16-bit mono；麦克风/ASR 输入仍为 16kHz。
+    audio = (
+        audio.set_frame_rate(OUTPUT_SAMPLE_RATE)
+        .set_channels(OUTPUT_CHANNELS)
+        .set_sample_width(OUTPUT_SAMPLE_WIDTH)
+    )
 
     audio.export(OUTPUT, format="wav")
     print(f"已保存: {OUTPUT}")

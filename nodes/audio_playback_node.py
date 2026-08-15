@@ -13,6 +13,7 @@ from rclpy.node import Node
 from std_msgs.msg import UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from services.audio_output import OUTPUT_SAMPLE_RATE
 from services.playback_service import PlaybackService
 
 
@@ -21,7 +22,7 @@ class AudioPlaybackNode(Node):
         super().__init__("audio_playback_node")
 
         self.declare_parameter("mode", "default")
-        self.declare_parameter("sample_rate", 16000)
+        self.declare_parameter("sample_rate", OUTPUT_SAMPLE_RATE)
 
         mode = self.get_parameter("mode").value
         sample_rate = self.get_parameter("sample_rate").value
