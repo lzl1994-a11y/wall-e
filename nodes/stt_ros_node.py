@@ -18,7 +18,7 @@ class STTNode(Node):
             String, 'llm_busy', self._on_llm_busy, 10
         )
         
-        self.get_logger().info('⏳ 正在预热 阿里云 SenseVoice 听觉引擎...')
+        self.get_logger().info('⏳ 正在初始化语音识别引擎...')
         
         try:
             # 2. 启动底层引擎，并把“发布消息”的动作作为回调函数塞进去
@@ -42,12 +42,12 @@ class STTNode(Node):
         self.publisher_.publish(msg)
 
     def _on_llm_busy(self, msg):
-        """LLM 忙时暂停 ASR，闲时恢复。"""
+        """对话开始时暂停 ASR，AI 语音播放完成后恢复。"""
         if msg.data == "busy":
-            self.get_logger().info('🔇 LLM 忙，暂停 ASR')
+            self.get_logger().info('🔇 对话处理中，暂停 ASR 和唤醒超时计时')
             self.stt_engine.pause()
         elif msg.data == "idle":
-            self.get_logger().info('🔊 LLM 闲，恢复 ASR')
+            self.get_logger().info('🔊 AI 语音播放完毕，恢复 ASR 并开始唤醒超时计时')
             self.stt_engine.resume()
 
     def destroy_node(self):

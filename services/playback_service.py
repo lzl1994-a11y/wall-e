@@ -17,15 +17,19 @@ from services.usb_devices import DEFAULT_CONFIG_PATH, resolve_audio_device
 class PlaybackService:
     """音频播放器：后台线程顺序播放，支持 USB / 板载切换。"""
 
+    _TURN_END = object()
+
     def __init__(
         self,
         mode="default",
         sample_rate=OUTPUT_SAMPLE_RATE,
         config_path=DEFAULT_CONFIG_PATH,
+        on_turn_complete=None,
     ):
         self.mode = mode
         self.sample_rate = sample_rate
         self.config_path = config_path
+        self.on_turn_complete = on_turn_complete
         self._device = None
         self._device_identity = ""
         self._refresh_device()
@@ -81,16 +85,30 @@ class PlaybackService:
             return
         self._queue.put(samples)
 
+    def mark_turn_end(self):
+        """在此前入队的音频全部播放后触发本轮完成回调。"""
+        self._queue.put(self._TURN_END)
+
+    def _play_item(self, item):
+        if item is self._TURN_END:
+            if self.on_turn_complete:
+                self.on_turn_complete()
+            return
+
+        if not self._refresh_device():
+            print("[Playback Service] configured voice USB is offline; audio skipped")
+            return
+        audio = item.astype(np.float32) / 32768.0
+        sd.play(audio, samplerate=self.sample_rate, device=self._device)
+        sd.wait()
+
     def _play_worker(self):
         """后台线程：阻塞播放音频队列。"""
         while True:
-            samples = self._queue.get()
+            item = self._queue.get()
             try:
-                if not self._refresh_device():
-                    print("[Playback Service] configured voice USB is offline; audio skipped")
-                    continue
-                audio = samples.astype(np.float32) / 32768.0
-                sd.play(audio, samplerate=self.sample_rate, device=self._device)
-                sd.wait()
+                self._play_item(item)
             except Exception as e:
                 print(f"[Playback Service] 播放失败: {e}")
+            finally:
+                self._queue.task_done()

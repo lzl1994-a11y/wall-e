@@ -52,6 +52,7 @@ class STTService:
         self._awake = False
         self._awake_timer = None
         self._awake_lock = threading.Lock()
+        self._awake_timer_generation = 0
 
     def _on_wake_word(self):
         """唤醒词触发：进入监听状态。"""
@@ -73,17 +74,21 @@ class STTService:
         self._pipe.stop()
         with self._awake_lock:
             self._awake = False
-            if self._awake_timer:
-                self._awake_timer.cancel()
+            self._cancel_awake_timer_locked()
         print("[STT] 语音监听已停止")
 
     def pause(self):
+        with self._awake_lock:
+            self._cancel_awake_timer_locked()
         self._pipe.pause()
-        print("[STT] 麦克风已暂停")
+        print("[STT] 麦克风已暂停，唤醒超时计时已挂起")
 
     def resume(self):
         self._pipe.resume()
-        print("[STT] 麦克风已恢复")
+        with self._awake_lock:
+            if self._awake:
+                self._reset_awake_timer()
+        print("[STT] 麦克风已恢复，重新开始唤醒超时计时")
 
     def set_awake(self, value: bool):
         """外部控制唤醒状态。"""
@@ -91,22 +96,38 @@ class STTService:
             self._awake = value
             if value:
                 self._reset_awake_timer()
-            elif self._awake_timer:
-                self._awake_timer.cancel()
+            else:
+                self._cancel_awake_timer_locked()
 
     # ===================================================================
     # 超时管理
     # ===================================================================
-    def _reset_awake_timer(self):
+    def _cancel_awake_timer_locked(self):
+        self._awake_timer_generation += 1
         if self._awake_timer:
             self._awake_timer.cancel()
-        self._awake_timer = threading.Timer(self._awake_timeout, self._on_awake_timeout)
+        self._awake_timer = None
+
+    def _reset_awake_timer(self):
+        self._cancel_awake_timer_locked()
+        generation = self._awake_timer_generation
+        self._awake_timer = threading.Timer(
+            self._awake_timeout,
+            self._on_awake_timeout,
+            args=(generation,),
+        )
         self._awake_timer.daemon = True
         self._awake_timer.start()
 
-    def _on_awake_timeout(self):
+    def _on_awake_timeout(self, generation=None):
         with self._awake_lock:
+            if generation is not None and generation != self._awake_timer_generation:
+                return
+            if not self._awake:
+                return
             self._awake = False
+            self._awake_timer = None
+            self._awake_timer_generation += 1
         self._pipe.set_awake(False)
         print(f"[STT] {self._awake_timeout:.0f}s 无语音，退出监听，等待唤醒词")
 
@@ -120,13 +141,14 @@ class STTService:
         if not awake:
             return  # 未唤醒，静默丢弃
 
-        # 刷新超时计时器
+        # 一旦开始识别完整句子，挂起超时；成功时由播放完成事件重新计时。
         with self._awake_lock:
-            self._reset_awake_timer()
+            self._cancel_awake_timer_locked()
 
         duration_ms = len(pcm_data) // 2 * 1000 // self.SAMPLE_RATE
 
         wav_path = None
+        delivered = False
         try:
             fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="stt_")
             os.close(fd)
@@ -149,6 +171,7 @@ class STTService:
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")
                 self.on_sentence_received(text)
+                delivered = True
             else:
                 print("[STT] ASR 未识别出文字")
 
@@ -160,3 +183,7 @@ class STTService:
                     os.remove(wav_path)
                 except OSError:
                     pass
+            if not delivered:
+                with self._awake_lock:
+                    if self._awake:
+                        self._reset_awake_timer()

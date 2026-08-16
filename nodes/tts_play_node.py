@@ -16,6 +16,7 @@ from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio_output import OUTPUT_SAMPLE_RATE
+from services.tts_protocol import decode_turn_end
 from services.tts_service import TTSService
 
 
@@ -55,13 +56,23 @@ class TTSPlayNode(Node):
         text = (msg.data or "").strip()
         if not text:
             return
-        self._text_queue.put(text)
+        turn_id = decode_turn_end(text)
+        if turn_id is not None:
+            self._text_queue.put(("turn_end", turn_id))
+            return
+        self._text_queue.put(("speech", text))
 
     def _synthesis_worker(self):
         """工作线程：顺序取文本 → 合成 → publish。"""
         while True:
-            text = self._text_queue.get()
+            item_type, value = self._text_queue.get()
             try:
+                if item_type == "turn_end":
+                    self.audio_pub.publish(UInt8MultiArray(data=[]))
+                    self.get_logger().info(f"TTS 轮次结束: {value}")
+                    continue
+
+                text = value
                 samples = self._tts.synthesize(text)
                 msg = UInt8MultiArray(data=samples.tobytes())
                 self.audio_pub.publish(msg)
@@ -70,6 +81,8 @@ class TTSPlayNode(Node):
                 )
             except Exception as e:
                 self.get_logger().error(f"TTS 合成失败: {e}")
+            finally:
+                self._text_queue.task_done()
 
     def destroy_node(self):
         self._tts.shutdown()

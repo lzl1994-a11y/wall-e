@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import UInt8MultiArray
+from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio_output import OUTPUT_SAMPLE_RATE
@@ -27,7 +27,12 @@ class AudioPlaybackNode(Node):
         mode = self.get_parameter("mode").value
         sample_rate = self.get_parameter("sample_rate").value
 
-        self._player = PlaybackService(mode=mode, sample_rate=sample_rate)
+        self._dialog_state_pub = self.create_publisher(String, "llm_busy", 10)
+        self._player = PlaybackService(
+            mode=mode,
+            sample_rate=sample_rate,
+            on_turn_complete=self._on_turn_complete,
+        )
 
         self.create_subscription(UInt8MultiArray, "audio_output", self._on_audio, 10)
 
@@ -37,9 +42,14 @@ class AudioPlaybackNode(Node):
 
     def _on_audio(self, msg):
         if not msg.data:
+            self._player.mark_turn_end()
             return
         samples = np.frombuffer(bytes(msg.data), dtype=np.int16)
         self._player.play(samples)
+
+    def _on_turn_complete(self):
+        self._dialog_state_pub.publish(String(data="idle"))
+        self.get_logger().info("本轮语音播放完成，恢复 ASR 计时")
 
 
 def main(args=None):

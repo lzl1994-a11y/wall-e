@@ -33,6 +33,7 @@ class LLMService:
         image_base64=None,
         tools_enabled=True,
         system_prompt=None,
+        max_tokens_override=None,
     ):
         """
         [ZH] 发起流式对话 (Generator)。
@@ -72,7 +73,11 @@ class LLMService:
             "model": self.model,
             "messages": messages,
             "temperature": self.settings.get('temperature', 0.3),
-            "max_tokens": self.settings.get('max_tokens', 1024),
+            "max_tokens": (
+                max_tokens_override
+                if max_tokens_override is not None
+                else self.settings.get('max_tokens', 1024)
+            ),
             "stream": True,
         }
         if tools_enabled:

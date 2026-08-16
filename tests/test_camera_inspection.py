@@ -144,6 +144,36 @@ class LLMServiceVisionTests(unittest.TestCase):
         })
         self.assertEqual(options, {})
 
+    def test_retry_can_raise_token_budget_without_changing_config(self):
+        fake_dispatcher = types.ModuleType("services.tool_dispatcher")
+        fake_dispatcher.get_tools = lambda: []
+
+        class FakeAccumulator:
+            def feed(self, _delta):
+                pass
+
+            def flush(self):
+                return []
+
+        fake_dispatcher.ToolCallAccumulator = FakeAccumulator
+        with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
+            sys.modules.pop("services.llm_service", None)
+            from services.llm_service import LLMService
+
+        service = object.__new__(LLMService)
+        service.settings = {"temperature": 0.2, "max_tokens": 256}
+        service.system_prompt = "你是瓦力。"
+        service.model = "glm-4.1v-thinking-flashx"
+        service.client = MagicMock()
+        service.client.chat.completions.create.return_value = _FakeResponse()
+
+        list(service.chat_stream("重试", tools_enabled=False, max_tokens_override=512))
+
+        kwargs = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(kwargs["max_tokens"], 512)
+        self.assertEqual(service.settings["max_tokens"], 256)
+        sys.modules.pop("services.llm_service", None)
+
 
 class CameraIntentTests(unittest.TestCase):
     def test_inspection_phrases_are_detected(self):

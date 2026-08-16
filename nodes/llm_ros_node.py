@@ -14,6 +14,7 @@ from pypinyin import Style, pinyin
 
 from services.llm_service import LLMService
 from services.camera_frame import CameraFrameProvider, is_camera_inspection_request
+from services.tts_protocol import encode_turn_end
 
 
 class LLMBrainNode(Node):
@@ -108,13 +109,16 @@ class LLMBrainNode(Node):
                 self._process_voice_task(task['turn_id'], task['user_prompt'])
             except Exception as e:
                 self.get_logger().error(f'Unhandled LLM worker error: {e}\n{traceback.format_exc()}')
+                failure_text = '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002'
+                self._publish_tts(failure_text, task.get('turn_id', ''))
                 self._publish_screen_dialog(
                     task.get('turn_id', ''),
                     task.get('user_prompt', ''),
-                    '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002',
+                    failure_text,
                     [],
                     error=str(e),
                 )
+                self._finish_tts_turn(task.get('turn_id', ''))
             finally:
                 self._request_queue.task_done()
 
@@ -155,6 +159,7 @@ class LLMBrainNode(Node):
         corrected_text = ''
         corrected_text_published = False
         actions = []
+        spoken_parts = []
 
         def publish_corrected(value):
             nonlocal corrected_text, corrected_text_published
@@ -167,6 +172,11 @@ class LLMBrainNode(Node):
                 f'[{turn_id}] Corrected text: raw="{user_prompt}" corrected="{corrected_text}"'
             )
 
+        def publish_spoken(value):
+            spoken = self._publish_tts(value, turn_id)
+            if spoken:
+                spoken_parts.append(spoken)
+
         try:
             stream = self.llm.chat_stream(augmented_prompt, list(self.chat_history))
 
@@ -177,6 +187,7 @@ class LLMBrainNode(Node):
                     chunk = data.get('content', '')
                     text_buffer += chunk
                     sentence_buffer += chunk
+                    punctuation_chunk = chunk
 
                     # Keep the existing first-line split idea, but accept several label variants.
                     if not corrected_text_extracted:
@@ -190,6 +201,7 @@ class LLMBrainNode(Node):
                                 sentence_buffer = self._strip_answer_prefix(
                                     parts[1] if len(parts) > 1 else ''
                                 )
+                                punctuation_chunk = sentence_buffer
                             else:
                                 publish_corrected(user_prompt)
 
@@ -200,7 +212,7 @@ class LLMBrainNode(Node):
                         else:
                             continue
 
-                    for char in chunk:
+                    for char in punctuation_chunk:
                         if not corrected_text_extracted:
                             break
 
@@ -212,10 +224,7 @@ class LLMBrainNode(Node):
                             tts_safe = self.TTS_CLEAN_RE.sub('', clean_sentence)
 
                             if tts_safe.strip():
-                                out_msg = String()
-                                out_msg.data = tts_safe.strip()
-                                self.tts_publisher.publish(out_msg)
-                                self.get_logger().info(f'[{turn_id}] Published TTS sentence: {out_msg.data}')
+                                publish_spoken(tts_safe)
 
                             sentence_buffer = ''
                             punc_count = 0
@@ -242,29 +251,43 @@ class LLMBrainNode(Node):
             if not corrected_text_published:
                 publish_corrected(user_prompt)
             failure_text = '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002'
+            publish_spoken(failure_text)
             self._publish_screen_dialog(turn_id, corrected_text or user_prompt, failure_text, actions, error=str(e))
-            idle_msg = String()
-            idle_msg.data = "idle"
-            self.busy_publisher.publish(idle_msg)
+            self._finish_tts_turn(turn_id)
             return
 
         if not corrected_text_published:
-            publish_corrected(user_prompt)
+            final_extracted = self._extract_corrected_text(sentence_buffer)
+            publish_corrected(final_extracted or user_prompt)
+            if final_extracted:
+                sentence_buffer = ''
 
         clean_tail = sentence_buffer.strip()
         if clean_tail:
             tts_safe_tail = self.TTS_CLEAN_RE.sub('', clean_tail)
             if tts_safe_tail.strip():
-                out_msg = String()
-                out_msg.data = tts_safe_tail.strip()
-                self.tts_publisher.publish(out_msg)
-                self.get_logger().info(f'[{turn_id}] Published TTS tail: {out_msg.data}')
+                publish_spoken(tts_safe_tail)
 
         final_user_memory = corrected_text if corrected_text else user_prompt
-        self.chat_history.append({'role': 'user', 'content': final_user_memory})
 
         clean_assistant_memory = self._strip_correction_line(text_buffer)
         clean_text = clean_assistant_memory.strip()
+        if '\n' not in text_buffer and self._extract_corrected_text(text_buffer):
+            clean_text = ''
+
+        if not clean_text and spoken_parts:
+            clean_text = ''.join(spoken_parts).strip()
+        if not clean_text:
+            clean_text = self._retry_empty_answer(
+                turn_id,
+                corrected_text or user_prompt,
+            )
+        if not clean_text:
+            clean_text = '\u6211\u521a\u624d\u6ca1\u7ec4\u7ec7\u597d\u56de\u7b54\uff0c\u4f60\u518d\u95ee\u6211\u4e00\u6b21\u3002'
+        if not spoken_parts:
+            publish_spoken(clean_text)
+
+        self.chat_history.append({'role': 'user', 'content': final_user_memory})
         
         assistant_msg = {'role': 'assistant', 'content': clean_text}
         
@@ -305,10 +328,8 @@ class LLMBrainNode(Node):
 
         self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
 
-        # 通知 STT 节点恢复 ASR
-        idle_msg = String()
-        idle_msg.data = "idle"
-        self.busy_publisher.publish(idle_msg)
+        # TTS 和播放节点会按顺序处理该标记；真正播完后再恢复 ASR。
+        self._finish_tts_turn(turn_id)
 
     def _process_camera_inspection(self, turn_id, user_prompt):
         """确认 → 抓帧 → 视觉 LLM → 播报结果。"""
@@ -323,7 +344,7 @@ class LLMBrainNode(Node):
             self._publish_screen_dialog(
                 turn_id, user_prompt, failure, [], error='camera_frame_unavailable'
             )
-            self._set_llm_idle()
+            self._finish_tts_turn(turn_id)
             return
 
         import base64
@@ -362,7 +383,7 @@ class LLMBrainNode(Node):
             self._publish_tts(failure, turn_id)
             self._publish_screen_dialog(turn_id, user_prompt, failure, [], error=str(exc))
         finally:
-            self._set_llm_idle()
+            self._finish_tts_turn(turn_id)
 
     def _visual_history(self):
         """只保留文本形式的最近上下文，避免把旧 tool 消息传给视觉模型。"""
@@ -388,12 +409,53 @@ class LLMBrainNode(Node):
     def _publish_tts(self, text, turn_id=''):
         safe = self.TTS_CLEAN_RE.sub('', (text or '').strip())
         if not safe:
-            return
+            return ''
         self.tts_publisher.publish(String(data=safe))
         self.get_logger().info(f'[{turn_id}] Published TTS sentence: {safe}')
+        return safe
 
-    def _set_llm_idle(self):
-        self.busy_publisher.publish(String(data='idle'))
+    def _finish_tts_turn(self, turn_id):
+        self.tts_publisher.publish(String(data=encode_turn_end(turn_id)))
+        self.get_logger().info(f'[{turn_id}] TTS turn queued; waiting for playback completion.')
+
+    def _retry_empty_answer(self, turn_id, user_prompt):
+        """Retry once when the model returned only the ASR correction line."""
+        self.get_logger().warning(
+            f'[{turn_id}] LLM returned no answer text; retrying once without tools.'
+        )
+        retry_prompt = (
+            f'用户说：{user_prompt}\n'
+            '请直接用一到两句简短自然的中文回答。只输出回答正文，不要输出纠错标签、'
+            '分析过程、Markdown、动作说明或任何前缀。'
+        )
+        settings = getattr(self.llm, 'settings', {})
+        configured_tokens = settings.get('max_tokens', 0) if isinstance(settings, dict) else 0
+        retry_tokens = max(512, configured_tokens if isinstance(configured_tokens, int) else 0)
+        try:
+            chunks = []
+            for data in self.llm.chat_stream(
+                retry_prompt,
+                list(self.chat_history),
+                tools_enabled=False,
+                max_tokens_override=retry_tokens,
+            ):
+                if data.get('type') == 'text' and data.get('content'):
+                    chunks.append(data['content'])
+            raw = ''.join(chunks).strip()
+            if not raw:
+                return ''
+            if '\n' not in raw and self._extract_corrected_text(raw):
+                return ''
+            answer = self._strip_answer_prefix(self._strip_correction_line(raw)).strip()
+            answer = self.TTS_CLEAN_RE.sub('', answer).strip()
+            if answer:
+                self.get_logger().info(f'[{turn_id}] Empty-answer retry succeeded.')
+            return answer
+        except Exception as exc:
+            self.get_logger().error(
+                f'[{turn_id}] Empty-answer retry failed: {exc}\n{traceback.format_exc()}'
+            )
+            return ''
 
     def _extract_corrected_text(self, first_line):
         first_line = (first_line or '').strip()
