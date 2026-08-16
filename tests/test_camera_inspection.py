@@ -13,7 +13,9 @@ if str(ROOT) not in sys.path:
 class _FakeResponse:
     def __iter__(self):
         delta = types.SimpleNamespace(content="看起来是一只杯子。", tool_calls=None)
-        yield types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta)])
+        yield types.SimpleNamespace(
+            choices=[types.SimpleNamespace(delta=delta, finish_reason="stop")]
+        )
 
 
 class LLMServiceVisionTests(unittest.TestCase):
@@ -59,6 +61,7 @@ class LLMServiceVisionTests(unittest.TestCase):
         self.assertNotIn("tool_choice", kwargs)
         self.assertNotIn("extra_body", kwargs)
         self.assertEqual(result[0]["content"], "看起来是一只杯子。")
+        self.assertEqual(result[-1], {"type": "done", "finish_reason": "stop"})
         sys.modules.pop("services.llm_service", None)
 
     def test_aliyun_fast_mode_disables_thinking(self):

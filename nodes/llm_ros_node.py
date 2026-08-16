@@ -18,6 +18,11 @@ from services.tts_protocol import encode_turn_end
 
 
 class LLMBrainNode(Node):
+    LONG_FORM_REQUEST_RE = re.compile(
+        r"(?:背(?:诵)?|朗(?:诵|读)|念|读)(?:一下|一遍|给我听)?|"
+        r"全文|完整(?:版|内容)?|全部|整首|从头到尾"
+    )
+    LONG_FORM_MAX_TOKENS = 2048
     CORRECTION_LABELS = {
         "\u4fee\u6b63\u6587\u672c",
         "\u7ea0\u9519\u6587\u672c",
@@ -136,6 +141,14 @@ class LLMBrainNode(Node):
 
         py_list = pinyin(user_prompt, style=Style.NORMAL)
         py_str = ' '.join([item[0] for item in py_list])
+        is_long_form = self._is_long_form_request(user_prompt)
+        if is_long_form:
+            response_policy = (
+                "这是朗读、背诵或完整内容请求。请连续完整输出用户要求的正文，"
+                "不要只给标题、简介或开头一句；除非用户明确只要片段。"
+            )
+        else:
+            response_policy = "普通对话保持一到两句、简短自然。"
 
         augmented_prompt = (
             f"\u539f\u59cb ASR \u6587\u672c\uff1a{user_prompt}\n"
@@ -145,10 +158,15 @@ class LLMBrainNode(Node):
             "\u62fc\u97f3\u3001\u4fee\u6b63\u6587\u672c\u3001\u7ea0\u9519\u7ed3\u679c\u3001\u5206\u6790\u3001\u601d\u8003\u3001\u8ba1\u5212\u3001\u89c4\u5219\u590d\u8ff0\u3001\u793a\u4f8b\u3001\u5217\u8868\u3001Markdown\u3001"
             "\u62ec\u53f7\u8bf4\u660e\u3001Function Calling \u5b57\u6837\u3001\u5de5\u5177\u540d\u6216\u5de5\u5177\u53c2\u6570\u3002"
             "\u9700\u8981\u52a8\u4f5c\u65f6\u53ea\u4f7f\u7528\u539f\u751f\u5de5\u5177\u8c03\u7528\uff0c\u4e0d\u8981\u5728\u6587\u5b57\u4e2d\u63cf\u8ff0\u8c03\u7528\u8fc7\u7a0b\u3002"
-            "\u666e\u901a\u5bf9\u8bdd\u4fdd\u6301\u4e00\u5230\u4e24\u53e5\u3001\u7b80\u77ed\u81ea\u7136\uff1b\u7528\u6237\u660e\u786e\u8981\u6c42\u5b8c\u6574\u5185\u5bb9\u65f6\u4e0d\u8981\u5f3a\u884c\u622a\u65ad\u3002"
+            f"{response_policy}"
         )
 
         self.get_logger().info(f'[{turn_id}] Sending request to LLM...')
+        max_tokens_override = self._max_tokens_for_request(is_long_form)
+        if max_tokens_override is not None:
+            self.get_logger().info(
+                f'[{turn_id}] Long-form request detected; max_tokens={max_tokens_override}.'
+            )
 
         text_buffer = ''
         sentence_buffer = ''
@@ -179,7 +197,11 @@ class LLMBrainNode(Node):
         publish_corrected(user_prompt)
 
         try:
-            stream = self.llm.chat_stream(augmented_prompt, list(self.chat_history))
+            stream = self.llm.chat_stream(
+                augmented_prompt,
+                list(self.chat_history),
+                max_tokens_override=max_tokens_override,
+            )
 
             for data in stream:
                 data_type = data.get('type')
@@ -220,6 +242,10 @@ class LLMBrainNode(Node):
                     action_msg = String()
                     action_msg.data = json.dumps(action_payload, ensure_ascii=False)
                     self.action_publisher.publish(action_msg)
+                elif data_type == 'done':
+                    finish_reason = data.get('finish_reason') or 'unknown'
+                    log = self.get_logger().warning if finish_reason == 'length' else self.get_logger().info
+                    log(f'[{turn_id}] LLM stream completed: finish_reason={finish_reason}')
 
         except Exception as e:
             self.get_logger().error(f'[{turn_id}] LLM request/stream failed: {e}\n{traceback.format_exc()}')
@@ -426,6 +452,19 @@ class LLMBrainNode(Node):
                 f'[{turn_id}] Empty-answer retry failed: {exc}\n{traceback.format_exc()}'
             )
             return ''
+
+    @classmethod
+    def _is_long_form_request(cls, user_prompt):
+        return bool(cls.LONG_FORM_REQUEST_RE.search(user_prompt or ''))
+
+    def _max_tokens_for_request(self, is_long_form):
+        if not is_long_form:
+            return None
+        settings = getattr(self.llm, 'settings', {})
+        configured_tokens = settings.get('max_tokens', 0) if isinstance(settings, dict) else 0
+        if not isinstance(configured_tokens, int):
+            configured_tokens = 0
+        return max(self.LONG_FORM_MAX_TOKENS, configured_tokens)
 
     def _extract_corrected_text(self, first_line):
         first_line = (first_line or '').strip()

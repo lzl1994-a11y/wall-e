@@ -201,6 +201,36 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(decode_turn_end(messages[1]), "turn-direct")
         sys.modules.pop("nodes.llm_ros_node", None)
 
+    def test_recitation_request_uses_long_form_prompt_and_token_budget(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.settings = {"max_tokens": 256}
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "浔阳江头夜送客。枫叶荻花秋瑟瑟。"},
+            {"type": "done", "finish_reason": "stop"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        logger = MagicMock()
+        node.get_logger = lambda: logger
+
+        node._process_voice_task("turn-poem", "背一下琵琶行")
+
+        request = node.llm.chat_stream.call_args
+        self.assertIn("连续完整输出", request.args[0])
+        self.assertEqual(request.kwargs["max_tokens_override"], 2048)
+        logger.info.assert_any_call(
+            "[turn-poem] LLM stream completed: finish_reason=stop"
+        )
+        sys.modules.pop("nodes.llm_ros_node", None)
+
     def test_correction_only_response_without_newline_is_not_spoken(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)

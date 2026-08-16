@@ -90,11 +90,16 @@ class LLMService:
 
         acc = ToolCallAccumulator()
         answer_filter = VisibleAnswerFilter()
+        finish_reason = ""
 
         for chunk in response:
             if not chunk.choices:
                 continue
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            chunk_finish_reason = getattr(choice, "finish_reason", None)
+            if chunk_finish_reason:
+                finish_reason = str(chunk_finish_reason)
+            delta = choice.delta
 
             acc.feed(delta)
 
@@ -113,3 +118,5 @@ class LLMService:
                 "name": tc["name"], 
                 "arguments": json.dumps(tc["arguments"])
             }
+
+        yield {"type": "done", "finish_reason": finish_reason}

@@ -13,6 +13,7 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 
 import numpy as np
 import sounddevice as sd
@@ -123,6 +124,7 @@ class AudioPipeline:
     FRAME_MS = 30  # WebRTC VAD 严格要求 10ms, 20ms, 或 30ms
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
     FRAME_BYTES = FRAME_SIZE * 2
+    PRE_ROLL_SEC = 0.3
     SILENCE_SEC = 0.8
     MAX_SPEECH_SEC = 15.0
 
@@ -377,8 +379,10 @@ class AudioPipeline:
     def _run(self):
         max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
         max_frames = int(self.MAX_SPEECH_SEC / (self.FRAME_MS / 1000.0))
+        pre_roll_size = max(1, int(self.PRE_ROLL_SEC / (self.FRAME_MS / 1000.0)))
 
         byte_buf = bytearray()
+        pre_roll_frames = deque(maxlen=pre_roll_size)
         speech_frames = []
         silence_count = 0
         in_speech = False
@@ -388,6 +392,7 @@ class AudioPipeline:
             if self._paused_event.is_set():
                 time.sleep(0.1)
                 byte_buf.clear()
+                pre_roll_frames.clear()
                 speech_frames.clear()
                 in_speech = False
                 silence_count = 0
@@ -409,6 +414,7 @@ class AudioPipeline:
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
                         self._awake = True
                         self._reset_vad_state()
+                        pre_roll_frames.clear()
                         speech_frames.clear()
                         in_speech = False
                         silence_count = 0
@@ -423,6 +429,7 @@ class AudioPipeline:
 
                 # ── 未唤醒时跳过 VAD 断句 ──
                 if not self._awake:
+                    pre_roll_frames.clear()
                     continue
 
                 # ── VAD + 静音断句 ──
@@ -432,8 +439,9 @@ class AudioPipeline:
                     silence_count = 0
                     if not in_speech:
                         in_speech = True
-                        speech_frames.clear()
-                        speech_frame_count = 0
+                        speech_frames = list(pre_roll_frames)
+                        speech_frame_count = len(speech_frames)
+                        pre_roll_frames.clear()
                     speech_frames.append(frame)
                     speech_frame_count += 1
 
@@ -460,6 +468,8 @@ class AudioPipeline:
                         self._emit_sentence(trimmed)
                         speech_frames.clear()
                         speech_frame_count = 0
+                else:
+                    pre_roll_frames.append(frame)
 
     def _vad_prob(self, frame: bytes) -> float:
         """

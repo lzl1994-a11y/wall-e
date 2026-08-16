@@ -1,5 +1,8 @@
 import asyncio
+import queue
 import sys
+import threading
+import types
 import unittest
 import wave
 from pathlib import Path
@@ -21,6 +24,40 @@ from services.tts_service import TTSService
 class AudioSampleRateContractTests(unittest.TestCase):
     def test_input_pipeline_remains_16khz(self):
         self.assertEqual(AudioPipeline.SAMPLE_RATE, 16000)
+
+    def test_vad_preroll_keeps_audio_before_first_detected_speech_frame(self):
+        pipeline = AudioPipeline.__new__(AudioPipeline)
+        pipeline.audio_queue = queue.Queue()
+        pipeline._is_running = True
+        pipeline._paused_event = threading.Event()
+        pipeline._ww = types.SimpleNamespace(enabled=False)
+        pipeline._awake = True
+        pipeline._vad_thresh = 0.5
+
+        quiet_frame = b"Q" * AudioPipeline.FRAME_BYTES
+        speech_frame = b"S" * AudioPipeline.FRAME_BYTES
+        trailing_frame = b"T" * AudioPipeline.FRAME_BYTES
+        pre_roll_count = int(AudioPipeline.PRE_ROLL_SEC / (AudioPipeline.FRAME_MS / 1000.0))
+        max_silence = int(AudioPipeline.SILENCE_SEC / (AudioPipeline.FRAME_MS / 1000.0))
+        frames = (
+            [quiet_frame] * pre_roll_count
+            + [speech_frame] * 2
+            + [trailing_frame] * (max_silence + 1)
+        )
+        pipeline.audio_queue.put(b"".join(frames))
+        pipeline._vad_prob = lambda frame: 1.0 if frame == speech_frame else 0.0
+        emitted = []
+
+        def on_sentence(pcm):
+            emitted.append(pcm)
+            pipeline._is_running = False
+
+        pipeline.on_sentence = on_sentence
+        pipeline._run()
+
+        self.assertEqual(len(emitted), 1)
+        self.assertTrue(emitted[0].startswith(quiet_frame * pre_roll_count))
+        self.assertIn(speech_frame * 2, emitted[0])
 
     @patch("services.playback_service.threading.Thread")
     @patch.object(PlaybackService, "_refresh_device", return_value=True)
