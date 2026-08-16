@@ -165,11 +165,40 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         dialog = json.loads(node.screen_dialog_publisher.publish.call_args.args[0].data)
         self.assertEqual(dialog["ai_text"], spoken_message)
         self.assertEqual(len(node.llm.chat_stream.call_args_list), 2)
+        initial_prompt = node.llm.chat_stream.call_args_list[0].args[0]
+        self.assertIn("\u9759\u9ed8\u7406\u89e3", initial_prompt)
+        self.assertNotIn("\u3010\u4fee\u6b63\u6587\u672c\u3011", initial_prompt)
         self.assertEqual(
             node.llm.chat_stream.call_args_list[1].kwargs["max_tokens_override"],
-            512,
+            256,
         )
         logger.warning.assert_called_once()
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_direct_answer_uses_one_request_and_keeps_asr_topic_contract(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "\u4f60\u597d\uff0c\u6211\u5728\u3002"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'\u3002', '\uff1f', '.', '?', '\uff01', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_voice_task("turn-direct", "\u4f60\u597d")
+
+        self.assertEqual(node.llm.chat_stream.call_count, 1)
+        self.assertEqual(node.corrected_publisher.publish.call_args.args[0].data, "\u4f60\u597d")
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(messages[0], "\u4f60\u597d\uff0c\u6211\u5728\u3002")
+        self.assertEqual(decode_turn_end(messages[1]), "turn-direct")
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_correction_only_response_without_newline_is_not_spoken(self):
@@ -196,6 +225,24 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(messages[0], "你好，又来找我了？")
         self.assertNotIn("修正文本", messages[0])
         self.assertEqual(decode_turn_end(messages[1]), "turn-3")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_legacy_correction_metadata_is_never_spoken(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+
+        self.assertEqual(
+            node._sanitize_speech_text("\u4fee\u6b63\u6587\u672c \u80cc\u4e00\u4e0b\u7435\u7436\u884c\u3002\n\u6d54\u9633\u6c5f\u5934\u591c\u9001\u5ba2\u3002"),
+            "\u6d54\u9633\u6c5f\u5934\u591c\u9001\u5ba2\u3002",
+        )
+        self.assertEqual(
+            node._sanitize_speech_text("\u4fee\u6b63\u6587\u672c\n\u80cc\u4e00\u4e0b\u7435\u7436\u884c\u3002\n\u6d54\u9633\u6c5f\u5934\u591c\u9001\u5ba2\u3002"),
+            "\u6d54\u9633\u6c5f\u5934\u591c\u9001\u5ba2\u3002",
+        )
+        self.assertEqual(
+            node._sanitize_speech_text("\u4fee\u6b63\u6587\u672c\u662f\u4ec0\u4e48\u610f\u601d\uff1f"),
+            "\u4fee\u6b63\u6587\u672c\u662f\u4ec0\u4e48\u610f\u601d\uff1f",
+        )
         sys.modules.pop("nodes.llm_ros_node", None)
 
 

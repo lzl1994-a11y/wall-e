@@ -134,6 +134,17 @@ class LLMServiceVisionTests(unittest.TestCase):
         )
         sys.modules.pop("services.llm_service", None)
 
+    def test_zhipu_glm_45_air_fast_mode_disables_thinking(self):
+        from services.llm_request_options import reasoning_request_options
+
+        options = reasoning_request_options({
+            "provider": "zhipu",
+            "model": "glm-4.5-air",
+            "reasoning_effort": "fast",
+        })
+
+        self.assertEqual(options, {"extra_body": {"thinking": {"type": "disabled"}}})
+
     def test_zhipu_fixed_thinking_model_keeps_supported_request_shape(self):
         from services.llm_request_options import reasoning_request_options
 

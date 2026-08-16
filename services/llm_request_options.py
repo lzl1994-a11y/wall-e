@@ -17,6 +17,7 @@ def reasoning_request_options(settings):
         return {"extra_body": {"enable_thinking": False}}
     model = str(settings.get("model", "")).strip().lower()
     zhipu_toggle_models = (
+        "glm-4.5",
         "glm-4.7",
         "glm-5",
     )

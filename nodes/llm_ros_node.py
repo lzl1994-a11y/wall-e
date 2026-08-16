@@ -140,14 +140,12 @@ class LLMBrainNode(Node):
         augmented_prompt = (
             f"\u539f\u59cb ASR \u6587\u672c\uff1a{user_prompt}\n"
             f"\u62fc\u97f3\u53c2\u8003\uff1a{py_str}\n\n"
-            "\u4e25\u683c\u6309\u4ee5\u4e0b\u4e24\u884c\u683c\u5f0f\u8f93\u51fa\uff0c\u4e0d\u5f97\u589e\u52a0\u5176\u4ed6\u5185\u5bb9\uff1a\n"
-            "\u3010\u4fee\u6b63\u6587\u672c\u3011: <\u6839\u636e\u4e0a\u4e0b\u6587\u548c\u62fc\u97f3\u7ea0\u6b63\u540e\u7684\u5b8c\u6574\u53e5\u5b50>\n"
-            "<\u53ef\u76f4\u63a5\u901a\u8fc7\u626c\u58f0\u5668\u64ad\u653e\u7684\u6700\u7ec8\u56de\u590d>\n\n"
-            "\u7b2c\u4e8c\u884c\u6700\u591a\u4e24\u53e5\uff0c\u7b80\u77ed\u81ea\u7136\u3002\u4e0d\u8981\u8f93\u51fa\u5206\u6790\u3001\u601d\u8003\u3001\u8ba1\u5212\u3001\u89c4\u5219\u590d\u8ff0\u3001\u793a\u4f8b\u3001\u5217\u8868\u3001Markdown\u3001"
+            "\u8bf7\u7ed3\u5408\u5bf9\u8bdd\u4e0a\u4e0b\u6587\u548c\u62fc\u97f3\u9759\u9ed8\u7406\u89e3\u7528\u6237\u672c\u610f\uff0c\u7136\u540e\u76f4\u63a5\u56de\u7b54\u3002"
+            "\u53ea\u8f93\u51fa\u53ef\u4ee5\u901a\u8fc7\u626c\u58f0\u5668\u64ad\u653e\u7684\u6700\u7ec8\u53f0\u8bcd\uff0c\u4e0d\u8981\u8f93\u51fa\u6216\u590d\u8ff0\u539f\u59cb ASR \u6587\u672c\u3001"
+            "\u62fc\u97f3\u3001\u4fee\u6b63\u6587\u672c\u3001\u7ea0\u9519\u7ed3\u679c\u3001\u5206\u6790\u3001\u601d\u8003\u3001\u8ba1\u5212\u3001\u89c4\u5219\u590d\u8ff0\u3001\u793a\u4f8b\u3001\u5217\u8868\u3001Markdown\u3001"
             "\u62ec\u53f7\u8bf4\u660e\u3001Function Calling \u5b57\u6837\u3001\u5de5\u5177\u540d\u6216\u5de5\u5177\u53c2\u6570\u3002"
-            "\u4e0d\u8981\u8f93\u51fa\u201c\u7b2c\u4e00\u884c\u201d\u6216\u201c\u7b2c\u4e8c\u884c\u201d\u524d\u7f00\u3002"
             "\u9700\u8981\u52a8\u4f5c\u65f6\u53ea\u4f7f\u7528\u539f\u751f\u5de5\u5177\u8c03\u7528\uff0c\u4e0d\u8981\u5728\u6587\u5b57\u4e2d\u63cf\u8ff0\u8c03\u7528\u8fc7\u7a0b\u3002"
-            "\u76f4\u63a5\u7ed9\u51fa\u4e24\u884c\u7ed3\u679c\u3002"
+            "\u666e\u901a\u5bf9\u8bdd\u4fdd\u6301\u4e00\u5230\u4e24\u53e5\u3001\u7b80\u77ed\u81ea\u7136\uff1b\u7528\u6237\u660e\u786e\u8981\u6c42\u5b8c\u6574\u5185\u5bb9\u65f6\u4e0d\u8981\u5f3a\u884c\u622a\u65ad\u3002"
         )
 
         self.get_logger().info(f'[{turn_id}] Sending request to LLM...')
@@ -155,7 +153,6 @@ class LLMBrainNode(Node):
         text_buffer = ''
         sentence_buffer = ''
         punc_count = 0
-        corrected_text_extracted = False
         corrected_text = ''
         corrected_text_published = False
         actions = []
@@ -177,6 +174,10 @@ class LLMBrainNode(Node):
             if spoken:
                 spoken_parts.append(spoken)
 
+        # Correction metadata is an internal concern. Publish the ASR text for
+        # the existing topic contract and ask the model for speech only.
+        publish_corrected(user_prompt)
+
         try:
             stream = self.llm.chat_stream(augmented_prompt, list(self.chat_history))
 
@@ -189,33 +190,7 @@ class LLMBrainNode(Node):
                     sentence_buffer += chunk
                     punctuation_chunk = chunk
 
-                    # Keep the existing first-line split idea, but accept several label variants.
-                    if not corrected_text_extracted:
-                        if '\n' in sentence_buffer:
-                            parts = sentence_buffer.split('\n', 1)
-                            first_line = parts[0].strip()
-                            extracted = self._extract_corrected_text(first_line)
-
-                            if extracted:
-                                publish_corrected(extracted)
-                                sentence_buffer = self._strip_answer_prefix(
-                                    parts[1] if len(parts) > 1 else ''
-                                )
-                                punctuation_chunk = sentence_buffer
-                            else:
-                                publish_corrected(user_prompt)
-
-                            corrected_text_extracted = True
-                        elif len(sentence_buffer) > 60:
-                            publish_corrected(user_prompt)
-                            corrected_text_extracted = True
-                        else:
-                            continue
-
                     for char in punctuation_chunk:
-                        if not corrected_text_extracted:
-                            break
-
                         if char in self.punctuations:
                             punc_count += 1
 
@@ -256,12 +231,6 @@ class LLMBrainNode(Node):
             self._finish_tts_turn(turn_id)
             return
 
-        if not corrected_text_published:
-            final_extracted = self._extract_corrected_text(sentence_buffer)
-            publish_corrected(final_extracted or user_prompt)
-            if final_extracted:
-                sentence_buffer = ''
-
         clean_tail = sentence_buffer.strip()
         if clean_tail:
             tts_safe_tail = self.TTS_CLEAN_RE.sub('', clean_tail)
@@ -270,8 +239,7 @@ class LLMBrainNode(Node):
 
         final_user_memory = corrected_text if corrected_text else user_prompt
 
-        clean_assistant_memory = self._strip_correction_line(text_buffer)
-        clean_text = clean_assistant_memory.strip()
+        clean_text = self._sanitize_speech_text(text_buffer)
         if '\n' not in text_buffer and self._extract_corrected_text(text_buffer):
             clean_text = ''
 
@@ -283,7 +251,7 @@ class LLMBrainNode(Node):
                 corrected_text or user_prompt,
             )
         if not clean_text:
-            clean_text = '\u6211\u521a\u624d\u6ca1\u7ec4\u7ec7\u597d\u56de\u7b54\uff0c\u4f60\u518d\u95ee\u6211\u4e00\u6b21\u3002'
+            clean_text = '\u6211\u521a\u624d\u5361\u4f4f\u4e86\uff0c\u7b49\u6211\u7f13\u4e00\u4e0b\u3002'
         if not spoken_parts:
             publish_spoken(clean_text)
 
@@ -407,7 +375,7 @@ class LLMBrainNode(Node):
         return LLMBrainNode.TTS_CLEAN_RE.sub('', text).strip()
 
     def _publish_tts(self, text, turn_id=''):
-        safe = self.TTS_CLEAN_RE.sub('', (text or '').strip())
+        safe = self._sanitize_speech_text(text)
         if not safe:
             return ''
         self.tts_publisher.publish(String(data=safe))
@@ -430,7 +398,10 @@ class LLMBrainNode(Node):
         )
         settings = getattr(self.llm, 'settings', {})
         configured_tokens = settings.get('max_tokens', 0) if isinstance(settings, dict) else 0
-        retry_tokens = max(512, configured_tokens if isinstance(configured_tokens, int) else 0)
+        retry_tokens = configured_tokens if isinstance(configured_tokens, int) else 0
+        if retry_tokens <= 0:
+            retry_tokens = 256
+        retry_tokens = min(max(retry_tokens, 128), 256)
         try:
             chunks = []
             for data in self.llm.chat_stream(
@@ -446,8 +417,7 @@ class LLMBrainNode(Node):
                 return ''
             if '\n' not in raw and self._extract_corrected_text(raw):
                 return ''
-            answer = self._strip_answer_prefix(self._strip_correction_line(raw)).strip()
-            answer = self.TTS_CLEAN_RE.sub('', answer).strip()
+            answer = self._sanitize_speech_text(raw)
             if answer:
                 self.get_logger().info(f'[{turn_id}] Empty-answer retry succeeded.')
             return answer
@@ -496,7 +466,10 @@ class LLMBrainNode(Node):
 
         for label in self.CORRECTION_LABELS:
             if value.lower().startswith(label.lower()):
-                maybe_text = value[len(label):].strip(' \t:\uff1a')
+                remainder = value[len(label):]
+                if remainder and remainder[0] not in ' \t:\uff1a':
+                    continue
+                maybe_text = remainder.strip(' \t:\uff1a')
                 return maybe_text.strip().strip('"\u201c\u201d') or None
 
         return None
@@ -507,7 +480,23 @@ class LLMBrainNode(Node):
         first_line, rest = text.split('\n', 1)
         if self._extract_corrected_text(first_line):
             return self._strip_answer_prefix(rest)
+        if self._is_correction_label_only(first_line):
+            if '\n' not in rest:
+                return ''
+            _, answer = rest.split('\n', 1)
+            return self._strip_answer_prefix(answer)
         return text
+
+    def _sanitize_speech_text(self, text):
+        clean = self._strip_answer_prefix(self._strip_correction_line(text)).strip()
+        if '\n' not in clean and self._extract_corrected_text(clean):
+            return ''
+        return self.TTS_CLEAN_RE.sub('', clean).strip()
+
+    def _is_correction_label_only(self, text):
+        cleaned = (text or '').strip().lstrip(' \t>*-#')
+        cleaned = cleaned.strip('[]\u3010\u3011').strip(' \t:\uff1a').lower()
+        return cleaned in self.CORRECTION_LABELS
 
     @classmethod
     def _strip_answer_prefix(cls, text):
