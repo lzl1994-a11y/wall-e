@@ -28,21 +28,42 @@ class PlaybackLifecycleTests(unittest.TestCase):
         player = PlaybackService.__new__(PlaybackService)
         player.sample_rate = 48000
         player._device = 2
+        player._stream = None
         player.on_turn_complete = lambda: events.append("complete")
         samples = np.array([1, -2, 3], dtype=np.int16)
+        stream = MagicMock()
+        stream.write.side_effect = lambda _audio: events.append("queued")
+        stream.stop.side_effect = lambda: events.append("played")
 
         with (
             patch.object(player, "_refresh_device", return_value=True),
-            patch("services.playback_service.sd.play"),
-            patch(
-                "services.playback_service.sd.wait",
-                side_effect=lambda: events.append("played"),
-            ),
+            patch("services.playback_service.sd.OutputStream", return_value=stream),
         ):
             player._play_item(samples)
             player._play_item(PlaybackService._TURN_END)
 
-        self.assertEqual(events, ["played", "complete"])
+        self.assertEqual(events, ["queued", "played", "complete"])
+        stream.start.assert_called_once_with()
+        stream.close.assert_called_once_with()
+
+    def test_multiple_segments_share_one_output_stream(self):
+        player = PlaybackService.__new__(PlaybackService)
+        player.sample_rate = 48000
+        player._device = 2
+        player._stream = None
+        player.on_turn_complete = None
+        stream = MagicMock()
+
+        with (
+            patch.object(player, "_refresh_device", return_value=True),
+            patch("services.playback_service.sd.OutputStream", return_value=stream) as stream_class,
+        ):
+            player._play_item(np.array([1, 2], dtype=np.int16))
+            player._play_item(np.array([3, 4], dtype=np.int16))
+            player._play_item(PlaybackService._TURN_END)
+
+        stream_class.assert_called_once()
+        self.assertEqual(stream.write.call_count, 2)
 
 
 class STTTimerLifecycleTests(unittest.TestCase):

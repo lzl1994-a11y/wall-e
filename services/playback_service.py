@@ -32,6 +32,7 @@ class PlaybackService:
         self.on_turn_complete = on_turn_complete
         self._device = None
         self._device_identity = ""
+        self._stream = None
         self._refresh_device()
 
         self._queue = queue.Queue()
@@ -91,16 +92,51 @@ class PlaybackService:
 
     def _play_item(self, item):
         if item is self._TURN_END:
-            if self.on_turn_complete:
-                self.on_turn_complete()
+            try:
+                self._close_stream(drain=True)
+            finally:
+                if self.on_turn_complete:
+                    self.on_turn_complete()
             return
 
-        if not self._refresh_device():
-            print("[Playback Service] configured voice USB is offline; audio skipped")
+        if not self._ensure_stream():
             return
         audio = item.astype(np.float32) / 32768.0
-        sd.play(audio, samplerate=self.sample_rate, device=self._device)
-        sd.wait()
+        self._stream.write(audio.reshape(-1, 1))
+
+    def _ensure_stream(self):
+        if self._stream is not None:
+            return True
+        if not self._refresh_device():
+            print("[Playback Service] configured voice USB is offline; audio skipped")
+            return False
+        try:
+            self._stream = sd.OutputStream(
+                samplerate=self.sample_rate,
+                device=self._device,
+                channels=1,
+                dtype="float32",
+                blocksize=0,
+            )
+            self._stream.start()
+            return True
+        except Exception as exc:
+            self._stream = None
+            print(f"[Playback Service] 打开音频流失败: {exc}")
+            return False
+
+    def _close_stream(self, drain=False):
+        stream = self._stream
+        self._stream = None
+        if stream is None:
+            return
+        try:
+            if drain:
+                stream.stop()
+            else:
+                stream.abort()
+        finally:
+            stream.close()
 
     def _play_worker(self):
         """后台线程：阻塞播放音频队列。"""
@@ -110,5 +146,6 @@ class PlaybackService:
                 self._play_item(item)
             except Exception as e:
                 print(f"[Playback Service] 播放失败: {e}")
+                self._close_stream(drain=False)
             finally:
                 self._queue.task_done()

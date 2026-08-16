@@ -5,8 +5,6 @@
 """
 
 import sys
-import threading
-import queue
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +14,7 @@ from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio_output import OUTPUT_SAMPLE_RATE
+from services.tts_pipeline import OrderedTTSPipeline
 from services.tts_protocol import decode_turn_end
 from services.tts_service import TTSService
 
@@ -31,10 +30,12 @@ class TTSPlayNode(Node):
         self.declare_parameter("rate", "+20%")
         self.declare_parameter("pitch", "+5Hz")
         self.declare_parameter("sample_rate", OUTPUT_SAMPLE_RATE)
+        self.declare_parameter("prefetch_workers", 2)
         self.voice = self.get_parameter("voice").value
         self.rate = self.get_parameter("rate").value
         self.pitch = self.get_parameter("pitch").value
         self.sample_rate = self.get_parameter("sample_rate").value
+        self.prefetch_workers = self.get_parameter("prefetch_workers").value
 
         self._tts = TTSService(
             voice=self.voice,
@@ -43,13 +44,18 @@ class TTSPlayNode(Node):
             sample_rate=self.sample_rate,
         )
 
-        self._text_queue = queue.Queue()
-        self._worker = threading.Thread(target=self._synthesis_worker, daemon=True)
-        self._worker.start()
+        self._pipeline = OrderedTTSPipeline(
+            synthesize=self._tts.synthesize,
+            on_audio=self._publish_audio,
+            on_turn_end=self._publish_turn_end,
+            on_error=self._log_synthesis_error,
+            workers=self.prefetch_workers,
+        )
 
         self.get_logger().info(
             f"TTS 播放节点上线 "
-            f"(voice={self.voice}, rate={self.rate}, pitch={self.pitch}, sr={self.sample_rate})"
+            f"(voice={self.voice}, rate={self.rate}, pitch={self.pitch}, "
+            f"sr={self.sample_rate}, prefetch={self.prefetch_workers})"
         )
 
     def _on_tts_text(self, msg):
@@ -58,33 +64,29 @@ class TTSPlayNode(Node):
             return
         turn_id = decode_turn_end(text)
         if turn_id is not None:
-            self._text_queue.put(("turn_end", turn_id))
+            self._pipeline.submit_turn_end(turn_id)
             return
-        self._text_queue.put(("speech", text))
+        self._pipeline.submit_speech(text)
 
-    def _synthesis_worker(self):
-        """工作线程：顺序取文本 → 合成 → publish。"""
-        while True:
-            item_type, value = self._text_queue.get()
-            try:
-                if item_type == "turn_end":
-                    self.audio_pub.publish(UInt8MultiArray(data=[]))
-                    self.get_logger().info(f"TTS 轮次结束: {value}")
-                    continue
+    def _publish_audio(self, samples, text, elapsed):
+        msg = UInt8MultiArray(data=samples.tobytes())
+        self.audio_pub.publish(msg)
+        self.get_logger().info(
+            f"TTS → /audio_output: {len(msg.data)} bytes, "
+            f"synthesis={elapsed:.2f}s, text={text[:40]}"
+        )
 
-                text = value
-                samples = self._tts.synthesize(text)
-                msg = UInt8MultiArray(data=samples.tobytes())
-                self.audio_pub.publish(msg)
-                self.get_logger().info(
-                    f"TTS → /audio_output: {len(msg.data)} bytes, text={text[:40]}"
-                )
-            except Exception as e:
-                self.get_logger().error(f"TTS 合成失败: {e}")
-            finally:
-                self._text_queue.task_done()
+    def _publish_turn_end(self, turn_id):
+        self.audio_pub.publish(UInt8MultiArray(data=[]))
+        self.get_logger().info(f"TTS 轮次结束: {turn_id}")
+
+    def _log_synthesis_error(self, text, error, elapsed):
+        self.get_logger().error(
+            f"TTS 合成失败 ({elapsed:.2f}s, text={text[:40]}): {error}"
+        )
 
     def destroy_node(self):
+        self._pipeline.shutdown()
         self._tts.shutdown()
         super().destroy_node()
 
