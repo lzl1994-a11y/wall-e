@@ -5,7 +5,7 @@
 ## 🌟 核心特性
 
 - 🤖 **仿生视觉追踪 (AI BPU)**：深度整合地平线 TogetherROS，实现无缝的人体/人脸追踪。独创“虚假扭头”仿生视效及双舵机补偿仰俯算法。
-- 🎙️ **多模态语音交互**：支持基于 Qwen-Omni 的端到端音频大模型交互，也支持传统的 STT(Paraformer) + LLM + TTS(EdgeTTS) 链路。
+- 🎙️ **可切换语音识别**：支持基于 Qwen-Omni 的端到端音频交互，也支持 `ASR → LLM → TTS` 链路；ASR 可在智谱、阿里云、百度智能云与多种本地离线模型之间切换。
 - 🎮 **零侵入物理接管**：通过高频发布中枢，使用游戏手柄可随时实现最高优先级的纯物理控制（摇杆差速底盘、线性扳机压感眼球），并自动屏蔽大模型的行动指令。
 - 🛡️ **小脑安全守护**：底层 `sequence_ros_node` 提供 50Hz 动作插值平滑，并内置严格的物理干涉检测（例如转头时眼睛自动抬高防止碰撞）。
 
@@ -34,25 +34,192 @@ colcon build --packages-select wali_x3_brain
 source install/setup.bash
 ```
 
-选择百度实时语音识别时，需要安装其 WebSocket 客户端依赖：
+### 3. ASR 运行依赖
+
+ASR 公共链路依赖如下：
 
 ```bash
-pip install websocket-client
+sudo apt install -y libportaudio2 portaudio19-dev
+python3 -m pip install numpy PyYAML sounddevice requests dashscope
 ```
 
-选择本地 ASR 时，只需要安装当前模型引擎对应的可选依赖：
+再根据实际选择的引擎安装可选依赖：
 
 ```bash
+# 百度实时 ASR
+python3 -m pip install websocket-client
+
 # Sherpa-ONNX Zipformer / Paraformer / SenseVoice / Whisper
-pip install sherpa-onnx
+python3 -m pip install sherpa-onnx
 
 # Faster-Whisper
-pip install faster-whisper
+python3 -m pip install faster-whisper
 ```
 
-本地 ASR 模型文件不随项目默认提供。请在配置网页中选择模型引擎，并填写该引擎要求的模型文件或目录路径。Sherpa 引擎需要使用与 `OfflineRecognizer` 兼容的模型。`models/sherpa-onnx` 中现有文件属于唤醒词检测模型，不应作为通用 ASR 模型使用。
+> [!NOTE]
+> 唤醒词与 ASR 是两套独立模块。即使 ASR 使用云端服务，只要启用了唤醒词，仍需要安装 `sherpa-onnx`。
 
-音频方向使用不同采样率：ESP32-S3 上传到主脑的麦克风 PCM 为 16 kHz，供 VAD、唤醒词和 ASR 使用；主脑下发给 ESP32-S3 的 TTS 与提示音 PCM 为 48 kHz、16-bit、单声道。
+## 🎙️ ASR 云端 / 本地引擎配置
+
+### 设计目标
+
+所有 ASR 引擎都实现同一个接口：
+
+```python
+recognize(wav_path: str, sample_rate: int = 16000) -> str
+```
+
+因此更换云端服务商或本地模型时，只替换 ASR 适配器，不需要修改唤醒词、VAD、LLM、TTS 或 ROS Topic。识别成功统一返回纯文本，识别失败统一返回空字符串。
+
+```mermaid
+flowchart LR
+    MIC["ESP32-S3 麦克风<br/>内部采样 48 kHz"] --> DS["下位机降采样并上传<br/>16 kHz / Mono / PCM16"]
+    DS --> PIPE["AudioPipeline<br/>唤醒词守门 + VAD 断句"]
+    PIPE --> WAV["STTService<br/>生成临时 16 kHz WAV"]
+    WAV --> FACTORY{"ASR Factory<br/>读取 asr.mode"}
+
+    FACTORY -->|cloud| CLOUD{"云端 provider"}
+    CLOUD --> ZHIPU["智谱 ASR"]
+    CLOUD --> ALIYUN["阿里云 Paraformer"]
+    CLOUD --> BAIDU["百度实时 ASR"]
+
+    FACTORY -->|local| LOCAL{"本地 engine"}
+    LOCAL --> SHERPA["Sherpa-ONNX<br/>Zipformer / Paraformer<br/>SenseVoice / Whisper"]
+    LOCAL --> FASTER["Faster-Whisper"]
+
+    ZHIPU --> TEXT["统一文本输出 str"]
+    ALIYUN --> TEXT
+    BAIDU --> TEXT
+    SHERPA --> TEXT
+    FASTER --> TEXT
+    TEXT --> TOPIC["ROS Topic: voice_text"]
+    TOPIC --> LLM["LLM 对话链路"]
+```
+
+> [!IMPORTANT]
+> ASR 输入固定为 `16 kHz / 16-bit / 单声道 PCM WAV`。ESP32-S3 的麦克风虽然内部以 48 kHz 采样，但上传给旭日派前会降采样到 16 kHz。48 kHz 只用于 TTS 和提示音播放输出。
+
+`wake_word.awake_timeout` 表示一轮对话中的用户无声等待时间。完成一句 ASR 后，计时会在 LLM 请求、TTS 合成和音频播放期间暂停；最后一段 AI 语音真正播放完成后，才重新开始计时。
+
+### 使用 Web 页面配置
+
+启动配置服务：
+
+```bash
+python3 services/web_server.py
+```
+
+浏览器打开 `http://<旭日派IP>:8080`，进入“对话模式 → ASR 语音识别”，选择“云端服务”或“本地离线模型”。页面只展示当前引擎需要的字段，并在保存前检查参数类型、模型文件和模型目录是否存在。
+
+保存后的配置写入 `core/config.yaml`。ASR 适配器在节点启动时创建，修改配置后需要重启主脑：
+
+```bash
+python3 launch_nodes.py --real-stt
+```
+
+API Key 不会回传到页面；密钥输入框留空时保留原值。不要把真实密钥写入 README、Issue、日志或提交到公开仓库。
+
+### 云端 ASR 参数
+
+| 服务商 | `provider` | 必填参数 | 可选参数 | 额外依赖 |
+| --- | --- | --- | --- | --- |
+| 智谱 AI | `zhipu` | `model`、`api_key`、`url` | - | `requests` |
+| 阿里云 Paraformer | `aliyun` | `model`、`api_key` | - | `dashscope` |
+| 百度实时语音识别 | `baidu` | `app_id`、`api_key`、`dev_pid`、`cuid`、`url` | `lm_id`；使用方言 PID `15376` 时还需 `user` | `websocket-client` |
+
+推荐使用按服务商分组的新配置格式：
+
+<details>
+<summary>智谱云端 ASR 示例</summary>
+
+```yaml
+pipeline:
+  mode: asr_llm
+
+asr:
+  mode: cloud
+  provider: zhipu
+  zhipu:
+    model: GLM-ASR-2512
+    api_key: YOUR_API_KEY
+    url: https://open.bigmodel.cn/api/paas/v4/audio/transcriptions
+```
+
+</details>
+
+<details>
+<summary>百度实时 ASR 示例</summary>
+
+```yaml
+pipeline:
+  mode: asr_llm
+
+asr:
+  mode: cloud
+  provider: baidu
+  baidu:
+    app_id: 12345678
+    api_key: YOUR_API_KEY
+    dev_pid: 15372
+    cuid: wali-x3
+    url: wss://vop.baidu.com/realtime_asr
+```
+
+</details>
+
+### 本地 ASR 模型要求
+
+| 本地引擎 | `engine` | 模型文件或目录 | 其他参数 |
+| --- | --- | --- | --- |
+| Sherpa Zipformer | `sherpa_onnx_zipformer` | `encoder`、`decoder`、`joiner`、`tokens` | `num_threads`：1-64 |
+| Sherpa Paraformer | `sherpa_onnx_paraformer` | `model`、`tokens` | `num_threads`：1-64 |
+| Sherpa SenseVoice | `sherpa_onnx_sensevoice` | `model`、`tokens` | `language`、`use_itn`、`num_threads` |
+| Sherpa Whisper | `sherpa_onnx_whisper` | `encoder`、`decoder`、`tokens` | `language`、`num_threads` |
+| Faster-Whisper | `faster_whisper` | `model_path` 模型目录 | `language`、`device`、`compute_type` |
+
+模型路径可以是绝对路径，也可以是相对于项目根目录的路径。Web 服务保存配置时会检查路径；主脑启动时会再次校验并解析为绝对路径。
+
+<details>
+<summary>Sherpa-ONNX Zipformer 示例</summary>
+
+```yaml
+pipeline:
+  mode: asr_llm
+
+asr:
+  mode: local
+  engine: sherpa_onnx_zipformer
+  sherpa_onnx_zipformer:
+    encoder: models/asr/zipformer/encoder.onnx
+    decoder: models/asr/zipformer/decoder.onnx
+    joiner: models/asr/zipformer/joiner.onnx
+    tokens: models/asr/zipformer/tokens.txt
+    num_threads: 2
+```
+
+</details>
+
+<details>
+<summary>Faster-Whisper 示例</summary>
+
+```yaml
+pipeline:
+  mode: asr_llm
+
+asr:
+  mode: local
+  engine: faster_whisper
+  faster_whisper:
+    model_path: models/asr/faster-whisper
+    language: zh
+    device: cpu
+    compute_type: int8
+```
+
+</details>
+
+> [!WARNING]
+> 本地 ASR 模型文件不随项目提供。Sherpa 模型必须与 `sherpa_onnx.OfflineRecognizer` 对应接口兼容。项目现有的 `models/sherpa-onnx` 是唤醒词模型，不能直接作为通用 ASR 模型使用。
 
 ## 🎮 启动指南
 
@@ -66,7 +233,7 @@ pip install faster-whisper
 python services/web_server.py
 ```
 
-浏览器访问 `http://<旭日派IP>:8080`（本机调试也可用 `http://127.0.0.1:8080`）。默认监听所有网络接口，默认访问令牌为 `123456`。页面右上角提供“修改令牌”按钮，修改后立即生效并写入 `config.yaml`，重启后仍然有效。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 可以选择云端服务或本地离线模型。云端模式支持智谱、阿里云和百度智能云，本地模式会根据 Zipformer、Paraformer、SenseVoice、Sherpa Whisper 或 Faster-Whisper 显示对应的模型文件字段。切换选项时只显示并提交当前选项的字段。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。ASR 配置在重启主脑后生效。
+浏览器访问 `http://<旭日派IP>:8080`（本机调试也可用 `http://127.0.0.1:8080`）。默认监听所有网络接口，默认访问令牌为 `123456`。页面右上角提供“修改令牌”按钮，修改后立即生效并写入 `config.yaml`，重启后仍然有效。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 的引擎、参数和模型文件要求见上方“ASR 云端 / 本地引擎配置”。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。ASR 配置在重启主脑后生效。
 
 “硬件”页面可以为三类物理 USB 分配角色：摄像头 USB、屏幕/运动 USB、语音 USB（麦克风、扬声器和声源定位）。点击“刷新设备”后选择当前设备并独立保存。配置使用 VID/PID 加序列号识别设备；没有序列号时使用物理 USB 端口路径，因此 `/dev/ttyACM*`、`/dev/video*` 或音频卡编号变化不会影响匹配。未配置某个角色时继续使用原有代码默认逻辑。运行中修改配置或拔插设备后，串口、DOA、音频和摄像头节点会自动重新发现并恢复，无需重启主程序。
 
@@ -138,7 +305,7 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 #### 启动参数选项 (`launch_nodes.py`)
 - `--tracking`：开启视觉追踪节点（监听地平线 BPU 输出）。
 - `--voice-chat`：使用大模型端到端语音交互（Qwen-Omni）。
-- `--real-stt`：使用阿里云 Paraformer 语音转文字。
+- `--real-stt`：启动 `ASR → LLM → TTS` 链路，实际 ASR 引擎由 `core/config.yaml` 或 Web 页面中的 `asr.mode`、`provider` / `engine` 决定。
 - `--keyboard-stt`：使用键盘输入文字模拟语音识别（调试用）。
 - `--no-serial`：不启动屏幕/下位机串口节点；板载 I²C 后端仍可运行。
 - `--no-hardware`：不启动舵机/电机硬件后端，保留其他节点用于调试。
