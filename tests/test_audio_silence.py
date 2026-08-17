@@ -35,6 +35,17 @@ class TurnAudioTrimmerTests(unittest.TestCase):
         self.assertAlmostEqual(result.trailing_cut_ms, 600.0, places=1)
         self.assertAlmostEqual(result.processed_ms, 500.0, places=1)
 
+    def test_retained_trailing_silence_is_forced_to_digital_zero(self):
+        leading = np.full(int(0.1 * self.SAMPLE_RATE), 8, dtype=np.int16)
+        speech = np.full(int(0.2 * self.SAMPLE_RATE), 1200, dtype=np.int16)
+        trailing = np.full(int(0.3 * self.SAMPLE_RATE), 8, dtype=np.int16)
+        trimmer = TurnAudioTrimmer(sample_rate=self.SAMPLE_RATE, keep_silence_ms=100)
+
+        result = trimmer.process(np.concatenate([leading, speech, trailing]))
+
+        tail = result.samples[-int(0.1 * self.SAMPLE_RATE) :]
+        self.assertTrue(np.all(tail == 0))
+
     def test_turn_reset_restores_first_segment_behavior(self):
         trimmer = TurnAudioTrimmer(sample_rate=self.SAMPLE_RATE, keep_silence_ms=100)
         trimmer.process(self.segment())
@@ -88,6 +99,21 @@ class TurnAudioTrimmerTests(unittest.TestCase):
 
         self.assertFalse(result.first_segment)
         self.assertAlmostEqual(result.leading_cut_ms, 100.0, places=1)
+
+    def test_streaming_retained_tail_is_digital_zero(self):
+        trimmer = StreamingTailSilenceTrimmer(
+            sample_rate=self.SAMPLE_RATE,
+            keep_silence_ms=100,
+        )
+        speech = np.full(int(0.2 * self.SAMPLE_RATE), 1200, dtype=np.int16)
+        quiet = np.full(int(0.3 * self.SAMPLE_RATE), 8, dtype=np.int16)
+
+        emitted = trimmer.process(np.concatenate([speech, quiet]))
+        tail = trimmer.finish()
+
+        self.assertGreater(emitted.size, 0)
+        self.assertEqual(tail.size, int(0.1 * self.SAMPLE_RATE))
+        self.assertTrue(np.all(tail == 0))
 
 
 if __name__ == "__main__":

@@ -32,7 +32,13 @@ class PlaybackLifecycleTests(unittest.TestCase):
         player.on_turn_complete = lambda: events.append("complete")
         samples = np.array([1, -2, 3], dtype=np.int16)
         stream = MagicMock()
-        stream.write.side_effect = lambda _audio: events.append("queued")
+        writes = []
+
+        def record_write(audio):
+            writes.append(audio.copy())
+            events.append("queued")
+
+        stream.write.side_effect = record_write
         stream.stop.side_effect = lambda: events.append("played")
 
         with (
@@ -42,7 +48,9 @@ class PlaybackLifecycleTests(unittest.TestCase):
             player._play_item(samples)
             player._play_item(PlaybackService._TURN_END)
 
-        self.assertEqual(events, ["queued", "played", "complete"])
+        self.assertEqual(events, ["queued", "queued", "played", "complete"])
+        self.assertEqual(writes[-1].shape, (4800, 1))
+        self.assertTrue(np.all(writes[-1] == 0.0))
         stream.start.assert_called_once_with()
         stream.close.assert_called_once_with()
 
@@ -63,7 +71,10 @@ class PlaybackLifecycleTests(unittest.TestCase):
             player._play_item(PlaybackService._TURN_END)
 
         stream_class.assert_called_once()
-        self.assertEqual(stream.write.call_count, 2)
+        self.assertEqual(stream.write.call_count, 3)
+        final_write = stream.write.call_args_list[-1].args[0]
+        self.assertEqual(final_write.shape, (4800, 1))
+        self.assertTrue(np.all(final_write == 0.0))
 
 
 class STTTimerLifecycleTests(unittest.TestCase):

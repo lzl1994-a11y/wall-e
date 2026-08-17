@@ -66,6 +66,9 @@ class TurnAudioTrimmer:
             trim_end = audio.size
 
         processed = audio[trim_start:trim_end].copy()
+        trailing_start = max(0, active_end - trim_start)
+        if trailing_start < processed.size:
+            processed[trailing_start:] = 0
         return AudioTrimResult(
             samples=processed,
             first_segment=first_segment,
@@ -142,7 +145,9 @@ class StreamingTailSilenceTrimmer:
             pending = np.concatenate(self._pending_silence)
             keep_samples = int(round(self.sample_rate * self.keep_silence_ms / 1000.0))
             if keep_samples:
-                emitted.append(pending[:keep_samples])
+                emitted.append(
+                    np.zeros(min(pending.size, keep_samples), dtype=np.int16)
+                )
         result = self._join(emitted)
         self.reset()
         return result

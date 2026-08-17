@@ -18,6 +18,7 @@ class PlaybackService:
     """音频播放器：后台线程顺序播放，支持 USB / 板载切换。"""
 
     _TURN_END = object()
+    TURN_END_SILENCE_SEC = 0.1
 
     def __init__(
         self,
@@ -93,6 +94,7 @@ class PlaybackService:
     def _play_item(self, item):
         if item is self._TURN_END:
             try:
+                self._write_silence(self.TURN_END_SILENCE_SEC)
                 self._close_stream(drain=True)
             finally:
                 if self.on_turn_complete:
@@ -103,6 +105,13 @@ class PlaybackService:
             return
         audio = item.astype(np.float32) / 32768.0
         self._stream.write(audio.reshape(-1, 1))
+
+    def _write_silence(self, duration_sec):
+        """Make the last UAC packet digital silence before stopping the stream."""
+        if self._stream is None:
+            return
+        frame_count = max(1, int(round(self.sample_rate * float(duration_sec))))
+        self._stream.write(np.zeros((frame_count, 1), dtype=np.float32))
 
     def _ensure_stream(self):
         if self._stream is not None:
