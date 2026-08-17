@@ -750,10 +750,16 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 return
             frame, status = self.server.camera_preview.get_frame()
             if frame is None:
-                message = status.get("error") or "摄像头正在启动，暂时没有画面"
+                preview_state = status.get("state")
+                if status.get("error"):
+                    message = status["error"]
+                elif preview_state == "stopped":
+                    message = "摄像头预览已停止"
+                else:
+                    message = "摄像头正在启动，暂时没有画面"
                 self._send_json(
                     HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"ok": False, "error": message, **status},
+                    {**status, "ok": False, "error": message},
                 )
                 return
             self._send_bytes(HTTPStatus.OK, frame, "image/jpeg")

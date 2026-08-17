@@ -210,6 +210,15 @@ async function pollCameraPreviewFrame() {
         renderCameraPreviewStatus(payload);
         return;
       }
+      if (response.status === 503 && payload.state === "stopped") {
+        state.cameraPreview.active = false;
+        setCameraPreviewControls(false);
+        renderCameraPreviewStatus(payload);
+        clearCameraPreviewImage();
+        $("#camera-preview-placeholder").textContent = payload.error || "预览已停止";
+        $("#camera-preview-placeholder").hidden = false;
+        return;
+      }
       const error = new Error(payload.error || `摄像头画面请求失败 (${response.status})`);
       error.status = response.status;
       throw error;

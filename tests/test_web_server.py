@@ -231,6 +231,27 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(body["state"], "error")
         self.assertEqual(body["error"], "设备被占用")
 
+    def test_camera_preview_frame_keeps_unavailable_message_when_status_error_is_blank(self):
+        preview = MagicMock()
+        status = {
+            "state": "stopped",
+            "device": "",
+            "width": 0,
+            "height": 0,
+            "fps": 0.0,
+            "frame_age_ms": None,
+            "error": "",
+        }
+        preview.get_frame.return_value = (None, status)
+        self.server.camera_preview = preview
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/camera-preview/frame")
+        self.assertEqual(context.exception.code, 503)
+        body = json.loads(context.exception.read().decode("utf-8"))
+        self.assertEqual(body["state"], "stopped")
+        self.assertEqual(body["error"], "摄像头预览已停止")
+
     def test_hardware_backend_controls_are_visible(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")
