@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import sys
 import time
 from typing import Any
@@ -124,7 +125,7 @@ def stream_ros_frames(wait_seconds: float, frame_rate: float) -> tuple[bool, str
         discovered: dict[str, list[str]] = {}
         emit({"type": "status", "phase": "discovering_ros", "source": "ROS graph"})
 
-        discovery_deadline = min(overall_deadline, time.monotonic() + 1.5)
+        discovery_deadline = min(overall_deadline, time.monotonic() + 4.0)
         while rclpy.ok() and not subscriptions and time.monotonic() < discovery_deadline:
             try:
                 discovered = dict(node.get_topic_names_and_types())
@@ -160,7 +161,15 @@ def stream_ros_frames(wait_seconds: float, frame_rate: float) -> tuple[bool, str
             detail = "; ".join(subscription_errors[-4:])
             if detail:
                 return False, f"创建 ROS 摄像头订阅失败: {detail}"
-            return False, f"ROS 图谱未发现支持的摄像头话题类型: {visible or '无话题'}"
+            runtime = (
+                f"python={sys.executable}, "
+                f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}, "
+                f"RMW_IMPLEMENTATION={os.environ.get('RMW_IMPLEMENTATION', 'default')}"
+            )
+            return (
+                False,
+                f"ROS 图谱未发现支持的摄像头话题类型: {visible or '无话题'} ({runtime})",
+            )
 
         emit({"type": "status", "phase": "waiting_ros", "source": "ROS image topic"})
 
@@ -282,7 +291,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", required=True)
     parser.add_argument("--fps", type=float, default=8.0)
-    parser.add_argument("--ros-wait", type=float, default=4.5)
+    parser.add_argument("--ros-wait", type=float, default=5.0)
     args = parser.parse_args()
 
     using_ros, diagnostic = stream_ros_frames(args.ros_wait, args.fps)

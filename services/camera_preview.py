@@ -21,6 +21,7 @@ except ImportError:  # Supports: python services/web_server.py
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKER_PATH = ROOT / "services" / "camera_preview_worker.py"
+DEFAULT_ROS_SETUP = Path("/opt/tros/humble/setup.bash")
 
 
 class CameraPreview:
@@ -32,7 +33,7 @@ class CameraPreview:
         *,
         idle_timeout: float = 15.0,
         frame_rate: float = 8.0,
-        startup_timeout: float = 6.0,
+        startup_timeout: float = 8.0,
         frame_timeout: float = 4.0,
     ) -> None:
         self._config_path = Path(config_path)
@@ -170,10 +171,12 @@ class CameraPreview:
         # The worker normally inherits the launcher's ROS environment. An
         # explicit override remains available for standalone config_web runs.
         ros_setup = os.environ.get("WALI_CAMERA_PREVIEW_ROS_SETUP", "").strip()
+        if not ros_setup and os.name != "nt" and DEFAULT_ROS_SETUP.is_file():
+            ros_setup = str(DEFAULT_ROS_SETUP)
         if os.name != "nt" and ros_setup and os.path.isfile(ros_setup):
             return [
                 "bash",
-                "-lc",
+                "-c",
                 'source "$1" && exec "${@:2}"',
                 "camera-preview-worker",
                 ros_setup,
