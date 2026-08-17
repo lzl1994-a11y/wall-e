@@ -158,8 +158,14 @@ function clearCameraPreviewImage() {
 
 function renderCameraPreviewStatus(status = {}) {
   const previewState = status.state || "stopped";
+  const startingText = {
+    resolving: "正在查找摄像头",
+    launching: "正在启动采集进程",
+    opening: status.device ? `正在打开 ${status.device}` : "正在打开摄像头",
+    waiting_frame: status.device ? `等待 ${status.device} 首帧` : "等待摄像头首帧",
+  }[status.phase] || "正在连接";
   const statusText = {
-    starting: "正在连接",
+    starting: startingText,
     running: "实时预览中",
     stopping: "正在停止",
     stopped: "已停止",

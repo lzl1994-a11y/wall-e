@@ -1,3 +1,7 @@
+import base64
+import json
+import subprocess
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -5,48 +9,39 @@ from unittest.mock import patch
 from services.camera_preview import CameraPreview
 
 
-class _FakeImage:
-    shape = (480, 640, 3)
+class _FakeStdout:
+    def __init__(self, lines, closed_event):
+        self._lines = lines
+        self._closed_event = closed_event
+
+    def __iter__(self):
+        yield from self._lines
+        self._closed_event.wait()
 
 
-class _FakeEncoded:
-    def tobytes(self):
-        return b"jpeg-frame"
+class _FakeProcess:
+    def __init__(self, messages):
+        self._closed_event = threading.Event()
+        lines = [json.dumps(message, ensure_ascii=False) + "\n" for message in messages]
+        self.stdout = _FakeStdout(lines, self._closed_event)
+        self.returncode = None
+        self.terminated = False
 
+    def poll(self):
+        return self.returncode
 
-class _FakeCapture:
-    def __init__(self):
-        self.released = False
+    def terminate(self):
+        self.terminated = True
+        self.returncode = 0
+        self._closed_event.set()
 
-    def isOpened(self):
-        return True
+    def kill(self):
+        self.terminate()
 
-    def set(self, _prop, _value):
-        return True
-
-    def read(self):
-        return True, _FakeImage()
-
-    def release(self):
-        self.released = True
-
-
-class _FakeCv2:
-    CAP_V4L2 = 200
-    CAP_PROP_FRAME_WIDTH = 3
-    CAP_PROP_FRAME_HEIGHT = 4
-    CAP_PROP_BUFFERSIZE = 38
-    IMWRITE_JPEG_QUALITY = 1
-
-    def __init__(self, capture):
-        self.capture = capture
-
-    def VideoCapture(self, _device, _backend=None):
-        return self.capture
-
-    @staticmethod
-    def imencode(_extension, _image, _options):
-        return True, _FakeEncoded()
+    def wait(self, timeout=None):
+        if self.returncode is None and not self._closed_event.wait(timeout):
+            raise subprocess.TimeoutExpired("fake-camera", timeout)
+        return self.returncode
 
 
 def _wait_for_state(preview, expected, timeout=1.0):
@@ -60,40 +55,60 @@ def _wait_for_state(preview, expected, timeout=1.0):
 
 
 class CameraPreviewTests(unittest.TestCase):
-    def test_capture_runs_in_background_and_releases_device(self):
-        capture = _FakeCapture()
+    def test_capture_runs_in_subprocess_and_releases_device(self):
+        process = _FakeProcess([
+            {"type": "status", "phase": "opening"},
+            {"type": "status", "phase": "waiting_frame"},
+            {
+                "type": "frame",
+                "jpeg": base64.b64encode(b"jpeg-frame").decode("ascii"),
+                "width": 640,
+                "height": 480,
+                "fps": 8.0,
+            },
+        ])
         preview = CameraPreview("unused.yaml", frame_rate=20)
         with (
-            patch("services.camera_preview.cv2", _FakeCv2(capture)),
             patch("services.camera_preview.resolve_camera_device", return_value="/dev/video2"),
+            patch("services.camera_preview.subprocess.Popen", return_value=process),
         ):
             starting = preview.start()
             self.assertEqual(starting["state"], "starting")
-            self.assertEqual(_wait_for_state(preview, "running")["device"], "/dev/video2")
+            running = _wait_for_state(preview, "running")
+            self.assertEqual(running["device"], "/dev/video2")
+            self.assertEqual(running["phase"], "streaming")
 
-            deadline = time.monotonic() + 1.0
-            frame = None
-            while time.monotonic() < deadline and frame is None:
-                frame, _ = preview.get_frame()
-                time.sleep(0.01)
+            frame, status = preview.get_frame()
             self.assertEqual(frame, b"jpeg-frame")
+            self.assertEqual((status["width"], status["height"]), (640, 480))
 
             stopped = preview.stop()
             self.assertEqual(stopped["state"], "stopped")
-            self.assertTrue(capture.released)
+            self.assertTrue(process.terminated)
 
     def test_missing_camera_is_reported_without_blocking_start(self):
         preview = CameraPreview("unused.yaml")
-        with (
-            patch("services.camera_preview.cv2", _FakeCv2(_FakeCapture())),
-            patch("services.camera_preview.resolve_camera_device", return_value=None),
-        ):
+        with patch("services.camera_preview.resolve_camera_device", return_value=None):
             started_at = time.monotonic()
             preview.start()
             self.assertLess(time.monotonic() - started_at, 0.2)
             status = _wait_for_state(preview, "error")
             self.assertEqual(status["state"], "error")
             self.assertIn("未找到", status["error"])
+
+    def test_blocked_camera_process_is_terminated_after_startup_timeout(self):
+        process = _FakeProcess([{"type": "status", "phase": "opening"}])
+        preview = CameraPreview("unused.yaml", startup_timeout=0.2)
+        with (
+            patch("services.camera_preview.resolve_camera_device", return_value="/dev/video0"),
+            patch("services.camera_preview.subprocess.Popen", return_value=process),
+        ):
+            preview.start()
+            status = _wait_for_state(preview, "error", timeout=1.0)
+            self.assertEqual(status["state"], "error")
+            self.assertEqual(status["phase"], "error")
+            self.assertIn("打开摄像头 /dev/video0 超时", status["error"])
+            self.assertTrue(process.terminated)
 
 
 if __name__ == "__main__":
