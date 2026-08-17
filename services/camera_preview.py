@@ -21,6 +21,8 @@ except ImportError:  # Supports: python services/web_server.py
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKER_PATH = ROOT / "services" / "camera_preview_worker.py"
+ROS_SETUP_PATH = Path("/opt/tros/humble/setup.bash")
+DEFAULT_ROS_PYTHON = Path("/usr/bin/python_backup")
 
 
 class CameraPreview:
@@ -48,7 +50,9 @@ class CameraPreview:
         self._state = "stopped"
         self._phase = "stopped"
         self._error = ""
+        self._diagnostic = ""
         self._device = ""
+        self._source = ""
         self._frame: bytes | None = None
         self._frame_time = 0.0
         self._last_client_time = 0.0
@@ -68,7 +72,9 @@ class CameraPreview:
             self._state = "starting"
             self._phase = "resolving"
             self._error = ""
+            self._diagnostic = ""
             self._device = ""
+            self._source = ""
             self._frame = None
             self._frame_time = 0.0
             self._width = 0
@@ -129,11 +135,13 @@ class CameraPreview:
             "state": self._state,
             "phase": self._phase,
             "device": self._device,
+            "source": self._source,
             "width": self._width,
             "height": self._height,
             "fps": round(self._fps, 1),
             "frame_age_ms": age_ms,
             "error": self._error,
+            "diagnostic": self._diagnostic,
         }
 
     def _set_status(self, generation: int, **changes: Any) -> bool:
@@ -144,15 +152,39 @@ class CameraPreview:
                 setattr(self, f"_{key}", value)
             return True
 
+    @staticmethod
+    def _ros_python() -> str:
+        """Choose the Python runtime that TogetherROS installed rclpy into."""
+        configured = os.environ.get("WALI_ROS_PYTHON", "").strip()
+        candidates = [configured] if configured else []
+        if os.name != "nt":
+            candidates.append(str(DEFAULT_ROS_PYTHON))
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return sys.executable
+
     def _worker_command(self, device: str) -> list[str]:
-        return [
-            sys.executable,
+        command = [
+            self._ros_python(),
             str(WORKER_PATH),
             "--device",
             device,
             "--fps",
             str(self._frame_rate),
         ]
+        # config_web is usually launched outside a ROS shell.  Source the same
+        # TogetherROS environment as the vision pipeline before starting rclpy.
+        if os.name != "nt" and ROS_SETUP_PATH.is_file():
+            return [
+                "bash",
+                "-lc",
+                'source "$1" && exec "${@:2}"',
+                "camera-preview-worker",
+                str(ROS_SETUP_PATH),
+                *command,
+            ]
+        return command
 
     def _capture_loop(self, generation: int, stop_event: threading.Event) -> None:
         process: subprocess.Popen[str] | None = None
@@ -205,6 +237,8 @@ class CameraPreview:
                 if idle:
                     break
                 if not last_frame_at and now - started_at > self._startup_timeout:
+                    if current_phase == "waiting_ros":
+                        raise RuntimeError("等待 ROS 摄像头图像超时，视觉管线没有发布画面")
                     if current_phase == "opening":
                         raise RuntimeError(f"打开摄像头 {device} 超时，设备可能被占用或节点不可用")
                     raise RuntimeError(f"摄像头 {device} 首帧等待超时，请检查设备节点和视频格式")
@@ -228,7 +262,12 @@ class CameraPreview:
                 message_type = message.get("type")
                 if message_type == "status":
                     phase = str(message.get("phase") or "opening")
-                    self._set_status(generation, phase=phase)
+                    changes = {"phase": phase}
+                    if message.get("source"):
+                        changes["source"] = str(message["source"])
+                    if message.get("diagnostic"):
+                        changes["diagnostic"] = str(message["diagnostic"])
+                    self._set_status(generation, **changes)
                     continue
                 if message_type == "error":
                     raise RuntimeError(str(message.get("error") or "摄像头采集失败"))
@@ -251,12 +290,18 @@ class CameraPreview:
                     width=int(message.get("width") or 0),
                     height=int(message.get("height") or 0),
                     fps=float(message.get("fps") or 0.0),
+                    source=str(message.get("source") or device),
                 ):
                     return
         except Exception as exc:
             ended_with_error = True
-            self._set_status(generation, state="error", phase="error", error=str(exc))
-            print(f"[CameraPreview] {exc}")
+            message = str(exc)
+            with self._lock:
+                diagnostic = self._diagnostic if generation == self._generation else ""
+            if diagnostic and diagnostic not in message:
+                message = f"{message}（{diagnostic}）"
+            self._set_status(generation, state="error", phase="error", error=message)
+            print(f"[CameraPreview] {message}")
         finally:
             self._terminate_process(process)
             with self._lock:

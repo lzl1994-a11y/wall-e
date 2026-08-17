@@ -1,6 +1,8 @@
 import base64
 import json
+import os
 import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -55,6 +57,14 @@ def _wait_for_state(preview, expected, timeout=1.0):
 
 
 class CameraPreviewTests(unittest.TestCase):
+    def test_worker_uses_configured_ros_python_when_available(self):
+        preview = CameraPreview("unused.yaml")
+        with patch.dict(os.environ, {"WALI_ROS_PYTHON": sys.executable}):
+            command = preview._worker_command("/dev/video0")
+
+        self.assertIn(sys.executable, command)
+        self.assertIn(str(preview._frame_rate), command)
+
     def test_capture_runs_in_subprocess_and_releases_device(self):
         process = _FakeProcess([
             {"type": "status", "phase": "opening"},
@@ -65,6 +75,7 @@ class CameraPreviewTests(unittest.TestCase):
                 "width": 640,
                 "height": 480,
                 "fps": 8.0,
+                "source": "/image_padded_jpeg",
             },
         ])
         preview = CameraPreview("unused.yaml", frame_rate=20)
@@ -77,6 +88,7 @@ class CameraPreviewTests(unittest.TestCase):
             running = _wait_for_state(preview, "running")
             self.assertEqual(running["device"], "/dev/video2")
             self.assertEqual(running["phase"], "streaming")
+            self.assertEqual(running["source"], "/image_padded_jpeg")
 
             frame, status = preview.get_frame()
             self.assertEqual(frame, b"jpeg-frame")
@@ -97,7 +109,11 @@ class CameraPreviewTests(unittest.TestCase):
             self.assertIn("未找到", status["error"])
 
     def test_blocked_camera_process_is_terminated_after_startup_timeout(self):
-        process = _FakeProcess([{"type": "status", "phase": "opening"}])
+        process = _FakeProcess([{
+            "type": "status",
+            "phase": "opening",
+            "diagnostic": "ROS Python 环境不可用: rclpy not installed",
+        }])
         preview = CameraPreview("unused.yaml", startup_timeout=0.2)
         with (
             patch("services.camera_preview.resolve_camera_device", return_value="/dev/video0"),
@@ -108,6 +124,7 @@ class CameraPreviewTests(unittest.TestCase):
             self.assertEqual(status["state"], "error")
             self.assertEqual(status["phase"], "error")
             self.assertIn("打开摄像头 /dev/video0 超时", status["error"])
+            self.assertIn("ROS Python 环境不可用", status["error"])
             self.assertTrue(process.terminated)
 
 

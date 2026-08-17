@@ -161,6 +161,8 @@ function renderCameraPreviewStatus(status = {}) {
   const startingText = {
     resolving: "正在查找摄像头",
     launching: "正在启动采集进程",
+    waiting_ros: "正在复用视觉管线画面",
+    ros_fallback: "视觉管线不可用，正在直连摄像头",
     opening: status.device ? `正在打开 ${status.device}` : "正在打开摄像头",
     waiting_frame: status.device ? `等待 ${status.device} 首帧` : "等待摄像头首帧",
   }[status.phase] || "正在连接";
@@ -175,7 +177,7 @@ function renderCameraPreviewStatus(status = {}) {
   dot.className = `preview-status-dot ${previewState}`;
   $("#camera-preview-status").textContent = statusText;
   $("#camera-preview-status").title = statusText;
-  $("#camera-preview-device").textContent = status.device || "—";
+  $("#camera-preview-device").textContent = status.source || status.device || "—";
   $("#camera-preview-resolution").textContent = status.width && status.height
     ? `${status.width} × ${status.height}`
     : "—";

@@ -22,9 +22,10 @@ except ImportError:  # pragma: no cover
     np = None
 
 try:
-    from sensor_msgs.msg import Image
+    from sensor_msgs.msg import CompressedImage, Image
 except ImportError:  # pragma: no cover - ROS is unavailable in unit tests
     Image = None
+    CompressedImage = None
 
 try:
     from rclpy.qos import qos_profile_sensor_data
@@ -73,12 +74,31 @@ class CameraFrameProvider:
                     )
                 except Exception as exc:
                     node.get_logger().debug(f"camera topic unavailable ({topic}): {exc}")
+        if CompressedImage is not None:
+            for topic in ("/image_padded_jpeg", "/image"):
+                try:
+                    self._subscriptions.append(
+                        node.create_subscription(
+                            CompressedImage,
+                            topic,
+                            lambda msg, source=topic: self._on_image(msg, source),
+                            qos_profile_sensor_data,
+                        )
+                    )
+                except Exception as exc:
+                    node.get_logger().debug(f"compressed camera topic unavailable ({topic}): {exc}")
 
     def _on_image(self, msg: Any, source: str = "/image") -> None:
         try:
             encoding = str(getattr(msg, "encoding", "")).lower()
+            compressed_format = str(getattr(msg, "format", "")).lower()
             raw = bytes(msg.data)
-            if encoding in {"jpeg", "jpg", "mjpeg"}:
+            if (
+                encoding in {"jpeg", "jpg", "mjpeg"}
+                or "jpeg" in compressed_format
+                or "jpg" in compressed_format
+                or raw.startswith(b"\xff\xd8")
+            ):
                 jpeg = raw
             elif cv2 is not None and np is not None:
                 channels = 1 if encoding in {"mono8", "8uc1"} else 3

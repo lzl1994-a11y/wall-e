@@ -200,6 +200,18 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
+    def test_compressed_ros_frame_is_cached(self):
+        from services.camera_frame import CameraFrameProvider
+
+        class CompressedMessage:
+            format = "bgr8; jpeg compressed bgr8"
+            data = b"compressed-jpeg"
+
+        node = MagicMock()
+        provider = CameraFrameProvider(node)
+        provider._on_image(CompressedMessage(), "/image_padded_jpeg")
+        self.assertEqual(provider.capture(timeout=0.01), b"compressed-jpeg")
+
     def test_cached_frame_is_returned(self):
         from services.camera_frame import CameraFrameProvider
 
