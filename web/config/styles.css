@@ -101,14 +101,29 @@ h3 { margin-bottom: 20px; font-size: 17px; }
 .camera-preview-placeholder { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; color: #aab2b8; font-size: 13px; text-align: center; }
 .camera-preview-details { min-width: 0; }
 .camera-preview-state { min-height: 42px; display: flex; align-items: center; gap: 9px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.camera-preview-state strong { min-width: 0; overflow-wrap: anywhere; }
+.camera-preview-elapsed { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .preview-status-dot { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; background: #9a9298; }
 .preview-status-dot.starting { background: var(--accent-2); box-shadow: 0 0 0 4px rgba(255, 200, 87, .2); }
 .preview-status-dot.running { background: var(--success); box-shadow: 0 0 0 4px rgba(85, 189, 152, .2); }
 .preview-status-dot.error { background: var(--danger); box-shadow: 0 0 0 4px rgba(223, 102, 130, .18); }
+.camera-preview-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 14px 0 8px; border-bottom: 1px solid var(--line); }
+.camera-preview-flow div { position: relative; display: grid; justify-items: center; gap: 5px; min-width: 0; color: var(--muted); text-align: center; }
+.camera-preview-flow div:not(:last-child)::after { position: absolute; top: 9px; left: calc(50% + 13px); width: calc(100% - 20px); height: 2px; content: ""; background: var(--line); }
+.camera-preview-flow span { position: relative; z-index: 1; display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); font-size: 10px; font-weight: 800; }
+.camera-preview-flow small { max-width: 100%; overflow-wrap: anywhere; font-size: 10px; }
+.camera-preview-flow div.complete { color: var(--success); }
+.camera-preview-flow div.complete span { border-color: var(--success); background: #e9f7f1; }
+.camera-preview-flow div.complete:not(:last-child)::after { background: var(--success); }
+.camera-preview-flow div.active { color: #8a6a18; }
+.camera-preview-flow div.active span { border-color: var(--accent-2); background: #fff6d9; box-shadow: 0 0 0 3px rgba(255, 200, 87, .18); }
+.camera-preview-flow div.failed { color: var(--danger); }
+.camera-preview-flow div.failed span { border-color: var(--danger); background: #fff0f3; }
 .camera-preview-meta { margin: 4px 0 0; }
 .camera-preview-meta div { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .camera-preview-meta dt { color: var(--muted); font-size: 12px; }
 .camera-preview-meta dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--text); font-size: 12px; font-weight: 700; }
+.camera-preview-diagnostic-row dd { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 500; line-height: 1.45; }
 .module-feedback { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .module-feedback.dirty { color: #c65b78; }
 .module-feedback.saving { color: #8a6a18; }

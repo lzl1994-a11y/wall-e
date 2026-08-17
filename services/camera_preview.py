@@ -115,6 +115,7 @@ class CameraPreview:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            self._last_client_time = time.monotonic()
             return self._status_locked()
 
     def get_frame(self) -> tuple[bytes | None, dict[str, Any]]:

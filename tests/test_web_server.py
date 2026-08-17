@@ -154,6 +154,10 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('id="camera-preview-start"', hardware_panel)
         self.assertIn('id="camera-preview-stop"', hardware_panel)
         self.assertIn('id="camera-preview-reconnect"', hardware_panel)
+        self.assertIn('id="camera-preview-flow"', hardware_panel)
+        self.assertIn('id="camera-preview-phase"', hardware_panel)
+        self.assertIn('id="camera-preview-source"', hardware_panel)
+        self.assertIn('id="camera-preview-diagnostic"', hardware_panel)
 
     def test_camera_preview_api_starts_returns_frames_and_stops(self):
         preview = MagicMock()

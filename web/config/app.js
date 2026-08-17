@@ -15,10 +15,24 @@ const state = {
     objectUrl: null,
     requesting: false,
     frameCount: 0,
+    lastStatus: null,
+    phaseKey: "",
+    phaseStartedAt: 0,
+    lastOperationalPhase: "launching",
   },
 };
 
 const CAMERA_PREVIEW_POLL_MS = 180;
+const CAMERA_PREVIEW_STATUS_POLL_MS = 400;
+
+const CAMERA_PREVIEW_PHASES = Object.freeze({
+  launching: { label: "启动 Web 采集", step: 0 },
+  requesting_camera: { label: "请求 camera_capture_node", step: 1 },
+  waiting_frame: { label: "启动摄像头并等待首帧", step: 2 },
+  streaming: { label: "已收到 /camera_frame", step: 3 },
+  stopping: { label: "正在释放摄像头", step: 0 },
+  stopped: { label: "预览已停止", step: -1 },
+});
 
 const MODULE_ROOTS = Object.freeze({
   runtime: "launch",
@@ -158,6 +172,23 @@ function clearCameraPreviewImage() {
 
 function renderCameraPreviewStatus(status = {}) {
   const previewState = status.state || "stopped";
+  const reportedPhase = status.phase || (previewState === "running" ? "streaming" : previewState);
+  if (CAMERA_PREVIEW_PHASES[reportedPhase] && !["stopping", "stopped"].includes(reportedPhase)) {
+    state.cameraPreview.lastOperationalPhase = reportedPhase;
+  }
+  const operationalPhase = reportedPhase === "error"
+    ? state.cameraPreview.lastOperationalPhase
+    : reportedPhase;
+  const phaseInfo = CAMERA_PREVIEW_PHASES[operationalPhase] || {
+    label: reportedPhase || "未知阶段",
+    step: -1,
+  };
+  const phaseKey = `${previewState}:${reportedPhase}`;
+  if (phaseKey !== state.cameraPreview.phaseKey) {
+    state.cameraPreview.phaseKey = phaseKey;
+    state.cameraPreview.phaseStartedAt = Date.now();
+  }
+  state.cameraPreview.lastStatus = { ...status };
   const startingText = {
     launching: "正在启动采集进程",
     requesting_camera: "正在请求按需摄像头",
@@ -174,11 +205,34 @@ function renderCameraPreviewStatus(status = {}) {
   dot.className = `preview-status-dot ${previewState}`;
   $("#camera-preview-status").textContent = statusText;
   $("#camera-preview-status").title = statusText;
-  $("#camera-preview-device").textContent = status.source || status.device || "—";
+  $("#camera-preview-elapsed").textContent = state.cameraPreview.phaseStartedAt
+    ? `${((Date.now() - state.cameraPreview.phaseStartedAt) / 1000).toFixed(1)}s`
+    : "—";
+  $("#camera-preview-phase").textContent = `${phaseInfo.label} (${reportedPhase || "unknown"})`;
+  $("#camera-preview-source").textContent = status.source || "—";
+  $("#camera-preview-device").textContent = status.device || "—";
   $("#camera-preview-resolution").textContent = status.width && status.height
     ? `${status.width} × ${status.height}`
     : "—";
   $("#camera-preview-fps").textContent = status.fps ? `${status.fps} FPS` : "—";
+  $("#camera-preview-frame-age").textContent = Number.isFinite(status.frame_age_ms)
+    ? `${status.frame_age_ms} ms`
+    : "—";
+  $("#camera-preview-diagnostic").textContent = status.diagnostic || status.error || "—";
+
+  $$("#camera-preview-flow [data-camera-step]").forEach((step, index) => {
+    step.classList.remove("complete", "active", "failed");
+    if (phaseInfo.step < 0) return;
+    if (index < phaseInfo.step || previewState === "running") step.classList.add("complete");
+    else if (index === phaseInfo.step) {
+      step.classList.add(previewState === "error" ? "failed" : "active");
+    }
+  });
+
+  const placeholder = $("#camera-preview-placeholder");
+  if (!placeholder.hidden && previewState !== "running") {
+    placeholder.textContent = status.error || phaseInfo.label;
+  }
 }
 
 function scheduleCameraPreviewPoll(delay = CAMERA_PREVIEW_POLL_MS) {
@@ -187,23 +241,32 @@ function scheduleCameraPreviewPoll(delay = CAMERA_PREVIEW_POLL_MS) {
   state.cameraPreview.timer = window.setTimeout(pollCameraPreviewFrame, delay);
 }
 
-async function refreshCameraPreviewStatus() {
+async function pollCameraPreviewFrame() {
+  if (!state.cameraPreview.active || state.cameraPreview.requesting) return;
+  state.cameraPreview.requesting = true;
+  let nextPollDelay = CAMERA_PREVIEW_POLL_MS;
   try {
-    const status = await api("/api/camera-preview/status");
+    const shouldRefreshStatus = !state.cameraPreview.lastStatus
+      || state.cameraPreview.lastStatus.state !== "running"
+      || state.cameraPreview.frameCount % 8 === 0;
+    const status = shouldRefreshStatus
+      ? await api("/api/camera-preview/status")
+      : state.cameraPreview.lastStatus;
     renderCameraPreviewStatus(status);
     if (["error", "stopped"].includes(status.state)) {
       state.cameraPreview.active = false;
       setCameraPreviewControls(false);
+      clearCameraPreviewImage();
+      $("#camera-preview-placeholder").hidden = false;
+      if (status.state === "error") showToast(status.error || "摄像头预览失败", "error");
+      return;
     }
-  } catch (_) {
-    // Frame polling owns connection error reporting.
-  }
-}
+    if (status.state !== "running") {
+      nextPollDelay = CAMERA_PREVIEW_STATUS_POLL_MS;
+      $("#camera-preview-placeholder").hidden = false;
+      return;
+    }
 
-async function pollCameraPreviewFrame() {
-  if (!state.cameraPreview.active || state.cameraPreview.requesting) return;
-  state.cameraPreview.requesting = true;
-  try {
     const response = await fetch(`/api/camera-preview/frame?t=${Date.now()}`, {
       cache: "no-store",
       headers: apiHeaders(false),
@@ -213,6 +276,7 @@ async function pollCameraPreviewFrame() {
       try { payload = await response.json(); } catch (_) { /* non-JSON error */ }
       if (response.status === 503 && ["starting", "running"].includes(payload.state)) {
         renderCameraPreviewStatus(payload);
+        nextPollDelay = CAMERA_PREVIEW_STATUS_POLL_MS;
         return;
       }
       if (response.status === 503 && payload.state === "stopped") {
@@ -241,7 +305,6 @@ async function pollCameraPreviewFrame() {
     $("#camera-preview-placeholder").hidden = true;
     state.cameraPreview.objectUrl = nextUrl;
     state.cameraPreview.frameCount += 1;
-    if (state.cameraPreview.frameCount % 8 === 1) refreshCameraPreviewStatus();
   } catch (error) {
     state.cameraPreview.active = false;
     setCameraPreviewControls(false);
@@ -252,7 +315,7 @@ async function pollCameraPreviewFrame() {
     showToast(error.message, "error");
   } finally {
     state.cameraPreview.requesting = false;
-    scheduleCameraPreviewPoll();
+    scheduleCameraPreviewPoll(nextPollDelay);
   }
 }
 
@@ -260,6 +323,10 @@ async function startCameraPreview() {
   if (state.cameraPreview.active) return;
   state.cameraPreview.active = true;
   state.cameraPreview.frameCount = 0;
+  state.cameraPreview.lastStatus = null;
+  state.cameraPreview.phaseKey = "";
+  state.cameraPreview.phaseStartedAt = Date.now();
+  state.cameraPreview.lastOperationalPhase = "launching";
   setCameraPreviewControls(true);
   clearCameraPreviewImage();
   renderCameraPreviewStatus({ state: "starting" });

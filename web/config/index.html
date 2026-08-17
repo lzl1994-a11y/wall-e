@@ -277,7 +277,7 @@
           </article>
           <article class="card span-two camera-preview-card">
             <div class="card-heading-row">
-              <div><h3>摄像头调试</h3><p class="card-subtitle">当前配置所指向的摄像头实时画面。</p></div>
+              <div><h3>摄像头调试</h3><p class="card-subtitle">按需视觉链路状态与实时画面。</p></div>
               <div class="camera-preview-actions">
                 <button id="camera-preview-start" class="button primary small" type="button">开始预览</button>
                 <button id="camera-preview-stop" class="button secondary small" type="button" disabled>停止</button>
@@ -293,11 +293,22 @@
                 <div class="camera-preview-state" aria-live="polite">
                   <span id="camera-preview-dot" class="preview-status-dot"></span>
                   <strong id="camera-preview-status">已停止</strong>
+                  <span id="camera-preview-elapsed" class="camera-preview-elapsed">—</span>
+                </div>
+                <div id="camera-preview-flow" class="camera-preview-flow" aria-label="摄像头链路状态">
+                  <div data-camera-step="worker"><span>1</span><small>Web Worker</small></div>
+                  <div data-camera-step="manager"><span>2</span><small>管理节点</small></div>
+                  <div data-camera-step="camera"><span>3</span><small>摄像头</small></div>
+                  <div data-camera-step="frame"><span>4</span><small>首帧</small></div>
                 </div>
                 <dl class="camera-preview-meta">
+                  <div><dt>阶段</dt><dd id="camera-preview-phase">stopped</dd></div>
+                  <div><dt>话题</dt><dd id="camera-preview-source">—</dd></div>
                   <div><dt>设备</dt><dd id="camera-preview-device">—</dd></div>
                   <div><dt>分辨率</dt><dd id="camera-preview-resolution">—</dd></div>
                   <div><dt>帧率</dt><dd id="camera-preview-fps">—</dd></div>
+                  <div><dt>帧龄</dt><dd id="camera-preview-frame-age">—</dd></div>
+                  <div class="camera-preview-diagnostic-row"><dt>诊断</dt><dd id="camera-preview-diagnostic">—</dd></div>
                 </dl>
               </div>
             </div>
