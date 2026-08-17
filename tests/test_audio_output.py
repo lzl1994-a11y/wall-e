@@ -1,4 +1,5 @@
 import asyncio
+import io
 import queue
 import sys
 import threading
@@ -136,6 +137,76 @@ class AudioSampleRateContractTests(unittest.TestCase):
         at_rate.set_channels.assert_called_once_with(1)
         mono.set_sample_width.assert_called_once_with(2)
         np.testing.assert_array_equal(samples, np.array([1, -2, 3], dtype=np.int16))
+
+    def test_tts_streaming_decodes_incremental_mp3_to_48khz_pcm(self):
+        service = TTSService(
+            voice="test-voice",
+            rate="+0%",
+            pitch="+0Hz",
+            sample_rate=OUTPUT_SAMPLE_RATE,
+        )
+        pcm = np.arange(4800, dtype=np.int16)
+        input_closed = threading.Event()
+
+        class FakeCommunicate:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def stream(self):
+                yield {"type": "audio", "data": b"mp3-a"}
+                yield {"type": "audio", "data": b"mp3-b"}
+
+        class FakeStdin:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, data):
+                self.writes.append(data)
+
+            def close(self):
+                input_closed.set()
+
+        class FakeStdout:
+            def __init__(self):
+                self._data = io.BytesIO(pcm.tobytes())
+
+            def read(self, size=-1):
+                input_closed.wait(timeout=1.0)
+                return self._data.read(size)
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = FakeStdin()
+                self.stdout = FakeStdout()
+                self.stderr = io.BytesIO()
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        process = FakeProcess()
+        try:
+            with (
+                patch("services.tts_service.edge_tts.Communicate", FakeCommunicate),
+                patch("services.tts_service.subprocess.Popen", return_value=process) as popen,
+            ):
+                chunks = list(service.synthesize_stream("你好", chunk_ms=100))
+        finally:
+            service.shutdown()
+
+        np.testing.assert_array_equal(np.concatenate(chunks), pcm)
+        self.assertEqual(process.stdin.writes, [b"mp3-a", b"mp3-b"])
+        command = popen.call_args.args[0]
+        self.assertIn("48000", command)
+        self.assertIn("pcm_s16le", command)
 
     def test_wake_response_asset_is_48khz_pcm_mono(self):
         with wave.open(str(ROOT / "assets" / "wake_response.wav"), "rb") as wav_file:

@@ -223,6 +223,33 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(decode_turn_end(messages[1]), "turn-direct")
         sys.modules.pop("nodes.llm_ros_node", None)
 
+    def test_first_long_comma_clause_is_published_before_sentence_end(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "这是白居易琵琶行的开头两句，后面描写秋夜送客。"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_voice_task("turn-clause", "这句诗是什么意思")
+
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(
+            messages[:2],
+            ["这是白居易琵琶行的开头两句，", "后面描写秋夜送客。"],
+        )
+        self.assertEqual(decode_turn_end(messages[2]), "turn-clause")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
     def test_recitation_request_uses_long_form_prompt_and_token_budget(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)

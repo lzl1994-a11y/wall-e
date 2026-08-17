@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from services.audio_silence import TurnAudioTrimmer
+from services.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
 
 
 class TurnAudioTrimmerTests(unittest.TestCase):
@@ -54,6 +54,40 @@ class TurnAudioTrimmerTests(unittest.TestCase):
         self.assertEqual(result.samples.size, samples.size)
         self.assertEqual(result.leading_cut_ms, 0.0)
         self.assertEqual(result.trailing_cut_ms, 0.0)
+
+    def test_streaming_trimmer_emits_speech_without_waiting_and_trims_tail(self):
+        trimmer = StreamingTailSilenceTrimmer(
+            sample_rate=self.SAMPLE_RATE,
+            keep_silence_ms=100,
+        )
+        samples = self.segment()
+        chunk_size = int(0.07 * self.SAMPLE_RATE)
+        emitted = []
+
+        for offset in range(0, samples.size, chunk_size):
+            output = trimmer.process(samples[offset : offset + chunk_size])
+            if output.size:
+                emitted.append(output)
+
+        self.assertTrue(emitted)
+        self.assertGreater(sum(chunk.size for chunk in emitted), 0)
+        emitted.append(trimmer.finish())
+        result = np.concatenate(emitted)
+
+        self.assertAlmostEqual(result.size * 1000 / self.SAMPLE_RATE, 600.0, places=1)
+        np.testing.assert_array_equal(
+            result[: int(0.2 * self.SAMPLE_RATE)],
+            np.zeros(int(0.2 * self.SAMPLE_RATE), dtype=np.int16),
+        )
+
+    def test_streaming_segment_advances_whole_segment_trimmer_state(self):
+        trimmer = TurnAudioTrimmer(sample_rate=self.SAMPLE_RATE, keep_silence_ms=100)
+
+        self.assertTrue(trimmer.mark_segment())
+        result = trimmer.process(self.segment())
+
+        self.assertFalse(result.first_segment)
+        self.assertAlmostEqual(result.leading_cut_ms, 100.0, places=1)
 
 
 if __name__ == "__main__":

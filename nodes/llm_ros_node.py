@@ -33,6 +33,8 @@ class LLMBrainNode(Node):
         re.IGNORECASE,
     )
     LONG_FORM_MAX_TOKENS = 2048
+    FIRST_TTS_CLAUSE_MIN_CHARS = 10
+    CLAUSE_PUNCTUATIONS = {'，', ',', '；', ';', '：', ':'}
     CORRECTION_LABELS = {
         "\u4fee\u6b63\u6587\u672c",
         "\u7ea0\u9519\u6587\u672c",
@@ -224,7 +226,14 @@ class LLMBrainNode(Node):
                     text_buffer += chunk
                     for char in chunk:
                         sentence_buffer += char
-                        if char in self.punctuations:
+                        sentence_boundary = char in self.punctuations
+                        first_clause_boundary = (
+                            not spoken_parts
+                            and char in self.CLAUSE_PUNCTUATIONS
+                            and len(self.TTS_CLEAN_RE.sub('', sentence_buffer).strip())
+                            >= self.FIRST_TTS_CLAUSE_MIN_CHARS
+                        )
+                        if sentence_boundary or first_clause_boundary:
                             clean_sentence = sentence_buffer.strip()
                             tts_safe = self.TTS_CLEAN_RE.sub('', clean_sentence)
 

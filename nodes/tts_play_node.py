@@ -14,7 +14,7 @@ from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio_output import OUTPUT_SAMPLE_RATE
-from services.audio_silence import TurnAudioTrimmer
+from services.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
 from services.tts_pipeline import OrderedTTSPipeline
 from services.tts_protocol import decode_turn_end
 from services.tts_service import TTSService
@@ -35,6 +35,8 @@ class TTSPlayNode(Node):
         self.declare_parameter("trim_boundary_silence", True)
         self.declare_parameter("boundary_silence_ms", 100.0)
         self.declare_parameter("silence_threshold_dbfs", -45.0)
+        self.declare_parameter("stream_first_segment", True)
+        self.declare_parameter("stream_chunk_ms", 100)
         self.voice = self.get_parameter("voice").value
         self.rate = self.get_parameter("rate").value
         self.pitch = self.get_parameter("pitch").value
@@ -43,6 +45,8 @@ class TTSPlayNode(Node):
         self.trim_boundary_silence = self.get_parameter("trim_boundary_silence").value
         self.boundary_silence_ms = self.get_parameter("boundary_silence_ms").value
         self.silence_threshold_dbfs = self.get_parameter("silence_threshold_dbfs").value
+        self.stream_first_segment = self.get_parameter("stream_first_segment").value
+        self.stream_chunk_ms = self.get_parameter("stream_chunk_ms").value
 
         self._tts = TTSService(
             voice=self.voice,
@@ -55,6 +59,12 @@ class TTSPlayNode(Node):
             keep_silence_ms=self.boundary_silence_ms,
             threshold_dbfs=self.silence_threshold_dbfs,
         )
+        self._stream_trimmer = StreamingTailSilenceTrimmer(
+            sample_rate=self.sample_rate,
+            keep_silence_ms=self.boundary_silence_ms,
+            threshold_dbfs=self.silence_threshold_dbfs,
+        )
+        self._stream_bytes = 0
 
         self._pipeline = OrderedTTSPipeline(
             synthesize=self._tts.synthesize,
@@ -62,13 +72,19 @@ class TTSPlayNode(Node):
             on_turn_end=self._publish_turn_end,
             on_error=self._log_synthesis_error,
             workers=self.prefetch_workers,
+            synthesize_stream=(
+                lambda text: self._tts.synthesize_stream(text, self.stream_chunk_ms)
+            ) if self.stream_first_segment else None,
+            on_audio_chunk=self._publish_stream_chunk,
+            on_stream_end=self._finish_stream_audio,
         )
 
         self.get_logger().info(
             f"TTS 播放节点上线 "
             f"(voice={self.voice}, rate={self.rate}, pitch={self.pitch}, "
             f"sr={self.sample_rate}, prefetch={self.prefetch_workers}, "
-            f"trim={self.trim_boundary_silence}, keep={self.boundary_silence_ms}ms)"
+            f"trim={self.trim_boundary_silence}, keep={self.boundary_silence_ms}ms, "
+            f"stream_first={self.stream_first_segment}, chunk={self.stream_chunk_ms}ms)"
         )
 
     def _on_tts_text(self, msg):
@@ -91,16 +107,47 @@ class TTSPlayNode(Node):
                 f"(head={result.leading_cut_ms:.0f}ms, tail={result.trailing_cut_ms:.0f}ms, "
                 f"first={result.first_segment})"
             )
-        msg = UInt8MultiArray(data=samples.tobytes())
-        self.audio_pub.publish(msg)
+        byte_count = self._publish_pcm(samples)
         self.get_logger().info(
-            f"TTS → /audio_output: {len(msg.data)} bytes, "
+            f"TTS → /audio_output: {byte_count} bytes, "
             f"synthesis={elapsed:.2f}s{trim_log}, text={text[:40]}"
         )
+
+    def _publish_stream_chunk(self, samples, text, elapsed, first_chunk):
+        if first_chunk:
+            self._audio_trimmer.mark_segment()
+            self._stream_trimmer.reset()
+            self._stream_bytes = 0
+        if self.trim_boundary_silence:
+            samples = self._stream_trimmer.process(samples)
+        byte_count = self._publish_pcm(samples)
+        self._stream_bytes += byte_count
+        if first_chunk:
+            self.get_logger().info(
+                f"TTS 首包 → /audio_output: {byte_count} bytes, "
+                f"latency={elapsed:.2f}s, text={text[:40]}"
+            )
+
+    def _finish_stream_audio(self, text, elapsed):
+        if self.trim_boundary_silence:
+            tail = self._stream_trimmer.finish()
+            self._stream_bytes += self._publish_pcm(tail)
+        self.get_logger().info(
+            f"TTS 流结束: {self._stream_bytes} bytes, "
+            f"synthesis={elapsed:.2f}s, text={text[:40]}"
+        )
+
+    def _publish_pcm(self, samples):
+        if samples is None or len(samples) == 0:
+            return 0
+        msg = UInt8MultiArray(data=samples.tobytes())
+        self.audio_pub.publish(msg)
+        return len(msg.data)
 
     def _publish_turn_end(self, turn_id):
         self.audio_pub.publish(UInt8MultiArray(data=[]))
         self._audio_trimmer.reset()
+        self._stream_trimmer.reset()
         self.get_logger().info(f"TTS 轮次结束: {turn_id}")
 
     def _log_synthesis_error(self, text, error, elapsed):

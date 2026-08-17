@@ -35,10 +35,15 @@ class TurnAudioTrimmer:
     def reset(self):
         self._first_segment = True
 
-    def process(self, samples: np.ndarray) -> AudioTrimResult:
-        audio = np.asarray(samples, dtype=np.int16)
+    def mark_segment(self):
+        """Advance turn state for a segment handled by a streaming trimmer."""
         first_segment = self._first_segment
         self._first_segment = False
+        return first_segment
+
+    def process(self, samples: np.ndarray) -> AudioTrimResult:
+        audio = np.asarray(samples, dtype=np.int16)
+        first_segment = self.mark_segment()
         original_ms = self._duration_ms(audio.size)
 
         bounds = self._active_bounds(audio)
@@ -91,3 +96,75 @@ class TurnAudioTrimmer:
 
     def _duration_ms(self, sample_count):
         return float(sample_count) * 1000.0 / self.sample_rate
+
+
+class StreamingTailSilenceTrimmer:
+    """Pass speech immediately while holding only possible trailing silence."""
+
+    def __init__(
+        self,
+        sample_rate=48000,
+        keep_silence_ms=100.0,
+        threshold_dbfs=-45.0,
+        window_ms=10.0,
+    ):
+        self.sample_rate = int(sample_rate)
+        self.keep_silence_ms = max(0.0, float(keep_silence_ms))
+        self.threshold_dbfs = float(threshold_dbfs)
+        self.window_size = max(1, int(round(self.sample_rate * window_ms / 1000.0)))
+        self._threshold = 32767.0 * (10.0 ** (self.threshold_dbfs / 20.0))
+        self.reset()
+
+    def reset(self):
+        self._seen_active = False
+        self._window_buffer = np.array([], dtype=np.int16)
+        self._pending_silence = []
+
+    def process(self, samples: np.ndarray) -> np.ndarray:
+        audio = np.asarray(samples, dtype=np.int16)
+        if audio.size == 0:
+            return audio
+        if self._window_buffer.size:
+            audio = np.concatenate((self._window_buffer, audio))
+
+        complete_size = audio.size - (audio.size % self.window_size)
+        self._window_buffer = audio[complete_size:].copy()
+        emitted = []
+        for offset in range(0, complete_size, self.window_size):
+            self._consume_window(audio[offset : offset + self.window_size], emitted)
+        return self._join(emitted)
+
+    def finish(self) -> np.ndarray:
+        emitted = []
+        if self._window_buffer.size:
+            self._consume_window(self._window_buffer, emitted)
+        if self._pending_silence:
+            pending = np.concatenate(self._pending_silence)
+            keep_samples = int(round(self.sample_rate * self.keep_silence_ms / 1000.0))
+            if keep_samples:
+                emitted.append(pending[:keep_samples])
+        result = self._join(emitted)
+        self.reset()
+        return result
+
+    def _consume_window(self, window, emitted):
+        values = window.astype(np.float32)
+        rms = float(np.sqrt(np.mean(np.square(values)))) if values.size else 0.0
+        if rms >= self._threshold:
+            if self._pending_silence:
+                emitted.extend(self._pending_silence)
+                self._pending_silence = []
+            emitted.append(window.copy())
+            self._seen_active = True
+        elif self._seen_active:
+            self._pending_silence.append(window.copy())
+        else:
+            emitted.append(window.copy())
+
+    @staticmethod
+    def _join(parts):
+        if not parts:
+            return np.array([], dtype=np.int16)
+        if len(parts) == 1:
+            return parts[0]
+        return np.concatenate(parts)

@@ -39,8 +39,8 @@ source install/setup.bash
 ASR 公共链路依赖如下：
 
 ```bash
-sudo apt install -y libportaudio2 portaudio19-dev
-python3 -m pip install numpy PyYAML sounddevice requests dashscope
+sudo apt install -y libportaudio2 portaudio19-dev ffmpeg
+python3 -m pip install numpy PyYAML sounddevice requests dashscope edge-tts pydub
 ```
 
 再根据实际选择的引擎安装可选依赖：
