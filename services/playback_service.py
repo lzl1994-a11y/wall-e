@@ -104,7 +104,9 @@ class PlaybackService:
         if not self._ensure_stream():
             return
         audio = item.astype(np.float32) / 32768.0
-        self._stream.write(audio.reshape(-1, 1))
+        underflowed = self._stream.write(audio.reshape(-1, 1))
+        if underflowed is True:
+            print("[Playback Service] 输出缓冲欠载，音频数据到达速度低于播放速度")
 
     def _write_silence(self, duration_sec):
         """Make the last UAC packet digital silence before stopping the stream."""

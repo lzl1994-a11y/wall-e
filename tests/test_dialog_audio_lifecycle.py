@@ -72,6 +72,14 @@ class PlaybackLifecycleTests(unittest.TestCase):
 
         stream_class.assert_called_once()
         self.assertEqual(stream.write.call_count, 3)
+        np.testing.assert_allclose(
+            stream.write.call_args_list[0].args[0].reshape(-1),
+            np.array([1, 2], dtype=np.float32) / 32768.0,
+        )
+        np.testing.assert_allclose(
+            stream.write.call_args_list[1].args[0].reshape(-1),
+            np.array([3, 4], dtype=np.float32) / 32768.0,
+        )
         final_write = stream.write.call_args_list[-1].args[0]
         self.assertEqual(final_write.shape, (4800, 1))
         self.assertTrue(np.all(final_write == 0.0))
