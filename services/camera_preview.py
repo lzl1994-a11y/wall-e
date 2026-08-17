@@ -21,8 +21,6 @@ except ImportError:  # Supports: python services/web_server.py
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKER_PATH = ROOT / "services" / "camera_preview_worker.py"
-ROS_SETUP_PATH = Path("/opt/tros/humble/setup.bash")
-DEFAULT_ROS_PYTHON = Path("/usr/bin/python_backup")
 
 
 class CameraPreview:
@@ -154,14 +152,10 @@ class CameraPreview:
 
     @staticmethod
     def _ros_python() -> str:
-        """Choose the Python runtime that TogetherROS installed rclpy into."""
-        configured = os.environ.get("WALI_ROS_PYTHON", "").strip()
-        candidates = [configured] if configured else []
-        if os.name != "nt":
-            candidates.append(str(DEFAULT_ROS_PYTHON))
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return candidate
+        """Use the launcher's Python unless preview-specific override is configured."""
+        configured = os.environ.get("WALI_CAMERA_PREVIEW_PYTHON", "").strip()
+        if configured and os.path.isfile(configured) and os.access(configured, os.X_OK):
+            return configured
         return sys.executable
 
     def _worker_command(self, device: str) -> list[str]:
@@ -173,15 +167,16 @@ class CameraPreview:
             "--fps",
             str(self._frame_rate),
         ]
-        # config_web is usually launched outside a ROS shell.  Source the same
-        # TogetherROS environment as the vision pipeline before starting rclpy.
-        if os.name != "nt" and ROS_SETUP_PATH.is_file():
+        # The worker normally inherits the launcher's ROS environment. An
+        # explicit override remains available for standalone config_web runs.
+        ros_setup = os.environ.get("WALI_CAMERA_PREVIEW_ROS_SETUP", "").strip()
+        if os.name != "nt" and ros_setup and os.path.isfile(ros_setup):
             return [
                 "bash",
                 "-lc",
                 'source "$1" && exec "${@:2}"',
                 "camera-preview-worker",
-                str(ROS_SETUP_PATH),
+                ros_setup,
                 *command,
             ]
         return command

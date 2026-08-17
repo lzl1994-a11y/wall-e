@@ -60,33 +60,50 @@ class CameraFrameProvider:
         self._lock = threading.Lock()
         self._frames: dict[str, tuple[bytes, float]] = {}
         self._subscriptions = []
+        self._subscription_keys: set[tuple[str, str]] = set()
+        self._subscription_timer = None
 
-        if Image is not None:
-            for topic in ("/image_padded_jpeg", "/image"):
+        self._ensure_subscriptions()
+        try:
+            self._subscription_timer = node.create_timer(1.0, self._ensure_subscriptions)
+        except Exception as exc:
+            node.get_logger().debug(f"camera topic discovery timer unavailable: {exc}")
+
+    def _ensure_subscriptions(self) -> None:
+        """Subscribe only to the concrete image type advertised by the ROS graph."""
+        message_types = {
+            "sensor_msgs/msg/Image": Image,
+            "sensor_msgs/msg/CompressedImage": CompressedImage,
+        }
+        try:
+            graph = self._node.get_topic_names_and_types()
+        except Exception as exc:
+            self._node.get_logger().debug(f"camera topic discovery failed: {exc}")
+            return
+        if not isinstance(graph, (list, tuple)):
+            return
+
+        discovered = dict(graph)
+        for topic in ("/image_padded_jpeg", "/image"):
+            for type_name in discovered.get(topic, []):
+                message_type = message_types.get(type_name)
+                key = (topic, type_name)
+                if message_type is None or key in self._subscription_keys:
+                    continue
                 try:
-                    self._subscriptions.append(
-                        node.create_subscription(
-                            Image,
-                            topic,
-                            lambda msg, source=topic: self._on_image(msg, source),
-                            qos_profile_sensor_data,
-                        )
+                    subscription = self._node.create_subscription(
+                        message_type,
+                        topic,
+                        lambda msg, source=topic: self._on_image(msg, source),
+                        qos_profile_sensor_data,
                     )
                 except Exception as exc:
-                    node.get_logger().debug(f"camera topic unavailable ({topic}): {exc}")
-        if CompressedImage is not None:
-            for topic in ("/image_padded_jpeg", "/image"):
-                try:
-                    self._subscriptions.append(
-                        node.create_subscription(
-                            CompressedImage,
-                            topic,
-                            lambda msg, source=topic: self._on_image(msg, source),
-                            qos_profile_sensor_data,
-                        )
+                    self._node.get_logger().debug(
+                        f"camera topic unavailable ({topic}, {type_name}): {exc}"
                     )
-                except Exception as exc:
-                    node.get_logger().debug(f"compressed camera topic unavailable ({topic}): {exc}")
+                    continue
+                self._subscriptions.append(subscription)
+                self._subscription_keys.add(key)
 
     def _on_image(self, msg: Any, source: str = "/image") -> None:
         try:

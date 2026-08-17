@@ -81,6 +81,7 @@ def stream_ros_frames(wait_seconds: float, frame_rate: float) -> tuple[bool, str
         sample_started = time.monotonic()
         sample_frames = 0
         measured_fps = 0.0
+        overall_deadline = time.monotonic() + max(0.1, wait_seconds)
 
         def on_image(message: Any, source: str) -> None:
             nonlocal first_frame, last_emit_at, padded_seen_at
@@ -113,27 +114,57 @@ def stream_ros_frames(wait_seconds: float, frame_rate: float) -> tuple[bool, str
                 "source": source,
             })
 
+        message_types = {
+            "sensor_msgs/msg/Image": Image,
+            "sensor_msgs/msg/CompressedImage": CompressedImage,
+        }
         subscriptions = []
-        for topic in ROS_IMAGE_TOPICS:
-            subscriptions.append(node.create_subscription(
-                Image,
-                topic,
-                lambda message, source=topic: on_image(message, source),
-                qos_profile_sensor_data,
-            ))
-            # Horizon camera/codec releases differ: JPEG topics may be either
-            # Image(encoding=jpeg) or CompressedImage(format=jpeg). DDS only
-            # connects the subscription with the matching topic type.
-            subscriptions.append(node.create_subscription(
-                CompressedImage,
-                topic,
-                lambda message, source=topic: on_image(message, source),
-                qos_profile_sensor_data,
-            ))
+        subscription_keys = set()
+        subscription_errors = []
+        discovered: dict[str, list[str]] = {}
+        emit({"type": "status", "phase": "discovering_ros", "source": "ROS graph"})
+
+        discovery_deadline = min(overall_deadline, time.monotonic() + 1.5)
+        while rclpy.ok() and not subscriptions and time.monotonic() < discovery_deadline:
+            try:
+                discovered = dict(node.get_topic_names_and_types())
+            except Exception as exc:
+                subscription_errors.append(f"读取 ROS 图谱失败: {exc}")
+                break
+
+            for topic in ROS_IMAGE_TOPICS:
+                for type_name in discovered.get(topic, []):
+                    message_type = message_types.get(type_name)
+                    key = (topic, type_name)
+                    if message_type is None or key in subscription_keys:
+                        continue
+                    try:
+                        subscriptions.append(node.create_subscription(
+                            message_type,
+                            topic,
+                            lambda message, source=topic: on_image(message, source),
+                            qos_profile_sensor_data,
+                        ))
+                        subscription_keys.add(key)
+                    except Exception as exc:
+                        subscription_errors.append(f"{topic} [{type_name}]: {exc}")
+            if not subscriptions:
+                rclpy.spin_once(node, timeout_sec=0.1)
+
+        if not subscriptions:
+            visible = {
+                topic: discovered.get(topic, [])
+                for topic in ROS_IMAGE_TOPICS
+                if discovered.get(topic)
+            }
+            detail = "; ".join(subscription_errors[-4:])
+            if detail:
+                return False, f"创建 ROS 摄像头订阅失败: {detail}"
+            return False, f"ROS 图谱未发现支持的摄像头话题类型: {visible or '无话题'}"
+
         emit({"type": "status", "phase": "waiting_ros", "source": "ROS image topic"})
 
-        deadline = time.monotonic() + max(0.1, wait_seconds)
-        while rclpy.ok() and not first_frame and time.monotonic() < deadline:
+        while rclpy.ok() and not first_frame and time.monotonic() < overall_deadline:
             rclpy.spin_once(node, timeout_sec=0.1)
         if not first_frame:
             return (

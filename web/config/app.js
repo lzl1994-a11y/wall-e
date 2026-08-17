@@ -161,6 +161,7 @@ function renderCameraPreviewStatus(status = {}) {
   const startingText = {
     resolving: "正在查找摄像头",
     launching: "正在启动采集进程",
+    discovering_ros: "正在查找 ROS 摄像头话题",
     waiting_ros: "正在复用视觉管线画面",
     ros_fallback: "视觉管线不可用，正在直连摄像头",
     opening: status.device ? `正在打开 ${status.device}` : "正在打开摄像头",

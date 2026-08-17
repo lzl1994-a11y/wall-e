@@ -200,6 +200,38 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
+    def test_only_the_ros_graph_message_type_is_subscribed(self):
+        from services import camera_frame
+
+        class FakeImage:
+            pass
+
+        class FakeCompressedImage:
+            pass
+
+        class FakeNode:
+            def __init__(self):
+                self.subscription_types = []
+
+            def get_topic_names_and_types(self):
+                return [("/image_padded_jpeg", ["sensor_msgs/msg/CompressedImage"])]
+
+            def create_subscription(self, message_type, _topic, _callback, _qos):
+                self.subscription_types.append(message_type)
+                return object()
+
+            def create_timer(self, _period, _callback):
+                return object()
+
+        node = FakeNode()
+        with (
+            patch.object(camera_frame, "Image", FakeImage),
+            patch.object(camera_frame, "CompressedImage", FakeCompressedImage),
+        ):
+            camera_frame.CameraFrameProvider(node)
+
+        self.assertEqual(node.subscription_types, [FakeCompressedImage])
+
     def test_compressed_ros_frame_is_cached(self):
         from services.camera_frame import CameraFrameProvider
 

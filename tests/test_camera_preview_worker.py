@@ -45,7 +45,12 @@ class CameraPreviewWorkerTests(unittest.TestCase):
             def __init__(self, _name):
                 self.callbacks = []
 
-            def create_subscription(self, _message_type, _topic, callback, _qos):
+            def get_topic_names_and_types(self):
+                return [("/image_padded_jpeg", ["sensor_msgs/msg/Image"])]
+
+            def create_subscription(self, message_type, _topic, callback, _qos):
+                if message_type is not _FakeRosImage:
+                    raise RuntimeError("invalid allocator")
                 self.callbacks.append(callback)
                 return object()
 

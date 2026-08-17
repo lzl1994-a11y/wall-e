@@ -59,11 +59,18 @@ def _wait_for_state(preview, expected, timeout=1.0):
 class CameraPreviewTests(unittest.TestCase):
     def test_worker_uses_configured_ros_python_when_available(self):
         preview = CameraPreview("unused.yaml")
-        with patch.dict(os.environ, {"WALI_ROS_PYTHON": sys.executable}):
+        with patch.dict(os.environ, {"WALI_CAMERA_PREVIEW_PYTHON": sys.executable}):
             command = preview._worker_command("/dev/video0")
 
         self.assertIn(sys.executable, command)
         self.assertIn(str(preview._frame_rate), command)
+
+    def test_worker_defaults_to_the_config_web_python(self):
+        preview = CameraPreview("unused.yaml")
+        with patch.dict(os.environ, {}, clear=True):
+            command = preview._worker_command("/dev/video0")
+
+        self.assertEqual(command[0], sys.executable)
 
     def test_capture_runs_in_subprocess_and_releases_device(self):
         process = _FakeProcess([
