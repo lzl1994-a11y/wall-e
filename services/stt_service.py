@@ -10,6 +10,7 @@
 import os
 import tempfile
 import threading
+import time
 import wave
 import yaml
 
@@ -43,6 +44,9 @@ class STTService:
 
         self._pipe = AudioPipeline(config_path)
         self._pipe.on_sentence = self._on_sentence
+        self._pipe.on_speech_start = self._on_speech_start
+        self._pipe.on_speech_audio = self._on_speech_audio
+        self._pipe.on_speech_cancel = self._on_speech_cancel
         self._pipe.on_wake_word = self._on_wake_word
 
         # 透传唤醒词回调
@@ -53,9 +57,13 @@ class STTService:
         self._awake_timer = None
         self._awake_lock = threading.Lock()
         self._awake_timer_generation = 0
+        self._streaming_active = False
+        self._streaming_lock = threading.Lock()
 
     def _on_wake_word(self):
         """唤醒词触发：进入监听状态。"""
+        self._cancel_streaming()
+        self._warmup_asr()
         with self._awake_lock:
             self._awake = True
             self._reset_awake_timer()
@@ -67,24 +75,30 @@ class STTService:
     # Public API
     # ===================================================================
     def start(self):
+        self._warmup_asr()
         self._pipe.start()
         print(f"[STT] 语音监听已启动 (适配器: {type(self.asr_adapter).__name__}), 等待唤醒词")
 
     def stop(self):
+        self._cancel_streaming()
         self._pipe.stop()
+        self._close_asr()
         with self._awake_lock:
             self._awake = False
             self._cancel_awake_timer_locked()
         print("[STT] 语音监听已停止")
 
     def pause(self):
+        self._cancel_streaming()
         with self._awake_lock:
             self._cancel_awake_timer_locked()
         self._pipe.pause()
+        self._warmup_asr()
         print("[STT] 麦克风已暂停，唤醒超时计时已挂起")
 
     def resume(self):
         self._pipe.resume()
+        self._warmup_asr()
         with self._awake_lock:
             if self._awake:
                 self._reset_awake_timer()
@@ -129,13 +143,84 @@ class STTService:
             self._awake_timer = None
             self._awake_timer_generation += 1
         self._pipe.set_awake(False)
+        self._cancel_streaming()
         print(f"[STT] {self._awake_timeout:.0f}s 无语音，退出监听，等待唤醒词")
 
     # ===================================================================
-    # PCM → WAV → ASR
+    # 可选实时 ASR 传输
+    # ===================================================================
+    def _on_speech_start(self, initial_pcm: bytes):
+        if not getattr(self.asr_adapter, "supports_streaming", False):
+            return
+        with self._awake_lock:
+            if not self._awake:
+                return
+            self._cancel_awake_timer_locked()
+
+        try:
+            self.asr_adapter.start_stream(self.SAMPLE_RATE)
+            with self._streaming_lock:
+                self._streaming_active = True
+            self.asr_adapter.accept_audio(initial_pcm)
+            print(f"[STT] {type(self.asr_adapter).__name__} 实时传输已开始")
+        except Exception as exc:
+            print(f"[STT] ASR 实时连接失败，将回退整句识别: {exc}")
+            self._cancel_streaming()
+
+    def _on_speech_audio(self, pcm_frame: bytes):
+        with self._streaming_lock:
+            active = self._streaming_active
+        if not active:
+            return
+        try:
+            self.asr_adapter.accept_audio(pcm_frame)
+        except Exception as exc:
+            print(f"[STT] ASR 实时传输中断，将回退整句识别: {exc}")
+            self._cancel_streaming()
+
+    def _on_speech_cancel(self):
+        self._cancel_streaming()
+        with self._awake_lock:
+            if self._awake:
+                self._reset_awake_timer()
+
+    def _cancel_streaming(self):
+        streaming_lock = getattr(self, "_streaming_lock", None)
+        adapter = getattr(self, "asr_adapter", None)
+        if streaming_lock is None or adapter is None:
+            return
+        with streaming_lock:
+            active = self._streaming_active
+            self._streaming_active = False
+        if active or getattr(adapter, "supports_streaming", False):
+            try:
+                adapter.cancel_stream()
+            except Exception:
+                pass
+
+    def _warmup_asr(self):
+        adapter = getattr(self, "asr_adapter", None)
+        if adapter is None:
+            return
+        try:
+            adapter.warmup()
+        except Exception as exc:
+            print(f"[STT] ASR 预热失败，将在识别时重试: {exc}")
+
+    def _close_asr(self):
+        adapter = getattr(self, "asr_adapter", None)
+        if adapter is None:
+            return
+        try:
+            adapter.close()
+        except Exception as exc:
+            print(f"[STT] ASR 关闭异常: {exc}")
+
+    # ===================================================================
+    # PCM → WAV/debug → ASR final result
     # ===================================================================
     def _on_sentence(self, pcm_data: bytes):
-        """AudioPipeline 断句回调：PCM bytes → WAV → ASR → 文本回调。"""
+        """VAD 断句回调：实时会话取最终文本，其他引擎识别完整 WAV。"""
         with self._awake_lock:
             awake = self._awake
         if not awake:
@@ -165,8 +250,24 @@ class STTService:
             shutil.copy2(wav_path, debug_path)
             print(f"[STT] 调试音频: {debug_path} ({duration_ms}ms)")
 
-            print(f"[STT] 提交语音 {duration_ms}ms 至 ASR...")
-            text = self.asr_adapter.recognize(wav_path, self.SAMPLE_RATE)
+            with self._streaming_lock:
+                streaming_active = self._streaming_active
+
+            started = time.monotonic()
+            if streaming_active:
+                print(f"[STT] 实时音频已发送 {duration_ms}ms，等待 ASR 最终结果...")
+                try:
+                    text = self.asr_adapter.finish_stream()
+                except Exception as exc:
+                    print(f"[STT] ASR 最终结果失败，回退整句识别: {exc}")
+                    text = self.asr_adapter.recognize(wav_path, self.SAMPLE_RATE)
+                finally:
+                    with self._streaming_lock:
+                        self._streaming_active = False
+            else:
+                print(f"[STT] 提交语音 {duration_ms}ms 至 ASR...")
+                text = self.asr_adapter.recognize(wav_path, self.SAMPLE_RATE)
+            print(f"[STT] ASR 耗时 {time.monotonic() - started:.2f}s")
 
             if text and self.on_sentence_received:
                 print(f"[STT] {text}")

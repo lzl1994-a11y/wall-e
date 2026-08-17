@@ -18,9 +18,19 @@ from services.tts_protocol import encode_turn_end
 
 
 class LLMBrainNode(Node):
+    CHAT_HISTORY_MESSAGES = 12
     LONG_FORM_REQUEST_RE = re.compile(
         r"(?:背(?:诵)?|朗(?:诵|读)|念|读)(?:一下|一遍|给我听)?|"
         r"全文|完整(?:版|内容)?|全部|整首|从头到尾"
+    )
+    ACTION_REQUEST_RE = re.compile(
+        r"(?:动作|动一下|跳舞|转圈|招手|挥手|点头|摇头|举手|抬手|放下.{0,3}手|"
+        r"低头|抬头|歪头|回正|看着我|盯着我|注视我|跟着我|跟随我|"
+        r"向左看|向右看|往左看|往右看|前进|后退|移动|走一下|走过去|走过来|"
+        r"转身|左转|右转|停下|别动|开启.{0,4}跟踪|关闭.{0,4}跟踪|停止.{0,4}跟踪|"
+        r"开心|难过|伤心|生气|害怕|惊讶|"
+        r"\b(?:move|turn|wave|dance|nod|follow|track|stop|raise\s+(?:your\s+)?hand)\b)",
+        re.IGNORECASE,
     )
     LONG_FORM_MAX_TOKENS = 2048
     CORRECTION_LABELS = {
@@ -44,7 +54,7 @@ class LLMBrainNode(Node):
         super().__init__('walle_llm_brain')
 
         self.llm = None
-        self.chat_history = deque(maxlen=40)  # 和 VoiceChatService 一致，防止 OOM
+        self.chat_history = deque(maxlen=24)
         self.punctuations = {'。', '？', '.', '?', '！', '!'}
         self._request_queue = queue.Queue(maxsize=8)
         self._worker_running = False
@@ -142,6 +152,7 @@ class LLMBrainNode(Node):
         py_list = pinyin(user_prompt, style=Style.NORMAL)
         py_str = ' '.join([item[0] for item in py_list])
         is_long_form = self._is_long_form_request(user_prompt)
+        tools_enabled = self._needs_action_tools(user_prompt)
         if is_long_form:
             response_policy = (
                 "这是朗读、背诵或完整内容请求。请连续完整输出用户要求的正文，"
@@ -162,6 +173,8 @@ class LLMBrainNode(Node):
         )
 
         self.get_logger().info(f'[{turn_id}] Sending request to LLM...')
+        if tools_enabled:
+            self.get_logger().info(f'[{turn_id}] Action intent detected; tools enabled.')
         max_tokens_override = self._max_tokens_for_request(is_long_form)
         if max_tokens_override is not None:
             self.get_logger().info(
@@ -170,7 +183,6 @@ class LLMBrainNode(Node):
 
         text_buffer = ''
         sentence_buffer = ''
-        punc_count = 0
         corrected_text = ''
         corrected_text_published = False
         actions = []
@@ -199,7 +211,8 @@ class LLMBrainNode(Node):
         try:
             stream = self.llm.chat_stream(
                 augmented_prompt,
-                list(self.chat_history),
+                self._history_for_request(),
+                tools_enabled=tools_enabled,
                 max_tokens_override=max_tokens_override,
             )
 
@@ -209,22 +222,16 @@ class LLMBrainNode(Node):
                 if data_type == 'text':
                     chunk = data.get('content', '')
                     text_buffer += chunk
-                    sentence_buffer += chunk
-                    punctuation_chunk = chunk
-
-                    for char in punctuation_chunk:
+                    for char in chunk:
+                        sentence_buffer += char
                         if char in self.punctuations:
-                            punc_count += 1
-
-                        if punc_count >= 2:
                             clean_sentence = sentence_buffer.strip()
                             tts_safe = self.TTS_CLEAN_RE.sub('', clean_sentence)
 
-                            if tts_safe.strip():
+                            if tts_safe.strip(' .,?!。，？！'):
                                 publish_spoken(tts_safe)
 
                             sentence_buffer = ''
-                            punc_count = 0
 
                 elif data_type == 'tool_call':
                     if data.get('name') == 'inspect_camera':
@@ -260,7 +267,7 @@ class LLMBrainNode(Node):
         clean_tail = sentence_buffer.strip()
         if clean_tail:
             tts_safe_tail = self.TTS_CLEAN_RE.sub('', clean_tail)
-            if tts_safe_tail.strip():
+            if tts_safe_tail.strip(' .,?!。，？！'):
                 publish_spoken(tts_safe_tail)
 
         final_user_memory = corrected_text if corrected_text else user_prompt
@@ -389,6 +396,12 @@ class LLMBrainNode(Node):
                 history.append({'role': item['role'], 'content': item['content']})
         return history
 
+    def _history_for_request(self):
+        history = list(self.chat_history)[-self.CHAT_HISTORY_MESSAGES:]
+        while history and history[0].get('role') != 'user':
+            history.pop(0)
+        return history
+
     @staticmethod
     def _clean_visual_answer(text):
         text = (text or '').strip()
@@ -432,7 +445,7 @@ class LLMBrainNode(Node):
             chunks = []
             for data in self.llm.chat_stream(
                 retry_prompt,
-                list(self.chat_history),
+                self._history_for_request(),
                 tools_enabled=False,
                 max_tokens_override=retry_tokens,
             ):
@@ -456,6 +469,10 @@ class LLMBrainNode(Node):
     @classmethod
     def _is_long_form_request(cls, user_prompt):
         return bool(cls.LONG_FORM_REQUEST_RE.search(user_prompt or ''))
+
+    @classmethod
+    def _needs_action_tools(cls, user_prompt):
+        return bool(cls.ACTION_REQUEST_RE.search(user_prompt or ''))
 
     def _max_tokens_for_request(self, is_long_form):
         if not is_long_form:

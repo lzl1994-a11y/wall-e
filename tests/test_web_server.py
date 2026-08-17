@@ -295,6 +295,7 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('data-path="vad.aggressiveness"', html)
         self.assertIn('data-path="vad.model_path"', html)
         self.assertIn('data-path="vad.threshold"', html)
+        self.assertIn('data-path="vad.silence_sec"', html)
 
     def test_vad_patch_is_saved_independently(self):
         before = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
@@ -330,6 +331,25 @@ class ConfigWebServerTests(unittest.TestCase):
                             "aggressiveness": 3,
                             "model_path": "models/silero_vad.onnx",
                             "threshold": 0.5,
+                        }
+                    }
+                },
+            )
+        self.assertEqual(context.exception.code, 400)
+
+    def test_invalid_vad_silence_endpoint_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "vad": {
+                            "provider": "webrtc",
+                            "aggressiveness": 3,
+                            "model_path": "models/silero_vad.onnx",
+                            "threshold": 0.5,
+                            "silence_sec": 0.1,
                         }
                     }
                 },

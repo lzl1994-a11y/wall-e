@@ -4,6 +4,8 @@
 Usage:
     from services.audio_pipeline import AudioPipeline
     pipe = AudioPipeline(config_path)
+    pipe.on_speech_start = lambda initial_pcm: ...
+    pipe.on_speech_audio = lambda pcm_frame: ...
     pipe.on_sentence = lambda pcm_frames: ...
     pipe.on_wake_word = lambda: ...
     pipe.start()
@@ -117,6 +119,9 @@ class AudioPipeline:
     音频管线：采集 → 唤醒词守门(可选) → VAD 断句 → 回调。
 
     on_sentence: Callable[[bytes], None]  — PCM 帧列表转为连续 bytes 后回调
+    on_speech_start: Callable[[bytes], None] — 开口时回调，包含预录音和首帧
+    on_speech_audio: Callable[[bytes], None] — 开口后的连续 PCM 帧
+    on_speech_cancel: Callable[[], None] — 过短语音或中途取消
     on_wake_word: Callable[[], None]     — 唤醒词触发（仅 enabled=True 时）
     """
 
@@ -125,7 +130,7 @@ class AudioPipeline:
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
     FRAME_BYTES = FRAME_SIZE * 2
     PRE_ROLL_SEC = 0.3
-    SILENCE_SEC = 0.8
+    SILENCE_SEC = 0.5
     MAX_SPEECH_SEC = 15.0
 
     def __init__(self, config_path: str = "core/config.yaml"):
@@ -149,6 +154,11 @@ class AudioPipeline:
         self._vad_err_count = 0
         # 断句 VAD 阈值
         self._vad_thresh = float(self._vad_cfg.get("threshold", 0.5))
+        try:
+            silence_sec = float(self._vad_cfg.get("silence_sec", self.SILENCE_SEC))
+        except (TypeError, ValueError):
+            silence_sec = self.SILENCE_SEC
+        self._silence_sec = min(2.0, max(0.3, silence_sec))
 
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
@@ -161,8 +171,11 @@ class AudioPipeline:
         self._audio_device_identity = ""
         self._awake = False  # 唤醒后才启动 VAD 断句
 
-        self.on_sentence = None     # Callable[[bytes], None]
-        self.on_wake_word = None    # Callable[[], None]
+        self.on_sentence = None       # Callable[[bytes], None]
+        self.on_speech_start = None   # Callable[[bytes], None]
+        self.on_speech_audio = None   # Callable[[bytes], None]
+        self.on_speech_cancel = None  # Callable[[], None]
+        self.on_wake_word = None      # Callable[[], None]
 
     # ── Public API ──
     def start(self):
@@ -377,7 +390,8 @@ class AudioPipeline:
             pass
 
     def _run(self):
-        max_silence = int(self.SILENCE_SEC / (self.FRAME_MS / 1000.0))
+        silence_sec = getattr(self, "_silence_sec", self.SILENCE_SEC)
+        max_silence = int(silence_sec / (self.FRAME_MS / 1000.0))
         max_frames = int(self.MAX_SPEECH_SEC / (self.FRAME_MS / 1000.0))
         pre_roll_size = max(1, int(self.PRE_ROLL_SEC / (self.FRAME_MS / 1000.0)))
 
@@ -437,13 +451,19 @@ class AudioPipeline:
 
                 if is_speech:
                     silence_count = 0
+                    speech_started = False
                     if not in_speech:
                         in_speech = True
                         speech_frames = list(pre_roll_frames)
                         speech_frame_count = len(speech_frames)
                         pre_roll_frames.clear()
+                        speech_started = True
                     speech_frames.append(frame)
                     speech_frame_count += 1
+                    if speech_started:
+                        self._emit_speech_start(speech_frames)
+                    else:
+                        self._emit_speech_audio(frame)
 
                     if speech_frame_count >= max_frames:
                         self._emit_sentence(speech_frames)
@@ -455,6 +475,7 @@ class AudioPipeline:
                     silence_count += 1
                     speech_frames.append(frame)
                     speech_frame_count += 1
+                    self._emit_speech_audio(frame)
 
                     if silence_count > max_silence or speech_frame_count >= max_frames:
                         in_speech = False
@@ -503,13 +524,44 @@ class AudioPipeline:
         except Exception:
             return 0.0
 
+    def _emit_speech_start(self, frames):
+        callback = getattr(self, "on_speech_start", None)
+        if not frames or not callback:
+            return
+        try:
+            callback(b"".join(frames))
+        except Exception as exc:
+            print(f"[AudioPipeline] on_speech_start 异常: {exc}")
+
+    def _emit_speech_audio(self, frame):
+        callback = getattr(self, "on_speech_audio", None)
+        if not frame or not callback:
+            return
+        try:
+            callback(frame)
+        except Exception as exc:
+            print(f"[AudioPipeline] on_speech_audio 异常: {exc}")
+
+    def _emit_speech_cancel(self):
+        callback = getattr(self, "on_speech_cancel", None)
+        if not callback:
+            return
+        try:
+            callback()
+        except Exception as exc:
+            print(f"[AudioPipeline] on_speech_cancel 异常: {exc}")
+
     def _emit_sentence(self, frames):
         """将帧列表合并为 PCM bytes，触发 on_sentence 回调。"""
-        if not frames or not self.on_sentence:
+        if not frames:
             return
         pcm = b"".join(frames)
         dur = len(pcm) // 2 * 1000 // self.SAMPLE_RATE
         if dur < 200:
+            self._emit_speech_cancel()
+            return
+        if not self.on_sentence:
+            self._emit_speech_cancel()
             return
         try:
             self.on_sentence(pcm)

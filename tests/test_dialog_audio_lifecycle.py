@@ -216,6 +216,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         node._process_voice_task("turn-direct", "\u4f60\u597d")
 
         self.assertEqual(node.llm.chat_stream.call_count, 1)
+        self.assertFalse(node.llm.chat_stream.call_args.kwargs["tools_enabled"])
         self.assertEqual(node.corrected_publisher.publish.call_args.args[0].data, "\u4f60\u597d")
         messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
         self.assertEqual(messages[0], "\u4f60\u597d\uff0c\u6211\u5728\u3002")
@@ -247,6 +248,9 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         request = node.llm.chat_stream.call_args
         self.assertIn("连续完整输出", request.args[0])
         self.assertEqual(request.kwargs["max_tokens_override"], 2048)
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(messages[:2], ["浔阳江头夜送客。", "枫叶荻花秋瑟瑟。"])
+        self.assertEqual(decode_turn_end(messages[2]), "turn-poem")
         logger.info.assert_any_call(
             "[turn-poem] LLM stream completed: finish_reason=stop"
         )
@@ -294,6 +298,32 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             node._sanitize_speech_text("\u4fee\u6b63\u6587\u672c\u662f\u4ec0\u4e48\u610f\u601d\uff1f"),
             "\u4fee\u6b63\u6587\u672c\u662f\u4ec0\u4e48\u610f\u601d\uff1f",
         )
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_tools_are_enabled_only_for_likely_action_requests(self):
+        node_class = self._load_node_class()
+
+        self.assertFalse(node_class._needs_action_tools("今天的天气怎么样"))
+        self.assertFalse(node_class._needs_action_tools("背一下琵琶行"))
+        self.assertTrue(node_class._needs_action_tools("向前走一下"))
+        self.assertTrue(node_class._needs_action_tools("看着我"))
+        self.assertTrue(node_class._needs_action_tools("挥挥手"))
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_request_history_is_limited_and_starts_with_user(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        history = [{"role": "assistant", "content": "orphan"}]
+        for index in range(10):
+            history.append({"role": "user", "content": f"u{index}"})
+            history.append({"role": "assistant", "content": f"a{index}"})
+        node.chat_history = deque(history, maxlen=40)
+
+        selected = node._history_for_request()
+
+        self.assertLessEqual(len(selected), node_class.CHAT_HISTORY_MESSAGES)
+        self.assertEqual(selected[0]["role"], "user")
+        self.assertEqual(selected[-1]["content"], "a9")
         sys.modules.pop("nodes.llm_ros_node", None)
 
 

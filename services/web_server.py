@@ -481,6 +481,8 @@ def validate_config(config: Any) -> list[str]:
             )
             _check_string(vad, "model_path", "vad.model_path", errors)
             _check_number(vad, "threshold", "vad.threshold", errors, 0, 1)
+            if "silence_sec" in vad:
+                _check_number(vad, "silence_sec", "vad.silence_sec", errors, 0.3, 2)
 
     if not isinstance(config.get("system_prompt"), str) or not config.get("system_prompt", "").strip():
         errors.append("system_prompt 不能为空")

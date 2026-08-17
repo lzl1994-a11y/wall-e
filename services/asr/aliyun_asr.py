@@ -50,3 +50,6 @@ class AliyunASR(AbstractASR):
         except Exception as e:
             print(f"[AliyunASR] 识别失败: {e}")
             return ""
+
+    def warmup(self) -> None:
+        self._ensure_loop()

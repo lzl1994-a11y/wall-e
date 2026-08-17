@@ -203,6 +203,7 @@ function ensureVadConfig() {
     aggressiveness: 3,
     model_path: "models/silero_vad.onnx",
     threshold: 0.5,
+    silence_sec: 0.5,
   };
   if (!state.config.vad || typeof state.config.vad !== "object") {
     state.config.vad = {};

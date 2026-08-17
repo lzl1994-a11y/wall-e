@@ -25,6 +25,7 @@ class LLMService:
             base_url=self.settings['url']
         )
         self.model = self.settings['model']
+        self._tools = None
 
     def chat_stream(
         self,
@@ -81,7 +82,9 @@ class LLMService:
             "stream": True,
         }
         if tools_enabled:
-            tools = get_tools()
+            if self._tools is None:
+                self._tools = get_tools()
+            tools = self._tools
             if tools:
                 request_kwargs["tools"] = tools
                 request_kwargs["tool_choice"] = "auto"

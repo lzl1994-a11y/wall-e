@@ -50,6 +50,21 @@ class VadConfigTests(unittest.TestCase):
             }))
         self.assertEqual(pipeline._vad_backend, "webrtc")
 
+    def test_silence_endpoint_uses_configured_value_and_safe_bounds(self):
+        configured = AudioPipeline(self.config_file({
+            "provider": "webrtc",
+            "aggressiveness": 3,
+            "silence_sec": 0.45,
+        }))
+        too_short = AudioPipeline(self.config_file({
+            "provider": "webrtc",
+            "aggressiveness": 3,
+            "silence_sec": 0.1,
+        }))
+
+        self.assertEqual(configured._silence_sec, 0.45)
+        self.assertEqual(too_short._silence_sec, 0.3)
+
 
 if __name__ == "__main__":
     unittest.main()

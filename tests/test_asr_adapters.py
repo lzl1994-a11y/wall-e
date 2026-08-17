@@ -1,6 +1,7 @@
 import json
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -18,6 +19,7 @@ from services.asr.baidu_asr import BaiduASR
 from services.asr import create_asr
 from services.asr.faster_whisper_asr import FasterWhisperASR
 from services.asr.sherpa_onnx_asr import SherpaParaformerASR
+from services.asr.zhipu_asr import ZhipuASR
 
 
 class BaiduASRTests(unittest.TestCase):
@@ -43,6 +45,14 @@ class BaiduASRTests(unittest.TestCase):
         }
         settings.update(overrides)
         return BaiduASR(**settings)
+
+    def wait_for_standby(self, adapter):
+        for _attempt in range(100):
+            with adapter._lifecycle_lock:
+                if adapter._standby_connection is not None:
+                    return
+            time.sleep(0.01)
+        self.fail("Baidu standby connection was not prepared")
 
     @patch("services.asr.baidu_asr.time.sleep", return_value=None)
     @patch("websocket.create_connection")
@@ -101,6 +111,85 @@ class BaiduASRTests(unittest.TestCase):
         self.assertEqual(self.adapter().recognize(str(bad_path)), "")
         create_connection.assert_not_called()
 
+    @patch("services.asr.baidu_asr.time.sleep")
+    @patch("websocket.create_connection")
+    def test_streaming_session_sends_captured_audio_without_replay_delay(
+        self, create_connection, sleep
+    ):
+        connection = MagicMock()
+        connection.recv.side_effect = [
+            json.dumps({"type": "MID_TEXT", "err_no": 0, "result": "瓦"}),
+            json.dumps({"type": "FIN_TEXT", "err_no": 0, "result": "瓦力你好"}),
+        ]
+        create_connection.return_value = connection
+        adapter = self.adapter()
+        first = b"A" * 3000
+        second = b"B" * 3000
+
+        adapter.start_stream(16000)
+        adapter.accept_audio(first)
+        self.assertEqual(connection.send_binary.call_count, 0)
+        adapter.accept_audio(second)
+        self.assertEqual(connection.send_binary.call_count, 1)
+        result = adapter.finish_stream()
+
+        self.assertEqual(result, "瓦力你好")
+        chunks = [call.args[0] for call in connection.send_binary.call_args_list]
+        self.assertEqual(b"".join(chunks), first + second)
+        self.assertEqual(len(chunks[0]), BaiduASR.CHUNK_BYTES)
+        sleep.assert_not_called()
+        self.assertEqual(json.loads(connection.send.call_args_list[-1].args[0]), {"type": "FINISH"})
+        connection.close.assert_called_once_with()
+
+    @patch("websocket.create_connection")
+    def test_cancel_stream_closes_active_connection(self, create_connection):
+        connection = MagicMock()
+        create_connection.return_value = connection
+        adapter = self.adapter()
+
+        adapter.start_stream()
+        adapter.cancel_stream()
+
+        connection.close.assert_called_once_with()
+        with self.assertRaisesRegex(RuntimeError, "not active"):
+            adapter.accept_audio(b"\x00\x00")
+
+    @patch("websocket.create_connection")
+    def test_warmup_connection_is_consumed_without_reconnecting(self, create_connection):
+        connection = MagicMock()
+        connection.connected = True
+        create_connection.return_value = connection
+        adapter = self.adapter()
+
+        adapter.warmup()
+        self.wait_for_standby(adapter)
+
+        self.assertEqual(create_connection.call_count, 1)
+        connection.send.assert_not_called()
+        adapter.start_stream()
+        self.assertEqual(create_connection.call_count, 1)
+        self.assertEqual(json.loads(connection.send.call_args.args[0])["type"], "START")
+        adapter.cancel_stream()
+
+    @patch("websocket.create_connection")
+    def test_expired_warmup_connection_is_replaced(self, create_connection):
+        stale = MagicMock()
+        stale.connected = True
+        fresh = MagicMock()
+        fresh.connected = True
+        create_connection.side_effect = [stale, fresh]
+        adapter = self.adapter()
+
+        adapter.warmup()
+        self.wait_for_standby(adapter)
+        adapter._standby_created_at = time.monotonic() - adapter.STANDBY_TTL_SEC - 1
+        adapter.start_stream()
+
+        stale.close.assert_called_once_with()
+        self.assertEqual(create_connection.call_count, 2)
+        self.assertEqual(json.loads(fresh.send.call_args.args[0])["type"], "START")
+        adapter.close()
+
     def test_factory_creates_baidu_adapter_from_nested_config(self):
         config_path = Path(self.temp_dir.name) / "config.yaml"
         config_path.write_text(
@@ -127,6 +216,29 @@ class BaiduASRTests(unittest.TestCase):
         self.assertEqual(adapter.lm_id, 88)
         self.assertEqual(adapter.user, "dialect-user")
 
+
+class ZhipuASRTests(unittest.TestCase):
+    @patch("services.asr.zhipu_asr.requests.Session")
+    def test_recognize_reuses_one_http_session(self, session_class):
+        session = session_class.return_value
+        response = session.post.return_value
+        response.json.return_value = {"text": "瓦力你好"}
+        adapter = ZhipuASR(
+            api_key="test-key",
+            url="https://example.com/audio/transcriptions",
+            model="test-model",
+        )
+
+        with tempfile.TemporaryDirectory(prefix="wali-zhipu-asr-") as temp_dir:
+            wav_path = Path(temp_dir) / "speech.wav"
+            wav_path.write_bytes(b"wav")
+            self.assertEqual(adapter.recognize(str(wav_path)), "瓦力你好")
+            self.assertEqual(adapter.recognize(str(wav_path)), "瓦力你好")
+        adapter.close()
+
+        session_class.assert_called_once_with()
+        self.assertEqual(session.post.call_count, 2)
+        session.close.assert_called_once_with()
 
 class ConfiguredModelTests(unittest.TestCase):
     def setUp(self):

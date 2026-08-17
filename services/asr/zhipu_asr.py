@@ -18,11 +18,12 @@ class ZhipuASR(AbstractASR):
         self.api_key = api_key
         self.url = url or self._DEFAULT_URL
         self.model = model.strip()
+        self._session = requests.Session()
 
     def recognize(self, wav_path: str, sample_rate: int = 16000) -> str:
         try:
             with open(wav_path, "rb") as f:
-                resp = requests.post(
+                resp = self._session.post(
                     self.url,
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     files={"file": (wav_path, f, "audio/wav")},
@@ -45,3 +46,6 @@ class ZhipuASR(AbstractASR):
         except Exception as e:
             print(f"[ZhipuASR] 识别失败: {e}")
             return ""
+
+    def close(self) -> None:
+        self._session.close()

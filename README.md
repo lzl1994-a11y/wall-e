@@ -63,13 +63,18 @@ python3 -m pip install faster-whisper
 
 ### 设计目标
 
-所有 ASR 引擎都实现同一个接口：
+所有 ASR 引擎都保留同一个整句识别接口：
 
 ```python
 recognize(wav_path: str, sample_rate: int = 16000) -> str
 ```
 
 因此更换云端服务商或本地模型时，只替换 ASR 适配器，不需要修改唤醒词、VAD、LLM、TTS 或 ROS Topic。识别成功统一返回纯文本，识别失败统一返回空字符串。
+
+支持实时音频传输的适配器还可以实现 `start_stream()`、`accept_audio()` 和
+`finish_stream()`。当前百度实时 ASR 会在 VAD 检测到开口后边采集边发送音频，断句时只获取并发布一次最终文本，避免录完后再按录音时长重放上传。如果实时连接失败，系统自动回退到上述完整 WAV 接口；其他云端和本地引擎继续使用整句识别，不受影响。
+
+ASR 适配器还提供 `warmup()` / `close()` 生命周期。百度在启动、唤醒和对话播放期间异步准备一条尚未发送 `START` 的待命 WebSocket，使用前检查有效期，失效时自动重连；一句识别结束后关闭已使用的会话，不会把旧会话用于下一句话。智谱使用持久 HTTP Session 复用 TCP/TLS 连接，本地模型实例则持续常驻内存。
 
 ```mermaid
 flowchart LR
@@ -100,6 +105,8 @@ flowchart LR
 > ASR 输入固定为 `16 kHz / 16-bit / 单声道 PCM WAV`。ESP32-S3 的麦克风虽然内部以 48 kHz 采样，但上传给旭日派前会降采样到 16 kHz。48 kHz 只用于 TTS 和提示音播放输出。
 
 `wake_word.awake_timeout` 表示一轮对话中的用户无声等待时间。完成一句 ASR 后，计时会在 LLM 请求、TTS 合成和音频播放期间暂停；最后一段 AI 语音真正播放完成后，才重新开始计时。
+
+`vad.silence_sec` 控制检测到人声后等待多少秒静音才结束一句，默认 `0.5` 秒，可在 Web 页面的“VAD 语音断句”中设置为 `0.3`～`2.0` 秒。数值越小响应越快，但过小可能切断说话中的自然停顿。
 
 ### 使用 Web 页面配置
 
