@@ -9,7 +9,16 @@ const state = {
   loading: false,
   usbDevices: [],
   usbLoading: false,
+  cameraPreview: {
+    active: false,
+    timer: null,
+    objectUrl: null,
+    requesting: false,
+    frameCount: 0,
+  },
 };
+
+const CAMERA_PREVIEW_POLL_MS = 180;
 
 const MODULE_ROOTS = Object.freeze({
   runtime: "launch",
@@ -130,6 +139,166 @@ async function api(path, options = {}) {
     throw error;
   }
   return payload;
+}
+
+function setCameraPreviewControls(active) {
+  $("#camera-preview-start").disabled = active;
+  $("#camera-preview-stop").disabled = !active;
+}
+
+function clearCameraPreviewImage() {
+  const image = $("#camera-preview-image");
+  image.hidden = true;
+  image.removeAttribute("src");
+  if (state.cameraPreview.objectUrl) {
+    URL.revokeObjectURL(state.cameraPreview.objectUrl);
+    state.cameraPreview.objectUrl = null;
+  }
+}
+
+function renderCameraPreviewStatus(status = {}) {
+  const previewState = status.state || "stopped";
+  const statusText = {
+    starting: "正在连接",
+    running: "实时预览中",
+    stopping: "正在停止",
+    stopped: "已停止",
+    error: status.error || "摄像头预览失败",
+  }[previewState] || previewState;
+  const dot = $("#camera-preview-dot");
+  dot.className = `preview-status-dot ${previewState}`;
+  $("#camera-preview-status").textContent = statusText;
+  $("#camera-preview-status").title = statusText;
+  $("#camera-preview-device").textContent = status.device || "—";
+  $("#camera-preview-resolution").textContent = status.width && status.height
+    ? `${status.width} × ${status.height}`
+    : "—";
+  $("#camera-preview-fps").textContent = status.fps ? `${status.fps} FPS` : "—";
+}
+
+function scheduleCameraPreviewPoll(delay = CAMERA_PREVIEW_POLL_MS) {
+  clearTimeout(state.cameraPreview.timer);
+  if (!state.cameraPreview.active) return;
+  state.cameraPreview.timer = window.setTimeout(pollCameraPreviewFrame, delay);
+}
+
+async function refreshCameraPreviewStatus() {
+  try {
+    const status = await api("/api/camera-preview/status");
+    renderCameraPreviewStatus(status);
+    if (["error", "stopped"].includes(status.state)) {
+      state.cameraPreview.active = false;
+      setCameraPreviewControls(false);
+    }
+  } catch (_) {
+    // Frame polling owns connection error reporting.
+  }
+}
+
+async function pollCameraPreviewFrame() {
+  if (!state.cameraPreview.active || state.cameraPreview.requesting) return;
+  state.cameraPreview.requesting = true;
+  try {
+    const response = await fetch(`/api/camera-preview/frame?t=${Date.now()}`, {
+      cache: "no-store",
+      headers: apiHeaders(false),
+    });
+    if (!response.ok) {
+      let payload = {};
+      try { payload = await response.json(); } catch (_) { /* non-JSON error */ }
+      if (response.status === 503 && ["starting", "running"].includes(payload.state)) {
+        renderCameraPreviewStatus(payload);
+        return;
+      }
+      const error = new Error(payload.error || `摄像头画面请求失败 (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
+
+    const blob = await response.blob();
+    const nextUrl = URL.createObjectURL(blob);
+    const previousUrl = state.cameraPreview.objectUrl;
+    const image = $("#camera-preview-image");
+    image.onload = () => {
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+    };
+    image.src = nextUrl;
+    image.hidden = false;
+    $("#camera-preview-placeholder").hidden = true;
+    state.cameraPreview.objectUrl = nextUrl;
+    state.cameraPreview.frameCount += 1;
+    if (state.cameraPreview.frameCount % 8 === 1) refreshCameraPreviewStatus();
+  } catch (error) {
+    state.cameraPreview.active = false;
+    setCameraPreviewControls(false);
+    clearCameraPreviewImage();
+    renderCameraPreviewStatus({ state: "error", error: error.message });
+    $("#camera-preview-placeholder").textContent = error.message;
+    $("#camera-preview-placeholder").hidden = false;
+    showToast(error.message, "error");
+  } finally {
+    state.cameraPreview.requesting = false;
+    scheduleCameraPreviewPoll();
+  }
+}
+
+async function startCameraPreview() {
+  if (state.cameraPreview.active) return;
+  state.cameraPreview.active = true;
+  state.cameraPreview.frameCount = 0;
+  setCameraPreviewControls(true);
+  clearCameraPreviewImage();
+  renderCameraPreviewStatus({ state: "starting" });
+  $("#camera-preview-placeholder").textContent = "正在连接摄像头";
+  $("#camera-preview-placeholder").hidden = false;
+  try {
+    const status = await api("/api/camera-preview/start", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    renderCameraPreviewStatus(status);
+    scheduleCameraPreviewPoll(0);
+  } catch (error) {
+    state.cameraPreview.active = false;
+    setCameraPreviewControls(false);
+    clearCameraPreviewImage();
+    renderCameraPreviewStatus({ state: "error", error: error.message });
+    $("#camera-preview-placeholder").textContent = error.message;
+    showToast(error.message, "error");
+  }
+}
+
+async function stopCameraPreview({ quiet = false } = {}) {
+  state.cameraPreview.active = false;
+  clearTimeout(state.cameraPreview.timer);
+  setCameraPreviewControls(false);
+  renderCameraPreviewStatus({ state: "stopping" });
+  try {
+    const status = await api("/api/camera-preview/stop", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    renderCameraPreviewStatus(status);
+  } catch (error) {
+    renderCameraPreviewStatus({ state: "error", error: error.message });
+    if (!quiet) showToast(error.message, "error");
+  }
+}
+
+async function reconnectCameraPreview() {
+  await stopCameraPreview({ quiet: true });
+  await startCameraPreview();
+}
+
+function stopCameraPreviewOnPageExit() {
+  if (!state.cameraPreview.active) return;
+  state.cameraPreview.active = false;
+  fetch("/api/camera-preview/stop", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({}),
+    keepalive: true,
+  }).catch(() => {});
 }
 
 async function changeAccessToken() {
@@ -804,6 +973,9 @@ function bindEvents() {
     });
   });
   $("#refresh-usb-devices").addEventListener("click", () => loadUsbDevices());
+  $("#camera-preview-start").addEventListener("click", startCameraPreview);
+  $("#camera-preview-stop").addEventListener("click", () => stopCameraPreview());
+  $("#camera-preview-reconnect").addEventListener("click", reconnectCameraPreview);
   $("#change-token-button").addEventListener("click", changeAccessToken);
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);
@@ -838,6 +1010,10 @@ function bindEvents() {
     if (!state.dirtyModules.size) return;
     event.preventDefault();
     event.returnValue = "";
+  });
+  window.addEventListener("pagehide", stopCameraPreviewOnPageExit);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && state.cameraPreview.active) stopCameraPreview({ quiet: true });
   });
 }
 

@@ -6,7 +6,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -144,6 +144,92 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('data-usb-role="camera"', html)
         self.assertIn('data-usb-role="screen_motion"', html)
         self.assertIn('data-usb-role="voice"', html)
+
+    def test_camera_preview_module_is_on_hardware_page(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        hardware_panel = html.split('data-panel="hardware"', 1)[1].split('data-panel="servos"', 1)[0]
+        self.assertIn('id="camera-preview-viewport"', hardware_panel)
+        self.assertIn('id="camera-preview-image"', hardware_panel)
+        self.assertIn('id="camera-preview-start"', hardware_panel)
+        self.assertIn('id="camera-preview-stop"', hardware_panel)
+        self.assertIn('id="camera-preview-reconnect"', hardware_panel)
+
+    def test_camera_preview_api_starts_returns_frames_and_stops(self):
+        preview = MagicMock()
+        starting = {
+            "state": "starting",
+            "device": "",
+            "width": 0,
+            "height": 0,
+            "fps": 0.0,
+            "frame_age_ms": None,
+            "error": "",
+        }
+        running = {
+            **starting,
+            "state": "running",
+            "device": "/dev/video2",
+            "width": 640,
+            "height": 480,
+            "fps": 8.0,
+        }
+        stopped = {**starting, "state": "stopped"}
+        preview.start.return_value = starting
+        preview.status.return_value = running
+        preview.get_frame.return_value = (b"jpeg-frame", running)
+        preview.stop.return_value = stopped
+        self.server.camera_preview = preview
+
+        status, body = self.request(
+            "/api/camera-preview/start",
+            method="POST",
+            payload={},
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(body["state"], "starting")
+
+        status, body = self.request("/api/camera-preview/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["device"], "/dev/video2")
+
+        status, body = self.request("/api/camera-preview/frame")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"jpeg-frame")
+
+        status, body = self.request(
+            "/api/camera-preview/stop",
+            method="POST",
+            payload={},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"], "stopped")
+
+    def test_camera_preview_api_requires_access_token(self):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/camera-preview/status", token=None)
+        self.assertEqual(context.exception.code, 401)
+
+    def test_camera_preview_frame_reports_capture_error(self):
+        preview = MagicMock()
+        status = {
+            "state": "error",
+            "device": "/dev/video0",
+            "width": 0,
+            "height": 0,
+            "fps": 0.0,
+            "frame_age_ms": None,
+            "error": "设备被占用",
+        }
+        preview.get_frame.return_value = (None, status)
+        self.server.camera_preview = preview
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/camera-preview/frame")
+        self.assertEqual(context.exception.code, 503)
+        body = json.loads(context.exception.read().decode("utf-8"))
+        self.assertEqual(body["state"], "error")
+        self.assertEqual(body["error"], "设备被占用")
 
     def test_hardware_backend_controls_are_visible(self):
         _, body = self.request("/", token=None)

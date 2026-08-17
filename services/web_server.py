@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Wali 本地配置网页服务。
 
-只依赖 Python 标准库和项目已经使用的 PyYAML。服务默认监听所有网络接口，
-并使用默认访问令牌 123456；令牌可以在网页中修改。
+基础配置功能只依赖 Python 标准库和项目已经使用的 PyYAML；摄像头预览
+会在按下开始按钮后按需使用 OpenCV。服务默认监听所有网络接口，并使用
+默认访问令牌 123456；令牌可以在网页中修改。
 """
 
 from __future__ import annotations
@@ -25,8 +26,10 @@ import yaml
 
 try:
     from services.usb_devices import USB_ROLES, list_usb_devices
+    from services.camera_preview import CameraPreview
 except ImportError:  # Supports: python services/web_server.py
     from usb_devices import USB_ROLES, list_usb_devices
+    from camera_preview import CameraPreview
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -626,6 +629,11 @@ class ConfigWebServer(ThreadingHTTPServer):
         self.store = store
         self.static_dir = static_dir.resolve()
         self.access_token = token or ""
+        self.camera_preview = CameraPreview(self.store.path)
+
+    def server_close(self) -> None:
+        self.camera_preview.close()
+        super().server_close()
 
 
 class ConfigRequestHandler(BaseHTTPRequestHandler):
@@ -662,6 +670,16 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _require_api_auth(self) -> bool:
         if self._authorized():
             return True
@@ -685,7 +703,7 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -722,11 +740,34 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, {"ok": True, "devices": devices})
             return
+        if route == "/api/camera-preview/status":
+            if not self._require_api_auth():
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, **self.server.camera_preview.status()})
+            return
+        if route == "/api/camera-preview/frame":
+            if not self._require_api_auth():
+                return
+            frame, status = self.server.camera_preview.get_frame()
+            if frame is None:
+                message = status.get("error") or "摄像头正在启动，暂时没有画面"
+                self._send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"ok": False, "error": message, **status},
+                )
+                return
+            self._send_bytes(HTTPStatus.OK, frame, "image/jpeg")
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
         route = urlsplit(self.path).path
-        if route not in {"/api/config", "/api/access-token"}:
+        if route not in {
+            "/api/config",
+            "/api/access-token",
+            "/api/camera-preview/start",
+            "/api/camera-preview/stop",
+        }:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if not self._require_api_auth():
@@ -748,6 +789,16 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "JSON 格式错误"})
+            return
+
+        if route == "/api/camera-preview/start":
+            status = self.server.camera_preview.start()
+            self._send_json(HTTPStatus.ACCEPTED, {"ok": True, **status})
+            return
+
+        if route == "/api/camera-preview/stop":
+            status = self.server.camera_preview.stop()
+            self._send_json(HTTPStatus.OK, {"ok": True, **status})
             return
 
         if route == "/api/access-token":
