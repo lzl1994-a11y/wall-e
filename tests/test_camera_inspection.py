@@ -200,75 +200,88 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
-    def test_only_the_ros_graph_message_type_is_subscribed(self):
+    def _provider(self):
         from services import camera_frame
 
         class FakeImage:
-            pass
+            encoding = "jpeg"
+            data = b"camera-jpeg"
 
-        class FakeCompressedImage:
-            pass
+        class FakeString:
+            def __init__(self, data=""):
+                self.data = data
+
+        class FakePublisher:
+            def __init__(self):
+                self.messages = []
+
+            def publish(self, message):
+                self.messages.append(message)
 
         class FakeNode:
             def __init__(self):
-                self.subscription_types = []
+                self.publisher = FakePublisher()
+                self.publisher_topic = ""
+                self.subscription_topic = ""
+                self.callback = None
 
-            def get_topic_names_and_types(self):
-                return [("/image_padded_jpeg", ["sensor_msgs/msg/CompressedImage"])]
+            def create_publisher(self, _message_type, topic, _qos):
+                self.publisher_topic = topic
+                return self.publisher
 
-            def create_subscription(self, message_type, _topic, _callback, _qos):
-                self.subscription_types.append(message_type)
-                return object()
-
-            def create_timer(self, _period, _callback):
+            def create_subscription(self, _message_type, topic, callback, _qos):
+                self.subscription_topic = topic
+                self.callback = callback
                 return object()
 
         node = FakeNode()
-        with (
-            patch.object(camera_frame, "Image", FakeImage),
-            patch.object(camera_frame, "CompressedImage", FakeCompressedImage),
-        ):
-            camera_frame.CameraFrameProvider(node)
+        image_patch = patch.object(camera_frame, "Image", FakeImage)
+        string_patch = patch.object(camera_frame, "String", FakeString)
+        image_patch.start()
+        string_patch.start()
+        self.addCleanup(image_patch.stop)
+        self.addCleanup(string_patch.stop)
+        return camera_frame.CameraFrameProvider(node), node, FakeImage
 
-        self.assertEqual(node.subscription_types, [FakeCompressedImage])
+    def test_provider_uses_only_camera_frame_and_capture_command_topics(self):
+        provider, node, _image_type = self._provider()
 
-    def test_compressed_ros_frame_is_cached(self):
-        from services.camera_frame import CameraFrameProvider
+        self.assertIsNotNone(provider)
+        self.assertEqual(node.publisher_topic, "/camera_capture_cmd")
+        self.assertEqual(node.subscription_topic, "/camera_frame")
 
-        class CompressedMessage:
-            format = "bgr8; jpeg compressed bgr8"
-            data = b"compressed-jpeg"
+    def test_capture_acquires_waits_for_fresh_frame_and_releases(self):
+        provider, node, image_type = self._provider()
+        result = []
 
-        node = MagicMock()
-        provider = CameraFrameProvider(node)
-        provider._on_image(CompressedMessage(), "/image_padded_jpeg")
-        self.assertEqual(provider.capture(timeout=0.01), b"compressed-jpeg")
+        thread = __import__("threading").Thread(
+            target=lambda: result.append(provider.capture(timeout=0.8))
+        )
+        thread.start()
+        deadline = __import__("time").monotonic() + 0.5
+        while not node.publisher.messages and __import__("time").monotonic() < deadline:
+            __import__("time").sleep(0.01)
+        node.callback(image_type())
+        thread.join(timeout=1.0)
 
-    def test_cached_frame_is_returned(self):
-        from services.camera_frame import CameraFrameProvider
+        commands = [
+            __import__("json").loads(message.data)
+            for message in node.publisher.messages
+        ]
+        self.assertEqual(result, [b"camera-jpeg"])
+        self.assertEqual(commands[0]["action"], "acquire")
+        self.assertEqual(commands[-1]["action"], "release")
 
-        node = MagicMock()
-        provider = CameraFrameProvider(node)
-        provider._frames["/image"] = (b"cached-jpeg", __import__("time").monotonic())
-        self.assertEqual(provider.capture(timeout=0.01), b"cached-jpeg")
+    def test_capture_timeout_releases_without_uvc_fallback(self):
+        provider, node, _image_type = self._provider()
+        self.assertIsNone(provider.capture(timeout=0.2))
 
-    def test_corrected_topic_has_priority_over_raw_image(self):
-        from services.camera_frame import CameraFrameProvider
-
-        node = MagicMock()
-        provider = CameraFrameProvider(node)
-        now = __import__("time").monotonic()
-        provider._frames["/image"] = (b"raw", now)
-        provider._frames["/image_padded_jpeg"] = (b"corrected", now)
-        self.assertEqual(provider.capture(timeout=0.01), b"corrected")
-
-    def test_uvc_fallback_is_used_when_cache_is_empty(self):
-        from services.camera_frame import CameraFrameProvider
-
-        node = MagicMock()
-        provider = CameraFrameProvider(node)
-        with patch.object(provider, "_capture_uvc", return_value=b"uvc-jpeg"):
-            self.assertEqual(provider.capture(timeout=0.01), b"uvc-jpeg")
+        commands = [
+            __import__("json").loads(message.data)
+            for message in node.publisher.messages
+        ]
+        self.assertEqual(commands[-1]["action"], "release")
+        self.assertFalse(hasattr(provider, "_capture_uvc"))
 
 
 if __name__ == "__main__":

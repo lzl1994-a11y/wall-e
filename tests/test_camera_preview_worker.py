@@ -1,11 +1,10 @@
+import json
 import sys
 import types
 import unittest
 from unittest.mock import patch
-from unittest.mock import patch
 
 from services import camera_preview_worker
-from services.camera_preview_worker import jpeg_from_ros_message
 
 
 class _FakeRosImage:
@@ -15,43 +14,33 @@ class _FakeRosImage:
     height = 480
 
 
-class _FakeCompressedRosImage:
-    format = "bgr8; jpeg compressed bgr8"
-    data = b"jpeg-frame"
+class _FakeString:
+    def __init__(self, data=""):
+        self.data = data
 
 
 class CameraPreviewWorkerTests(unittest.TestCase):
-    def test_encoded_ros_image_is_reused_without_decoding(self):
-        self.assertEqual(jpeg_from_ros_message(_FakeRosImage()), b"jpeg-frame")
-
-    def test_empty_encoded_ros_image_is_ignored(self):
-        message = _FakeRosImage()
-        message.data = b""
-        self.assertIsNone(jpeg_from_ros_message(message))
-
-    def test_compressed_ros_image_is_reused_without_decoding(self):
-        self.assertEqual(jpeg_from_ros_message(_FakeCompressedRosImage()), b"jpeg-frame")
-
-    def test_compressed_jpeg_with_empty_format_is_reused(self):
-        message = _FakeCompressedRosImage()
-        message.format = ""
-        message.data = b"\xff\xd8jpeg-frame"
-        self.assertEqual(jpeg_from_ros_message(message), message.data)
-
-    def test_ros_topic_frame_is_forwarded_without_opening_uvc(self):
+    def test_worker_leases_and_streams_only_camera_frame(self):
         state = {"initialized": False, "emitted": False}
+        commands = []
+
+        class FakePublisher:
+            def __init__(self, topic):
+                self.topic = topic
+
+            def publish(self, message):
+                if self.topic == "/camera_capture_cmd":
+                    commands.append(json.loads(message.data))
 
         class FakeNode:
             def __init__(self, _name):
-                self.callbacks = []
+                self.callbacks = {}
 
-            def get_topic_names_and_types(self):
-                return [("/image_padded_jpeg", ["sensor_msgs/msg/Image"])]
+            def create_publisher(self, _message_type, topic, _qos):
+                return FakePublisher(topic)
 
-            def create_subscription(self, message_type, _topic, callback, _qos):
-                if message_type is not _FakeRosImage:
-                    raise RuntimeError("invalid allocator")
-                self.callbacks.append(callback)
+            def create_subscription(self, _message_type, topic, callback, _qos):
+                self.callbacks[topic] = callback
                 return object()
 
             def destroy_node(self):
@@ -66,8 +55,9 @@ class CameraPreviewWorkerTests(unittest.TestCase):
 
         def spin_once(node, timeout_sec=0.0):
             del timeout_sec
-            node.callbacks[0](_FakeRosImage())
-            state["emitted"] = True
+            if not state["emitted"]:
+                node.callbacks["/camera_frame"](_FakeRosImage())
+                state["emitted"] = True
 
         fake_rclpy.init = init
         fake_rclpy.spin_once = spin_once
@@ -78,7 +68,8 @@ class CameraPreviewWorkerTests(unittest.TestCase):
         fake_qos_module.qos_profile_sensor_data = object()
         fake_sensor_module = types.ModuleType("sensor_msgs.msg")
         fake_sensor_module.Image = _FakeRosImage
-        fake_sensor_module.CompressedImage = _FakeCompressedRosImage
+        fake_std_module = types.ModuleType("std_msgs.msg")
+        fake_std_module.String = _FakeString
         emitted = []
 
         with (
@@ -87,31 +78,37 @@ class CameraPreviewWorkerTests(unittest.TestCase):
                 "rclpy.node": fake_node_module,
                 "rclpy.qos": fake_qos_module,
                 "sensor_msgs.msg": fake_sensor_module,
+                "std_msgs.msg": fake_std_module,
             }),
             patch.object(camera_preview_worker, "emit", side_effect=emitted.append),
         ):
-            using_ros, diagnostic = camera_preview_worker.stream_ros_frames(0.2, 8.0)
+            result = camera_preview_worker.stream_camera_frames(8.0)
 
-        self.assertTrue(using_ros)
-        self.assertEqual(diagnostic, "")
+        self.assertEqual(result, 0)
+        self.assertEqual(commands[0]["action"], "acquire")
+        self.assertEqual(commands[-1]["action"], "release")
+        frames = [item for item in emitted if item.get("type") == "frame"]
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0]["source"], "/camera_frame")
 
-        frame_messages = [item for item in emitted if item.get("type") == "frame"]
-        self.assertEqual(len(frame_messages), 1)
-        self.assertEqual(frame_messages[0]["source"], "/image_padded_jpeg")
-
-    def test_ros_import_error_is_reported_for_the_web_status(self):
+    def test_ros_import_error_is_reported_without_uvc_fallback(self):
         real_import = __import__
+        emitted = []
 
         def blocked_ros_import(name, *args, **kwargs):
             if name == "rclpy":
                 raise ImportError("rclpy not installed")
             return real_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=blocked_ros_import):
-            using_ros, diagnostic = camera_preview_worker.stream_ros_frames(0.2, 8.0)
+        with (
+            patch("builtins.__import__", side_effect=blocked_ros_import),
+            patch.object(camera_preview_worker, "emit", side_effect=emitted.append),
+        ):
+            result = camera_preview_worker.stream_camera_frames(8.0)
 
-        self.assertFalse(using_ros)
-        self.assertIn("ROS Python 环境不可用", diagnostic)
+        self.assertEqual(result, 2)
+        self.assertIn("ROS 摄像头环境不可用", emitted[0]["error"])
+        self.assertFalse(hasattr(camera_preview_worker, "stream_uvc_frames"))
 
 
 if __name__ == "__main__":

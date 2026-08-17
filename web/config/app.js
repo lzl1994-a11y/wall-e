@@ -159,13 +159,9 @@ function clearCameraPreviewImage() {
 function renderCameraPreviewStatus(status = {}) {
   const previewState = status.state || "stopped";
   const startingText = {
-    resolving: "正在查找摄像头",
     launching: "正在启动采集进程",
-    discovering_ros: "正在查找 ROS 摄像头话题",
-    waiting_ros: "正在复用视觉管线画面",
-    ros_fallback: "视觉管线不可用，正在直连摄像头",
-    opening: status.device ? `正在打开 ${status.device}` : "正在打开摄像头",
-    waiting_frame: status.device ? `等待 ${status.device} 首帧` : "等待摄像头首帧",
+    requesting_camera: "正在请求按需摄像头",
+    waiting_frame: "等待 /camera_frame 首帧",
   }[status.phase] || "正在连接";
   const statusText = {
     starting: startingText,

@@ -89,6 +89,19 @@ class LaunchNodesTests(unittest.TestCase):
         self.assertEqual(web_entries[0].script, launch_nodes.ROOT / "services" / "web_server.py")
 
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_camera_capture_owner_always_starts_before_consumers(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args())
+        names = [entry.name for entry in entries]
+
+        self.assertEqual(names[0], "camera_capture")
+        self.assertLess(names.index("camera_capture"), names.index("config_web"))
+        self.assertLess(names.index("camera_capture"), names.index("llm"))
+        self.assertEqual(
+            entries[0].script,
+            launch_nodes.ROOT / "nodes" / "camera_capture_node.py",
+        )
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_config_web_can_be_disabled(self, _load_config):
         entries = launch_nodes.build_node_list(launcher_args(no_web=True))
 

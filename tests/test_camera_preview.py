@@ -60,42 +60,40 @@ class CameraPreviewTests(unittest.TestCase):
     def test_worker_uses_configured_ros_python_when_available(self):
         preview = CameraPreview("unused.yaml")
         with patch.dict(os.environ, {"WALI_CAMERA_PREVIEW_PYTHON": sys.executable}):
-            command = preview._worker_command("/dev/video0")
+            command = preview._worker_command()
 
         self.assertIn(sys.executable, command)
         self.assertIn(str(preview._frame_rate), command)
+        self.assertNotIn("--device", command)
 
     def test_worker_defaults_to_the_config_web_python(self):
         preview = CameraPreview("unused.yaml")
         with patch.dict(os.environ, {}, clear=True):
-            command = preview._worker_command("/dev/video0")
+            command = preview._worker_command()
 
         self.assertEqual(command[0], sys.executable)
 
-    def test_capture_runs_in_subprocess_and_releases_device(self):
+    def test_preview_streams_only_from_camera_frame(self):
         process = _FakeProcess([
-            {"type": "status", "phase": "opening"},
-            {"type": "status", "phase": "waiting_frame"},
+            {"type": "status", "phase": "requesting_camera", "source": "/camera_frame"},
+            {"type": "status", "phase": "waiting_frame", "source": "/camera_frame"},
             {
                 "type": "frame",
                 "jpeg": base64.b64encode(b"jpeg-frame").decode("ascii"),
                 "width": 640,
                 "height": 480,
                 "fps": 8.0,
-                "source": "/image_padded_jpeg",
+                "source": "/camera_frame",
             },
         ])
         preview = CameraPreview("unused.yaml", frame_rate=20)
-        with (
-            patch("services.camera_preview.resolve_camera_device", return_value="/dev/video2"),
-            patch("services.camera_preview.subprocess.Popen", return_value=process),
-        ):
+        with patch("services.camera_preview.subprocess.Popen", return_value=process):
             starting = preview.start()
             self.assertEqual(starting["state"], "starting")
             running = _wait_for_state(preview, "running")
-            self.assertEqual(running["device"], "/dev/video2")
             self.assertEqual(running["phase"], "streaming")
-            self.assertEqual(running["source"], "/image_padded_jpeg")
+            self.assertEqual(running["source"], "/camera_frame")
+            self.assertEqual(running["device"], "")
 
             frame, status = preview.get_frame()
             self.assertEqual(frame, b"jpeg-frame")
@@ -105,34 +103,34 @@ class CameraPreviewTests(unittest.TestCase):
             self.assertEqual(stopped["state"], "stopped")
             self.assertTrue(process.terminated)
 
-    def test_missing_camera_is_reported_without_blocking_start(self):
+    def test_worker_error_is_reported(self):
+        process = _FakeProcess([{
+            "type": "error",
+            "error": "camera_capture_node 不可用",
+        }])
         preview = CameraPreview("unused.yaml")
-        with patch("services.camera_preview.resolve_camera_device", return_value=None):
-            started_at = time.monotonic()
+        with patch("services.camera_preview.subprocess.Popen", return_value=process):
             preview.start()
-            self.assertLess(time.monotonic() - started_at, 0.2)
             status = _wait_for_state(preview, "error")
-            self.assertEqual(status["state"], "error")
-            self.assertIn("未找到", status["error"])
 
-    def test_blocked_camera_process_is_terminated_after_startup_timeout(self):
+        self.assertIn("camera_capture_node", status["error"])
+        self.assertTrue(process.terminated)
+
+    def test_missing_camera_frame_times_out_with_manager_diagnostic(self):
         process = _FakeProcess([{
             "type": "status",
-            "phase": "opening",
-            "diagnostic": "ROS Python 环境不可用: rclpy not installed",
+            "phase": "waiting_frame",
+            "source": "/camera_frame",
+            "diagnostic": "hobot_usb_cam 已退出，退出码 1",
         }])
         preview = CameraPreview("unused.yaml", startup_timeout=0.2)
-        with (
-            patch("services.camera_preview.resolve_camera_device", return_value="/dev/video0"),
-            patch("services.camera_preview.subprocess.Popen", return_value=process),
-        ):
+        with patch("services.camera_preview.subprocess.Popen", return_value=process):
             preview.start()
             status = _wait_for_state(preview, "error", timeout=1.0)
-            self.assertEqual(status["state"], "error")
-            self.assertEqual(status["phase"], "error")
-            self.assertIn("打开摄像头 /dev/video0 超时", status["error"])
-            self.assertIn("ROS Python 环境不可用", status["error"])
-            self.assertTrue(process.terminated)
+
+        self.assertIn("等待 /camera_frame 超时", status["error"])
+        self.assertIn("hobot_usb_cam 已退出", status["error"])
+        self.assertTrue(process.terminated)
 
 
 if __name__ == "__main__":

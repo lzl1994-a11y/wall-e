@@ -51,6 +51,23 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `screen_dialog` | `walle_llm_brain` | `walle_serial_node` | 一整轮完整对话包，包含 `turn_id`、`corrected_text`、`ai_text`、`actions`。目前屏幕串口节点主要看这个。 |
 | `/wall_e/vision` | `yolo_brain_node` | 当前默认无人订阅 | 视觉识别结果演示话题。 |
 
+### 按需看图/拍照链路
+
+`camera_capture_node` 始终启动，是 `/dev/video*` 的按需生命周期管理者：
+
+```text
+LLM / Web -> /camera_capture_cmd -> camera_capture_node
+                                      ├─ 跟踪已运行: /image -> /camera_frame
+                                      └─ 跟踪未运行: 临时 hobot_usb_cam -> /camera_frame
+
+/camera_frame -> CameraFrameProvider -> 云端视觉 LLM
+              -> Config Web preview
+```
+
+消费者只订阅 `/camera_frame`，不直接打开摄像头，也不依赖
+`/image_padded_jpeg`。客户端使用带超时的租约；全部租约释放或过期后，
+临时 `hobot_usb_cam` 会自动停止。
+
 ### 视觉跟踪链路（--tracking）
 
 使能跟踪:
@@ -76,6 +93,7 @@ wali_tracking_node  -> /servo_cmd ┐
 
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
+| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image`, `/camera_frame` | `/camera_frame`, `/camera_capture_status` | 按需摄像头唯一所有者；启动临时 `hobot_usb_cam`，或复用跟踪链路的 `/image`。 |
 | `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机和电机控制指令。 |
 | `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机。 |
 | `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685。 |
@@ -85,6 +103,9 @@ wali_tracking_node  -> /servo_cmd ┐
 
 | 话题 | 发布者 | 订阅者 | 作用 |
 | --- | --- | --- | --- |
+| `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
+| `/camera_frame` | `camera_capture_node` 或临时 `hobot_usb_cam` | LLM、Web preview | 独立的按需 JPEG 图像话题。 |
+| `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
 | `/motor_cmd` | `sequence_ros_node`, `joy_control_node` | 当前硬件后端 | JSON: `{"left":{"action":1,"throttle":30},"right":{...}}` |
 | `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
@@ -108,7 +129,8 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | 文件 | 作用 |
 | --- | --- |
 | `services/llm_service.py` | 封装 OpenAI/Kimi 兼容接口，提供流式大模型回复和工具调用结果。 |
-| `services/camera_frame.py` | 缓存 `/image_padded_jpeg`/`/image` 最新帧；视觉管线未启动时从配置的 USB 摄像头临时抓取一帧。 |
+| `services/camera_frame.py` | 请求摄像头租约，等待一张新的 `/camera_frame`，完成后立即释放；不会直接打开摄像头。 |
+| `services/camera_capture_protocol.py` | 定义按需摄像头话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 重映射命令。 |
 | `services/mcp_service.py` | 注册可给 LLM 调用的工具，目前包括 `express_emotion`、`perform_action`、`move_chassis`。 |
 | `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
 | `services/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |

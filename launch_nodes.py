@@ -66,7 +66,7 @@ def build_node_list(args):
     else:
         pipeline = config.get("pipeline", {}).get("mode", "keyboard")
 
-    nodes = []
+    nodes = [NodeEntry("camera_capture", ROOT / "nodes" / "camera_capture_node.py")]
     if not args.no_web:
         nodes.append(NodeEntry("config_web", ROOT / "services" / "web_server.py"))
 

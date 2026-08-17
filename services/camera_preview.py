@@ -13,11 +13,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-try:
-    from services.usb_devices import resolve_camera_device
-except ImportError:  # Supports: python services/web_server.py
-    from usb_devices import resolve_camera_device
-
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKER_PATH = ROOT / "services" / "camera_preview_worker.py"
@@ -36,7 +31,7 @@ class CameraPreview:
         startup_timeout: float = 8.0,
         frame_timeout: float = 4.0,
     ) -> None:
-        self._config_path = Path(config_path)
+        del config_path  # Device ownership belongs to camera_capture_node.
         self._idle_timeout = max(2.0, float(idle_timeout))
         self._frame_rate = max(1.0, float(frame_rate))
         self._startup_timeout = max(0.2, float(startup_timeout))
@@ -69,7 +64,7 @@ class CameraPreview:
             generation = self._generation
             self._stop_event = threading.Event()
             self._state = "starting"
-            self._phase = "resolving"
+            self._phase = "launching"
             self._error = ""
             self._diagnostic = ""
             self._device = ""
@@ -159,12 +154,10 @@ class CameraPreview:
             return configured
         return sys.executable
 
-    def _worker_command(self, device: str) -> list[str]:
+    def _worker_command(self) -> list[str]:
         command = [
             self._ros_python(),
             str(WORKER_PATH),
-            "--device",
-            device,
             "--fps",
             str(self._frame_rate),
         ]
@@ -189,12 +182,9 @@ class CameraPreview:
         ended_with_error = False
         messages: queue.Queue[str] = queue.Queue()
         try:
-            device = resolve_camera_device(self._config_path)
-            if not device:
-                raise RuntimeError("未找到已配置的摄像头设备")
             if not WORKER_PATH.is_file():
                 raise RuntimeError(f"摄像头预览采集程序不存在: {WORKER_PATH}")
-            if not self._set_status(generation, device=str(device), phase="launching"):
+            if not self._set_status(generation, source="/camera_frame", phase="launching"):
                 return
 
             popen_kwargs: dict[str, Any] = {
@@ -206,8 +196,8 @@ class CameraPreview:
             }
             if os.name == "nt":
                 popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            process = subprocess.Popen(self._worker_command(str(device)), **popen_kwargs)
-            if not self._set_status(generation, process=process, phase="opening"):
+            process = subprocess.Popen(self._worker_command(), **popen_kwargs)
+            if not self._set_status(generation, process=process, phase="requesting_camera"):
                 return
 
             def read_messages() -> None:
@@ -231,17 +221,14 @@ class CameraPreview:
                     if generation != self._generation:
                         return
                     idle = now - self._last_client_time > self._idle_timeout
-                    current_phase = self._phase
                 if idle:
                     break
                 if not last_frame_at and now - started_at > self._startup_timeout:
-                    if current_phase == "waiting_ros":
-                        raise RuntimeError("等待 ROS 摄像头图像超时，视觉管线没有发布画面")
-                    if current_phase == "opening":
-                        raise RuntimeError(f"打开摄像头 {device} 超时，设备可能被占用或节点不可用")
-                    raise RuntimeError(f"摄像头 {device} 首帧等待超时，请检查设备节点和视频格式")
+                    raise RuntimeError("等待 /camera_frame 超时，请检查 camera_capture_node 状态")
                 if last_frame_at and now - last_frame_at > self._frame_timeout:
-                    raise RuntimeError(f"摄像头 {device} 画面中断，超过 {self._frame_timeout:g} 秒没有新帧")
+                    raise RuntimeError(
+                        f"/camera_frame 画面中断，超过 {self._frame_timeout:g} 秒没有新帧"
+                    )
 
                 try:
                     raw_message = messages.get(timeout=0.1)
@@ -259,7 +246,7 @@ class CameraPreview:
                     continue
                 message_type = message.get("type")
                 if message_type == "status":
-                    phase = str(message.get("phase") or "opening")
+                    phase = str(message.get("phase") or "requesting_camera")
                     changes = {"phase": phase}
                     if message.get("source"):
                         changes["source"] = str(message["source"])
@@ -288,7 +275,7 @@ class CameraPreview:
                     width=int(message.get("width") or 0),
                     height=int(message.get("height") or 0),
                     fps=float(message.get("fps") or 0.0),
-                    source=str(message.get("source") or device),
+                    source=str(message.get("source") or "/camera_frame"),
                 ):
                     return
         except Exception as exc:
