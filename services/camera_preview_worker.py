@@ -66,6 +66,7 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
         sample_started = time.monotonic()
         sample_frames = 0
         measured_fps = 0.0
+        manager_acknowledged = False
 
         def publish_command(action: str) -> None:
             if command_pub is None:
@@ -75,6 +76,7 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
             )
 
         def on_status(message: String) -> None:
+            nonlocal manager_acknowledged
             try:
                 status = json.loads(message.data)
             except (TypeError, json.JSONDecodeError):
@@ -82,7 +84,9 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
             if not isinstance(status, dict):
                 return
             manager_state = str(status.get("state", ""))
-            phase = "waiting_frame" if manager_state in {"starting", "streaming"} else "requesting_camera"
+            if manager_state in {"starting", "streaming"}:
+                manager_acknowledged = True
+            phase = "waiting_frame" if manager_acknowledged else "requesting_camera"
             emit({
                 "type": "status",
                 "phase": phase,

@@ -222,16 +222,16 @@ class CameraFrameProviderTests(unittest.TestCase):
             def __init__(self):
                 self.publisher = FakePublisher()
                 self.publisher_topic = ""
-                self.subscription_topic = ""
-                self.callback = None
+                self.subscription_topics = []
+                self.callbacks = {}
 
             def create_publisher(self, _message_type, topic, _qos):
                 self.publisher_topic = topic
                 return self.publisher
 
             def create_subscription(self, _message_type, topic, callback, _qos):
-                self.subscription_topic = topic
-                self.callback = callback
+                self.subscription_topics.append(topic)
+                self.callbacks[topic] = callback
                 return object()
 
         node = FakeNode()
@@ -248,7 +248,10 @@ class CameraFrameProviderTests(unittest.TestCase):
 
         self.assertIsNotNone(provider)
         self.assertEqual(node.publisher_topic, "/camera_capture_cmd")
-        self.assertEqual(node.subscription_topic, "/camera_frame")
+        self.assertEqual(
+            node.subscription_topics,
+            ["/camera_frame", "/camera_capture_status"],
+        )
 
     def test_capture_acquires_waits_for_fresh_frame_and_releases(self):
         provider, node, image_type = self._provider()
@@ -261,7 +264,7 @@ class CameraFrameProviderTests(unittest.TestCase):
         deadline = __import__("time").monotonic() + 0.5
         while not node.publisher.messages and __import__("time").monotonic() < deadline:
             __import__("time").sleep(0.01)
-        node.callback(image_type())
+        node.callbacks["/camera_frame"](image_type())
         thread.join(timeout=1.0)
 
         commands = [
@@ -282,6 +285,53 @@ class CameraFrameProviderTests(unittest.TestCase):
         ]
         self.assertEqual(commands[-1]["action"], "release")
         self.assertFalse(hasattr(provider, "_capture_uvc"))
+
+    def test_manager_ack_starts_a_fresh_frame_timeout(self):
+        provider, node, image_type = self._provider()
+        result = []
+        started_at = __import__("time").monotonic()
+
+        thread = __import__("threading").Thread(
+            target=lambda: result.append(
+                provider.capture(timeout=0.25, request_timeout=0.4)
+            )
+        )
+        thread.start()
+        __import__("time").sleep(0.2)
+        status_message = type("Status", (), {
+            "data": '{"state":"starting","source":"/camera_frame"}'
+        })()
+        node.callbacks["/camera_capture_status"](status_message)
+        __import__("time").sleep(0.15)
+        node.callbacks["/camera_frame"](image_type())
+        thread.join(timeout=1.0)
+
+        self.assertGreater(__import__("time").monotonic() - started_at, 0.25)
+        self.assertEqual(result, [b"camera-jpeg"])
+
+    def test_repeated_manager_status_does_not_extend_frame_timeout(self):
+        provider, node, _image_type = self._provider()
+        result = []
+        started_at = __import__("time").monotonic()
+        status_message = type("Status", (), {
+            "data": '{"state":"starting","source":"/camera_frame"}'
+        })()
+
+        thread = __import__("threading").Thread(
+            target=lambda: result.append(
+                provider.capture(timeout=0.2, request_timeout=0.4)
+            )
+        )
+        thread.start()
+        __import__("time").sleep(0.03)
+        node.callbacks["/camera_capture_status"](status_message)
+        __import__("time").sleep(0.1)
+        node.callbacks["/camera_capture_status"](status_message)
+        thread.join(timeout=0.3)
+
+        elapsed = __import__("time").monotonic() - started_at
+        self.assertEqual(result, [None])
+        self.assertLess(elapsed, 0.32)
 
 
 if __name__ == "__main__":

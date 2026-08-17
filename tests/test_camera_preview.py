@@ -12,20 +12,23 @@ from services.camera_preview import CameraPreview
 
 
 class _FakeStdout:
-    def __init__(self, lines, closed_event):
-        self._lines = lines
+    def __init__(self, messages, closed_event):
+        self._messages = messages
         self._closed_event = closed_event
 
     def __iter__(self):
-        yield from self._lines
+        for item in self._messages:
+            delay, message = item if isinstance(item, tuple) else (0.0, item)
+            if self._closed_event.wait(delay):
+                return
+            yield json.dumps(message, ensure_ascii=False) + "\n"
         self._closed_event.wait()
 
 
 class _FakeProcess:
     def __init__(self, messages):
         self._closed_event = threading.Event()
-        lines = [json.dumps(message, ensure_ascii=False) + "\n" for message in messages]
-        self.stdout = _FakeStdout(lines, self._closed_event)
+        self.stdout = _FakeStdout(messages, self._closed_event)
         self.returncode = None
         self.terminated = False
 
@@ -131,6 +134,60 @@ class CameraPreviewTests(unittest.TestCase):
         self.assertIn("等待 /camera_frame 超时", status["error"])
         self.assertIn("hobot_usb_cam 已退出", status["error"])
         self.assertTrue(process.terminated)
+
+    def test_manager_ack_starts_a_fresh_first_frame_deadline(self):
+        process = _FakeProcess([
+            {"type": "status", "phase": "requesting_camera"},
+            (0.22, {"type": "status", "phase": "waiting_frame"}),
+            (0.16, {
+                "type": "frame",
+                "jpeg": base64.b64encode(b"delayed-frame").decode("ascii"),
+                "width": 640,
+                "height": 480,
+                "source": "/camera_frame",
+            }),
+        ])
+        preview = CameraPreview(
+            "unused.yaml",
+            request_timeout=0.35,
+            startup_timeout=0.25,
+        )
+        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+            preview.start()
+            status = _wait_for_state(preview, "running", timeout=1.0)
+
+        self.assertEqual(status["state"], "running")
+        frame, _status = preview.get_frame()
+        self.assertEqual(frame, b"delayed-frame")
+        preview.stop()
+
+    def test_repeated_waiting_status_does_not_extend_first_frame_timeout(self):
+        process = _FakeProcess([
+            {"type": "status", "phase": "waiting_frame"},
+            (0.07, {"type": "status", "phase": "waiting_frame"}),
+            (0.07, {"type": "status", "phase": "waiting_frame"}),
+            (0.07, {"type": "status", "phase": "waiting_frame"}),
+        ])
+        preview = CameraPreview("unused.yaml", startup_timeout=0.12)
+        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+            preview.start()
+            status = _wait_for_state(preview, "error", timeout=0.3)
+
+        self.assertEqual(status["state"], "error")
+        self.assertIn("等待 /camera_frame 超时", status["error"])
+
+    def test_camera_manager_request_has_its_own_timeout(self):
+        process = _FakeProcess([])
+        preview = CameraPreview(
+            "unused.yaml",
+            request_timeout=0.2,
+            startup_timeout=0.8,
+        )
+        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+            preview.start()
+            status = _wait_for_state(preview, "error", timeout=0.6)
+
+        self.assertIn("等待 camera_capture_node 响应超时", status["error"])
 
 
 if __name__ == "__main__":

@@ -56,6 +56,12 @@ class CameraPreviewWorkerTests(unittest.TestCase):
         def spin_once(node, timeout_sec=0.0):
             del timeout_sec
             if not state["emitted"]:
+                node.callbacks["/camera_capture_status"](
+                    _FakeString('{"state":"starting"}')
+                )
+                node.callbacks["/camera_capture_status"](
+                    _FakeString('{"state":"error","error":"temporary"}')
+                )
                 node.callbacks["/camera_frame"](_FakeRosImage())
                 state["emitted"] = True
 
@@ -90,6 +96,8 @@ class CameraPreviewWorkerTests(unittest.TestCase):
         frames = [item for item in emitted if item.get("type") == "frame"]
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0]["source"], "/camera_frame")
+        phases = [item["phase"] for item in emitted if item.get("type") == "status"]
+        self.assertEqual(phases[-2:], ["waiting_frame", "waiting_frame"])
 
     def test_ros_import_error_is_reported_without_uvc_fallback(self):
         real_import = __import__

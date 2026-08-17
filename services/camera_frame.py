@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
@@ -20,6 +21,7 @@ except ImportError:  # pragma: no cover - ROS is unavailable in unit tests
 from services.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
+    CAMERA_STATUS_TOPIC,
     encode_camera_command,
     jpeg_from_ros_image,
 )
@@ -50,18 +52,24 @@ class CameraFrameProvider:
         self._condition = threading.Condition()
         self._frame: bytes | None = None
         self._frame_time = 0.0
+        self._status_state = ""
+        self._status_time = 0.0
+        self._status_error = ""
         self._command_pub = None
-        self._subscription = None
+        self._subscriptions: list[Any] = []
 
         if Image is None or String is None:
             return
         self._command_pub = node.create_publisher(String, CAMERA_COMMAND_TOPIC, 10)
-        self._subscription = node.create_subscription(
-            Image,
-            CAMERA_FRAME_TOPIC,
-            self._on_image,
-            qos_profile_sensor_data,
-        )
+        self._subscriptions = [
+            node.create_subscription(
+                Image,
+                CAMERA_FRAME_TOPIC,
+                self._on_image,
+                qos_profile_sensor_data,
+            ),
+            node.create_subscription(String, CAMERA_STATUS_TOPIC, self._on_status, 10),
+        ]
 
     def _on_image(self, message: Any) -> None:
         jpeg = jpeg_from_ros_image(message, quality=85)
@@ -72,6 +80,19 @@ class CameraFrameProvider:
             self._frame_time = time.monotonic()
             self._condition.notify_all()
 
+    def _on_status(self, message: Any) -> None:
+        try:
+            status = json.loads(message.data)
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(status, dict):
+            return
+        with self._condition:
+            self._status_state = str(status.get("state", ""))
+            self._status_error = str(status.get("error", ""))
+            self._status_time = time.monotonic()
+            self._condition.notify_all()
+
     def _publish_command(self, action: str, client_id: str, lease_sec: float = 0.0) -> None:
         if self._command_pub is None or String is None:
             return
@@ -79,24 +100,44 @@ class CameraFrameProvider:
             String(data=encode_camera_command(action, client_id, lease_sec))
         )
 
-    def capture(self, timeout: float = 6.0) -> bytes | None:
+    def capture(
+        self,
+        timeout: float = 8.0,
+        *,
+        request_timeout: float | None = None,
+    ) -> bytes | None:
         """Acquire the camera, return the first frame after this request, then release it."""
         if self._command_pub is None:
             return None
-        wait_seconds = max(0.2, float(timeout))
+        frame_wait_seconds = max(0.2, float(timeout))
+        request_wait_seconds = (
+            frame_wait_seconds
+            if request_timeout is None
+            else max(0.2, float(request_timeout))
+        )
         client_id = f"llm-{uuid.uuid4().hex}"
         requested_at = time.monotonic()
-        deadline = requested_at + wait_seconds
+        deadline = requested_at + request_wait_seconds
+        manager_acknowledged = False
+        lease_seconds = request_wait_seconds + frame_wait_seconds + 2.0
         action = "acquire"
         try:
             with self._condition:
                 while True:
                     if self._frame is not None and self._frame_time >= requested_at:
                         return self._frame
-                    remaining = deadline - time.monotonic()
+                    now = time.monotonic()
+                    if (
+                        not manager_acknowledged
+                        and self._status_time >= requested_at
+                        and self._status_state in {"starting", "streaming"}
+                    ):
+                        manager_acknowledged = True
+                        deadline = now + frame_wait_seconds
+                    remaining = deadline - now
                     if remaining <= 0:
                         return None
-                    self._publish_command(action, client_id, wait_seconds + 2.0)
+                    self._publish_command(action, client_id, lease_seconds)
                     action = "renew"
                     self._condition.wait(timeout=min(0.5, remaining))
         finally:

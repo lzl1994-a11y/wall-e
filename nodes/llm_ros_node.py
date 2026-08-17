@@ -347,7 +347,7 @@ class LLMBrainNode(Node):
         self._publish_tts(confirmation, turn_id)
         self._publish_screen_dialog(turn_id, user_prompt, confirmation, [])
 
-        frame = self.camera_frames.capture(timeout=6.0)
+        frame = self.camera_frames.capture(timeout=8.0, request_timeout=12.0)
         if not frame:
             failure = '我现在看不到画面，检查一下摄像头连接。'
             self._publish_tts(failure, turn_id)

@@ -28,12 +28,14 @@ class CameraPreview:
         *,
         idle_timeout: float = 15.0,
         frame_rate: float = 8.0,
+        request_timeout: float = 12.0,
         startup_timeout: float = 8.0,
         frame_timeout: float = 4.0,
     ) -> None:
         del config_path  # Device ownership belongs to camera_capture_node.
         self._idle_timeout = max(2.0, float(idle_timeout))
         self._frame_rate = max(1.0, float(frame_rate))
+        self._request_timeout = max(0.2, float(request_timeout))
         self._startup_timeout = max(0.2, float(startup_timeout))
         self._frame_timeout = max(0.5, float(frame_timeout))
         self._lock = threading.Lock()
@@ -213,7 +215,8 @@ class CameraPreview:
             )
             reader.start()
 
-            started_at = time.monotonic()
+            startup_phase = "requesting_camera"
+            phase_started_at = time.monotonic()
             last_frame_at = 0.0
             while not stop_event.is_set():
                 now = time.monotonic()
@@ -223,8 +226,20 @@ class CameraPreview:
                     idle = now - self._last_client_time > self._idle_timeout
                 if idle:
                     break
-                if not last_frame_at and now - started_at > self._startup_timeout:
-                    raise RuntimeError("等待 /camera_frame 超时，请检查 camera_capture_node 状态")
+                if not last_frame_at:
+                    phase_timeout = (
+                        self._startup_timeout
+                        if startup_phase == "waiting_frame"
+                        else self._request_timeout
+                    )
+                    if now - phase_started_at > phase_timeout:
+                        if startup_phase == "waiting_frame":
+                            raise RuntimeError(
+                                "等待 /camera_frame 超时，请检查 hobot_usb_cam 状态"
+                            )
+                        raise RuntimeError(
+                            "等待 camera_capture_node 响应超时，请检查节点状态"
+                        )
                 if last_frame_at and now - last_frame_at > self._frame_timeout:
                     raise RuntimeError(
                         f"/camera_frame 画面中断，超过 {self._frame_timeout:g} 秒没有新帧"
@@ -246,7 +261,11 @@ class CameraPreview:
                     continue
                 message_type = message.get("type")
                 if message_type == "status":
-                    phase = str(message.get("phase") or "requesting_camera")
+                    reported_phase = str(message.get("phase") or "requesting_camera")
+                    if reported_phase == "waiting_frame" and startup_phase != "waiting_frame":
+                        startup_phase = "waiting_frame"
+                        phase_started_at = time.monotonic()
+                    phase = startup_phase
                     changes = {"phase": phase}
                     if message.get("source"):
                         changes["source"] = str(message["source"])
