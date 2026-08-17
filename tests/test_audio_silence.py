@@ -35,6 +35,21 @@ class TurnAudioTrimmerTests(unittest.TestCase):
         self.assertAlmostEqual(result.trailing_cut_ms, 600.0, places=1)
         self.assertAlmostEqual(result.processed_ms, 500.0, places=1)
 
+    def test_tail_can_keep_an_extra_one_hundred_ms_without_changing_head(self):
+        trimmer = TurnAudioTrimmer(
+            sample_rate=self.SAMPLE_RATE,
+            keep_silence_ms=100,
+            tail_keep_silence_ms=200,
+        )
+        trimmer.process(self.segment())
+
+        result = trimmer.process(self.segment())
+
+        self.assertAlmostEqual(result.leading_cut_ms, 100.0, places=1)
+        self.assertAlmostEqual(result.trailing_cut_ms, 500.0, places=1)
+        self.assertAlmostEqual(result.processed_ms, 600.0, places=1)
+        self.assertTrue(np.all(result.samples[-int(0.2 * self.SAMPLE_RATE) :] == 0))
+
     def test_retained_trailing_silence_is_forced_to_digital_zero(self):
         leading = np.full(int(0.1 * self.SAMPLE_RATE), 8, dtype=np.int16)
         speech = np.full(int(0.2 * self.SAMPLE_RATE), 1200, dtype=np.int16)

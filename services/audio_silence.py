@@ -23,11 +23,15 @@ class TurnAudioTrimmer:
         self,
         sample_rate=48000,
         keep_silence_ms=100.0,
+        tail_keep_silence_ms=None,
         threshold_dbfs=-45.0,
         window_ms=10.0,
     ):
         self.sample_rate = int(sample_rate)
         self.keep_silence_ms = max(0.0, float(keep_silence_ms))
+        if tail_keep_silence_ms is None:
+            tail_keep_silence_ms = keep_silence_ms
+        self.tail_keep_silence_ms = max(0.0, float(tail_keep_silence_ms))
         self.threshold_dbfs = float(threshold_dbfs)
         self.window_ms = max(1.0, float(window_ms))
         self._first_segment = True
@@ -58,9 +62,16 @@ class TurnAudioTrimmer:
             )
 
         active_start, active_end = bounds
-        keep_samples = int(round(self.sample_rate * self.keep_silence_ms / 1000.0))
-        trim_start = 0 if first_segment else max(0, active_start - keep_samples)
-        trim_end = min(audio.size, active_end + keep_samples)
+        leading_keep_samples = int(
+            round(self.sample_rate * self.keep_silence_ms / 1000.0)
+        )
+        trailing_keep_samples = int(
+            round(self.sample_rate * self.tail_keep_silence_ms / 1000.0)
+        )
+        trim_start = (
+            0 if first_segment else max(0, active_start - leading_keep_samples)
+        )
+        trim_end = min(audio.size, active_end + trailing_keep_samples)
         if trim_end <= trim_start:
             trim_start = 0
             trim_end = audio.size

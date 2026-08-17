@@ -34,6 +34,7 @@ class TTSPlayNode(Node):
         self.declare_parameter("prefetch_workers", 2)
         self.declare_parameter("trim_boundary_silence", True)
         self.declare_parameter("boundary_silence_ms", 100.0)
+        self.declare_parameter("tail_silence_ms", 200.0)
         self.declare_parameter("silence_threshold_dbfs", -45.0)
         self.declare_parameter("stream_first_segment", True)
         self.declare_parameter("stream_chunk_ms", 100)
@@ -44,6 +45,7 @@ class TTSPlayNode(Node):
         self.prefetch_workers = self.get_parameter("prefetch_workers").value
         self.trim_boundary_silence = self.get_parameter("trim_boundary_silence").value
         self.boundary_silence_ms = self.get_parameter("boundary_silence_ms").value
+        self.tail_silence_ms = self.get_parameter("tail_silence_ms").value
         self.silence_threshold_dbfs = self.get_parameter("silence_threshold_dbfs").value
         self.stream_first_segment = self.get_parameter("stream_first_segment").value
         self.stream_chunk_ms = self.get_parameter("stream_chunk_ms").value
@@ -57,11 +59,12 @@ class TTSPlayNode(Node):
         self._audio_trimmer = TurnAudioTrimmer(
             sample_rate=self.sample_rate,
             keep_silence_ms=self.boundary_silence_ms,
+            tail_keep_silence_ms=self.tail_silence_ms,
             threshold_dbfs=self.silence_threshold_dbfs,
         )
         self._stream_trimmer = StreamingTailSilenceTrimmer(
             sample_rate=self.sample_rate,
-            keep_silence_ms=self.boundary_silence_ms,
+            keep_silence_ms=self.tail_silence_ms,
             threshold_dbfs=self.silence_threshold_dbfs,
         )
         self._stream_bytes = 0
@@ -83,7 +86,8 @@ class TTSPlayNode(Node):
             f"TTS 播放节点上线 "
             f"(voice={self.voice}, rate={self.rate}, pitch={self.pitch}, "
             f"sr={self.sample_rate}, prefetch={self.prefetch_workers}, "
-            f"trim={self.trim_boundary_silence}, keep={self.boundary_silence_ms}ms, "
+            f"trim={self.trim_boundary_silence}, "
+            f"head={self.boundary_silence_ms}ms, tail={self.tail_silence_ms}ms, "
             f"stream_first={self.stream_first_segment}, chunk={self.stream_chunk_ms}ms)"
         )
 
