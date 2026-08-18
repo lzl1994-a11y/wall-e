@@ -135,12 +135,16 @@ class CameraCaptureNode(Node):
         ):
             waited = now - self._process_started_at
             device = self._camera_device or "未知设备"
+            topic_diagnostic = self._camera_topic_diagnostic()
             self._stop_camera_process()
             self._retry_after = now + self.RETRY_DELAY_SEC
             self._publish_status(
                 "error",
                 source=CAMERA_FRAME_TOPIC,
-                error=f"hobot_usb_cam 首帧等待超时（设备 {device}，已等待 {waited:.1f}s）",
+                error=(
+                    f"hobot_usb_cam 首帧等待超时（设备 {device}，已等待 {waited:.1f}s）"
+                    f"{('；' + topic_diagnostic) if topic_diagnostic else ''}"
+                ),
                 force=True,
             )
             return
@@ -152,6 +156,22 @@ class CameraCaptureNode(Node):
         if self._camera_process is not None:
             state = "streaming" if now - self._last_output_frame <= 1.0 else "starting"
             self._publish_status(state, source=CAMERA_FRAME_TOPIC)
+
+    def _camera_topic_diagnostic(self) -> str:
+        """Report graph state without assuming the camera message type."""
+        try:
+            graph = dict(self.get_topic_names_and_types())
+        except Exception:
+            return "ROS 图谱查询失败"
+        details = []
+        for topic in (CAMERA_FRAME_TOPIC, TRACKING_IMAGE_TOPIC):
+            types = ",".join(graph.get(topic, [])) or "无类型"
+            try:
+                publishers = self.count_publishers(topic)
+            except Exception:
+                publishers = "?"
+            details.append(f"{topic}: {types}, publishers={publishers}")
+        return "ROS 图谱 " + "；".join(details)
 
     def _start_camera_process(self) -> None:
         device = resolve_camera_device()

@@ -57,6 +57,9 @@ class _FakeNodeBase:
     def count_publishers(self, _topic):
         return 0
 
+    def get_topic_names_and_types(self):
+        return {}
+
     def get_logger(self):
         return _FakeLogger()
 
