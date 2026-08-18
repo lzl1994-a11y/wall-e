@@ -11,10 +11,10 @@ from typing import Any
 
 try:
     from rclpy.qos import qos_profile_sensor_data
-    from sensor_msgs.msg import Image
+    from sensor_msgs.msg import CompressedImage
     from std_msgs.msg import String
 except ImportError:  # pragma: no cover - ROS is unavailable in unit tests
-    Image = None
+    CompressedImage = None
     String = None
     qos_profile_sensor_data = 10
 
@@ -58,12 +58,12 @@ class CameraFrameProvider:
         self._command_pub = None
         self._subscriptions: list[Any] = []
 
-        if Image is None or String is None:
+        if CompressedImage is None or String is None:
             return
         self._command_pub = node.create_publisher(String, CAMERA_COMMAND_TOPIC, 10)
         self._subscriptions = [
             node.create_subscription(
-                Image,
+                CompressedImage,
                 CAMERA_FRAME_TOPIC,
                 self._on_image,
                 qos_profile_sensor_data,

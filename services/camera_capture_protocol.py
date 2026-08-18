@@ -112,7 +112,7 @@ def build_hobot_camera_command(
 
 
 def jpeg_from_ros_image(message: Any, *, quality: int = 85) -> bytes | None:
-    """Convert the Image payload to JPEG without ever opening a camera device."""
+    """Convert an Image or CompressedImage payload to JPEG bytes."""
     encoding = str(getattr(message, "encoding", "")).lower()
     image_format = str(getattr(message, "format", "")).lower()
     raw = bytes(getattr(message, "data", b""))

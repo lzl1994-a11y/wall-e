@@ -104,7 +104,7 @@ wali_tracking_node  -> /servo_cmd ┐
 | 话题 | 发布者 | 订阅者 | 作用 |
 | --- | --- | --- | --- |
 | `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
-| `/camera_frame` | `camera_capture_node` 或临时 `hobot_usb_cam` | LLM、Web preview | 独立的按需 JPEG 图像话题。 |
+| `/camera_frame` | `camera_capture_node` 或临时 `hobot_usb_cam` | LLM、Web preview | `sensor_msgs/msg/CompressedImage` 格式的独立按需 JPEG 图像话题。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
 | `/motor_cmd` | `sequence_ros_node`, `joy_control_node` | 当前硬件后端 | JSON: `{"left":{"action":1,"throttle":30},"right":{...}}` |

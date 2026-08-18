@@ -36,7 +36,7 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
         import rclpy
         from rclpy.node import Node
         from rclpy.qos import qos_profile_sensor_data
-        from sensor_msgs.msg import Image
+        from sensor_msgs.msg import CompressedImage
         from std_msgs.msg import String
     except ImportError as exc:
         emit({"type": "error", "error": f"ROS 摄像头环境不可用: {exc}"})
@@ -94,7 +94,7 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
                 "diagnostic": str(status.get("error", "")),
             })
 
-        def on_image(message: Image) -> None:
+        def on_image(message: CompressedImage) -> None:
             nonlocal last_emit_at, sample_started, sample_frames, measured_fps
             now = time.monotonic()
             if now - last_emit_at < frame_interval:
@@ -119,7 +119,12 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
             })
 
         subscriptions = [
-            node.create_subscription(Image, CAMERA_FRAME_TOPIC, on_image, qos_profile_sensor_data),
+            node.create_subscription(
+                CompressedImage,
+                CAMERA_FRAME_TOPIC,
+                on_image,
+                qos_profile_sensor_data,
+            ),
             node.create_subscription(String, CAMERA_STATUS_TOPIC, on_status, 10),
         ]
         emit({

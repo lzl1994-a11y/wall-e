@@ -18,6 +18,14 @@ class _FakeImage:
     data = b"frame"
     width = 640
     height = 480
+    header = object()
+
+
+class _FakeCompressedImage:
+    def __init__(self, *, header=None, format="", data=b""):
+        self.header = header
+        self.format = format
+        self.data = data
 
 
 class _FakePublisher:
@@ -40,15 +48,19 @@ class _FakeLogger:
 class _FakeNodeBase:
     def __init__(self, _name):
         self.publishers = {}
+        self.publisher_types = {}
         self.subscriptions = {}
+        self.subscription_types = {}
 
-    def create_publisher(self, _message_type, topic, _qos):
+    def create_publisher(self, message_type, topic, _qos):
         publisher = _FakePublisher(topic)
         self.publishers[topic] = publisher
+        self.publisher_types[topic] = message_type
         return publisher
 
-    def create_subscription(self, _message_type, topic, callback, _qos):
+    def create_subscription(self, message_type, topic, callback, _qos):
         self.subscriptions[topic] = callback
+        self.subscription_types[topic] = message_type
         return object()
 
     def create_timer(self, _period, _callback):
@@ -99,6 +111,7 @@ def _load_camera_capture_module():
     fake_qos_module.qos_profile_sensor_data = object()
     fake_sensor_module = types.ModuleType("sensor_msgs.msg")
     fake_sensor_module.Image = _FakeImage
+    fake_sensor_module.CompressedImage = _FakeCompressedImage
     fake_std_module = types.ModuleType("std_msgs.msg")
     fake_std_module.String = _FakeString
     modules = {
@@ -122,6 +135,12 @@ class CameraCaptureNodeTests(unittest.TestCase):
             patch.object(module.subprocess, "Popen", return_value=process) as popen,
         ):
             node = module.CameraCaptureNode()
+            self.assertIs(node.publisher_types["/camera_frame"], _FakeCompressedImage)
+            self.assertIs(node.subscription_types["/image"], _FakeImage)
+            self.assertIs(
+                node.subscription_types["/camera_frame"],
+                _FakeCompressedImage,
+            )
             node._on_command(_FakeString(encode_camera_command("acquire", "llm", 5)))
             command = popen.call_args.args[0]
             self.assertIn("video_device:=/dev/video2", command)
@@ -143,7 +162,9 @@ class CameraCaptureNodeTests(unittest.TestCase):
         popen.assert_not_called()
         frames = node.publishers["/camera_frame"].messages
         self.assertEqual(len(frames), 1)
-        self.assertIsInstance(frames[0], _FakeImage)
+        self.assertIsInstance(frames[0], _FakeCompressedImage)
+        self.assertEqual(frames[0].format, "jpeg")
+        self.assertEqual(frames[0].data, b"frame")
 
     def test_tracking_publisher_prevents_a_second_camera_during_startup(self):
         module = _load_camera_capture_module()

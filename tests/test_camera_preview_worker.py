@@ -23,6 +23,7 @@ class CameraPreviewWorkerTests(unittest.TestCase):
     def test_worker_leases_and_streams_only_camera_frame(self):
         state = {"initialized": False, "emitted": False}
         commands = []
+        subscription_types = {}
 
         class FakePublisher:
             def __init__(self, topic):
@@ -39,7 +40,8 @@ class CameraPreviewWorkerTests(unittest.TestCase):
             def create_publisher(self, _message_type, topic, _qos):
                 return FakePublisher(topic)
 
-            def create_subscription(self, _message_type, topic, callback, _qos):
+            def create_subscription(self, message_type, topic, callback, _qos):
+                subscription_types[topic] = message_type
                 self.callbacks[topic] = callback
                 return object()
 
@@ -73,7 +75,7 @@ class CameraPreviewWorkerTests(unittest.TestCase):
         fake_qos_module = types.ModuleType("rclpy.qos")
         fake_qos_module.qos_profile_sensor_data = object()
         fake_sensor_module = types.ModuleType("sensor_msgs.msg")
-        fake_sensor_module.Image = _FakeRosImage
+        fake_sensor_module.CompressedImage = _FakeRosImage
         fake_std_module = types.ModuleType("std_msgs.msg")
         fake_std_module.String = _FakeString
         emitted = []
@@ -93,6 +95,7 @@ class CameraPreviewWorkerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(commands[0]["action"], "acquire")
         self.assertEqual(commands[-1]["action"], "release")
+        self.assertIs(subscription_types["/camera_frame"], _FakeRosImage)
         frames = [item for item in emitted if item.get("type") == "frame"]
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0]["source"], "/camera_frame")

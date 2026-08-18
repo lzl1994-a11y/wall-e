@@ -14,7 +14,7 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -27,6 +27,7 @@ from services.camera_capture_protocol import (
     CameraLeaseBook,
     build_hobot_camera_command,
     decode_camera_command,
+    jpeg_from_ros_image,
 )
 from services.usb_devices import resolve_camera_device
 
@@ -52,11 +53,23 @@ class CameraCaptureNode(Node):
         self._last_status_signature: tuple | None = None
         self._last_status_publish = 0.0
 
-        self._frame_pub = self.create_publisher(Image, CAMERA_FRAME_TOPIC, qos_profile_sensor_data)
+        # hobot_usb_cam publishes CompressedImage on its remapped /image topic.
+        # Keep the public on-demand topic homogeneous so every consumer can
+        # subscribe with the same ROS message type.
+        self._frame_pub = self.create_publisher(
+            CompressedImage,
+            CAMERA_FRAME_TOPIC,
+            qos_profile_sensor_data,
+        )
         self._status_pub = self.create_publisher(String, CAMERA_STATUS_TOPIC, 10)
         self.create_subscription(String, CAMERA_COMMAND_TOPIC, self._on_command, 10)
         self.create_subscription(Image, TRACKING_IMAGE_TOPIC, self._on_tracking_image, qos_profile_sensor_data)
-        self.create_subscription(Image, CAMERA_FRAME_TOPIC, self._on_camera_frame, qos_profile_sensor_data)
+        self.create_subscription(
+            CompressedImage,
+            CAMERA_FRAME_TOPIC,
+            self._on_camera_frame,
+            qos_profile_sensor_data,
+        )
         self._timer = self.create_timer(0.2, self._tick)
         self._publish_status("idle", source="", force=True)
         self.get_logger().info(
@@ -80,10 +93,19 @@ class CameraCaptureNode(Node):
             return
         if self._camera_process is not None:
             self._stop_camera_process()
-        self._frame_pub.publish(message)
+        jpeg = jpeg_from_ros_image(message)
+        if not jpeg:
+            return
+        self._frame_pub.publish(
+            CompressedImage(
+                header=message.header,
+                format="jpeg",
+                data=jpeg,
+            )
+        )
         self._publish_status("streaming", source=TRACKING_IMAGE_TOPIC)
 
-    def _on_camera_frame(self, _message: Image) -> None:
+    def _on_camera_frame(self, _message: CompressedImage) -> None:
         self._last_output_frame = time.monotonic()
         if self._leases.active and not self._tracking_source_fresh():
             self._publish_status("streaming", source=CAMERA_FRAME_TOPIC)

@@ -203,7 +203,7 @@ class CameraFrameProviderTests(unittest.TestCase):
     def _provider(self):
         from services import camera_frame
 
-        class FakeImage:
+        class FakeCompressedImage:
             encoding = "jpeg"
             data = b"camera-jpeg"
 
@@ -223,25 +223,27 @@ class CameraFrameProviderTests(unittest.TestCase):
                 self.publisher = FakePublisher()
                 self.publisher_topic = ""
                 self.subscription_topics = []
+                self.subscription_types = {}
                 self.callbacks = {}
 
             def create_publisher(self, _message_type, topic, _qos):
                 self.publisher_topic = topic
                 return self.publisher
 
-            def create_subscription(self, _message_type, topic, callback, _qos):
+            def create_subscription(self, message_type, topic, callback, _qos):
                 self.subscription_topics.append(topic)
+                self.subscription_types[topic] = message_type
                 self.callbacks[topic] = callback
                 return object()
 
         node = FakeNode()
-        image_patch = patch.object(camera_frame, "Image", FakeImage)
+        image_patch = patch.object(camera_frame, "CompressedImage", FakeCompressedImage)
         string_patch = patch.object(camera_frame, "String", FakeString)
         image_patch.start()
         string_patch.start()
         self.addCleanup(image_patch.stop)
         self.addCleanup(string_patch.stop)
-        return camera_frame.CameraFrameProvider(node), node, FakeImage
+        return camera_frame.CameraFrameProvider(node), node, FakeCompressedImage
 
     def test_provider_uses_only_camera_frame_and_capture_command_topics(self):
         provider, node, _image_type = self._provider()
@@ -251,6 +253,10 @@ class CameraFrameProviderTests(unittest.TestCase):
         self.assertEqual(
             node.subscription_topics,
             ["/camera_frame", "/camera_capture_status"],
+        )
+        self.assertEqual(
+            node.subscription_types["/camera_frame"].__name__,
+            "FakeCompressedImage",
         )
 
     def test_capture_acquires_waits_for_fresh_frame_and_releases(self):
