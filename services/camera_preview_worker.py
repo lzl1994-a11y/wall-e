@@ -151,7 +151,7 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
                 command_pub.publish(
                     String(data=encode_camera_command("release", client_id))
                 )
-                if node is not None:
+                if node is not None and initialized_here and rclpy.ok():
                     rclpy.spin_once(node, timeout_sec=0.1)
             except Exception:
                 pass

@@ -28,8 +28,8 @@ class CameraPreview:
         *,
         idle_timeout: float = 15.0,
         frame_rate: float = 8.0,
-        request_timeout: float = 12.0,
-        startup_timeout: float = 8.0,
+        request_timeout: float = 15.0,
+        startup_timeout: float = 18.0,
         frame_timeout: float = 4.0,
     ) -> None:
         del config_path  # Device ownership belongs to camera_capture_node.

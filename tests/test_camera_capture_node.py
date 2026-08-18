@@ -164,7 +164,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
         ):
             node = module.CameraCaptureNode()
             node._on_command(_FakeString(encode_camera_command("acquire", "llm", 10)))
-            node._process_started_at = time.monotonic() - 6.0
+            node._process_started_at = time.monotonic() - node.FIRST_FRAME_TIMEOUT_SEC - 1.0
             node._tick()
 
         self.assertTrue(process.terminated)

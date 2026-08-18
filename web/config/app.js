@@ -184,7 +184,7 @@ function renderCameraPreviewStatus(status = {}) {
     step: -1,
   };
   const phaseKey = `${previewState}:${reportedPhase}`;
-  if (phaseKey !== state.cameraPreview.phaseKey) {
+  if (reportedPhase !== "error" && phaseKey !== state.cameraPreview.phaseKey) {
     state.cameraPreview.phaseKey = phaseKey;
     state.cameraPreview.phaseStartedAt = Date.now();
   }

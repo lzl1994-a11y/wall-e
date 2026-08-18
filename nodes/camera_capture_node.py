@@ -34,7 +34,11 @@ from services.usb_devices import resolve_camera_device
 class CameraCaptureNode(Node):
     SOURCE_FRESH_SEC = 0.8
     RETRY_DELAY_SEC = 1.0
-    FIRST_FRAME_TIMEOUT_SEC = 5.0
+    # ros2 run + hobot_usb_cam may spend several seconds enumerating V4L2
+    # nodes before it publishes the first ROS image. Keep this watchdog longer
+    # than device initialization so a slow first open is not mistaken for a
+    # dead camera.
+    FIRST_FRAME_TIMEOUT_SEC = 15.0
 
     def __init__(self) -> None:
         super().__init__("camera_capture_node")
@@ -129,12 +133,14 @@ class CameraCaptureNode(Node):
             and self._last_output_frame < self._process_started_at
             and now - self._process_started_at > self.FIRST_FRAME_TIMEOUT_SEC
         ):
+            waited = now - self._process_started_at
+            device = self._camera_device or "未知设备"
             self._stop_camera_process()
             self._retry_after = now + self.RETRY_DELAY_SEC
             self._publish_status(
                 "error",
                 source=CAMERA_FRAME_TOPIC,
-                error="hobot_usb_cam 首帧等待超时",
+                error=f"hobot_usb_cam 首帧等待超时（设备 {device}，已等待 {waited:.1f}s）",
                 force=True,
             )
             return
