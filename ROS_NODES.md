@@ -83,6 +83,7 @@ wali_tracking_node  -> /servo_cmd ┐
                     -> /motor_cmd ┴-> 当前硬件后端
                                       ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
                                       └─ ubuntu_i2c: i2c_hardware_node -> 板载 I2C -> PCA9685
+                    -> /vision_pipeline_cmd -> hobot_vision_node -> USB 摄像头 + RDK BPU 检测
         ^
         ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
         ├─ /action_cmd                    (LLM 模式切换)
@@ -94,7 +95,8 @@ wali_tracking_node  -> /servo_cmd ┐
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
 | `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image`, `/camera_frame` | `/camera_frame`, `/camera_capture_status` | 按需摄像头唯一所有者；启动临时 `hobot_usb_cam`，或复用跟踪链路的 `/image`。 |
-| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机和电机控制指令。 |
+| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd`, `/vision_pipeline_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机、电机和视觉管线控制指令。 |
+| `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd` | `/image`, `/hobot_mono2d_body_detection` | 启停 USB 摄像头和 RDK `mono2d_body_detection` 进程组。 |
 | `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机。 |
 | `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685。 |
 | `nodes/doa_ros_node.py` | `doa_ros_node` | `--tracking` (除非 `--no-doa`) | 无(串口直读) | `/doa_angle` | DOA 声源定位桥接节点，对接 D-DOA TDOA 模块串口，发布声源角度。 |
@@ -110,6 +112,7 @@ wali_tracking_node  -> /servo_cmd ┐
 | `/motor_cmd` | `sequence_ros_node`, `joy_control_node` | 当前硬件后端 | JSON: `{"left":{"action":1,"throttle":30},"right":{...}}` |
 | `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
 | `/hobot_mono2d_body_detection` | RDK X3 `mono2d_body_detection` | `wali_tracking_node` | `ai_msgs/PerceptionTargets`，BPU 检测结果（body/face/head/hand 框 + track_id） |
+| `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control` | `std_msgs/String`：`start` 启动摄像头与 BPU 检测，`stop` 关闭整个视觉跟踪管线。 |
 
 ### 跟随模式切换
 
@@ -121,6 +124,8 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 {"turn_id":"...","name":"set_vision_gate","arguments":{"enabled":true}}    // 默认 body_follow
 {"turn_id":"...","name":"set_vision_gate","arguments":{"enabled":false}}   // 关闭跟踪
 ```
+
+进入跟随或注视模式时会自动启动摄像头和 BPU 检测。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并关闭视觉管线。多张人脸同时出现时，注视模式选择面积最大的人脸。
 
 ## 辅助服务文件
 

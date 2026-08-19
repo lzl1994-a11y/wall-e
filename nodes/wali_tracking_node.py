@@ -11,7 +11,14 @@ import time
 import json
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from std_msgs.msg import String, Int32
+
+from services.vision_pipeline_protocol import (
+    VISION_PIPELINE_COMMAND_TOPIC,
+    VISION_PIPELINE_START,
+    VISION_PIPELINE_STOP,
+)
 
 try:
     from ai_msgs.msg import PerceptionTargets
@@ -61,13 +68,18 @@ class WaliTrackingNode(Node):
     BODY_TARGET_RATIO = 0.35  # 跟随模式下的期望身体面积占比
 
     SEARCH_ROTATE_SPEED = 25  # 丢失目标时的原地转圈速度
+    SEARCH_START_DELAY_SEC = 1.0
+    SEARCH_STOP_DELAY_SEC = 5.0
+    TRACKING_SHUTDOWN_DELAY_SEC = 60.0
 
     def __init__(self):
         super().__init__('wali_tracking_node')
 
         self.mode = self.MODE_IDLE
-        self._last_time = time.time()
+        self._last_time = time.monotonic()
         self._joy_override = False # 若未来恢复 joy_override 机制
+        self._search_active = False
+        self._search_halted = False
 
         # ── PID 控制器 ──
         # 底盘水平追踪 (模式1用)
@@ -93,10 +105,21 @@ class WaliTrackingNode(Node):
 
         self._action_pub = self.create_publisher(String, '/action_cmd', 10)
         self._motor_pub = self.create_publisher(String, '/motor_cmd', 10)
+        pipeline_qos = QoSProfile(depth=1)
+        pipeline_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self._vision_pipeline_pub = self.create_publisher(
+            String,
+            VISION_PIPELINE_COMMAND_TOPIC,
+            pipeline_qos,
+        )
 
         # 丢失目标的搜索定时器
         self._timer = self.create_timer(0.1, self._control_tick)
-        self._last_target_seen = time.time()
+        self._last_target_seen = time.monotonic()
+
+        # Tracking starts in IDLE, so the expensive RDK camera/detector pipeline
+        # can remain off until a follow/look command arrives.
+        self._publish_vision_pipeline_command(VISION_PIPELINE_STOP)
 
         self.get_logger().info("视觉跟踪节点上线 (双舵机俯仰 + 底盘左右版本)")
 
@@ -107,7 +130,7 @@ class WaliTrackingNode(Node):
         if self.mode == self.MODE_IDLE or self._joy_override:
             return
 
-        now = time.time()
+        now = time.monotonic()
         dt = now - self._last_time
         self._last_time = now
 
@@ -135,8 +158,8 @@ class WaliTrackingNode(Node):
         if not body_boxes:
             return  # 丢失交由 _control_tick 处理原地打转
 
-        self._last_target_seen = time.time()
-        best = max(body_boxes, key=lambda b: b[2])
+        self._mark_target_seen()
+        best = self._largest_box(body_boxes)
         cx, cy, area_ratio = best
 
         # 因为图像被底层 flip_horizontal 翻转了，所以此处 X 误差必须取反，才能保证底盘转向正确的物理方向
@@ -169,11 +192,13 @@ class WaliTrackingNode(Node):
     def _handle_face_follow(self, face_boxes, body_boxes, dt):
         """模式 2: 禅定注视 (底盘静止，双舵机动态俯仰)"""
         target = None
-        now = time.time()
+        now = time.monotonic()
         
         # 1. 寻找目标
         if face_boxes:
-            target = max(face_boxes, key=lambda b: b[2])
+            # Multiple people may be visible. Always look at the largest face,
+            # which is normally the person closest to Wali.
+            target = self._largest_box(face_boxes)
             self._search_face_tilt_timer = 0.0 # 清除抬头搜寻倒计时
         elif body_boxes:
             # 只看见身体没看见脸，尝试抬头搜寻
@@ -185,22 +210,22 @@ class WaliTrackingNode(Node):
                 self._current_neck_pitch += 0.5 * dt
                 self._current_neck_pitch = max(min(self._current_neck_pitch, 1.0), -1.0)
                 # 因为没找到目标，所以水平偏差假定为身体的偏差来做仿生扭头
-                best_body = max(body_boxes, key=lambda b: b[2])
+                best_body = self._largest_box(body_boxes)
                 # 因为图像被底层 flip_horizontal 翻转了，这里取反
                 x_error = -(best_body[0] - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
                 self._publish_head_and_neck(x_error, self._current_neck_pitch)
-                self._last_target_seen = time.time()
+                self._mark_target_seen()
                 self._stop_motor() # 底盘死死刹住
                 return
             else:
                 # 抬头找了2秒还是没脸，妥协降级，直接把这个肚子当目标
-                target = max(body_boxes, key=lambda b: b[2])
+                target = self._largest_box(body_boxes)
 
         if not target:
             return # 彻底丢失，交由 _control_tick 处理
 
         # 2. 锁定目标，进行调节
-        self._last_target_seen = time.time()
+        self._mark_target_seen()
         cx, cy, area_ratio = target
 
         # 只要画面内有目标，底盘死死刹住
@@ -232,17 +257,34 @@ class WaliTrackingNode(Node):
 
 
     def _control_tick(self):
-        """低频检查：丢失目标的打转搜寻逻辑"""
+        """Search briefly, then fail safe and eventually release the camera."""
         if self.mode == self.MODE_IDLE or self._joy_override:
             return
 
-        if time.time() - self._last_target_seen > 1.0:
-            # 超过1秒没看到目标，底盘原地向右缓慢打转
-            # 左前，右后 = 右转
+        lost_seconds = time.monotonic() - self._last_target_seen
+        if lost_seconds >= self.TRACKING_SHUTDOWN_DELAY_SEC:
+            self.get_logger().warning(
+                "目标丢失超过60秒，退出视觉跟随并关闭跟踪摄像头"
+            )
+            self._set_tracking_mode(self.MODE_IDLE)
+            return
+
+        if lost_seconds >= self.SEARCH_STOP_DELAY_SEC:
+            if not self._search_halted:
+                self._stop_motor()
+                self._current_neck_pitch = 0.0
+                self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
+                self._search_active = False
+                self._search_halted = True
+                self.get_logger().warning("目标丢失超过5秒，停止旋转搜索")
+            return
+
+        if lost_seconds >= self.SEARCH_START_DELAY_SEC and not self._search_active:
+            # Search only during the 1s..5s loss window.
             self._publish_motor(1, 2, self.SEARCH_ROTATE_SPEED)
-            # 脑袋和脖子复位
             self._current_neck_pitch = 0.0
             self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
+            self._search_active = True
 
     # ===================================================================
     # 执行层
@@ -267,6 +309,18 @@ class WaliTrackingNode(Node):
 
     def _stop_motor(self):
         self._publish_motor(0, 0, 0)
+
+    @staticmethod
+    def _largest_box(boxes):
+        return max(boxes, key=lambda box: box[2], default=None)
+
+    def _mark_target_seen(self):
+        self._last_target_seen = time.monotonic()
+        self._search_active = False
+        self._search_halted = False
+
+    def _publish_vision_pipeline_command(self, command):
+        self._vision_pipeline_pub.publish(String(data=command))
 
     def _publish_head_and_neck(self, x_error, pitch_val):
         """
@@ -307,16 +361,23 @@ class WaliTrackingNode(Node):
         if mode in (self.MODE_BODY_FOLLOW, self.MODE_FACE_FOLLOW):
             self.mode = mode
             self._current_neck_pitch = 0.0
-            self._last_time = time.time()
-            self._last_target_seen = time.time()
+            now = time.monotonic()
+            self._last_time = now
+            self._last_target_seen = now
+            self._search_active = False
+            self._search_halted = False
             self._pid_chassis_yaw.reset()
             self._pid_chassis_dist.reset()
             self._pid_neck_pitch.reset()
+            self._publish_vision_pipeline_command(VISION_PIPELINE_START)
             self.get_logger().info(f"Entered tracking mode: {mode} (requested: {mode_key})")
         elif mode == self.MODE_IDLE:
             self.mode = self.MODE_IDLE
+            self._search_active = False
+            self._search_halted = False
             self._stop_motor()
             self._publish_head_and_neck(0.0, 0.0) # 回中
+            self._publish_vision_pipeline_command(VISION_PIPELINE_STOP)
             self.get_logger().info("Tracking mode: IDLE")
         else:
             self.get_logger().warn(f"Unknown tracking mode: {requested_mode}")
@@ -359,7 +420,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node._stop_motor()
+        node._set_tracking_mode(node.MODE_IDLE)
         node.destroy_node()
         rclpy.shutdown()
 

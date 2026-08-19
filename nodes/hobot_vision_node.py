@@ -13,8 +13,39 @@ import time
 import shlex
 from pathlib import Path
 
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from std_msgs.msg import String
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.usb_devices import resolve_camera_device
+from services.vision_pipeline_protocol import (
+    VISION_PIPELINE_COMMAND_TOPIC,
+    VISION_PIPELINE_START,
+    decode_vision_pipeline_command,
+)
+
+
+class VisionPipelineControl(Node):
+    """Keep the detector wrapper alive while allowing its camera to stop."""
+
+    def __init__(self):
+        super().__init__("hobot_vision_control")
+        self.enabled = True
+        command_qos = QoSProfile(depth=1)
+        command_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.create_subscription(
+            String,
+            VISION_PIPELINE_COMMAND_TOPIC,
+            self._on_command,
+            command_qos,
+        )
+
+    def _on_command(self, message):
+        command = decode_vision_pipeline_command(message.data)
+        if command is not None:
+            self.enabled = command == VISION_PIPELINE_START
 
 
 def cleanup_old_processes():
@@ -107,6 +138,8 @@ def main():
     stopping = False
     proc = None
     active_device = None
+    rclpy.init()
+    control = VisionPipelineControl()
 
     def handler(signum, frame):
         nonlocal stopping
@@ -116,34 +149,45 @@ def main():
     signal.signal(signal.SIGTERM, handler)
     
     cleanup_old_processes()
-    while not stopping:
-        video_device = resolve_camera_device()
-        if not video_device:
-            if proc:
-                print("[hobot_vision_node] Camera disconnected; stopping vision pipeline")
+    try:
+        while not stopping:
+            rclpy.spin_once(control, timeout_sec=0.2)
+
+            if not control.enabled:
+                if proc:
+                    print("[hobot_vision_node] Tracking disabled; stopping vision pipeline")
+                    _stop_pipeline(proc)
+                    proc = None
+                    active_device = None
+                continue
+
+            video_device = resolve_camera_device()
+            if not video_device:
+                if proc:
+                    print("[hobot_vision_node] Camera disconnected; stopping vision pipeline")
+                    _stop_pipeline(proc)
+                    proc = None
+                    active_device = None
+                continue
+
+            if proc and proc.poll() is not None:
+                cleanup_old_processes()
+                proc = None
+                active_device = None
+
+            if proc and video_device != active_device:
                 _stop_pipeline(proc)
                 proc = None
                 active_device = None
-            time.sleep(1.0)
-            continue
 
-        if proc and proc.poll() is not None:
-            cleanup_old_processes()
-            proc = None
-            active_device = None
-
-        if proc and video_device != active_device:
-            _stop_pipeline(proc)
-            proc = None
-            active_device = None
-
-        if proc is None:
-            proc = _start_pipeline(video_device)
-            active_device = video_device if proc else None
-        time.sleep(1.0)
-
-    print("\n[hobot_vision_node] Stopping vision pipeline...")
-    _stop_pipeline(proc)
+            if proc is None:
+                proc = _start_pipeline(video_device)
+                active_device = video_device if proc else None
+    finally:
+        print("\n[hobot_vision_node] Stopping vision pipeline...")
+        _stop_pipeline(proc)
+        control.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
