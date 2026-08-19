@@ -3,7 +3,7 @@ import json
 import sys
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class _FakeString:
@@ -71,6 +71,8 @@ def _load_tracking_module():
     fake_qos = types.ModuleType("rclpy.qos")
     fake_qos.QoSProfile = _FakeQoSProfile
     fake_qos.DurabilityPolicy = types.SimpleNamespace(TRANSIENT_LOCAL="transient")
+    fake_signals = types.ModuleType("rclpy.signals")
+    fake_signals.SignalHandlerOptions = types.SimpleNamespace(NO="no")
     fake_std = types.ModuleType("std_msgs.msg")
     fake_std.String = _FakeString
     fake_std.Int32 = type("Int32", (), {})
@@ -80,6 +82,7 @@ def _load_tracking_module():
         "rclpy": fake_rclpy,
         "rclpy.node": fake_node,
         "rclpy.qos": fake_qos,
+        "rclpy.signals": fake_signals,
         "std_msgs.msg": fake_std,
         "ai_msgs.msg": fake_ai,
     }
@@ -122,6 +125,29 @@ class WaliTrackingNodeTests(unittest.TestCase):
             (800.0, 300.0, 0.10),
         ]
         self.assertEqual(module.WaliTrackingNode._largest_box(boxes), boxes[1])
+
+    def test_main_keeps_context_alive_for_fail_safe_shutdown(self):
+        module = _load_tracking_module()
+        node = Mock()
+        node.MODE_IDLE = "idle"
+
+        with (
+            patch.object(module, "WaliTrackingNode", return_value=node),
+            patch.object(module.rclpy, "init") as init,
+            patch.object(module.rclpy, "spin", side_effect=KeyboardInterrupt),
+            patch.object(module.rclpy, "shutdown") as shutdown,
+            patch.object(module.signal, "signal") as install_signal,
+        ):
+            module.main()
+
+        init.assert_called_once_with(args=None, signal_handler_options="no")
+        install_signal.assert_called_once_with(
+            module.signal.SIGTERM,
+            module.signal.default_int_handler,
+        )
+        node._set_tracking_mode.assert_called_once_with("idle")
+        node.destroy_node.assert_called_once_with()
+        shutdown.assert_called_once_with()
 
 
 if __name__ == "__main__":

@@ -100,9 +100,8 @@ def _start_pipeline(video_device):
     cleanup_old_processes()
     time.sleep(1)
     
-    cmd = [
-        "bash", "-c",
-        "source /opt/tros/humble/setup.bash && "
+    pipeline_script = (
+        "source /opt/tros/humble/setup.bash && { "
         f"ros2 run hobot_usb_cam hobot_usb_cam --ros-args --log-level WARN -p video_device:={shlex.quote(video_device)} -p image_width:=640 -p image_height:=480 & "
         "ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:=/image -p pub_topic:=/image_nv12 & "
         f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=true -p flip_horizontal:=true & "
@@ -110,8 +109,9 @@ def _start_pipeline(video_device):
         "(cd /opt/tros/humble/lib/mono2d_body_detection && ros2 run mono2d_body_detection mono2d_body_detection --ros-args --log-level WARN -p is_shared_mem_sub:=0 -p ros_img_topic_name:=/image_padded_nv12 -p ai_msg_pub_topic_name:=/hobot_mono2d_body_detection_raw) & "
         f"{shlex.quote(ros_python)} {scaler_script} --ros-args --log-level WARN -p transform_mode:=none -p image_topic:=/image_padded_jpeg -p model_width:=960.0 -p model_height:=544.0 -p x_scale:=1.0 -p y_scale:=1.0 -p x_offset:=0.0 -p y_offset:=0.0 -p clip_width:=960.0 -p clip_height:=544.0 & "
         "ros2 run websocket websocket --ros-args --log-level WARN -p image_topic:=/image_padded_jpeg -p image_type:=mjpeg -p msg_pub_topic_name:=/hobot_mono2d_body_detection & "
-        "wait"
-    ]
+        "wait; }"
+    )
+    cmd = ["bash", "-c", pipeline_script]
     
     print(f"[hobot_vision_node] Starting vision pipeline with {video_device}...")
     try:

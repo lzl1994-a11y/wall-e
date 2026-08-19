@@ -12,13 +12,13 @@ if str(ROOT) not in sys.path:
 import launch_nodes
 
 
-def launcher_args(*, no_web=False, no_serial=True, no_hardware=False):
+def launcher_args(*, no_web=False, no_serial=True, no_hardware=False, tracking=False):
     return Namespace(
         voice_chat=False,
         real_stt=False,
         keyboard_stt=False,
         no_serial=no_serial,
-        tracking=False,
+        tracking=tracking,
         no_doa=False,
         no_hardware=no_hardware,
         no_web=no_web,
@@ -119,6 +119,32 @@ class LaunchNodesTests(unittest.TestCase):
             child_env["PYTHONPATH"].split(os.pathsep),
             [str(launch_nodes.ROOT), "existing-path"],
         )
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_tracking_node_loads_tros_environment(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args(tracking=True))
+        tracking = next(entry for entry in entries if entry.name == "tracking")
+
+        self.assertEqual(
+            tracking.environment_setup,
+            Path("/opt/tros/humble/setup.bash"),
+        )
+
+    @patch("launch_nodes.subprocess.Popen")
+    def test_environment_setup_wraps_node_process(self, popen):
+        setup = Path("/opt/tros/humble/setup.bash")
+        entry = launch_nodes.NodeEntry(
+            "tracking",
+            launch_nodes.ROOT / "launch_nodes.py",
+            environment_setup=setup,
+        )
+
+        with patch.object(launch_nodes.os, "name", "posix"):
+            launch_nodes.start_process(entry)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:3], ["bash", "-c", 'source "$1" && exec "$2" "$3"'])
+        self.assertEqual(command[4], str(setup))
 
 
 if __name__ == "__main__":

@@ -9,9 +9,11 @@
 
 import time
 import json
+import signal
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String, Int32
 
 from services.vision_pipeline_protocol import (
@@ -74,6 +76,12 @@ class WaliTrackingNode(Node):
 
     def __init__(self):
         super().__init__('wali_tracking_node')
+
+        if not HAS_HOBOT_MSGS:
+            raise RuntimeError(
+                "ai_msgs is unavailable; start tracking through launch_nodes.py "
+                "or source /opt/tros/humble/setup.bash first"
+            )
 
         self.mode = self.MODE_IDLE
         self._last_time = time.monotonic()
@@ -413,7 +421,10 @@ class WaliTrackingNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    # Keep the context alive until fail-safe motor/camera stop commands publish.
+    # rclpy's default SIGINT handler shuts it down before finally can run.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     node = WaliTrackingNode()
     try:
         rclpy.spin(node)

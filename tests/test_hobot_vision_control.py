@@ -2,7 +2,7 @@ import importlib
 import sys
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class _FakeString:
@@ -56,6 +56,32 @@ class VisionPipelineControlTests(unittest.TestCase):
         self.assertTrue(control.enabled)
         control._on_command(_FakeString("invalid"))
         self.assertTrue(control.enabled)
+
+    def test_every_pipeline_command_inherits_tros_environment(self):
+        module = _load_module()
+        process = Mock()
+
+        with (
+            patch.object(module.Path, "exists", return_value=True),
+            patch.object(module, "cleanup_old_processes"),
+            patch.object(module.time, "sleep"),
+            patch.object(module.os, "setsid", create=True),
+            patch.object(module.subprocess, "Popen", return_value=process) as popen,
+        ):
+            self.assertIs(module._start_pipeline("/dev/video-test"), process)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:2], ["bash", "-c"])
+        pipeline_script = command[2]
+        self.assertTrue(
+            pipeline_script.startswith(
+                "source /opt/tros/humble/setup.bash && { "
+            )
+        )
+        self.assertTrue(pipeline_script.endswith("wait; }"))
+        self.assertIn("ros2 run hobot_codec", pipeline_script)
+        self.assertIn("ros2 run mono2d_body_detection", pipeline_script)
+        self.assertIn("ros2 run websocket", pipeline_script)
 
 
 if __name__ == "__main__":

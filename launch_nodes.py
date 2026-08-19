@@ -44,6 +44,7 @@ class NodeEntry:
     script: Path
     max_restarts: int = DEFAULT_MAX_RESTARTS
     restart_delay: float = DEFAULT_RESTART_DELAY
+    environment_setup: Path | None = None
 
 
 def build_node_list(args):
@@ -99,7 +100,13 @@ def build_node_list(args):
     # tracking: CLI --tracking 覆盖 config
     if args.tracking or launch_cfg.get("tracking", False):
         nodes.append(NodeEntry("hobot_vision", ROOT / "nodes" / "hobot_vision_node.py"))
-        nodes.append(NodeEntry("tracking", ROOT / "nodes" / "wali_tracking_node.py"))
+        nodes.append(
+            NodeEntry(
+                "tracking",
+                ROOT / "nodes" / "wali_tracking_node.py",
+                environment_setup=Path("/opt/tros/humble/setup.bash"),
+            )
+        )
         if not args.no_doa:
             nodes.append(NodeEntry("doa_ros", ROOT / "nodes" / "doa_ros_node.py"))
 
@@ -121,6 +128,18 @@ def start_process(entry: NodeEntry):
         raise FileNotFoundError(f"Node script not found: {script}")
 
     cmd = [sys.executable, str(script)]
+    if entry.environment_setup is not None and os.name != "nt":
+        # Positional parameters keep paths safely quoted while sourcing the RDK
+        # environment in the same shell that execs the ROS node.
+        cmd = [
+            "bash",
+            "-c",
+            'source "$1" && exec "$2" "$3"',
+            "wali-node",
+            str(entry.environment_setup),
+            sys.executable,
+            str(script),
+        ]
     env = os.environ.copy()
     root_path = str(ROOT)
     existing_paths = [
