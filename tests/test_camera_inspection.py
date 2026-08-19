@@ -205,7 +205,9 @@ class CameraFrameProviderTests(unittest.TestCase):
 
         class FakeCompressedImage:
             encoding = "jpeg"
-            data = b"camera-jpeg"
+
+            def __init__(self, data=b"camera-jpeg"):
+                self.data = data
 
         class FakeString:
             def __init__(self, data=""):
@@ -239,11 +241,28 @@ class CameraFrameProviderTests(unittest.TestCase):
         node = FakeNode()
         image_patch = patch.object(camera_frame, "CompressedImage", FakeCompressedImage)
         string_patch = patch.object(camera_frame, "String", FakeString)
+        jpeg_patch = patch.object(
+            camera_frame,
+            "jpeg_from_ros_image",
+            side_effect=lambda message, quality=85: (
+                None if message.data == b"broken-jpeg" else bytes(message.data)
+            ),
+        )
         image_patch.start()
         string_patch.start()
+        jpeg_patch.start()
         self.addCleanup(image_patch.stop)
         self.addCleanup(string_patch.stop)
-        return camera_frame.CameraFrameProvider(node), node, FakeCompressedImage
+        self.addCleanup(jpeg_patch.stop)
+        return (
+            camera_frame.CameraFrameProvider(
+                node,
+                warmup_seconds=0.0,
+                warmup_frames=1,
+            ),
+            node,
+            FakeCompressedImage,
+        )
 
     def test_provider_uses_only_camera_frame_and_capture_command_topics(self):
         provider, node, _image_type = self._provider()
@@ -291,6 +310,48 @@ class CameraFrameProviderTests(unittest.TestCase):
         ]
         self.assertEqual(commands[-1]["action"], "release")
         self.assertFalse(hasattr(provider, "_capture_uvc"))
+
+    def test_capture_ignores_invalid_jpeg_before_returning_a_valid_frame(self):
+        provider, node, image_type = self._provider()
+        result = []
+
+        thread = __import__("threading").Thread(
+            target=lambda: result.append(provider.capture(timeout=0.8))
+        )
+        thread.start()
+        deadline = __import__("time").monotonic() + 0.5
+        while not node.publisher.messages and __import__("time").monotonic() < deadline:
+            __import__("time").sleep(0.01)
+        node.callbacks["/camera_frame"](image_type(b"broken-jpeg"))
+        __import__("time").sleep(0.03)
+        self.assertTrue(thread.is_alive())
+        node.callbacks["/camera_frame"](image_type(b"valid-jpeg"))
+        thread.join(timeout=1.0)
+
+        self.assertEqual(result, [b"valid-jpeg"])
+
+    def test_capture_waits_for_camera_warmup_frames(self):
+        provider, node, image_type = self._provider()
+        provider._warmup_seconds = 0.04
+        provider._warmup_frames = 3
+        result = []
+
+        thread = __import__("threading").Thread(
+            target=lambda: result.append(provider.capture(timeout=0.8))
+        )
+        thread.start()
+        deadline = __import__("time").monotonic() + 0.5
+        while not node.publisher.messages and __import__("time").monotonic() < deadline:
+            __import__("time").sleep(0.01)
+        node.callbacks["/camera_frame"](image_type(b"frame-1"))
+        __import__("time").sleep(0.02)
+        node.callbacks["/camera_frame"](image_type(b"frame-2"))
+        __import__("time").sleep(0.03)
+        self.assertTrue(thread.is_alive())
+        node.callbacks["/camera_frame"](image_type(b"frame-3"))
+        thread.join(timeout=1.0)
+
+        self.assertEqual(result, [b"frame-3"])
 
     def test_manager_ack_starts_a_fresh_frame_timeout(self):
         provider, node, image_type = self._provider()

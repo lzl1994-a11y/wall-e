@@ -153,7 +153,10 @@ class CameraCaptureNodeTests(unittest.TestCase):
 
     def test_active_tracking_image_is_relayed_without_starting_second_camera(self):
         module = _load_camera_capture_module()
-        with patch.object(module.subprocess, "Popen") as popen:
+        with (
+            patch.object(module.subprocess, "Popen") as popen,
+            patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
+        ):
             node = module.CameraCaptureNode()
             node._on_tracking_image(_FakeImage())
             node._on_command(_FakeString(encode_camera_command("acquire", "web", 5)))

@@ -122,7 +122,31 @@ def jpeg_from_ros_image(message: Any, *, quality: int = 85) -> bytes | None:
         or "jpg" in image_format
         or raw.startswith(b"\xff\xd8")
     ):
-        return raw or None
+        # A camera that has just been opened can briefly publish an incomplete
+        # MJPEG buffer.  The ROS message still labels it as JPEG, but cloud
+        # vision APIs reject it with an image parsing error.  Require a complete
+        # JPEG envelope and, when OpenCV is available, make sure it decodes.
+        if not raw.startswith(b"\xff\xd8"):
+            return None
+        eoi = raw.rfind(b"\xff\xd9")
+        if eoi < 2:
+            return None
+        jpeg = raw[:eoi + 2]
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            return jpeg
+        try:
+            decoded = cv2.imdecode(
+                np.frombuffer(jpeg, dtype=np.uint8),
+                cv2.IMREAD_UNCHANGED,
+            )
+        except Exception:
+            return None
+        if decoded is None or decoded.size == 0:
+            return None
+        return jpeg
 
     try:
         import cv2

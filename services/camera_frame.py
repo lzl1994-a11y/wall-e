@@ -47,11 +47,24 @@ def is_camera_inspection_request(user_prompt: str) -> bool:
 class CameraFrameProvider:
     """Request a leased camera session and wait for a fresh /camera_frame JPEG."""
 
-    def __init__(self, node: Any, config_path: str | Path = "core/config.yaml"):
+    DEFAULT_WARMUP_SECONDS = 0.5
+    DEFAULT_WARMUP_FRAMES = 3
+
+    def __init__(
+        self,
+        node: Any,
+        config_path: str | Path = "core/config.yaml",
+        *,
+        warmup_seconds: float = DEFAULT_WARMUP_SECONDS,
+        warmup_frames: int = DEFAULT_WARMUP_FRAMES,
+    ):
         del config_path  # Device selection belongs exclusively to camera_capture_node.
         self._condition = threading.Condition()
         self._frame: bytes | None = None
         self._frame_time = 0.0
+        self._frame_sequence = 0
+        self._warmup_seconds = max(0.0, float(warmup_seconds))
+        self._warmup_frames = max(1, int(warmup_frames))
         self._status_state = ""
         self._status_time = 0.0
         self._status_error = ""
@@ -78,6 +91,7 @@ class CameraFrameProvider:
         with self._condition:
             self._frame = jpeg
             self._frame_time = time.monotonic()
+            self._frame_sequence += 1
             self._condition.notify_all()
 
     def _on_status(self, message: Any) -> None:
@@ -119,13 +133,26 @@ class CameraFrameProvider:
         requested_at = time.monotonic()
         deadline = requested_at + request_wait_seconds
         manager_acknowledged = False
+        first_fresh_frame_time = 0.0
+        first_fresh_frame_sequence = 0
         lease_seconds = request_wait_seconds + frame_wait_seconds + 2.0
         action = "acquire"
         try:
             with self._condition:
                 while True:
                     if self._frame is not None and self._frame_time >= requested_at:
-                        return self._frame
+                        if not first_fresh_frame_time:
+                            first_fresh_frame_time = self._frame_time
+                            first_fresh_frame_sequence = self._frame_sequence
+                        warmup_elapsed = self._frame_time - first_fresh_frame_time
+                        warmup_frame_count = (
+                            self._frame_sequence - first_fresh_frame_sequence + 1
+                        )
+                        if (
+                            warmup_elapsed >= self._warmup_seconds
+                            and warmup_frame_count >= self._warmup_frames
+                        ):
+                            return self._frame
                     now = time.monotonic()
                     if (
                         not manager_acknowledged
