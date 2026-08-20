@@ -12,11 +12,18 @@ if str(ROOT) not in sys.path:
 import launch_nodes
 
 
-def launcher_args(*, no_web=False, no_serial=True, no_hardware=False, tracking=False):
+def launcher_args(
+    *,
+    no_web=False,
+    no_serial=True,
+    no_hardware=False,
+    tracking=False,
+    keyboard_stt=False,
+):
     return Namespace(
         voice_chat=False,
         real_stt=False,
-        keyboard_stt=False,
+        keyboard_stt=keyboard_stt,
         no_serial=no_serial,
         tracking=tracking,
         no_doa=False,
@@ -26,6 +33,14 @@ def launcher_args(*, no_web=False, no_serial=True, no_hardware=False, tracking=F
 
 
 class LaunchNodesTests(unittest.TestCase):
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_keyboard_flag_selects_existing_keyboard_node(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args(keyboard_stt=True))
+        keyboard = next(entry for entry in entries if entry.name == "keyboard_stt")
+
+        self.assertTrue(keyboard.script.is_file())
+        self.assertNotIn("stt", [entry.name for entry in entries])
+
     @patch(
         "launch_nodes.load_config",
         return_value={

@@ -4,12 +4,13 @@
 
 信息来源：`nodes/*.py` 里的 `super().__init__(...)` 节点名，以及 `launch_nodes.py` 的启动列表。
 
-## 默认启动链路
+## 启动链路
 
-默认执行：
+不带语音模式参数时，启动器使用 `core/config.yaml` 中的 `pipeline.mode`。
+如需在没有麦克风的环境中调试完整的 LLM/TTS 链路，执行：
 
 ```bash
-python launch_nodes.py
+python launch_nodes.py --keyboard-stt
 ```
 
 启动链路是：
@@ -34,8 +35,8 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 
 | 脚本 | ROS 节点名 | 默认启动 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
-| `nodes/keyboard_stt_node.py` | `keyboard_stt_test_node` | 是，默认测试输入 | 无 | `voice_text` | 键盘输入测试节点。你在终端输入文字后，它把文字发布到 `voice_text`，模拟 STT 输出。 |
-| `nodes/stt_ros_node.py` | `walle_ear_node` | 否，使用 `--real-stt` 时启动 | 无 | `voice_text` | 真实语音识别节点。调用 `services/stt_service.py`，识别到一句话后发布到 `voice_text`。 |
+| `nodes/keyboard_stt_node.py` | `keyboard_stt_test_node` | `pipeline.mode=keyboard` 或 `--keyboard-stt` | 无 | `voice_text` | 键盘输入测试节点。你在终端输入文字后，它把文字发布到 `voice_text`，模拟 STT 输出。 |
+| `nodes/stt_ros_node.py` | `walle_ear_node` | `pipeline.mode=asr_llm` 或 `--real-stt` | 无 | `voice_text` | 真实语音识别节点。调用 `services/stt_service.py`，识别到一句话后发布到 `voice_text`。 |
 | `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `action_cmd`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
 | `nodes/serial_ros_node.py` | `walle_serial_node` | 是，除非加 `--no-serial` | `screen_dialog` | 无 | 串口/屏幕输出节点。接收完整对话包，把用户文本、AI 回复和动作命令写给下位机或屏幕。 |
 

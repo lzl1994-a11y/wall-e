@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Start the local ROS2 Python nodes for Wali.
 
-Voice pipeline is set in core/config.yaml → launch.voice_pipeline
+Voice pipeline is set in core/config.yaml → pipeline.mode
 and can be overridden by CLI flags: --voice-chat / --real-stt / --keyboard-stt.
 """
 
