@@ -1,0 +1,73 @@
+import importlib
+import sys
+import types
+import unittest
+from unittest.mock import MagicMock, patch
+
+from services.tts_protocol import decode_turn_end
+
+
+class VoiceChatTurnEndTests(unittest.TestCase):
+    @staticmethod
+    def _load_node_class():
+        fake_rclpy = types.ModuleType("rclpy")
+        fake_rclpy_node = types.ModuleType("rclpy.node")
+        fake_rclpy_node.Node = object
+
+        class String:
+            def __init__(self, data=""):
+                self.data = data
+
+        fake_std_msgs = types.ModuleType("std_msgs")
+        fake_std_msgs_msg = types.ModuleType("std_msgs.msg")
+        fake_std_msgs_msg.String = String
+
+        fake_service = types.ModuleType("services.voice_chat_service")
+        fake_service.VoiceChatService = object
+        fake_audio_output = types.ModuleType("services.audio_output")
+        fake_audio_output.OUTPUT_CHANNELS = 1
+        fake_audio_output.OUTPUT_SAMPLE_RATE = 48000
+        fake_audio_output.OUTPUT_SAMPLE_WIDTH = 2
+        fake_tools = types.ModuleType("services.tool_dispatcher")
+        fake_tools.build_action_cmd = lambda name, arguments: ""
+        fake_usb = types.ModuleType("services.usb_devices")
+        fake_usb.resolve_audio_device = lambda *args, **kwargs: None
+
+        modules = {
+            "rclpy": fake_rclpy,
+            "rclpy.node": fake_rclpy_node,
+            "std_msgs": fake_std_msgs,
+            "std_msgs.msg": fake_std_msgs_msg,
+            "services.voice_chat_service": fake_service,
+            "services.audio_output": fake_audio_output,
+            "services.tool_dispatcher": fake_tools,
+            "services.usb_devices": fake_usb,
+        }
+        sys.modules.pop("nodes.voice_chat_ros_node", None)
+        with patch.dict(sys.modules, modules):
+            module = importlib.import_module("nodes.voice_chat_ros_node")
+        return module.VoiceChatNode
+
+    def test_llm_done_publishes_turn_end_and_resets_turn_state(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.tts_pub = MagicMock()
+        node.get_logger = lambda: MagicMock()
+        node._active_turn_id = "turn-multimodal"
+        node._sentence_buffer = ""
+        node._punc_count = 0
+        node._correction_done = True
+
+        node._on_llm_done()
+
+        marker = node.tts_pub.publish.call_args.args[0].data
+        self.assertEqual(decode_turn_end(marker), "turn-multimodal")
+        self.assertIsNone(node._active_turn_id)
+        self.assertEqual(node._sentence_buffer, "")
+        self.assertEqual(node._punc_count, 0)
+        self.assertFalse(node._correction_done)
+        sys.modules.pop("nodes.voice_chat_ros_node", None)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -32,6 +32,7 @@ from services.audio_output import (
     OUTPUT_SAMPLE_WIDTH,
 )
 from services.tool_dispatcher import build_action_cmd
+from services.tts_protocol import encode_turn_end
 from services.usb_devices import resolve_audio_device
 
 # 去掉 TTS 不需要的符号（保留中文标点和空格）
@@ -52,13 +53,14 @@ class VoiceChatNode(Node):
         self.vc.on_llm_chunk = self._on_llm_chunk
         self.vc.on_llm_reply = self._on_llm_reply
         self.vc.on_tool_call = self._on_tool_call
+        self.vc.on_llm_done = self._on_llm_done
         self.vc.on_llm_timeout = self._on_llm_timeout
-        self.vc.start()
 
         # 流式 TTS 状态
         self._sentence_buffer = ""     # 当前攒的句子
         self._punc_count = 0           # 标点计数
         self._correction_done = False  # 第一行纠错已提取
+        self._active_turn_id = None
         self.punctuations = {"。", "？", ".", "?", "！", "!"}
 
         # 唤醒应答 WAV 路径
@@ -66,6 +68,7 @@ class VoiceChatNode(Node):
         self._wake_wav = str(root / "assets" / "wake_response.wav")
         self._wake_play_lock = threading.Lock()
 
+        self.vc.start()
         self.get_logger().info("语音直聊节点已上线")
 
     # ── 唤醒词回调 ──
@@ -141,6 +144,7 @@ class VoiceChatNode(Node):
         if not text:
             return
 
+        self._ensure_turn_id()
         self._sentence_buffer += text
 
         # 跳过第一行（纠错文本前缀）
@@ -183,6 +187,8 @@ class VoiceChatNode(Node):
         if not text:
             return
 
+        turn_id = self._ensure_turn_id()
+
         # 解析 you: / ai: 格式
         corrected_text = ""
         ai_text = text
@@ -210,7 +216,7 @@ class VoiceChatNode(Node):
         # 屏幕对话框（对齐 llm_ros_node 格式）
         dialog = String()
         dialog.data = json.dumps({
-            "turn_id": uuid.uuid4().hex[:12],
+            "turn_id": turn_id,
             "corrected_text": corrected_text,
             "ai_text": ai_text,
             "actions": [],
@@ -223,6 +229,21 @@ class VoiceChatNode(Node):
         self._sentence_buffer = ""
         self._punc_count = 0
         self._correction_done = False
+
+    def _ensure_turn_id(self):
+        if self._active_turn_id is None:
+            self._active_turn_id = uuid.uuid4().hex[:12]
+        return self._active_turn_id
+
+    def _on_llm_done(self):
+        """关闭本轮 TTS；播放节点会在音频真正播完后结束回合。"""
+        turn_id = self._ensure_turn_id()
+        self.tts_pub.publish(String(data=encode_turn_end(turn_id)))
+        self.get_logger().info(f"TTS turn queued: {turn_id}")
+        self._sentence_buffer = ""
+        self._punc_count = 0
+        self._correction_done = False
+        self._active_turn_id = None
 
     # ── 超时回调 ──
     def _on_llm_timeout(self):

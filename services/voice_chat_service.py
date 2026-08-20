@@ -44,6 +44,7 @@ class VoiceChatService:
         vc.on_llm_reply    = lambda text: your_tts(text)
         vc.on_llm_chunk    = lambda text: stream_tts(text)
         vc.on_tool_call    = lambda name, args: your_action(name, args)
+        vc.on_llm_done     = your_turn_done_handler
         vc.on_llm_timeout  = your_timeout_handler
         vc.start()
     """
@@ -88,6 +89,7 @@ class VoiceChatService:
         self.on_llm_reply = None       # LLM 文本回复（最终完整回复）
         self.on_llm_chunk = None       # LLM 流式文本块
         self.on_tool_call = None       # LLM 工具调用
+        self.on_llm_done = None        # LLM 本轮结束（成功、失败或取消）
         self.on_llm_timeout = None     # 40s 无回复超时
 
     # ================================================================
@@ -263,7 +265,6 @@ class VoiceChatService:
                             response.close()
                         except Exception:
                             pass
-                    self._llm_done()
                     return
 
                 if chunk.choices:
@@ -320,3 +321,8 @@ class VoiceChatService:
         with self._state_lock:
             if self._state == _State.LLM_PENDING:
                 self._state = _State.AWAKE
+        if self.on_llm_done:
+            try:
+                self.on_llm_done()
+            except Exception as e:
+                print(f"[VoiceChat] on_llm_done 异常: {e}")
