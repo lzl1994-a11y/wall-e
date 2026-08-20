@@ -1,5 +1,6 @@
 import importlib
 import json
+import queue
 import sys
 import threading
 import types
@@ -23,6 +24,19 @@ class TTSProtocolTests(unittest.TestCase):
 
 
 class PlaybackLifecycleTests(unittest.TestCase):
+    def test_empty_queue_writes_silence_while_output_stream_is_open(self):
+        player = PlaybackService.__new__(PlaybackService)
+        player.sample_rate = 1000
+        player._queue = queue.Queue()
+        player._stream = MagicMock()
+
+        player._play_next_item()
+
+        player._stream.write.assert_called_once()
+        idle_audio = player._stream.write.call_args.args[0]
+        self.assertEqual(idle_audio.shape, (20, 1))
+        self.assertTrue(np.all(idle_audio == 0.0))
+
     def test_turn_complete_runs_after_preceding_audio_finishes(self):
         events = []
         player = PlaybackService.__new__(PlaybackService)

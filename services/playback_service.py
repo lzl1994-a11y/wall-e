@@ -19,6 +19,7 @@ class PlaybackService:
 
     _TURN_END = object()
     TURN_END_SILENCE_SEC = 0.1
+    IDLE_SILENCE_SEC = 0.02
 
     def __init__(
         self,
@@ -150,13 +151,26 @@ class PlaybackService:
             stream.close()
 
     def _play_worker(self):
-        """后台线程：阻塞播放音频队列。"""
+        """后台线程：顺序播放；流已打开但暂时断粮时持续输出数字静音。"""
         while True:
-            item = self._queue.get()
+            self._play_next_item()
+
+    def _play_next_item(self):
+        """播放一个队列项，或在等待超时时向已打开的流补一小段静音。"""
+        try:
+            item = self._queue.get(timeout=self.IDLE_SILENCE_SEC)
+        except queue.Empty:
             try:
-                self._play_item(item)
-            except Exception as e:
-                print(f"[Playback Service] 播放失败: {e}")
+                self._write_silence(self.IDLE_SILENCE_SEC)
+            except Exception as exc:
+                print(f"[Playback Service] 静音填充失败: {exc}")
                 self._close_stream(drain=False)
-            finally:
-                self._queue.task_done()
+            return
+
+        try:
+            self._play_item(item)
+        except Exception as e:
+            print(f"[Playback Service] 播放失败: {e}")
+            self._close_stream(drain=False)
+        finally:
+            self._queue.task_done()

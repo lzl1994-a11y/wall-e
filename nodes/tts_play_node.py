@@ -40,6 +40,7 @@ class TTSPlayNode(Node):
         self.declare_parameter("stream_first_segment", True)
         self.declare_parameter("stream_chunk_ms", 100)
         self.declare_parameter("stream_prebuffer_ms", 400.0)
+        self.declare_parameter("stream_idle_timeout_sec", 2.0)
         self.voice = self.get_parameter("voice").value
         self.rate = self.get_parameter("rate").value
         self.pitch = self.get_parameter("pitch").value
@@ -52,6 +53,9 @@ class TTSPlayNode(Node):
         self.stream_first_segment = self.get_parameter("stream_first_segment").value
         self.stream_chunk_ms = self.get_parameter("stream_chunk_ms").value
         self.stream_prebuffer_ms = self.get_parameter("stream_prebuffer_ms").value
+        self.stream_idle_timeout_sec = self.get_parameter(
+            "stream_idle_timeout_sec"
+        ).value
 
         self._tts = TTSService(
             voice=self.voice,
@@ -83,7 +87,11 @@ class TTSPlayNode(Node):
             on_error=self._log_synthesis_error,
             workers=self.prefetch_workers,
             synthesize_stream=(
-                lambda text: self._tts.synthesize_stream(text, self.stream_chunk_ms)
+                lambda text: self._tts.synthesize_stream(
+                    text,
+                    self.stream_chunk_ms,
+                    self.stream_idle_timeout_sec,
+                )
             ) if self.stream_first_segment else None,
             on_audio_chunk=self._publish_stream_chunk,
             on_stream_end=self._finish_stream_audio,
@@ -96,7 +104,8 @@ class TTSPlayNode(Node):
             f"trim={self.trim_boundary_silence}, "
             f"head={self.boundary_silence_ms}ms, tail={self.tail_silence_ms}ms, "
             f"stream_first={self.stream_first_segment}, chunk={self.stream_chunk_ms}ms, "
-            f"prebuffer={self.stream_prebuffer_ms}ms)"
+            f"prebuffer={self.stream_prebuffer_ms}ms, "
+            f"idle_timeout={self.stream_idle_timeout_sec}s)"
         )
 
     def _on_tts_text(self, msg):

@@ -5,10 +5,12 @@
 """
 
 import asyncio
+from concurrent.futures import CancelledError
 import io
 import queue
 import subprocess
 import threading
+import time
 
 import edge_tts
 import numpy as np
@@ -55,15 +57,23 @@ class TTSService:
         )
         return future.result()
 
-    def synthesize_stream(self, text: str, chunk_ms: int = 100):
+    def synthesize_stream(
+        self,
+        text: str,
+        chunk_ms: int = 100,
+        idle_timeout_sec: float = 2.0,
+    ):
         """Yield 48 kHz PCM while Edge TTS is still producing MP3 data."""
         if not text or not text.strip():
             raise ValueError("text is empty")
 
         chunk_ms = max(20, int(chunk_ms))
+        idle_timeout_sec = max(0.1, float(idle_timeout_sec))
         chunk_bytes = max(2, self.sample_rate * OUTPUT_SAMPLE_WIDTH * chunk_ms // 1000)
         mp3_queue = queue.Queue()
-        sentinel = object()
+        mp3_sentinel = object()
+        pcm_queue = queue.Queue()
+        pcm_sentinel = object()
         process = subprocess.Popen(
             [
                 "ffmpeg",
@@ -95,17 +105,20 @@ class TTSService:
             raise RuntimeError("ffmpeg streaming pipes could not be created")
 
         producer = asyncio.run_coroutine_threadsafe(
-            self._download_to_queue(text, mp3_queue, sentinel),
+            self._download_to_queue(text, mp3_queue, mp3_sentinel),
             self._loop,
         )
         writer_errors = []
+        reader_errors = []
+        last_activity = [time.monotonic()]
 
         def feed_decoder():
             try:
                 while True:
                     data = mp3_queue.get()
-                    if data is sentinel:
+                    if data is mp3_sentinel:
                         break
+                    last_activity[0] = time.monotonic()
                     process.stdin.write(data)
             except Exception as exc:
                 writer_errors.append(exc)
@@ -115,21 +128,73 @@ class TTSService:
                 except Exception:
                     pass
 
+        def read_decoder():
+            try:
+                while True:
+                    data = process.stdout.read(chunk_bytes)
+                    if not data:
+                        break
+                    last_activity[0] = time.monotonic()
+                    pcm_queue.put(data)
+            except Exception as exc:
+                reader_errors.append(exc)
+            finally:
+                pcm_queue.put(pcm_sentinel)
+
         writer = threading.Thread(
             target=feed_decoder,
             name="edge-tts-ffmpeg-writer",
             daemon=True,
         )
+        reader = threading.Thread(
+            target=read_decoder,
+            name="edge-tts-ffmpeg-reader",
+            daemon=True,
+        )
         writer.start()
+        reader.start()
 
         yielded_audio = False
+        received_pcm = False
         pending = bytearray()
         completed = False
+        idle_timed_out = False
+        flush_deadline = None
         try:
             while True:
-                data = process.stdout.read(chunk_bytes)
-                if not data:
+                if flush_deadline is not None:
+                    wait_timeout = max(0.0, flush_deadline - time.monotonic())
+                    if wait_timeout == 0.0:
+                        raise RuntimeError("ffmpeg did not flush after TTS idle timeout")
+                elif received_pcm:
+                    idle_remaining = idle_timeout_sec - (
+                        time.monotonic() - last_activity[0]
+                    )
+                    wait_timeout = max(0.01, idle_remaining)
+                else:
+                    wait_timeout = None
+
+                try:
+                    data = pcm_queue.get(timeout=wait_timeout)
+                except queue.Empty:
+                    if flush_deadline is not None:
+                        raise RuntimeError("ffmpeg did not flush after TTS idle timeout")
+                    idle_for = time.monotonic() - last_activity[0]
+                    if idle_for < idle_timeout_sec:
+                        continue
+                    idle_timed_out = True
+                    flush_deadline = time.monotonic() + 5.0
+                    print(
+                        f"[TTS Service] 流式音频连续 {idle_for:.2f}s 无新数据，"
+                        "主动关闭输入并冲刷尾帧"
+                    )
+                    producer.cancel()
+                    mp3_queue.put_nowait(mp3_sentinel)
+                    continue
+
+                if data is pcm_sentinel:
                     break
+                received_pcm = True
                 pending.extend(data)
                 while len(pending) >= chunk_bytes:
                     yielded_audio = True
@@ -147,11 +212,20 @@ class TTSService:
             writer.join(timeout=5.0)
             if writer.is_alive():
                 raise RuntimeError("ffmpeg input writer did not finish")
-            producer.result(timeout=5.0)
+            reader.join(timeout=1.0)
+            if reader.is_alive():
+                raise RuntimeError("ffmpeg output reader did not finish")
+            try:
+                producer.result(timeout=5.0)
+            except CancelledError:
+                if not idle_timed_out:
+                    raise
             return_code = process.wait(timeout=5.0)
             stderr = process.stderr.read().decode("utf-8", errors="replace").strip()
             if writer_errors:
                 raise RuntimeError(f"ffmpeg input failed: {writer_errors[0]}")
+            if reader_errors:
+                raise RuntimeError(f"ffmpeg output failed: {reader_errors[0]}")
             if return_code != 0:
                 raise RuntimeError(stderr or f"ffmpeg exited with code {return_code}")
             if not yielded_audio:
@@ -161,7 +235,7 @@ class TTSService:
             if not completed:
                 producer.cancel()
                 try:
-                    mp3_queue.put_nowait(sentinel)
+                    mp3_queue.put_nowait(mp3_sentinel)
                 except Exception:
                     pass
                 if process.poll() is None:
@@ -171,6 +245,7 @@ class TTSService:
                     except subprocess.TimeoutExpired:
                         process.kill()
                 writer.join(timeout=1.0)
+                reader.join(timeout=1.0)
 
     async def _download_to_queue(self, text, output_queue, sentinel):
         communicate = edge_tts.Communicate(
