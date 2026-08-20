@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Cloud ASR providers. The factory imports only the configured provider.
+dashscope>=1,<2
+requests>=2.31,<3
+websocket-client>=1.7,<2

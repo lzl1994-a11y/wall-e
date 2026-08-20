@@ -4,16 +4,6 @@ from pathlib import Path
 
 import yaml
 
-from .aliyun_asr import AliyunASR
-from .baidu_asr import BaiduASR
-from .zhipu_asr import ZhipuASR
-
-PROVIDERS = {
-    "aliyun": AliyunASR,
-    "baidu": BaiduASR,
-    "zhipu": ZhipuASR,
-}
-
 LOCAL_ENGINES = {
     "sherpa_onnx_zipformer",
     "sherpa_onnx_paraformer",
@@ -171,6 +161,8 @@ def create_asr(config_path: str = "core/config.yaml"):
     # Nested provider settings are preferred; flat keys keep old configs valid.
     api_key = provider_cfg.get("api_key") or asr_cfg.get("key", "")
     if provider == "baidu":
+        from .baidu_asr import BaiduASR
+
         return BaiduASR(
             app_id=provider_cfg["app_id"],
             api_key=api_key,
@@ -186,8 +178,12 @@ def create_asr(config_path: str = "core/config.yaml"):
         raise ValueError(f"asr.{provider}.model must be configured in config.yaml")
     model = model.strip()
     if provider == "aliyun":
+        from .aliyun_asr import AliyunASR
+
         return AliyunASR(api_key=api_key, model=model)
     if provider == "zhipu":
+        from .zhipu_asr import ZhipuASR
+
         return ZhipuASR(
             api_key=api_key,
             model=model,

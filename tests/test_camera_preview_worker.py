@@ -8,10 +8,10 @@ from services import camera_preview_worker
 
 
 class _FakeRosImage:
-    encoding = "jpeg"
-    data = b"jpeg-frame"
-    width = 640
-    height = 480
+    encoding = "rgb8"
+    data = b"\x00" * 12
+    width = 2
+    height = 2
 
 
 class _FakeString:

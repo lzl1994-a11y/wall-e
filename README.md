@@ -36,28 +36,29 @@ source install/setup.bash
 
 ### 3. ASR 运行依赖
 
-ASR 公共链路依赖如下：
+先安装系统音频依赖，再按使用的语音模式安装对应清单：
 
 ```bash
-sudo apt install -y libportaudio2 portaudio19-dev ffmpeg
-python3 -m pip install numpy PyYAML sounddevice requests dashscope edge-tts pydub
-```
+sudo apt install -y libportaudio2 portaudio19-dev ffmpeg python3-opencv
 
-再根据实际选择的引擎安装可选依赖：
+# 键盘调试、LLM、TTS 和通用硬件链路
+python3 -m pip install -r requirements.txt
 
-```bash
-# 百度实时 ASR
-python3 -m pip install websocket-client
+# 使用任一云端 ASR 时（智谱、阿里云或百度）
+python3 -m pip install -r requirements-cloud-asr.txt
 
-# Sherpa-ONNX Zipformer / Paraformer / SenseVoice / Whisper
-python3 -m pip install sherpa-onnx
+# 使用本地 ASR、本地 VAD 或 sherpa-onnx 唤醒词时
+python3 -m pip install -r requirements-local-asr.txt
 
-# Faster-Whisper
-python3 -m pip install faster-whisper
+# 仅在 hardware.backend=ubuntu_i2c 时需要
+python3 -m pip install -r requirements-i2c.txt
 ```
 
 > [!NOTE]
 > 唤醒词与 ASR 是两套独立模块。即使 ASR 使用云端服务，只要启用了唤醒词，仍需要安装 `sherpa-onnx`。
+
+开发机可安装 `requirements-dev.txt`。仓库的 GitHub Actions 会在每次
+push 和 pull request 时安装这组依赖并运行 `python -m unittest discover -s tests -v`。
 
 ## 🎙️ ASR 云端 / 本地引擎配置
 

@@ -1,0 +1,7 @@
+# CI/test environment: common runtime plus all cloud ASR adapters exercised by
+# the unit tests. Local inference libraries remain optional and are mocked.
+-r requirements-cloud-asr.txt
+
+onnxruntime>=1.17,<2
+opencv-python-headless>=4.9,<5
+webrtcvad-wheels>=2.0.14,<3

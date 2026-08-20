@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Install this set for local ASR, local VAD, or sherpa-onnx wake-word use.
+faster-whisper>=1,<2
+onnxruntime>=1.17,<2
+sherpa-onnx>=1.10,<2
+webrtcvad-wheels>=2.0.14,<3

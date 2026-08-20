@@ -1,0 +1,12 @@
+# Shared runtime used by every voice mode. ROS 2 Python packages (rclpy,
+# std_msgs, sensor_msgs and ai_msgs) come from TogetherROS/apt, not PyPI.
+edge-tts>=7,<8
+evdev>=1.7,<2; sys_platform == "linux"
+fastmcp>=2,<3
+numpy>=1.26,<3
+openai>=1,<4
+pydub>=0.25,<1
+pypinyin>=0.49,<1
+pyserial>=3.5,<4
+PyYAML>=6,<7
+sounddevice>=0.4,<1
