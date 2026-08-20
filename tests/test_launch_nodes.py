@@ -56,6 +56,7 @@ class LaunchNodesTests(unittest.TestCase):
         ]
         self.assertIn("serial", names)
         self.assertIn("hardware_bridge", names)
+        self.assertLess(names.index("motion_arbiter"), names.index("hardware_bridge"))
         self.assertNotIn("i2c_hardware", names)
 
     @patch(
@@ -73,6 +74,7 @@ class LaunchNodesTests(unittest.TestCase):
         ]
         self.assertIn("serial", names)
         self.assertIn("i2c_hardware", names)
+        self.assertLess(names.index("motion_arbiter"), names.index("i2c_hardware"))
         self.assertNotIn("hardware_bridge", names)
         self.assertNotIn("servo", names)
         self.assertNotIn("motor", names)

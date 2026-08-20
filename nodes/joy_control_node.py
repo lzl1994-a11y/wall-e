@@ -14,6 +14,7 @@ import evdev
 from evdev import ecodes
 
 from services.motor_control import mix_differential_drive
+from services.motion_arbiter import MOTOR_JOYSTICK_TOPIC, STOP_COMMAND
 from services.remote_control_config import RemoteControlConfigWatcher
 
 # --- 按键/轴映射 ---
@@ -48,7 +49,7 @@ class JoyControlNode(Node):
         self.update_rate_hz = remote_config["update_rate_hz"]
 
         self.action_pub = self.create_publisher(String, '/action_cmd', 10)
-        self.motor_pub = self.create_publisher(String, '/motor_cmd', 10)
+        self.motor_pub = self.create_publisher(String, MOTOR_JOYSTICK_TOPIC, 10)
 
         self.device = None
         self.running = False
@@ -257,7 +258,7 @@ class JoyControlNode(Node):
 
     def _stop_motors(self):
         msg = String()
-        msg.data = json.dumps({"left": {"action": 0, "throttle": 0}, "right": {"action": 0, "throttle": 0}})
+        msg.data = json.dumps(STOP_COMMAND)
         self.motor_pub.publish(msg)
 
     def shutdown(self):

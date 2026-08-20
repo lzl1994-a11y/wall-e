@@ -81,6 +81,7 @@ def build_node_list(args):
     if launch_cfg.get("serial", True):
         if not args.no_serial:
             nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
+        nodes.append(NodeEntry("motion_arbiter", ROOT / "nodes" / "motion_arbiter_node.py"))
         nodes.append(NodeEntry("action", ROOT / "nodes" / "sequence_ros_node.py"))
         nodes.append(NodeEntry("joy_control", ROOT / "nodes" / "joy_control_node.py"))
         if not args.no_hardware:

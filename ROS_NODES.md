@@ -80,10 +80,11 @@ python launch_nodes.py --tracking
 此时在默认链路基础上附加:
 
 ```text
-wali_tracking_node  -> /servo_cmd ┐
-                    -> /motor_cmd ┴-> 当前硬件后端
-                                      ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
-                                      └─ ubuntu_i2c: i2c_hardware_node -> 板载 I2C -> PCA9685
+wali_tracking_node  -> /servo_cmd --------------------------------> 当前硬件后端
+                    -> /motor_cmd/tracking ┐
+sequence_ros_node   -> /motor_cmd/autonomy ├-> motion_arbiter_node -> /motor_cmd
+joy_control_node    -> /motor_cmd/joystick ┘                         ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
+                                                                    └─ ubuntu_i2c: i2c_hardware_node -> 板载 I2C -> PCA9685
                     -> /vision_pipeline_cmd -> hobot_vision_node -> USB 摄像头 + RDK BPU 检测
         ^
         ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
@@ -96,8 +97,9 @@ wali_tracking_node  -> /servo_cmd ┐
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
 | `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image`, `/camera_frame` | `/camera_frame`, `/camera_capture_status` | 按需摄像头唯一所有者；启动临时 `hobot_usb_cam`，或复用跟踪链路的 `/image`。 |
-| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd`, `/vision_pipeline_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机、电机和视觉管线控制指令。 |
+| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd/tracking`, `/vision_pipeline_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机、电机和视觉管线控制指令。 |
 | `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd` | `/image`, `/hobot_mono2d_body_detection` | 启停 USB 摄像头和 RDK `mono2d_body_detection` 进程组。 |
+| `nodes/motion_arbiter_node.py` | `motion_arbiter_node` | 运动控制启用时 | `/motor_cmd/joystick`, `/motor_cmd/tracking`, `/motor_cmd/autonomy` | `/motor_cmd` | 唯一电机命令仲裁器，执行手柄 > 跟踪 > 自主动作的优先级，并在上游命令超时后停车。 |
 | `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机。 |
 | `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685。 |
 | `nodes/doa_ros_node.py` | `doa_ros_node` | `--tracking` (除非 `--no-doa`) | 无(串口直读) | `/doa_angle` | DOA 声源定位桥接节点，对接 D-DOA TDOA 模块串口，发布声源角度。 |
@@ -110,7 +112,10 @@ wali_tracking_node  -> /servo_cmd ┐
 | `/camera_frame` | `camera_capture_node` 或临时 `hobot_usb_cam` | LLM、Web preview | `sensor_msgs/msg/CompressedImage` 格式的独立按需 JPEG 图像话题。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
-| `/motor_cmd` | `sequence_ros_node`, `joy_control_node` | 当前硬件后端 | JSON: `{"left":{"action":1,"throttle":30},"right":{...}}` |
+| `/motor_cmd/joystick` | `joy_control_node` | `motion_arbiter_node` | 最高优先级手柄电机心跳。 |
+| `/motor_cmd/tracking` | `wali_tracking_node` | `motion_arbiter_node` | 视觉跟踪电机心跳。 |
+| `/motor_cmd/autonomy` | `sequence_ros_node` | `motion_arbiter_node` | LLM 与预设动作产生的电机心跳。 |
+| `/motor_cmd` | `motion_arbiter_node` | 当前硬件后端 | 仲裁后的唯一电机输出；JSON: `{"left":{"action":1,"throttle":30},"right":{...}}`。 |
 | `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
 | `/hobot_mono2d_body_detection` | RDK X3 `mono2d_body_detection` | `wali_tracking_node` | `ai_msgs/PerceptionTargets`，BPU 检测结果（body/face/head/hand 框 + track_id） |
 | `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control` | `std_msgs/String`：`start` 启动摄像头与 BPU 检测，`stop` 关闭整个视觉跟踪管线。 |

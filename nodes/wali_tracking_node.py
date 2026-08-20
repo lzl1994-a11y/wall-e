@@ -15,6 +15,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String, Int32
+from services.motion_arbiter import MOTOR_TRACKING_TOPIC
 
 from services.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
@@ -112,7 +113,7 @@ class WaliTrackingNode(Node):
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
 
         self._action_pub = self.create_publisher(String, '/action_cmd', 10)
-        self._motor_pub = self.create_publisher(String, '/motor_cmd', 10)
+        self._motor_pub = self.create_publisher(String, MOTOR_TRACKING_TOPIC, 10)
         pipeline_qos = QoSProfile(depth=1)
         pipeline_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self._vision_pipeline_pub = self.create_publisher(
@@ -287,12 +288,13 @@ class WaliTrackingNode(Node):
                 self.get_logger().warning("目标丢失超过5秒，停止旋转搜索")
             return
 
-        if lost_seconds >= self.SEARCH_START_DELAY_SEC and not self._search_active:
-            # Search only during the 1s..5s loss window.
+        if lost_seconds >= self.SEARCH_START_DELAY_SEC:
+            # Heartbeat the search command throughout the 1s..5s loss window.
             self._publish_motor(1, 2, self.SEARCH_ROTATE_SPEED)
-            self._current_neck_pitch = 0.0
-            self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
-            self._search_active = True
+            if not self._search_active:
+                self._current_neck_pitch = 0.0
+                self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
+                self._search_active = True
 
     # ===================================================================
     # 执行层

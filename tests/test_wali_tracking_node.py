@@ -100,13 +100,13 @@ class WaliTrackingNodeTests(unittest.TestCase):
 
         with patch.object(module.time, "monotonic", return_value=101.1):
             node._control_tick()
-        search_cmd = json.loads(node.publishers["/motor_cmd"].messages[-1].data)
+        search_cmd = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
         self.assertEqual(search_cmd["left"]["action"], 1)
         self.assertEqual(search_cmd["right"]["action"], 2)
 
         with patch.object(module.time, "monotonic", return_value=105.1):
             node._control_tick()
-        stop_cmd = json.loads(node.publishers["/motor_cmd"].messages[-1].data)
+        stop_cmd = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
         self.assertEqual(stop_cmd["left"]["action"], 0)
         self.assertEqual(stop_cmd["right"]["action"], 0)
         self.assertEqual(node.mode, node.MODE_BODY_FOLLOW)

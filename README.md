@@ -341,5 +341,6 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 ## 📝 消息话题 (Topics)
 - `/hobot_dnn_detection`：来自地平线节点的 AI 识别框数据。
 - `/servo_cmd`：底层的舵机驱动指令 (JSON)。
-- `/motor_cmd`：底层的双履带电机驱动指令 (JSON)。
+- `/motor_cmd/joystick`、`/motor_cmd/tracking`、`/motor_cmd/autonomy`：手柄、视觉跟踪和自主动作的分源电机指令。
+- `/motor_cmd`：`motion_arbiter_node` 按“手柄 > 跟踪 > 自主动作”选出的唯一硬件电机指令；上游心跳超过 300ms 未刷新时自动停车。
 - `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。

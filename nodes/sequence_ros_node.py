@@ -7,6 +7,7 @@ import yaml
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+from services.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
 
 class SequenceRosNode(Node):
     # 所有的动作预设已迁移至 sequences.yaml，由 _flatten_sequence 处理
@@ -46,12 +47,13 @@ class SequenceRosNode(Node):
         # 时间轴与队列
         self._current_sequence = []
         self._sequence_start_time = 0.0
-        self._motor_timer = None
+        self._active_motor_cmd = None
+        self._motor_stop_at = 0.0
         self._auto_reset_timer = None
 
         # 3. ROS 接口
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
-        self.motor_pub = self.create_publisher(String, '/motor_cmd', 10)
+        self.motor_pub = self.create_publisher(String, MOTOR_AUTONOMY_TOPIC, 10)
         self.tft_pub   = self.create_publisher(String, '/tft_cmd', 10)
 
         # 4. 核心 50Hz 插值定时器
@@ -223,15 +225,15 @@ class SequenceRosNode(Node):
                             
         elif t == 'motor':
             direction = act.get('direction', 'forward')
-            duration = act.get('duration', 1.0)
+            duration = max(0.0, min(float(act.get('duration', 1.0)), 10.0))
             motor = self.MOTION_TO_MOTOR.get(direction)
             if motor:
-                msg = String()
-                msg.data = json.dumps(motor, ensure_ascii=False)
-                self.motor_pub.publish(msg)
-                if self._motor_timer:
-                    self.destroy_timer(self._motor_timer)
-                self._motor_timer = self.create_timer(duration, self._stop_motors)
+                if duration <= 0.0:
+                    self._stop_motors()
+                    return
+                self._active_motor_cmd = motor
+                self._motor_stop_at = time.monotonic() + duration
+                self._publish_active_motor()
                 
         elif t == 'express_emotion':
             emotion = act.get('emotion', 'happy')
@@ -251,13 +253,25 @@ class SequenceRosNode(Node):
 
     def _stop_motors(self):
         msg = String()
-        msg.data = json.dumps({"left": {"action": 0, "throttle": 0}, "right": {"action": 0, "throttle": 0}}, ensure_ascii=False)
+        msg.data = json.dumps(STOP_COMMAND, ensure_ascii=False)
         self.motor_pub.publish(msg)
-        if self._motor_timer:
-            self.destroy_timer(self._motor_timer)
-            self._motor_timer = None
+        self._active_motor_cmd = None
+        self._motor_stop_at = 0.0
+
+    def _publish_active_motor(self):
+        if self._active_motor_cmd is None:
+            return
+        self.motor_pub.publish(
+            String(data=json.dumps(self._active_motor_cmd, ensure_ascii=False))
+        )
 
     def _tick(self):
+        if self._active_motor_cmd is not None:
+            if time.monotonic() >= self._motor_stop_at:
+                self._stop_motors()
+            else:
+                self._publish_active_motor()
+
         # 1. 时间轴播放器：按时间触发关键帧剧本
         if self._current_sequence:
             item = self._current_sequence[0]
