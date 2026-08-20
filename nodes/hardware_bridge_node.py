@@ -24,6 +24,8 @@ import os
 import yaml
 
 from services.motor_control import apply_direction_inversion, motor_inversion_flags
+from services.motion_arbiter import normalize_motor_command
+from services.motor_watchdog import MotorWatchdog
 
 class HardwareBridgeNode(Node):
     _PUBLISH_INTERVAL_SECONDS = 0.02
@@ -66,6 +68,7 @@ class HardwareBridgeNode(Node):
         # 电机初始全停
         for i in range(9, 15):
             self._state[i] = 0
+        self._motor_watchdog = MotorWatchdog()
 
         self.create_subscription(String, '/servo_cmd', self._on_servo_cmd, 10)
         self.create_subscription(String, '/motor_cmd', self._on_motor_cmd, 10)
@@ -97,6 +100,11 @@ class HardwareBridgeNode(Node):
 
     def _flush_state(self):
         """Publish at most one complete state packet per control frame."""
+        if self._motor_watchdog.poll():
+            left_changed = self._apply_motor(9, 0, 0)
+            right_changed = self._apply_motor(12, 0, 0)
+            self._state_dirty = self._state_dirty or left_changed or right_changed
+            self.get_logger().error("[Bridge] 电机指令超时，硬件后端已强制停车")
         if not self._state_dirty:
             return
 
@@ -149,6 +157,11 @@ class HardwareBridgeNode(Node):
             self.get_logger().warn(f'[Bridge] motor JSON 解析失败: {msg.data[:80]}')
             return
 
+        cmd = normalize_motor_command(cmd)
+        if cmd is None:
+            self.get_logger().warn(f'[Bridge] motor 指令无效: {msg.data[:80]}')
+            return
+
         left = cmd.get('left', {})
         right = cmd.get('right', {})
 
@@ -161,6 +174,8 @@ class HardwareBridgeNode(Node):
         left_changed = self._apply_motor(9, left_action, left.get('throttle', 0))
         right_changed = self._apply_motor(12, right_action, right.get('throttle', 0))
         self._state_dirty = self._state_dirty or left_changed or right_changed
+        if self._motor_watchdog.refresh():
+            self.get_logger().info('[Bridge] 电机心跳恢复')
 
     def _apply_motor(self, base_ch: int, action: int, throttle: int) -> bool:
         """将一路电机的 action/throttle 写入 _state 对应 3 个通道。"""

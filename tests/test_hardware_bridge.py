@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from services.motor_watchdog import MotorWatchdog
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -53,6 +55,8 @@ class HardwareBridgeBatchingTests(unittest.TestCase):
         node._name_to_ch = {"head_yaw": 4, "neck_top": 5, "neck_bottom": 6}
         node._motor_inverted = {"left": False, "right": False}
         node._state_dirty = False
+        self.now = 10.0
+        node._motor_watchdog = MotorWatchdog(clock=lambda: self.now)
         node._raw_pub = Mock()
         node.get_logger = Mock()
         return node
@@ -111,6 +115,41 @@ class HardwareBridgeBatchingTests(unittest.TestCase):
         values = [int(value) for value in values.split(",")]
         self.assertEqual(values[4], 5000)
         self.assertEqual(values[9:15], [65535, 0, 32767, 0, 65535, 16383])
+
+    def test_motor_watchdog_forces_stop_after_heartbeat_loss(self):
+        node = self.make_node()
+        node._on_motor_cmd(
+            self.command(
+                {
+                    "left": {"action": 1, "throttle": 50},
+                    "right": {"action": 1, "throttle": 50},
+                }
+            )
+        )
+        node._flush_state()
+        node._raw_pub.reset_mock()
+
+        self.now += 0.31
+        node._flush_state()
+
+        node._raw_pub.publish.assert_called_once()
+        values = node._raw_pub.publish.call_args.args[0].data.split(":", 1)[1]
+        values = [int(value) for value in values.split(",")]
+        self.assertEqual(values[9:15], [0, 0, 0, 0, 0, 0])
+
+    def test_invalid_motor_command_does_not_refresh_watchdog(self):
+        node = self.make_node()
+        node._on_motor_cmd(
+            self.command(
+                {
+                    "left": {"action": 1, "throttle": 101},
+                    "right": {"action": 1, "throttle": 50},
+                }
+            )
+        )
+        self.now += 0.31
+
+        self.assertTrue(node._motor_watchdog.poll())
 
 
 if __name__ == "__main__":

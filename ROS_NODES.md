@@ -100,8 +100,8 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd/tracking`, `/vision_pipeline_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机、电机和视觉管线控制指令。 |
 | `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd` | `/image`, `/hobot_mono2d_body_detection` | 启停 USB 摄像头和 RDK `mono2d_body_detection` 进程组。 |
 | `nodes/motion_arbiter_node.py` | `motion_arbiter_node` | 运动控制启用时 | `/motor_cmd/joystick`, `/motor_cmd/tracking`, `/motor_cmd/autonomy` | `/motor_cmd` | 唯一电机命令仲裁器，执行手柄 > 跟踪 > 自主动作的优先级，并在上游命令超时后停车。 |
-| `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机。 |
-| `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685。 |
+| `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机；300ms 收不到仲裁心跳时强制写入停车状态。 |
+| `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685；300ms 收不到仲裁心跳时直接停车。 |
 | `nodes/doa_ros_node.py` | `doa_ros_node` | `--tracking` (除非 `--no-doa`) | 无(串口直读) | `/doa_angle` | DOA 声源定位桥接节点，对接 D-DOA TDOA 模块串口，发布声源角度。 |
 
 ### 视觉跟踪话题

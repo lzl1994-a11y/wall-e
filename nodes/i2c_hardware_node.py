@@ -8,14 +8,24 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from services.servo_control import ServoControl
+from services.motion_arbiter import normalize_motor_command
+from services.motor_watchdog import (
+    MOTOR_WATCHDOG_CHECK_INTERVAL_SEC,
+    MotorWatchdog,
+)
 
 
 class I2CHardwareNode(Node):
     def __init__(self):
         super().__init__("i2c_hardware_node")
         self.driver = ServoControl()
+        self._motor_watchdog = MotorWatchdog()
         self.create_subscription(String, "/servo_cmd", self._on_servo_cmd, 10)
         self.create_subscription(String, "/motor_cmd", self._on_motor_cmd, 10)
+        self.create_timer(
+            MOTOR_WATCHDOG_CHECK_INTERVAL_SEC,
+            self._check_motor_watchdog,
+        )
         self.get_logger().info(
             "Ubuntu I2C hardware online: "
             f"/dev/i2c-{self.driver.bus_number}, address=0x{self.driver.address:02x}, "
@@ -50,6 +60,11 @@ class I2CHardwareNode(Node):
             self.get_logger().warn(f"/motor_cmd JSON 解析失败: {msg.data[:80]}")
             return
 
+        command = normalize_motor_command(command)
+        if command is None:
+            self.get_logger().warn(f"/motor_cmd 指令无效: {msg.data[:80]}")
+            return
+
         try:
             for side in ("left", "right"):
                 motor = command.get(side, {})
@@ -60,6 +75,19 @@ class I2CHardwareNode(Node):
                 )
         except (TypeError, ValueError, OSError) as exc:
             self.get_logger().error(f"电机 I2C 写入失败: {exc}")
+            return
+        if self._motor_watchdog.refresh():
+            self.get_logger().info("I2C 电机心跳恢复")
+
+    def _check_motor_watchdog(self):
+        if not self._motor_watchdog.poll():
+            return
+        try:
+            self.driver.set_motor("left", 0, 0)
+            self.driver.set_motor("right", 0, 0)
+            self.get_logger().error("I2C 电机指令超时，硬件后端已强制停车")
+        except (TypeError, ValueError, OSError) as exc:
+            self.get_logger().error(f"I2C watchdog 停车失败: {exc}")
 
     def destroy_node(self):
         if hasattr(self, "driver"):
