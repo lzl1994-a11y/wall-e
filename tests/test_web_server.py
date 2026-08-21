@@ -62,6 +62,18 @@ def sample_config():
             "enabled_on_start": False,
             "pid": {"kp": 0.12, "ki": 0.0, "kd": 0.02},
         },
+        "tft_preview": {
+            "bind_address": "0.0.0.0",
+            "port": 9000,
+            "frame_provider": "ros_camera_frame",
+            "fps": 10,
+            "recognition_duration_ms": 1500,
+            "photo_duration_ms": 3000,
+            "hold_ms": 3000,
+            "jpeg_quality": 70,
+            "max_frame_bytes": 262144,
+            "photo_directory": "~/.wali/photos",
+        },
         "servos": [{"id": 0, "name": "eye_r", "limit_1": 2000, "limit_2": 4300, "init": 3000}],
         "motors": [{"id": 0, "name": "track_r", "max_speed": 100, "neutral_speed": 0, "invert_direction": False}],
     }
@@ -158,6 +170,17 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('id="camera-preview-phase"', hardware_panel)
         self.assertIn('id="camera-preview-source"', hardware_panel)
         self.assertIn('id="camera-preview-diagnostic"', hardware_panel)
+        self.assertIn('data-module="tft_preview"', hardware_panel)
+        self.assertIn('data-path="tft_preview.port"', hardware_panel)
+
+    def test_invalid_tft_preview_fps_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={"patch": {"tft_preview": {"fps": 25}}},
+            )
+        self.assertEqual(context.exception.code, 400)
 
     def test_camera_preview_api_starts_returns_frames_and_stops(self):
         preview = MagicMock()

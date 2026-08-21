@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     from rclpy.qos import qos_profile_sensor_data
@@ -27,10 +27,22 @@ from services.camera_capture_protocol import (
 )
 
 
+def is_camera_photo_request(user_prompt: str) -> bool:
+    """识别只拍照保存、不调用视觉模型的请求。"""
+    text = (user_prompt or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "拍照", "拍张照", "拍一张", "照张相", "照一张", "给我拍", "帮我拍",
+        "摄影", "take a photo", "take a picture",
+    )
+    return any(marker in text for marker in markers)
+
+
 def is_camera_inspection_request(user_prompt: str) -> bool:
     """快速识别常见的一次性视觉问题，持续注视/跟随不在此范围。"""
     text = (user_prompt or "").strip().lower()
-    if not text or any(word in text for word in (
+    if not text or is_camera_photo_request(text) or any(word in text for word in (
         "看着我", "看我", "盯着我", "跟着我", "跟随我", "look at me", "follow me"
     )):
         return False
@@ -38,8 +50,7 @@ def is_camera_inspection_request(user_prompt: str) -> bool:
         "看一下", "看一看", "帮我看看", "你看看", "请看看", "看下", "看一眼",
         "看什么", "是什么东西", "前面有什么", "面前有什么", "眼前有什么",
         "看到了什么", "看见了什么", "识别一下", "辨认一下", "认一下",
-        "拍照", "拍张照", "拍一张", "照一张",
-        "what is this", "what do you see", "take a photo",
+        "what is this", "what do you see",
     )
     return any(marker in text for marker in markers)
 
@@ -169,3 +180,125 @@ class CameraFrameProvider:
                     self._condition.wait(timeout=min(0.5, remaining))
         finally:
             self._publish_command("release", client_id)
+
+    def capture_stream(
+        self,
+        *,
+        duration_ms: int,
+        fps: int,
+        on_frame: Callable[[bytes], None],
+        timeout: float = 8.0,
+        request_timeout: float | None = None,
+    ) -> bytes | None:
+        """Lease the shared camera and deliver paced, complete JPEG frames.
+
+        The preview clock starts only after a fresh, warmed-up frame arrives, so
+        camera startup time does not shorten the requested TFT preview.
+        """
+        if self._command_pub is None:
+            return None
+        frame_wait_seconds = max(0.2, float(timeout))
+        request_wait_seconds = (
+            frame_wait_seconds
+            if request_timeout is None
+            else max(0.2, float(request_timeout))
+        )
+        duration_seconds = max(0.1, float(duration_ms) / 1000.0)
+        target_fps = min(20, max(1, int(fps)))
+        frame_interval = 1.0 / target_fps
+        client_id = f"tft-{uuid.uuid4().hex}"
+        requested_at = time.monotonic()
+        deadline = requested_at + request_wait_seconds
+        manager_acknowledged = False
+        first_fresh_frame_time = 0.0
+        first_fresh_frame_sequence = 0
+        lease_seconds = request_wait_seconds + frame_wait_seconds + duration_seconds + 2.0
+        action = "acquire"
+        first_frame: bytes | None = None
+
+        try:
+            with self._condition:
+                while first_frame is None:
+                    if self._frame is not None and self._frame_time >= requested_at:
+                        if not first_fresh_frame_time:
+                            first_fresh_frame_time = self._frame_time
+                            first_fresh_frame_sequence = self._frame_sequence
+                        warmup_elapsed = self._frame_time - first_fresh_frame_time
+                        warmup_frame_count = (
+                            self._frame_sequence - first_fresh_frame_sequence + 1
+                        )
+                        if (
+                            warmup_elapsed >= self._warmup_seconds
+                            and warmup_frame_count >= self._warmup_frames
+                        ):
+                            first_frame = self._frame
+                            break
+                    now = time.monotonic()
+                    if (
+                        not manager_acknowledged
+                        and self._status_time >= requested_at
+                        and self._status_state in {"starting", "streaming"}
+                    ):
+                        manager_acknowledged = True
+                        deadline = now + frame_wait_seconds
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        return None
+                    self._publish_command(action, client_id, lease_seconds)
+                    action = "renew"
+                    self._condition.wait(timeout=min(0.5, remaining))
+
+            stream_started = time.monotonic()
+            stream_deadline = stream_started + duration_seconds
+            next_frame_at = stream_started
+            last_renewed_at = stream_started
+            last_frame = first_frame
+
+            while True:
+                now = time.monotonic()
+                if now >= stream_deadline:
+                    break
+                wait_seconds = next_frame_at - now
+                if wait_seconds > 0:
+                    with self._condition:
+                        self._condition.wait(
+                            timeout=min(wait_seconds, max(0.0, stream_deadline - now))
+                        )
+                    continue
+
+                with self._condition:
+                    if self._frame is not None:
+                        last_frame = self._frame
+                if last_frame is not None:
+                    on_frame(last_frame)
+
+                now = time.monotonic()
+                if now - last_renewed_at >= 0.5:
+                    self._publish_command("renew", client_id, lease_seconds)
+                    last_renewed_at = now
+                next_frame_at += frame_interval
+                if next_frame_at <= now:
+                    # Encoding/network backpressure may make us late. Drop old
+                    # time slots instead of sending a burst of stale frames.
+                    next_frame_at = now + frame_interval
+
+            # Return the last frame delivered to consumers. This keeps the
+            # saved/analysed photo identical to the frame the TFT holds.
+            return last_frame
+        finally:
+            self._publish_command("release", client_id)
+
+
+def save_camera_photo(jpeg: bytes, directory: str | Path) -> Path:
+    """Atomically save one complete source JPEG and return its absolute path."""
+    data = bytes(jpeg or b"")
+    if not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+        raise ValueError("camera photo is not a complete JPEG")
+    target_directory = Path(directory).expanduser().resolve()
+    target_directory.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    target = target_directory / f"wali_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
+    temporary = target.with_suffix(".jpg.tmp")
+    temporary.write_bytes(data)
+    temporary.replace(target)
+    return target

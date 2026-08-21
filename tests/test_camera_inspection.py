@@ -191,10 +191,16 @@ class LLMServiceVisionTests(unittest.TestCase):
 
 class CameraIntentTests(unittest.TestCase):
     def test_inspection_phrases_are_detected(self):
-        from services.camera_frame import is_camera_inspection_request
+        from services.camera_frame import (
+            is_camera_inspection_request,
+            is_camera_photo_request,
+        )
 
         self.assertTrue(is_camera_inspection_request("瓦力你看一下这是个什么东西"))
         self.assertTrue(is_camera_inspection_request("你前面有什么"))
+        self.assertFalse(is_camera_inspection_request("帮我拍张照片"))
+        self.assertTrue(is_camera_photo_request("帮我拍张照片"))
+        self.assertTrue(is_camera_photo_request("take a picture"))
         self.assertFalse(is_camera_inspection_request("瓦力看着我"))
         self.assertFalse(is_camera_inspection_request("跟着我"))
 
@@ -352,6 +358,39 @@ class CameraFrameProviderTests(unittest.TestCase):
         thread.join(timeout=1.0)
 
         self.assertEqual(result, [b"frame-3"])
+
+    def test_capture_stream_reuses_one_lease_and_returns_last_complete_frame(self):
+        provider, node, image_type = self._provider()
+        emitted = []
+        result = []
+        thread = __import__("threading").Thread(
+            target=lambda: result.append(provider.capture_stream(
+                duration_ms=120,
+                fps=20,
+                on_frame=emitted.append,
+                timeout=0.5,
+                request_timeout=0.5,
+            ))
+        )
+        thread.start()
+        deadline = __import__("time").monotonic() + 0.5
+        while not node.publisher.messages and __import__("time").monotonic() < deadline:
+            __import__("time").sleep(0.01)
+        node.callbacks["/camera_frame"](image_type(b"frame-1"))
+        __import__("time").sleep(0.04)
+        node.callbacks["/camera_frame"](image_type(b"frame-2"))
+        __import__("time").sleep(0.05)
+        node.callbacks["/camera_frame"](image_type(b"frame-3"))
+        thread.join(timeout=1.0)
+
+        commands = [
+            __import__("json").loads(message.data)
+            for message in node.publisher.messages
+        ]
+        self.assertEqual(result, [b"frame-3"])
+        self.assertGreaterEqual(len(emitted), 2)
+        self.assertEqual(commands[0]["action"], "acquire")
+        self.assertEqual(commands[-1]["action"], "release")
 
     def test_manager_ack_starts_a_fresh_frame_timeout(self):
         provider, node, image_type = self._provider()

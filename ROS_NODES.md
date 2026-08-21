@@ -61,7 +61,8 @@ LLM / Web -> /camera_capture_cmd -> camera_capture_node
                                       ├─ 跟踪已运行: /image -> /camera_frame
                                       └─ 跟踪未运行: 临时 hobot_usb_cam -> /camera_frame
 
-/camera_frame -> CameraFrameProvider -> 云端视觉 LLM
+/camera_frame -> CameraFrameProvider -> 1.5 秒 TFT 预览 -> 云端视觉 LLM
+              -> CameraFrameProvider -> 3 秒 TFT 预览 -> 本地照片
               -> Config Web preview
 ```
 
@@ -140,8 +141,9 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | 文件 | 作用 |
 | --- | --- |
 | `services/llm_service.py` | 封装 OpenAI/Kimi 兼容接口，提供流式大模型回复和工具调用结果。 |
-| `services/camera_frame.py` | 请求摄像头租约，等待一张新的 `/camera_frame`，完成后立即释放；不会直接打开摄像头。 |
+| `services/camera_frame.py` | 请求摄像头租约，支持单帧或限时帧流，完成后立即释放；不会直接打开摄像头。 |
 | `services/camera_capture_protocol.py` | 定义按需摄像头话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 重映射命令。 |
+| `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
 | `services/mcp_service.py` | 注册可给 LLM 调用的工具，目前包括 `express_emotion`、`perform_action`、`move_chassis`。 |
 | `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
 | `services/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |

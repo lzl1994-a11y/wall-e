@@ -13,7 +13,17 @@ from std_msgs.msg import String
 from pypinyin import Style, pinyin
 
 from services.llm_service import LLMService
-from services.camera_frame import CameraFrameProvider, is_camera_inspection_request
+from services.camera_frame import (
+    CameraFrameProvider,
+    is_camera_inspection_request,
+    is_camera_photo_request,
+    save_camera_photo,
+)
+from services.tft_preview_server import (
+    PreviewResult,
+    TftPreviewServer,
+    load_tft_preview_settings,
+)
 from services.tts_protocol import encode_turn_end
 
 
@@ -76,6 +86,17 @@ class LLMBrainNode(Node):
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
         self.busy_publisher = self.create_publisher(String, 'llm_busy', 10)
         self.camera_frames = CameraFrameProvider(self)
+        self.tft_preview_settings = load_tft_preview_settings()
+        self.tft_preview = TftPreviewServer(
+            self.tft_preview_settings,
+            logger=self.get_logger(),
+        )
+        try:
+            self.tft_preview.start()
+        except Exception as exc:
+            # Camera/photo business remains available when port 9000 is busy or
+            # the network stack is unavailable.
+            self.get_logger().error(f'TFT preview service failed to start: {exc}')
 
         try:
             self.llm = LLMService()
@@ -145,7 +166,12 @@ class LLMBrainNode(Node):
         busy_msg.data = "busy"
         self.busy_publisher.publish(busy_msg)
 
-        # 视觉查看是一个两阶段技能：先立即确认，再抓取一帧交给视觉模型。
+        # 拍照只保存本地文件，不进入视觉模型。
+        if is_camera_photo_request(user_prompt):
+            self._process_camera_photo(turn_id, user_prompt)
+            return
+
+        # 视觉查看是一个两阶段技能：先立即确认，再预览并把末帧交给视觉模型。
         # 这样用户不会等待摄像头和第二次 LLM 请求时陷入沉默。
         if is_camera_inspection_request(user_prompt):
             self._process_camera_inspection(turn_id, user_prompt)
@@ -342,12 +368,23 @@ class LLMBrainNode(Node):
         self._finish_tts_turn(turn_id)
 
     def _process_camera_inspection(self, turn_id, user_prompt):
-        """确认 → 抓帧 → 视觉 LLM → 播报结果。"""
+        """确认 → TFT 预览 1.5 秒 → 末帧视觉 LLM → 播报结果。"""
         confirmation = '好的，我看一下。'
         self._publish_tts(confirmation, turn_id)
         self._publish_screen_dialog(turn_id, user_prompt, confirmation, [])
 
-        frame = self.camera_frames.capture(timeout=10.0, request_timeout=15.0)
+        preview = self._run_camera_preview(
+            duration_ms=self.tft_preview_settings.recognition_duration_ms,
+        )
+        if preview.busy:
+            failure = '我正在处理上一张画面，等一下再看。'
+            self._publish_tts(failure, turn_id)
+            self._publish_screen_dialog(
+                turn_id, user_prompt, failure, [], error='camera_preview_busy'
+            )
+            self._finish_tts_turn(turn_id)
+            return
+        frame = preview.last_frame
         if not frame:
             failure = '我现在看不到画面，检查一下摄像头连接。'
             self._publish_tts(failure, turn_id)
@@ -394,6 +431,58 @@ class LLMBrainNode(Node):
             self._publish_screen_dialog(turn_id, user_prompt, failure, [], error=str(exc))
         finally:
             self._finish_tts_turn(turn_id)
+
+    def _process_camera_photo(self, turn_id, user_prompt):
+        """确认 → TFT 预览 3 秒 → 保存末帧；不调用视觉模型。"""
+        confirmation = '好的，准备拍照。'
+        self._publish_tts(confirmation, turn_id)
+        self._publish_screen_dialog(turn_id, user_prompt, confirmation, [])
+
+        preview = self._run_camera_preview(
+            duration_ms=self.tft_preview_settings.photo_duration_ms,
+        )
+        if preview.busy:
+            answer = '我正在拍上一张，等一下再试。'
+            error = 'camera_preview_busy'
+        elif not preview.last_frame:
+            answer = '这次没有拍到，检查一下摄像头连接。'
+            error = preview.error or 'camera_frame_unavailable'
+        else:
+            try:
+                photo_path = save_camera_photo(
+                    preview.last_frame,
+                    self.tft_preview_settings.photo_directory,
+                )
+                self.get_logger().info(f'[{turn_id}] Photo saved: {photo_path}')
+                answer = '拍好了，照片已经保存。'
+                error = None
+            except Exception as exc:
+                self.get_logger().error(
+                    f'[{turn_id}] Photo save failed: {exc}\n{traceback.format_exc()}'
+                )
+                answer = '画面拍到了，但照片保存失败了。'
+                error = str(exc)
+
+        self._publish_tts(answer, turn_id)
+        self.chat_history.append({'role': 'user', 'content': user_prompt})
+        self.chat_history.append({'role': 'assistant', 'content': answer})
+        self.full_ai_publisher.publish(String(data=answer))
+        self._publish_screen_dialog(turn_id, user_prompt, answer, [], error=error)
+        self._finish_tts_turn(turn_id)
+
+    def _run_camera_preview(self, *, duration_ms):
+        """Run camera capture on the LLM worker, never on the ROS callback thread."""
+        preview_service = getattr(self, 'tft_preview', None)
+        if preview_service is None:
+            return PreviewResult(
+                last_frame=self.camera_frames.capture(timeout=10.0, request_timeout=15.0)
+            )
+        return preview_service.send_camera_preview(
+            self.camera_frames,
+            duration_ms=duration_ms,
+            hold_ms=self.tft_preview_settings.hold_ms,
+            fps=self.tft_preview_settings.fps,
+        )
 
     def _visual_history(self):
         """只保留文本形式的最近上下文，避免把旧 tool 消息传给视觉模型。"""
@@ -591,6 +680,8 @@ class LLMBrainNode(Node):
                 pass
         if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
+        if getattr(self, 'tft_preview', None) is not None:
+            self.tft_preview.stop()
         super().destroy_node()
 
 

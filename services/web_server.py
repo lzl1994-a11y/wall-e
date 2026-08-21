@@ -381,6 +381,32 @@ def _validate_web(web: Any, errors: list[str]) -> None:
         errors.append("web.access_token 只能使用 ASCII 字母、数字和符号，不能包含中文")
 
 
+def _validate_tft_preview(value: Any, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append("tft_preview 必须是配置对象")
+        return
+    _check_string(value, "bind_address", "tft_preview.bind_address", errors)
+    _check_number(value, "port", "tft_preview.port", errors, 1, 65535, integer=True)
+    _check_string(value, "frame_provider", "tft_preview.frame_provider", errors)
+    if value.get("frame_provider") != "ros_camera_frame":
+        errors.append("tft_preview.frame_provider 目前只能是 ros_camera_frame")
+    _check_number(value, "fps", "tft_preview.fps", errors, 1, 20, integer=True)
+    for key in ("recognition_duration_ms", "photo_duration_ms"):
+        _check_number(value, key, f"tft_preview.{key}", errors, 100, 60000, integer=True)
+    _check_number(value, "hold_ms", "tft_preview.hold_ms", errors, 0, 60000, integer=True)
+    _check_number(value, "jpeg_quality", "tft_preview.jpeg_quality", errors, 1, 100, integer=True)
+    _check_number(
+        value,
+        "max_frame_bytes",
+        "tft_preview.max_frame_bytes",
+        errors,
+        1024,
+        256 * 1024,
+        integer=True,
+    )
+    _check_string(value, "photo_directory", "tft_preview.photo_directory", errors)
+
+
 def validate_config(config: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(config, dict):
@@ -516,6 +542,9 @@ def validate_config(config: Any) -> list[str]:
     else:
         for key in ("kp", "ki", "kd"):
             _check_number(pid, key, f"vision.pid.{key}", errors, -100, 100)
+
+    if config.get("tft_preview") is not None:
+        _validate_tft_preview(config.get("tft_preview"), errors)
 
     _validate_servos(config.get("servos"), errors)
     _validate_motors(config.get("motors"), errors)

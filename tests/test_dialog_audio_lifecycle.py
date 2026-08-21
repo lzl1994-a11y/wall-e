@@ -1,3 +1,4 @@
+import base64
 import importlib
 import json
 import queue
@@ -6,6 +7,7 @@ import threading
 import types
 import unittest
 from collections import deque
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -171,6 +173,8 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         fake_camera = types.ModuleType("services.camera_frame")
         fake_camera.CameraFrameProvider = object
         fake_camera.is_camera_inspection_request = lambda _text: False
+        fake_camera.is_camera_photo_request = lambda _text: False
+        fake_camera.save_camera_photo = lambda _jpeg, _directory: None
 
         modules = {
             "rclpy": fake_rclpy,
@@ -254,6 +258,85 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
         self.assertEqual(messages[0], "\u4f60\u597d\uff0c\u6211\u5728\u3002")
         self.assertEqual(decode_turn_end(messages[1]), "turn-direct")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_photo_preview_saves_last_frame_without_calling_llm(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.chat_history = deque(maxlen=40)
+        node.tts_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(
+            photo_duration_ms=3000,
+            recognition_duration_ms=1500,
+            hold_ms=3000,
+            fps=10,
+            photo_directory="/tmp/wali-photos",
+        )
+        node.tft_preview = MagicMock()
+        from services.tft_preview_server import PreviewResult
+        node.tft_preview.send_camera_preview.return_value = PreviewResult(
+            last_frame=b"\xff\xd8photo\xff\xd9"
+        )
+        node.camera_frames = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        save = MagicMock(return_value=Path("/tmp/photo.jpg"))
+        with patch.dict(
+            node_class._process_camera_photo.__globals__,
+            {"save_camera_photo": save},
+        ):
+            node._process_camera_photo("turn-photo", "帮我拍张照片")
+
+        node.llm.chat_stream.assert_not_called()
+        save.assert_called_once_with(b"\xff\xd8photo\xff\xd9", "/tmp/wali-photos")
+        preview_call = node.tft_preview.send_camera_preview.call_args
+        self.assertEqual(preview_call.kwargs["duration_ms"], 3000)
+        self.assertEqual(preview_call.kwargs["hold_ms"], 3000)
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(messages[:2], ["好的，准备拍照。", "拍好了，照片已经保存。"])
+        self.assertEqual(decode_turn_end(messages[2]), "turn-photo")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_inspection_previews_for_1500ms_then_sends_last_frame_to_llm(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "前面是一只杯子。"},
+            {"type": "done", "finish_reason": "stop"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.tts_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(
+            photo_duration_ms=3000,
+            recognition_duration_ms=1500,
+            hold_ms=3000,
+            fps=10,
+            photo_directory="/tmp/wali-photos",
+        )
+        node.tft_preview = MagicMock()
+        from services.tft_preview_server import PreviewResult
+        node.tft_preview.send_camera_preview.return_value = PreviewResult(
+            last_frame=b"\xff\xd8vision\xff\xd9"
+        )
+        node.camera_frames = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_camera_inspection("turn-vision", "帮我看看这是什么")
+
+        preview_call = node.tft_preview.send_camera_preview.call_args
+        self.assertEqual(preview_call.kwargs["duration_ms"], 1500)
+        llm_call = node.llm.chat_stream.call_args
+        expected_image = base64.b64encode(b"\xff\xd8vision\xff\xd9").decode("ascii")
+        self.assertEqual(llm_call.kwargs["image_base64"], expected_image)
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(messages[:2], ["好的，我看一下。", "前面是一只杯子。"])
+        self.assertEqual(decode_turn_end(messages[2]), "turn-vision")
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_first_long_comma_clause_is_published_before_sentence_end(self):

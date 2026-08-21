@@ -319,6 +319,30 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 - `--no-hardware`：不启动舵机/电机硬件后端，保留其他节点用于调试。
 - `--no-web`：不启动 `config.yaml` 配置网页。
 
+### 胸前屏幕拍照预览
+
+`walle_llm_brain` 会自动启动 TFT TCP 服务。ESP32 连接上位机的 9000 端口并以
+`WALL_E_TFT` 发送 HELLO 后，平时只保持连接和心跳；“看一下/识别一下”会预览
+1.5 秒并把末帧交给视觉模型，“拍照”会预览 3 秒、保存末帧到本地且不调用模型。
+摄像头图像继续复用 `/camera_frame`，不会重复打开摄像头。默认配置如下：
+
+```yaml
+tft_preview:
+  bind_address: 0.0.0.0
+  port: 9000
+  frame_provider: ros_camera_frame
+  fps: 10
+  recognition_duration_ms: 1500
+  photo_duration_ms: 3000
+  hold_ms: 3000
+  jpeg_quality: 70
+  max_frame_bytes: 262144
+  photo_directory: ~/.wali/photos
+```
+
+随主程序启动即可：`python launch_nodes.py --real-stt`。也可以在配置网页的
+“硬件 → 胸前屏幕拍照预览”中修改这些参数，保存后重启主程序生效。
+
 舵机和履带的硬件后端在配置网页“硬件 → 运动硬件后端”中选择：
 
 - `serial_mcu`：默认模式，通过 USB 串口把 PCA9685 数据发送给 ESP32 下位机。
