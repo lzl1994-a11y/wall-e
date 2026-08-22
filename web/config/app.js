@@ -1012,6 +1012,96 @@ async function saveModule(module) {
   }
 }
 
+function utf8ByteLength(value) {
+  return new TextEncoder().encode(value).length;
+}
+
+function esp32NetworkPayload() {
+  const wifi = [1, 2, 3].map((index) => ({
+    ssid: $(`#esp32-wifi-ssid-${index}`).value,
+    password: $(`#esp32-wifi-password-${index}`).value,
+  }));
+  wifi.forEach((entry, index) => {
+    const number = index + 1;
+    if (utf8ByteLength(entry.ssid) > 32) throw new Error(`Wi-Fi ${number} SSID 不能超过 32 个 UTF-8 字节`);
+    if (utf8ByteLength(entry.password) > 64) throw new Error(`Wi-Fi ${number} 密码不能超过 64 个 UTF-8 字节`);
+    if (!entry.ssid && entry.password) throw new Error(`未使用的 Wi-Fi ${number} 必须同时留空 SSID 和密码`);
+  });
+  if (!wifi.some((entry) => entry.ssid)) throw new Error("至少必须配置一个非空 SSID");
+  const host = $("#esp32-network-host").value;
+  if (!utf8ByteLength(host) || utf8ByteLength(host) > 64) throw new Error("图像服务器地址必须为 1–64 个 UTF-8 字节");
+  const port = Number($("#esp32-network-port").value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("图像服务器端口必须是 1–65535 的整数");
+  return { wifi, host, port };
+}
+
+function setEsp32NetworkStatus(text, kind = "") {
+  const element = $("#esp32-network-status");
+  element.textContent = text;
+  element.dataset.state = kind;
+}
+
+function setEsp32NetworkBusy(busy, label = "") {
+  const save = $("#esp32-network-save");
+  const query = $("#esp32-network-query");
+  save.disabled = busy;
+  query.disabled = busy;
+  save.textContent = busy ? label || "正在应用…" : "保存并应用";
+}
+
+async function saveEsp32Network() {
+  let payload;
+  try {
+    payload = esp32NetworkPayload();
+  } catch (error) {
+    setEsp32NetworkStatus(error.message, "error");
+    showToast(error.message, "error");
+    return;
+  }
+  setEsp32NetworkBusy(true, "正在验证并应用…");
+  setEsp32NetworkStatus("已发送 SET，正在等待 ESP32 验证 Wi-Fi、TCP 图像服务器和 HELLO（最多约 65 秒）。请勿关闭串口或刷新页面。", "saving");
+  try {
+    const result = await api("/api/esp32-network/save-and-apply", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    // Firmware never returns passwords; remove entered copies after success too.
+    [1, 2, 3].forEach((index) => { $(`#esp32-wifi-password-${index}`).value = ""; });
+    setEsp32NetworkStatus(`配置成功：ESP32 已验证连接并写入 NVS（SET #${result.set_seq}，APPLY #${result.apply_seq}）。`, "success");
+    showToast("ESP32 网络配置已成功应用并保存");
+  } catch (error) {
+    setEsp32NetworkStatus(`配置失败：${error.message}`, "error");
+    showToast(error.message, "error");
+  } finally {
+    setEsp32NetworkBusy(false);
+  }
+}
+
+async function queryEsp32Network() {
+  setEsp32NetworkBusy(true, "正在读取…");
+  setEsp32NetworkStatus("正在通过 USB 串口读取 ESP32 当前网络状态…", "saving");
+  try {
+    const result = await api("/api/esp32-network/query", { method: "POST", body: JSON.stringify({}) });
+    (result.wifi || []).forEach((entry, index) => {
+      const input = $(`#esp32-wifi-ssid-${index + 1}`);
+      if (input) input.value = entry.ssid || "";
+    });
+    $("#esp32-network-host").value = result.host || "";
+    $("#esp32-network-port").value = result.port || "";
+    // The firmware never returns passwords. Clear any old values so a newly
+    // queried SSID can never accidentally be saved with a previous password.
+    [1, 2, 3].forEach((index) => { $(`#esp32-wifi-password-${index}`).value = ""; });
+    const selected = result.selected === 255 ? "未连接 Wi-Fi" : `Wi-Fi ${result.selected + 1}`;
+    const flags = [result.active_from_nvs ? "NVS 已保存" : "无 NVS 配置", result.candidate_present ? "有候选配置" : "无候选配置", result.apply_running ? "切换中" : "未切换"].join("；");
+    setEsp32NetworkStatus(`已读取（${selected}，${flags}）。Wi-Fi 密码不会由设备返回，已清空，请在保存前重新输入。`, "success");
+  } catch (error) {
+    setEsp32NetworkStatus(`读取失败：${error.message}`, "error");
+    showToast(error.message, "error");
+  } finally {
+    setEsp32NetworkBusy(false);
+  }
+}
+
 function bindEvents() {
   $$(".tab").forEach((tab) => tab.addEventListener("click", () => {
     $$(".tab").forEach((item) => item.classList.toggle("active", item === tab));
@@ -1059,6 +1149,8 @@ function bindEvents() {
   $("#camera-preview-start").addEventListener("click", startCameraPreview);
   $("#camera-preview-stop").addEventListener("click", () => stopCameraPreview());
   $("#camera-preview-reconnect").addEventListener("click", reconnectCameraPreview);
+  $("#esp32-network-save").addEventListener("click", saveEsp32Network);
+  $("#esp32-network-query").addEventListener("click", queryEsp32Network);
   $("#change-token-button").addEventListener("click", changeAccessToken);
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);

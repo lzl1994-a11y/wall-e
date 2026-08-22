@@ -94,6 +94,16 @@ h3 { margin-bottom: 20px; font-size: 17px; }
 .usb-role small { min-height: 36px; overflow-wrap: anywhere; }
 .usb-scan-status { margin: 14px 0 0; color: var(--muted); font-size: 12px; }
 .camera-preview-actions { display: flex; align-items: center; gap: 8px; }
+.esp32-network-actions { display: flex; align-items: center; gap: 8px; }
+.wifi-config-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 20px 0 14px; }
+.wifi-config { min-width: 0; margin: 0; padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: #fffafd; }
+.wifi-config legend { padding: 0 5px; color: var(--text); font-size: 13px; font-weight: 800; }
+.wifi-config .field + .field { margin-top: 12px; }
+.esp32-server-grid { margin-top: 4px; }
+.esp32-network-status { min-height: 20px; margin: 16px 0 0; color: var(--muted); font-size: 12px; }
+.esp32-network-status[data-state="saving"] { color: #8a6a18; }
+.esp32-network-status[data-state="success"] { color: #34755e; }
+.esp32-network-status[data-state="error"] { color: var(--danger); }
 .camera-preview-body { margin-top: 20px; display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(220px, .8fr); gap: 20px; align-items: start; }
 .camera-preview-viewport { position: relative; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; border: 1px solid #2b3035; border-radius: 6px; background: #111519; }
 .camera-preview-viewport img { display: block; width: 100%; height: 100%; object-fit: contain; background: #090b0d; }
@@ -203,7 +213,7 @@ tr:last-child td { border-bottom: 0; }
   .token-field input { width: 100%; }
   .status-strip { align-items: flex-start; flex-direction: column; }
   .status-meta { width: 100%; flex-direction: column; gap: 3px; }
-  .card-grid, .form-grid, .form-grid.three, .form-grid.five, .usb-role-grid, .camera-preview-body { grid-template-columns: 1fr; }
+  .card-grid, .form-grid, .form-grid.three, .form-grid.five, .usb-role-grid, .wifi-config-grid, .camera-preview-body { grid-template-columns: 1fr; }
   .switch-grid, .mode-guide { grid-template-columns: 1fr; }
   .card.span-two { grid-column: auto; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
@@ -228,4 +238,6 @@ tr:last-child td { border-bottom: 0; }
   .usb-card-actions .button { flex: 1; }
   .camera-preview-actions { width: 100%; flex-wrap: wrap; }
   .camera-preview-actions .button { flex: 1 1 auto; }
+  .esp32-network-actions { width: 100%; }
+  .esp32-network-actions .button { flex: 1; }
 }

@@ -27,9 +27,13 @@ import yaml
 try:
     from services.usb_devices import USB_ROLES, list_usb_devices
     from services.camera_preview import CameraPreview
+    from services.esp32_netcfg import NetworkConfigError
+    from services.esp32_netcfg_rpc import Esp32NetworkRpcClient
 except ImportError:  # Supports: python services/web_server.py
     from usb_devices import USB_ROLES, list_usb_devices
     from camera_preview import CameraPreview
+    from esp32_netcfg import NetworkConfigError
+    from esp32_netcfg_rpc import Esp32NetworkRpcClient
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -653,15 +657,29 @@ class ConfigWebServer(ThreadingHTTPServer):
         store: ConfigStore,
         static_dir: Path,
         token: str | None,
+        network_configurator: Any | None = None,
     ):
         super().__init__(server_address, handler_class)
         self.store = store
         self.static_dir = static_dir.resolve()
         self.access_token = token or ""
         self.camera_preview = CameraPreview(self.store.path)
+        # Created on first NETCFG call so the ordinary config page can still run
+        # in a non-ROS test or standalone maintenance environment.
+        self.network_configurator = network_configurator
+        self._network_configurator_lock = threading.Lock()
+
+    def get_network_configurator(self) -> Any:
+        with self._network_configurator_lock:
+            if self.network_configurator is None:
+                self.network_configurator = Esp32NetworkRpcClient()
+            return self.network_configurator
 
     def server_close(self) -> None:
         self.camera_preview.close()
+        configurator = self.network_configurator
+        if configurator is not None and hasattr(configurator, "close"):
+            configurator.close()
         super().server_close()
 
 
@@ -802,6 +820,8 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             "/api/access-token",
             "/api/camera-preview/start",
             "/api/camera-preview/stop",
+            "/api/esp32-network/save-and-apply",
+            "/api/esp32-network/query",
         }:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -834,6 +854,27 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/camera-preview/stop":
             status = self.server.camera_preview.stop()
             self._send_json(HTTPStatus.OK, {"ok": True, **status})
+            return
+
+        if route == "/api/esp32-network/save-and-apply":
+            try:
+                result = self.server.get_network_configurator().save_and_apply(payload)
+            except NetworkConfigError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "message": "网络配置已验证、应用并保存到 ESP32", **result},
+            )
+            return
+
+        if route == "/api/esp32-network/query":
+            try:
+                result = self.server.get_network_configurator().query()
+            except NetworkConfigError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, **result})
             return
 
         if route == "/api/access-token":
@@ -905,6 +946,7 @@ def create_server(
     config_path: Path | str = DEFAULT_CONFIG_PATH,
     static_dir: Path | str = DEFAULT_STATIC_DIR,
     token: str | None | object = _TOKEN_UNSET,
+    network_configurator: Any | None = None,
 ) -> ConfigWebServer:
     if token is _TOKEN_UNSET:
         token = _config_access_token(config_path) or DEFAULT_ACCESS_TOKEN
@@ -925,6 +967,7 @@ def create_server(
         store=ConfigStore(config_path),
         static_dir=static_path,
         token=token,
+        network_configurator=network_configurator,
     )
 
 

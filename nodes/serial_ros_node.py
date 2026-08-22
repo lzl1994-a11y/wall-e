@@ -12,12 +12,15 @@ hardware_bridge_node 发送；ubuntu_i2c 模式下本节点只负责屏幕通信
 """
 
 import json
+import threading
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
 from services.serial_bridge import SerialBridge
+from services.esp32_netcfg import Esp32NetworkConfigurator, NetworkConfigError, validate_network_payload
+from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
 
 
 class SerialNode(Node):
@@ -26,6 +29,8 @@ class SerialNode(Node):
 
         self.get_logger().info('Serial bridge node starting...')
         self.bridge = SerialBridge(device_name="WALL_E_TFT")
+        self.netcfg = Esp32NetworkConfigurator()
+        self._netcfg_request_lock = threading.Lock()
 
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')
@@ -34,6 +39,8 @@ class SerialNode(Node):
         self.create_subscription(String, 'screen_dialog', self.screen_dialog_callback, 10)
         self.create_subscription(String, 'tft_cmd', self.tft_cmd_callback, 10)
         self.create_subscription(String, 'pca9685_raw', self.pca9685_callback, 10)
+        self._netcfg_response_publisher = self.create_publisher(String, RESPONSE_TOPIC, 10)
+        self.create_subscription(String, REQUEST_TOPIC, self.netcfg_request_callback, 10)
 
         self.get_logger().info('Serial ROS node is online (sole serial owner).')
 
@@ -91,6 +98,66 @@ class SerialNode(Node):
         payload = msg.data + '\n'
         if self.bridge.send_raw(payload):
             self.get_logger().debug(f'[Serial] PCA9685 forwarded ({len(msg.data)} bytes)')
+
+    # ------------------------------------------------------------------
+    # ESP32 network configuration: Web -> ROS RPC -> this sole serial owner.
+    # ------------------------------------------------------------------
+    def netcfg_request_callback(self, msg):
+        """Dispatch the potentially 65+ second APPLY without blocking ROS spin."""
+        try:
+            request = json.loads(msg.data)
+            if not isinstance(request, dict):
+                return
+            request_id = request.get("request_id")
+            operation = request.get("operation")
+        except (TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(request_id, str) or operation not in {"save_and_apply", "query"}:
+            return
+        if not self._netcfg_request_lock.acquire(blocking=False):
+            response = String()
+            response.data = json.dumps(
+                {"request_id": request_id, "ok": False, "error": "已有 ESP32 网络配置操作正在执行"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            self._netcfg_response_publisher.publish(response)
+            return
+        # Never log request data: it can include Wi-Fi passwords.
+        threading.Thread(
+            target=self._run_netcfg_request,
+            args=(request_id, operation, request.get("payload")),
+            name="esp32-netcfg",
+            daemon=True,
+        ).start()
+
+    def _run_netcfg_request(self, request_id, operation, payload):
+        response = {"request_id": request_id, "ok": False}
+        try:
+            if operation == "save_and_apply":
+                if not isinstance(payload, dict):
+                    raise NetworkConfigError("网络配置请求格式错误")
+                # Validate before taking the physical serial connection; a bad
+                # browser request must not reset a healthy screen connection.
+                settings = validate_network_payload(payload)
+                data = self.bridge.run_exclusive(
+                    lambda stream: self.netcfg.save_and_apply(settings, stream=stream)
+                )
+            else:
+                data = self.bridge.run_exclusive(lambda stream: self.netcfg.query(stream=stream))
+            response.update(ok=True, data=data)
+        except (NetworkConfigError, RuntimeError) as exc:
+            response["error"] = str(exc)
+        except Exception:
+            # Do not expose or log request contents; serial details are not useful
+            # to the browser and could accidentally include sensitive input.
+            response["error"] = "ESP32 网络配置串口通信失败"
+        try:
+            message = String()
+            message.data = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+            self._netcfg_response_publisher.publish(message)
+        finally:
+            self._netcfg_request_lock.release()
 
     # ------------------------------------------------------------------
     # 清理

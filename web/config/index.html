@@ -313,6 +313,22 @@
               </div>
             </div>
           </article>
+          <article class="card span-two esp32-network-card">
+            <div class="card-heading-row">
+              <div><h3>ESP32 网络（USB 串口）</h3><p class="card-subtitle">配置仅通过屏幕/运动 ESP32 的 USB 串口下发；TCP 只传图像。保存后设备会实测 Wi-Fi、图像服务器和 HELLO，最长约 65 秒。</p></div>
+              <div class="esp32-network-actions">
+                <button id="esp32-network-query" class="button secondary small" type="button">读取当前配置</button>
+                <button id="esp32-network-save" class="button primary small" type="button">保存并应用</button>
+              </div>
+            </div>
+            <div class="wifi-config-grid">
+              <fieldset class="wifi-config"><legend>Wi-Fi 1</legend><label class="field"><span>SSID</span><input id="esp32-wifi-ssid-1" type="text" maxlength="32" autocomplete="off"></label><label class="field secret"><span>密码</span><input id="esp32-wifi-password-1" type="password" maxlength="64" autocomplete="new-password"></label></fieldset>
+              <fieldset class="wifi-config"><legend>Wi-Fi 2（可选）</legend><label class="field"><span>SSID</span><input id="esp32-wifi-ssid-2" type="text" maxlength="32" autocomplete="off"></label><label class="field secret"><span>密码</span><input id="esp32-wifi-password-2" type="password" maxlength="64" autocomplete="new-password"></label></fieldset>
+              <fieldset class="wifi-config"><legend>Wi-Fi 3（可选）</legend><label class="field"><span>SSID</span><input id="esp32-wifi-ssid-3" type="text" maxlength="32" autocomplete="off"></label><label class="field secret"><span>密码</span><input id="esp32-wifi-password-3" type="password" maxlength="64" autocomplete="new-password"></label></fieldset>
+            </div>
+            <div class="form-grid esp32-server-grid"><label class="field"><span>图像服务器 IP / 主机名</span><input id="esp32-network-host" type="text" maxlength="64" autocomplete="off" placeholder="192.168.1.100"></label><label class="field"><span>图像服务器端口</span><input id="esp32-network-port" type="number" min="1" max="65535" step="1" value="9000"></label></div>
+            <p id="esp32-network-status" class="esp32-network-status" aria-live="polite">尚未读取 ESP32 网络配置；设备不会返回 Wi-Fi 密码。</p>
+          </article>
           <article class="card" data-module="serial">
             <div class="card-heading-row"><h3>串口</h3><button class="button secondary small module-save" data-save-module="serial" type="button">保存本模块</button></div>
             <div class="form-grid">

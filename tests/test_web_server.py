@@ -17,6 +17,29 @@ if str(ROOT) not in sys.path:
 from services.web_server import DEFAULT_STATIC_DIR, create_server
 
 
+class FakeNetworkConfigurator:
+    def __init__(self):
+        self.saved = None
+        self.queried = False
+
+    def save_and_apply(self, payload):
+        self.saved = payload
+        return {"set_seq": 1001, "apply_seq": 1002, "result": "applied"}
+
+    def query(self):
+        self.queried = True
+        return {
+            "seq": 1003,
+            "active_from_nvs": True,
+            "candidate_present": False,
+            "apply_running": False,
+            "selected": 0,
+            "wifi": [{"ssid": "MyWiFi"}, {"ssid": ""}, {"ssid": ""}],
+            "host": "192.168.1.100",
+            "port": 9000,
+        }
+
+
 def sample_config():
     return {
         "pipeline": {"mode": "asr_llm"},
@@ -156,6 +179,32 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('data-usb-role="camera"', html)
         self.assertIn('data-usb-role="screen_motion"', html)
         self.assertIn('data-usb-role="voice"', html)
+
+    def test_esp32_network_ui_has_fixed_three_wifi_groups_and_safe_actions(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        for index in (1, 2, 3):
+            self.assertIn(f'id="esp32-wifi-ssid-{index}"', html)
+            self.assertIn(f'id="esp32-wifi-password-{index}"', html)
+        self.assertIn('id="esp32-network-save"', html)
+        self.assertIn('id="esp32-network-query"', html)
+
+    def test_esp32_network_endpoints_delegate_to_serial_owner_rpc(self):
+        fake = FakeNetworkConfigurator()
+        self.server.network_configurator = fake
+        payload = {
+            "wifi": [{"ssid": "MyWiFi", "password": "password"}, {"ssid": "", "password": ""}, {"ssid": "", "password": ""}],
+            "host": "192.168.1.100",
+            "port": 9000,
+        }
+        status, result = self.request("/api/esp32-network/save-and-apply", method="POST", payload=payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["apply_seq"], 1002)
+        self.assertEqual(fake.saved, payload)
+        status, result = self.request("/api/esp32-network/query", method="POST", payload={})
+        self.assertEqual(status, 200)
+        self.assertTrue(fake.queried)
+        self.assertEqual(result["wifi"][0]["ssid"], "MyWiFi")
 
     def test_camera_preview_module_is_on_hardware_page(self):
         _, body = self.request("/", token=None)
