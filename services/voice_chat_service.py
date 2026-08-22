@@ -21,10 +21,14 @@ from collections import deque
 from enum import Enum, auto
 
 from openai import OpenAI
-from services.llm_output_filter import VisibleAnswerFilter
-from services.llm_prompt import with_direct_speech_policy
+from services.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
 from services.llm_request_options import reasoning_request_options
-from services.tool_dispatcher import get_tools, ToolCallAccumulator, build_action_cmd
+from services.tool_dispatcher import (
+    DIRECT_ANSWER_TOOL_NAME,
+    ToolCallAccumulator,
+    build_action_cmd,
+    get_tools,
+)
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
 
@@ -63,7 +67,9 @@ class VoiceChatService:
         self.model = llm_cfg["model"]
         self.max_tokens = llm_cfg.get("max_tokens", 1024)
         self.llm_settings = llm_cfg
-        self.system_prompt = with_direct_speech_policy(config.get("system_prompt", ""))
+        self.system_prompt = with_structured_answer_policy(
+            with_direct_speech_policy(config.get("system_prompt", ""))
+        )
 
         # 对话历史（最近20轮）
         self._chat_history: deque = deque(maxlen=40)
@@ -255,8 +261,6 @@ class VoiceChatService:
 
             acc = ToolCallAccumulator()
             chunks = []
-            answer_filter = VisibleAnswerFilter()
-
             for chunk in response:
                 if self._cancel_llm.is_set():
                     print("[VoiceChat] LLM 调用被中断")
@@ -270,18 +274,25 @@ class VoiceChatService:
                 if chunk.choices:
                     delta = chunk.choices[0].delta
                     acc.feed(delta)
-                    if hasattr(delta, "content") and delta.content:
-                        visible = answer_filter.feed(delta.content)
-                        if visible:
-                            chunks.append(visible)
-                            if self.on_llm_chunk:
-                                self.on_llm_chunk(visible)
+                    # The multimodal path has the same speech-safety contract
+                    # as LLMService: only direct_answer.response is spoken.
 
-            visible_tail = answer_filter.flush()
-            if visible_tail:
-                chunks.append(visible_tail)
-                if self.on_llm_chunk:
-                    self.on_llm_chunk(visible_tail)
+            tool_calls = acc.flush()
+            direct_answers = [
+                tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
+            ]
+            response_text = ""
+            if direct_answers:
+                candidate = direct_answers[-1]["arguments"].get("response")
+                if isinstance(candidate, str):
+                    response_text = candidate.strip()
+            if not response_text:
+                raise RuntimeError(
+                    "模型没有返回 direct_answer.response；请使用支持原生 Function Calling 的模型"
+                )
+            chunks.append(response_text)
+            if self.on_llm_chunk:
+                self.on_llm_chunk(response_text)
 
             elapsed = time.time() - t0
             reply = "".join(chunks).strip()
@@ -301,7 +312,9 @@ class VoiceChatService:
             if ai_text:
                 self._chat_history.append({"role": "assistant", "content": ai_text})
 
-            for tc in acc.flush():
+            for tc in tool_calls:
+                if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
+                    continue
                 print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
                 if self.on_tool_call:
                     self.on_tool_call(tc["name"], tc["arguments"])

@@ -1,10 +1,14 @@
 """多模态适配器工厂：读 config.llm.provider → 返回对应适配器实例。"""
 import yaml
 from .aliyun_multimodal import AliyunMultimodal
+from .doubao_multimodal import DoubaoMultimodal
 from .zhipu_multimodal import ZhipuMultimodal
 
 PROVIDERS = {
     "aliyun": AliyunMultimodal,
+    "doubao": DoubaoMultimodal,
+    "volcengine": DoubaoMultimodal,
+    "ark": DoubaoMultimodal,
     "zhipu": ZhipuMultimodal,
 }
 

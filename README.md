@@ -369,4 +369,25 @@ tft_preview:
 - `/motor_cmd`：`motion_arbiter_node` 按“手柄 > 跟踪 > 自主动作”选出的唯一硬件电机指令；上游心跳超过 300ms 未刷新时自动停车。串口与 I²C 硬件后端还各有独立的 300ms watchdog，仲裁器失联时同样会强制停车。
 - `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。普通对话始终向模型提供已注册的动作工具，由模型做语义意图判断；视觉查看和无答案重试等专用路径会明确禁用工具。
 
-如主模型不支持 Function Calling，可在 `llm.tool_model` 单独指定动作工具模型；工具请求只会使用该模型，视觉和明确禁用工具的请求继续使用 `llm.model`。未设置时，`glm-4.1v-thinking-flashx` / `glm-4.1v-thinking-flash` 会安全回退到已验证的 `glm-4.6v-flash`，并记录一条启动诊断日志。
+普通语音对话、动作调用和多模态直聊都要求主模型支持原生 Function Calling。瓦力会要求模型调用虚拟工具 `direct_answer(response)`，并且只朗读该 `response` 字段；普通 `content` 永不播放，因此推理文本、标签或服务商控制标记不会泄漏到扬声器。模型若没有返回该工具调用，本轮会明确报错，而不会退回朗读非结构化文本。
+
+### 豆包（火山方舟）LLM
+
+LLM 服务已适配火山方舟的 OpenAI 兼容接口。请在火山方舟控制台创建 API Key，并在 Web 配置页的“LLM 服务”填写服务商 `doubao`、控制台给出的模型或推理接入点 ID，以及方舟地址。示例：
+
+```yaml
+llm:
+  provider: doubao
+  # 填写火山方舟控制台中可用的模型名或 ep- 开头的推理接入点 ID
+  model: doubao-seed-2-0-lite-260428
+  url: https://ark.cn-beijing.volces.com/api/v3
+  key: ${ARK_API_KEY}
+  temperature: 0.4
+  max_tokens: 512
+  # fast 会向方舟传递 thinking.type=disabled，避免思考内容拖慢语音首响。
+  reasoning_effort: fast
+```
+
+`llm.key` 应填写真实方舟 API Key；示例中的环境变量仅用于说明，当前 YAML 不会自动展开环境变量。模型名、区域和是否可用以你的方舟控制台为准。豆包配置会通过标准 OpenAI `chat/completions` 调用；当 `reasoning_effort` 为 `fast` 时，程序传递火山方舟官方支持的 `thinking: {type: disabled}` 参数。
+
+豆包既可用于 `pipeline.mode: asr_llm` 的文本回复，也可用于 `pipeline.mode: multimodal` 的原始音频直聊。后者请在方舟控制台选择确认支持音频输入的模型或接入点；已用项目的 `16 kHz / Mono / WAV` 测试语音验证 `doubao-seed-2-0-lite-260428` 可用。

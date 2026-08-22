@@ -15,9 +15,33 @@ from services.action_command import build_action_cmd, parse_action_cmd
 
 import yaml
 
+
+DIRECT_ANSWER_TOOL_NAME = "direct_answer"
+DIRECT_ANSWER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": DIRECT_ANSWER_TOOL_NAME,
+        "description": (
+            "每轮都必须调用一次。将唯一允许播放给用户听的最终台词写入 response。"
+            "如需调用其他动作工具，也仍必须调用本工具。不要把台词写在普通 content 中。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "response": {
+                    "type": "string",
+                    "description": "给用户播报的完整、自然、简短的最终台词",
+                },
+            },
+            "required": ["response"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 def get_tools():
-    """OpenAI function calling 格式的工具列表"""
-    return mcp.get_chat_tools()
+    """OpenAI function declarations, including the required speech outlet."""
+    return [DIRECT_ANSWER_TOOL, *mcp.get_chat_tools()]
 
 
 class ToolCallAccumulator:

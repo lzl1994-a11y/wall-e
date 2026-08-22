@@ -1,4 +1,5 @@
 import base64
+import json
 import sys
 import types
 import unittest
@@ -18,17 +19,39 @@ class _FakeResponse:
         )
 
 
+class _FakeStructuredResponse:
+    def __iter__(self):
+        tool_call = types.SimpleNamespace(
+            index=0,
+            function=types.SimpleNamespace(
+                name="direct_answer",
+                arguments='{"response":"看起来是一只杯子。"}',
+            ),
+        )
+        delta = types.SimpleNamespace(content=None, tool_calls=[tool_call])
+        yield types.SimpleNamespace(
+            choices=[types.SimpleNamespace(delta=delta, finish_reason="tool_calls")]
+        )
+
+
 class LLMServiceVisionTests(unittest.TestCase):
-    def test_image_is_sent_as_openai_vision_content_without_tools(self):
+    def test_image_is_sent_as_openai_vision_content_with_structured_answer(self):
         fake_dispatcher = types.ModuleType("services.tool_dispatcher")
         fake_dispatcher.get_tools = lambda: []
 
         class FakeAccumulator:
-            def feed(self, _delta):
-                pass
+            def __init__(self):
+                self.calls = []
+
+            def feed(self, delta):
+                for call in getattr(delta, "tool_calls", None) or []:
+                    self.calls.append({
+                        "name": call.function.name,
+                        "arguments": json.loads(call.function.arguments),
+                    })
 
             def flush(self):
-                return []
+                return self.calls
 
         fake_dispatcher.ToolCallAccumulator = FakeAccumulator
         with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
@@ -44,10 +67,15 @@ class LLMServiceVisionTests(unittest.TestCase):
         service.system_prompt = "你是瓦力。"
         service.model = "glm-4.1v-thinking-flashx"
         service.client = MagicMock()
-        service.client.chat.completions.create.return_value = _FakeResponse()
+        service.client.chat.completions.create.return_value = _FakeStructuredResponse()
 
         payload = base64.b64encode(b"jpeg").decode("ascii")
-        result = list(service.chat_stream("这是什么？", image_base64=payload, tools_enabled=False))
+        result = list(service.chat_stream(
+            "这是什么？",
+            image_base64=payload,
+            tools_enabled=False,
+            structured_answer=True,
+        ))
 
         kwargs = service.client.chat.completions.create.call_args.kwargs
         user_message = kwargs["messages"][-1]
@@ -57,11 +85,11 @@ class LLMServiceVisionTests(unittest.TestCase):
             user_message["content"][1]["image_url"]["url"],
             "data:image/jpeg;base64," + payload,
         )
-        self.assertNotIn("tools", kwargs)
-        self.assertNotIn("tool_choice", kwargs)
+        self.assertEqual(kwargs["tools"][0]["function"]["name"], "direct_answer")
+        self.assertEqual(kwargs["tool_choice"], "auto")
         self.assertNotIn("extra_body", kwargs)
         self.assertEqual(result[0]["content"], "看起来是一只杯子。")
-        self.assertEqual(result[-1], {"type": "done", "finish_reason": "stop"})
+        self.assertEqual(result[-1], {"type": "done", "finish_reason": "tool_calls"})
         sys.modules.pop("services.llm_service", None)
 
     def test_aliyun_fast_mode_disables_thinking(self):
@@ -147,6 +175,28 @@ class LLMServiceVisionTests(unittest.TestCase):
         })
 
         self.assertEqual(options, {"extra_body": {"thinking": {"type": "disabled"}}})
+
+    def test_doubao_fast_mode_disables_thinking(self):
+        from services.llm_request_options import reasoning_request_options
+
+        options = reasoning_request_options({
+            "provider": "doubao",
+            "model": "doubao-seed-2-0-lite-260215",
+            "reasoning_effort": "fast",
+        })
+
+        self.assertEqual(options, {"extra_body": {"thinking": {"type": "disabled"}}})
+
+    def test_doubao_default_mode_preserves_model_default(self):
+        from services.llm_request_options import reasoning_request_options
+
+        options = reasoning_request_options({
+            "provider": "doubao",
+            "model": "doubao-seed-2-0-lite-260215",
+            "reasoning_effort": "default",
+        })
+
+        self.assertEqual(options, {})
 
     def test_zhipu_fixed_thinking_model_keeps_supported_request_shape(self):
         from services.llm_request_options import reasoning_request_options

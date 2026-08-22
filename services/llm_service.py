@@ -4,23 +4,32 @@ import logging
 import yaml
 from openai import OpenAI
 from services.llm_output_filter import VisibleAnswerFilter
-from services.llm_prompt import with_direct_speech_policy
+from services.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
 from services.llm_request_options import reasoning_request_options
-from services.tool_dispatcher import get_tools, ToolCallAccumulator
+from services.tool_dispatcher import ToolCallAccumulator, get_tools
 
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_TOOL_MODEL_BY_PRIMARY = {
-    # These 4.1V thinking models may accept `tools` but return normal text
-    # instead of a tool call. Use the tested tools-capable V model unless the
-    # operator explicitly sets llm.tool_model.
-    "glm-4.1v-thinking-flashx": "glm-4.6v-flash",
-    "glm-4.1v-thinking-flash": "glm-4.6v-flash",
+DIRECT_ANSWER_TOOL_NAME = "direct_answer"
+DIRECT_ANSWER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": DIRECT_ANSWER_TOOL_NAME,
+        "description": "将唯一允许播放给用户听的最终台词写入 response。",
+        "parameters": {
+            "type": "object",
+            "properties": {"response": {"type": "string"}},
+            "required": ["response"],
+            "additionalProperties": False,
+        },
+    },
 }
-
-
 class ToolCallingUnavailableError(RuntimeError):
     """The configured model or MCP registry cannot service a tools-enabled turn."""
+
+
+class StructuredAnswerUnavailableError(RuntimeError):
+    """A tools-enabled model did not return the required direct_answer call."""
 
 
 def _is_tool_calling_rejection(exc: Exception) -> bool:
@@ -67,9 +76,6 @@ class LLMService:
         configured = self.settings.get("tool_model") if isinstance(self.settings, dict) else None
         if isinstance(configured, str) and configured.strip():
             return configured.strip(), "llm.tool_model"
-        fallback = DEFAULT_TOOL_MODEL_BY_PRIMARY.get(str(self.model).strip().lower())
-        if fallback:
-            return fallback, "known-model compatibility fallback"
         return self.model, "primary model"
 
     def _request_model(self, tools_enabled):
@@ -85,6 +91,7 @@ class LLMService:
         chat_history=None,
         image_base64=None,
         tools_enabled=True,
+        structured_answer=False,
         system_prompt=None,
         max_tokens_override=None,
     ):
@@ -102,9 +109,13 @@ class LLMService:
         selected_system_prompt = (
             self.system_prompt if system_prompt is None else system_prompt
         )
+        requires_structured_answer = tools_enabled or structured_answer
+        system_content = with_direct_speech_policy(selected_system_prompt)
+        if requires_structured_answer:
+            system_content = with_structured_answer_policy(system_content)
         messages = [{
             "role": "system",
-            "content": with_direct_speech_policy(selected_system_prompt),
+            "content": system_content,
         }]
         messages.extend(chat_history)
         if image_base64:
@@ -134,10 +145,10 @@ class LLMService:
             ),
             "stream": True,
         }
-        if tools_enabled:
-            if self._tools is None:
-                self._tools = get_tools()
-            tools = self._tools
+        if requires_structured_answer:
+            if getattr(self, "_tools", None) is None:
+                self._tools = get_tools() if tools_enabled else [DIRECT_ANSWER_TOOL]
+            tools = self._tools if tools_enabled else [DIRECT_ANSWER_TOOL]
             if not tools:
                 raise ToolCallingUnavailableError(
                     "动作工具为空；拒绝以无工具模式发送请求。请检查 FastMCP 2.x 工具注册。"
@@ -153,7 +164,7 @@ class LLMService:
         try:
             response = self.client.chat.completions.create(**request_kwargs)
         except Exception as exc:
-            if tools_enabled and _is_tool_calling_rejection(exc):
+            if requires_structured_answer and _is_tool_calling_rejection(exc):
                 raise ToolCallingUnavailableError(
                     f"模型 {request_model!r} 拒绝或不支持 function calling；"
                     "请检查模型能力和兼容 API 的 tools 支持。"
@@ -175,16 +186,38 @@ class LLMService:
 
             acc.feed(delta)
 
-            if delta.content:
+            # A tools-enabled turn has one trusted speech outlet only:
+            # direct_answer.response.  Never stream unstructured content into
+            # TTS; it can contain reasoning, tags, or provider control tokens.
+            if delta.content and not requires_structured_answer:
                 visible = answer_filter.feed(delta.content)
                 if visible:
                     yield {"type": "text", "content": visible}
 
-        visible_tail = answer_filter.flush()
-        if visible_tail:
-            yield {"type": "text", "content": visible_tail}
+        if not requires_structured_answer:
+            visible_tail = answer_filter.flush()
+            if visible_tail:
+                yield {"type": "text", "content": visible_tail}
 
-        for tc in acc.flush():
+        tool_calls = acc.flush()
+        if requires_structured_answer:
+            direct_answers = [
+                tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
+            ]
+            response = ""
+            if direct_answers:
+                candidate = direct_answers[-1]["arguments"].get("response")
+                if isinstance(candidate, str):
+                    response = candidate.strip()
+            if not response:
+                raise StructuredAnswerUnavailableError(
+                    "模型没有返回 direct_answer.response；请使用支持原生 Function Calling 的模型"
+                )
+            yield {"type": "text", "content": response}
+
+        for tc in tool_calls:
+            if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
+                continue
             yield {
                 "type": "tool_call", 
                 "name": tc["name"], 

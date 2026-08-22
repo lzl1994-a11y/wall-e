@@ -9,8 +9,21 @@ Markdown、括号说明、工具名、工具参数或工具调用过程。需要
 """.strip()
 
 
+STRUCTURED_ANSWER_POLICY = """
+本轮必须调用 direct_answer 工具一次，把唯一可播报的最终台词写入 response 参数。
+即使还需要调用身体动作工具，也必须同时调用 direct_answer。不要在普通 content 中输出
+台词、思考或解释；普通 content 不会被播放。
+""".strip()
+
+
 def with_direct_speech_policy(system_prompt):
     base = str(system_prompt or "").strip()
     if not base:
         return DIRECT_SPEECH_POLICY
     return f"{base}\n\n{DIRECT_SPEECH_POLICY}"
+
+
+def with_structured_answer_policy(system_prompt):
+    """Require a native tool-call answer for a tools-enabled voice turn."""
+    base = str(system_prompt or "").strip()
+    return f"{base}\n\n{STRUCTURED_ANSWER_POLICY}" if base else STRUCTURED_ANSWER_POLICY

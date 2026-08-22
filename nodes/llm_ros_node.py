@@ -402,6 +402,7 @@ class LLMBrainNode(Node):
                 self._visual_history(),
                 image_base64=image_b64,
                 tools_enabled=False,
+                structured_answer=True,
                 system_prompt=(
                     '你是瓦力的视觉。只依据当前摄像头图片回答问题；看不清时明确说看不清，'
                     '不要猜测。答案使用简短自然的中文，不能输出分析过程或任何标签。'
@@ -539,6 +540,7 @@ class LLMBrainNode(Node):
                 retry_prompt,
                 self._history_for_request(),
                 tools_enabled=False,
+                structured_answer=True,
                 max_tokens_override=retry_tokens,
             ):
                 if data.get('type') == 'text' and data.get('content'):

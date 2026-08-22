@@ -56,19 +56,35 @@ class FastMcpToolTests(unittest.TestCase):
             with self.assertRaisesRegex(mcp_service.MCPToolDiscoveryError, "未枚举"):
                 mcp_service.get_chat_tools()
 
+    def test_dispatcher_adds_required_direct_answer_tool(self):
+        from services import tool_dispatcher
+
+        with patch.object(tool_dispatcher.mcp, "get_chat_tools", return_value=[]):
+            tools = tool_dispatcher.get_tools()
+        self.assertEqual([tool["function"]["name"] for tool in tools], ["direct_answer"])
+
 
 class _ToolCallResponse:
     def __iter__(self):
-        tool_call = types.SimpleNamespace(
-            index=0,
-            function=types.SimpleNamespace(
-                name="play_sequence",
-                arguments='{"sequence_name":"turn_head_left"}',
+        tool_call = [
+            types.SimpleNamespace(
+                index=0,
+                function=types.SimpleNamespace(
+                    name="direct_answer",
+                    arguments='{"response":"好的，我来转头。"}',
+                ),
             ),
-        )
+            types.SimpleNamespace(
+                index=1,
+                function=types.SimpleNamespace(
+                    name="play_sequence",
+                    arguments='{"sequence_name":"turn_head_left"}',
+                ),
+            ),
+        ]
         yield types.SimpleNamespace(
             choices=[types.SimpleNamespace(
-                delta=types.SimpleNamespace(content=None, tool_calls=[tool_call]),
+                delta=types.SimpleNamespace(content=None, tool_calls=tool_call),
                 finish_reason="tool_calls",
             )]
         )
@@ -107,11 +123,43 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             {"type": "tool_call", "name": "play_sequence", "arguments": '{"sequence_name": "turn_head_left"}'},
             events,
         )
+        self.assertIn(
+            {"type": "text", "content": "好的，我来转头。"},
+            events,
+        )
         request = service.client.chat.completions.create.call_args.kwargs
         self.assertEqual(request["tool_choice"], "auto")
         self.assertIn("tools", request)
 
-    def test_known_thinking_model_uses_default_tool_model_but_non_tools_keep_primary(self):
+    def test_tools_enabled_response_requires_direct_answer(self):
+        from services.llm_service import StructuredAnswerUnavailableError
+
+        class ActionOnlyResponse:
+            def __iter__(self):
+                tool_call = types.SimpleNamespace(
+                    index=0,
+                    function=types.SimpleNamespace(
+                        name="play_sequence",
+                        arguments='{"sequence_name":"turn_head_left"}',
+                    ),
+                )
+                yield types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content=None, tool_calls=[tool_call]),
+                        finish_reason="tool_calls",
+                    )]
+                )
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = ActionOnlyResponse()
+        with patch("services.llm_service.get_tools", return_value=[{
+            "type": "function",
+            "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
+        }]):
+            with self.assertRaisesRegex(StructuredAnswerUnavailableError, "direct_answer.response"):
+                list(service.chat_stream("转个头", tools_enabled=True))
+
+    def test_primary_model_is_used_when_no_tool_model_is_configured(self):
         service = self._service()
         service.client.chat.completions.create.return_value = _ToolCallResponse()
         tool_schema = [{
@@ -122,7 +170,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             list(service.chat_stream("转个头", tools_enabled=True))
         self.assertEqual(
             service.client.chat.completions.create.call_args.kwargs["model"],
-            "glm-4.6v-flash",
+            "glm-4.1v-thinking-flashx",
         )
 
         service.client.chat.completions.create.return_value = _ToolCallResponse()
