@@ -219,6 +219,7 @@
             <div class="form-grid">
               <label class="field"><span>服务商</span><input data-path="llm.provider" type="text"></label>
               <label class="field"><span>模型</span><input data-path="llm.model" type="text"></label>
+              <label class="field"><span>动作工具模型（可选）</span><input data-path="llm.tool_model" type="text" placeholder="留空自动选择兼容模型"></label>
               <label class="field full"><span>接口地址</span><input data-path="llm.url" type="url"></label>
               <label class="field full secret"><span>API Key</span><input data-path="llm.key" data-secret="true" type="password" autocomplete="new-password" placeholder="留空保持现有密钥"><small data-secret-status="llm.key"></small></label>
               <label class="field"><span>Temperature</span><input data-path="llm.temperature" data-type="number" type="number" min="0" max="2" step="0.1"></label>

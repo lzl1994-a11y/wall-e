@@ -4,11 +4,17 @@
 # LLM 返回 tool_call → llm_ros_node 发到 /action_cmd → 对应节点执行
 
 import asyncio
+import logging
 import os
 import yaml
 from fastmcp import FastMCP
 
 mcp = FastMCP("Wali_Action_Center")
+LOGGER = logging.getLogger(__name__)
+
+
+class MCPToolDiscoveryError(RuntimeError):
+    """Raised when function tools cannot be supplied to an LLM request."""
 
 # 已知动作的中英文语义映射字典（用于增强大模型的语义理解）
 _semantic_mappings = {
@@ -169,22 +175,52 @@ def inspect_camera(question: str = "") -> str:
 # ==========================================
 
 def get_chat_tools():
-    """将 FastMCP 注册的工具列表转换成 LLM function calling 格式"""
-    tools = []
+    """Return FastMCP 2.x tools as OpenAI function-calling declarations.
+
+    FastMCP 2.x exposes ``get_tools()`` (a mapping), not the old
+    ``list_tools()`` API.  An empty or malformed result is an operational
+    failure: silently returning ``[]`` would make the model explain actions in
+    text instead of being able to call the robot-control functions.
+    """
     try:
-        mcp_tools = asyncio.run(mcp.list_tools())
-        for tool in mcp_tools:
+        getter = getattr(mcp, "get_tools", None)
+        if not callable(getter):
+            # Kept only for an explicitly older FastMCP installation. The
+            # project requirement pins FastMCP >=2,<3, where get_tools is used.
+            getter = getattr(mcp, "list_tools", None)
+        if not callable(getter):
+            raise MCPToolDiscoveryError("FastMCP 缺少 get_tools()；项目要求 FastMCP 2.x")
+        registered = asyncio.run(getter())
+        raw_tools = registered.values() if isinstance(registered, dict) else registered
+        tools = []
+        for tool in raw_tools:
+            name = getattr(tool, "name", None)
+            description = getattr(tool, "description", None)
+            parameters = getattr(tool, "parameters", None)
+            if not isinstance(name, str) or not name:
+                raise MCPToolDiscoveryError("FastMCP 返回了没有名称的工具")
+            if not isinstance(description, str):
+                raise MCPToolDiscoveryError(f"FastMCP 工具 {name} 没有有效说明")
+            if not isinstance(parameters, dict) or parameters.get("type") != "object":
+                raise MCPToolDiscoveryError(f"FastMCP 工具 {name} 没有合法 JSON Schema")
             tools.append({
                 "type": "function",
                 "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters
-                }
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                },
             })
-    except Exception as e:
-        print(f"[MCP] 获取工具列表失败: {e}")
-    return tools
+        if not tools:
+            raise MCPToolDiscoveryError("FastMCP 未枚举到任何控制工具")
+        return tools
+    except MCPToolDiscoveryError as exc:
+        LOGGER.error("FastMCP control-tool configuration error: %s", exc)
+        raise
+    except Exception as exc:
+        error = MCPToolDiscoveryError(f"FastMCP 2.x 工具枚举失败: {exc}")
+        LOGGER.exception("FastMCP control-tool enumeration failed")
+        raise error from exc
 
 
 def execute_tool(name, args_json):

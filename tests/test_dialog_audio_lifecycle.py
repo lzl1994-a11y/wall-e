@@ -253,7 +253,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         node._process_voice_task("turn-direct", "\u4f60\u597d")
 
         self.assertEqual(node.llm.chat_stream.call_count, 1)
-        self.assertFalse(node.llm.chat_stream.call_args.kwargs["tools_enabled"])
+        self.assertTrue(node.llm.chat_stream.call_args.kwargs["tools_enabled"])
         self.assertEqual(node.corrected_publisher.publish.call_args.args[0].data, "\u4f60\u597d")
         messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
         self.assertEqual(messages[0], "\u4f60\u597d\uff0c\u6211\u5728\u3002")
@@ -443,14 +443,45 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         )
         sys.modules.pop("nodes.llm_ros_node", None)
 
-    def test_tools_are_enabled_only_for_likely_action_requests(self):
+    def test_tools_are_enabled_for_all_ordinary_semantic_requests(self):
         node_class = self._load_node_class()
 
-        self.assertFalse(node_class._needs_action_tools("今天的天气怎么样"))
-        self.assertFalse(node_class._needs_action_tools("背一下琵琶行"))
+        self.assertTrue(node_class._needs_action_tools("今天的天气怎么样"))
+        self.assertTrue(node_class._needs_action_tools("背一下琵琶行"))
+        self.assertTrue(node_class._needs_action_tools("旋转头"))
+        self.assertTrue(node_class._needs_action_tools("转个头"))
         self.assertTrue(node_class._needs_action_tools("向前走一下"))
         self.assertTrue(node_class._needs_action_tools("看着我"))
         self.assertTrue(node_class._needs_action_tools("挥挥手"))
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_semantic_head_turn_tool_call_is_published_as_action_cmd(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "好的。"},
+            {"type": "tool_call", "name": "play_sequence", "arguments": '{"sequence_name":"turn_head_left"}'},
+            {"type": "done", "finish_reason": "tool_calls"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_voice_task("turn-head", "转个头")
+
+        self.assertTrue(node.llm.chat_stream.call_args.kwargs["tools_enabled"])
+        published = json.loads(node.action_publisher.publish.call_args.args[0].data)
+        self.assertEqual(published["turn_id"], "turn-head")
+        self.assertEqual(published["name"], "play_sequence")
+        # sequence_ros_node accepts this string form and parses it to the same dict.
+        self.assertEqual(json.loads(published["arguments"]), {"sequence_name": "turn_head_left"})
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_request_history_is_limited_and_starts_with_user(self):

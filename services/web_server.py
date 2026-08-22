@@ -426,6 +426,8 @@ def validate_config(config: Any) -> list[str]:
     llm = _require_mapping(config, "llm", errors)
     for key in ("provider", "model"):
         _check_string(llm, key, f"llm.{key}", errors)
+    if "tool_model" in llm:
+        _check_string(llm, "tool_model", "llm.tool_model", errors, allow_empty=True, max_length=256)
     _check_url(llm, "url", "llm.url", errors)
     _check_string(llm, "key", "llm.key", errors, allow_empty=True, max_length=8192)
     _check_number(llm, "temperature", "llm.temperature", errors, 0, 2)

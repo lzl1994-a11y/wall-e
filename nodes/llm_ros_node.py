@@ -33,15 +33,6 @@ class LLMBrainNode(Node):
         r"(?:背(?:诵)?|朗(?:诵|读)|念|读)(?:一下|一遍|给我听)?|"
         r"全文|完整(?:版|内容)?|全部|整首|从头到尾"
     )
-    ACTION_REQUEST_RE = re.compile(
-        r"(?:动作|动一下|跳舞|转圈|招手|挥手|点头|摇头|举手|抬手|放下.{0,3}手|"
-        r"低头|抬头|歪头|回正|看着我|盯着我|注视我|跟着我|跟随我|"
-        r"向左看|向右看|往左看|往右看|前进|后退|移动|走一下|走过去|走过来|"
-        r"转身|左转|右转|停下|别动|开启.{0,4}跟踪|关闭.{0,4}跟踪|停止.{0,4}跟踪|"
-        r"开心|难过|伤心|生气|害怕|惊讶|"
-        r"\b(?:move|turn|wave|dance|nod|follow|track|stop|raise\s+(?:your\s+)?hand)\b)",
-        re.IGNORECASE,
-    )
     LONG_FORM_MAX_TOKENS = 2048
     FIRST_TTS_CLAUSE_MIN_CHARS = 10
     CLAUSE_PUNCTUATIONS = {'，', ',', '；', ';', '：', ':'}
@@ -180,7 +171,11 @@ class LLMBrainNode(Node):
         py_list = pinyin(user_prompt, style=Style.NORMAL)
         py_str = ' '.join([item[0] for item in py_list])
         is_long_form = self._is_long_form_request(user_prompt)
-        tools_enabled = self._needs_action_tools(user_prompt)
+        # Tool availability must not depend on a keyword gate. ASR wording and
+        # natural requests such as “旋转头/转个头” are semantic decisions for
+        # the model, not a brittle regex. Explicit visual/retry paths below
+        # still call chat_stream(tools_enabled=False) by design.
+        tools_enabled = True
         if is_long_form:
             response_policy = (
                 "这是朗读、背诵或完整内容请求。请连续完整输出用户要求的正文，"
@@ -201,8 +196,7 @@ class LLMBrainNode(Node):
         )
 
         self.get_logger().info(f'[{turn_id}] Sending request to LLM...')
-        if tools_enabled:
-            self.get_logger().info(f'[{turn_id}] Action intent detected; tools enabled.')
+        self.get_logger().info(f'[{turn_id}] Control tools enabled for semantic handling.')
         max_tokens_override = self._max_tokens_for_request(is_long_form)
         if max_tokens_override is not None:
             self.get_logger().info(
@@ -570,7 +564,13 @@ class LLMBrainNode(Node):
 
     @classmethod
     def _needs_action_tools(cls, user_prompt):
-        return bool(cls.ACTION_REQUEST_RE.search(user_prompt or ''))
+        """Compatibility helper: ordinary dialogue always receives control tools.
+
+        Dedicated visual inspection and empty-answer retry paths explicitly
+        disable tools at their call sites, rather than relying on wording.
+        """
+        del user_prompt
+        return True
 
     def _max_tokens_for_request(self, is_long_form):
         if not is_long_form:

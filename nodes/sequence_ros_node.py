@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # nodes/sequence_ros_node.py
 # 统一轨迹控制器：接管所有 /action_cmd，支持单一动作与成组动作 (Timeline)，并利用步长进行平滑插值
-import json
 import time
+import json
 import yaml
+from services.action_command import parse_action_cmd
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -91,16 +92,10 @@ class SequenceRosNode(Node):
         return float(cfg.get('init', fallback))
 
     def _on_action_cmd(self, msg):
-        try:
-            cmd = json.loads(msg.data)
-        except Exception:
+        decoded = parse_action_cmd(msg.data)
+        if decoded is None:
             return
-            
-        tool = cmd.get("name")
-        args = cmd.get("arguments", {})
-        if isinstance(args, str):
-            try: args = json.loads(args)
-            except: args = {}
+        tool, args = decoded
 
         # ===== 外部打断机制核心：清空队列，并清零步长 =====
         self._current_sequence = [] # 打断成组动作

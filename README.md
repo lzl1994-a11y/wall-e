@@ -367,4 +367,6 @@ tft_preview:
 - `/servo_cmd`：底层的舵机驱动指令 (JSON)。
 - `/motor_cmd/joystick`、`/motor_cmd/tracking`、`/motor_cmd/autonomy`：手柄、视觉跟踪和自主动作的分源电机指令。
 - `/motor_cmd`：`motion_arbiter_node` 按“手柄 > 跟踪 > 自主动作”选出的唯一硬件电机指令；上游心跳超过 300ms 未刷新时自动停车。串口与 I²C 硬件后端还各有独立的 300ms watchdog，仲裁器失联时同样会强制停车。
-- `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。
+- `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。普通对话始终向模型提供已注册的动作工具，由模型做语义意图判断；视觉查看和无答案重试等专用路径会明确禁用工具。
+
+如主模型不支持 Function Calling，可在 `llm.tool_model` 单独指定动作工具模型；工具请求只会使用该模型，视觉和明确禁用工具的请求继续使用 `llm.model`。未设置时，`glm-4.1v-thinking-flashx` / `glm-4.1v-thinking-flash` 会安全回退到已验证的 `glm-4.6v-flash`，并记录一条启动诊断日志。

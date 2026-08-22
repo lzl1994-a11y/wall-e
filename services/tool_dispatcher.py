@@ -10,6 +10,7 @@
 
 import json
 import services.mcp_service as mcp
+from services.action_command import build_action_cmd, parse_action_cmd
 
 
 import yaml
@@ -17,18 +18,6 @@ import yaml
 def get_tools():
     """OpenAI function calling 格式的工具列表"""
     return mcp.get_chat_tools()
-
-
-def build_action_cmd(tool_name, arguments):
-    """将 LLM 返回的 tool_call 构造为 /action_cmd 的 payload。
-
-    arguments 可以是 dict 或 JSON 字符串。
-    """
-    if isinstance(arguments, str):
-        args = json.loads(arguments or "{}")
-    else:
-        args = arguments
-    return json.dumps({"name": tool_name, "arguments": args})
 
 
 class ToolCallAccumulator:

@@ -144,7 +144,7 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | `services/camera_frame.py` | 请求摄像头租约，支持单帧或限时帧流，完成后立即释放；不会直接打开摄像头。 |
 | `services/camera_capture_protocol.py` | 定义按需摄像头话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 重映射命令。 |
 | `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
-| `services/mcp_service.py` | 注册可给 LLM 调用的工具，目前包括 `express_emotion`、`perform_action`、`move_chassis`。 |
+| `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
 | `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
 | `services/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |
 | `services/serial_broker.py` | 串口设备挂载/管理相关逻辑。 |
