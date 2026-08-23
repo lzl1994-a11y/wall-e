@@ -146,15 +146,18 @@ class Esp32NetworkProtocolTests(unittest.TestCase):
 
 
 class Esp32NetworkRpcSafetyTests(unittest.TestCase):
-    class _Endpoint:
-        def __init__(self, count):
-            self.count = count
+    class _GraphNode:
+        def __init__(self, subscribers=0, publishers=0):
+            self.subscribers = subscribers
+            self.publishers = publishers
 
-        def get_subscription_count(self):
-            return self.count
+        def count_subscribers(self, topic):
+            self.last_subscriber_topic = topic
+            return self.subscribers
 
-        def get_publisher_count(self):
-            return self.count
+        def count_publishers(self, topic):
+            self.last_publisher_topic = topic
+            return self.publishers
 
     class _Message:
         def __init__(self, data):
@@ -172,11 +175,14 @@ class Esp32NetworkRpcSafetyTests(unittest.TestCase):
         return rpc
 
     def test_ros_discovery_requires_both_request_subscriber_and_response_publisher(self):
+        from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
+
         rpc = self._bare_rpc()
-        rpc._publisher = self._Endpoint(1)
-        rpc._response_subscription = self._Endpoint(1)
+        rpc._node = self._GraphNode(subscribers=1, publishers=1)
         self.assertTrue(rpc._wait_for_serial_owner(time.monotonic() + 0.1))
-        rpc._response_subscription = self._Endpoint(0)
+        self.assertEqual(rpc._node.last_subscriber_topic, REQUEST_TOPIC)
+        self.assertEqual(rpc._node.last_publisher_topic, RESPONSE_TOPIC)
+        rpc._node.publishers = 0
         started = time.monotonic()
         self.assertFalse(rpc._wait_for_serial_owner(time.monotonic() + 0.1))
         self.assertLess(time.monotonic() - started, 0.1)

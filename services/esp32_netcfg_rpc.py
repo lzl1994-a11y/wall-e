@@ -94,9 +94,16 @@ class Esp32NetworkRpcClient:
         discovery_deadline = min(deadline, self._monotonic() + self._discovery_timeout_seconds)
         while not self._closed.is_set() and self._monotonic() < discovery_deadline:
             try:
-                has_request_subscriber = self._publisher.get_subscription_count() >= 1
-                has_response_publisher = self._response_subscription.get_publisher_count() >= 1
-            except Exception:
+                # ROS 2 Humble subscriptions do not expose
+                # ``get_publisher_count()``. Query the graph through Node APIs,
+                # which are supported across the deployed Humble runtime.
+                has_request_subscriber = (
+                    self._node.count_subscribers(REQUEST_TOPIC) >= 1
+                )
+                has_response_publisher = (
+                    self._node.count_publishers(RESPONSE_TOPIC) >= 1
+                )
+            except RuntimeError:
                 return False
             if has_request_subscriber and has_response_publisher:
                 return True
@@ -114,7 +121,9 @@ class Esp32NetworkRpcClient:
             self._pending[request_id] = (event, result)
         try:
             if not self._wait_for_serial_owner(deadline):
-                raise NetworkConfigError("ESP32 串口服务未就绪；请确认 serial_ros_node 正在运行")
+                raise NetworkConfigError(
+                    "未发现 serial_ros_node 的 ESP32 NETCFG RPC 端点"
+                )
             # Do not log this JSON: save_and_apply contains Wi-Fi passwords.
             body = {"request_id": request_id, "operation": operation}
             if payload is not None:
