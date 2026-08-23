@@ -217,7 +217,7 @@
           <article class="card" data-module="llm">
             <div class="card-heading-row"><h3>LLM 服务</h3><button class="button secondary small module-save" data-save-module="llm" type="button">保存本模块</button></div>
             <div class="form-grid">
-              <label class="field"><span>服务商</span><input data-path="llm.provider" type="text" list="llm-provider-options" placeholder="例如：zhipu、doubao"><datalist id="llm-provider-options"><option value="doubao">火山方舟 / 豆包</option><option value="zhipu">智谱 AI</option><option value="qwen">阿里云百炼 / 通义千问</option></datalist></label>
+              <label class="field"><span>服务商</span><select data-path="llm.provider"><option value="zhipu">智谱 AI</option><option value="aliyun">阿里云百炼 / Qwen-Omni</option><option value="doubao">火山方舟 / 豆包</option></select><small>多模态音频直聊支持以上三家；豆包请选择支持音频输入的模型或接入点。</small></label>
               <label class="field"><span>模型</span><input data-path="llm.model" type="text" placeholder="豆包可填写控制台模型/接入点 ID"></label>
               <label class="field"><span>动作工具模型（可选）</span><input data-path="llm.tool_model" type="text" placeholder="主模型必须支持原生 Function Calling"></label>
               <label class="field full"><span>接口地址</span><input data-path="llm.url" type="url" placeholder="豆包：https://ark.cn-beijing.volces.com/api/v3"></label>
