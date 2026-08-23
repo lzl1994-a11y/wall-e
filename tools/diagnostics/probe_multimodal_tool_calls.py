@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Probe structured tool-call reliability without starting ROS or hardware.
 
-The default ``robot`` history mode intentionally mirrors the current
+The ``robot`` history mode intentionally mirrors the legacy broken
 VoiceChatService behavior: it stores successful assistant replies without a
-matching user transcript. Compare it with ``paired`` and ``none`` to diagnose
-whether malformed conversation history causes missing ``direct_answer`` calls.
+matching user transcript. Compare it with the default ``paired`` mode and
+``none`` to diagnose structured-answer reliability.
 """
 
 from __future__ import annotations
@@ -24,7 +24,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from services.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
 from services.llm_request_options import reasoning_request_options
-from services.tool_dispatcher import DIRECT_ANSWER_TOOL_NAME, ToolCallAccumulator, get_tools
+from services.tool_dispatcher import (
+    DIRECT_ANSWER_TOOL_NAME,
+    MULTIMODAL_DIRECT_ANSWER_TOOL,
+    ToolCallAccumulator,
+    get_multimodal_tools,
+)
 
 
 DEFAULT_PROMPTS = (
@@ -47,14 +52,19 @@ def _parse_args():
     parser.add_argument(
         "--history-mode",
         choices=("robot", "paired", "none"),
-        default="robot",
-        help="robot mirrors VoiceChatService; paired stores user+assistant; none is stateless.",
+        default="paired",
+        help="robot mirrors the legacy bug; paired stores user+assistant; none is stateless.",
     )
     parser.add_argument(
         "prompts",
         nargs="*",
         default=list(DEFAULT_PROMPTS),
         help="Prompts sent in order as one conversation.",
+    )
+    parser.add_argument(
+        "--retry-missing",
+        action="store_true",
+        help="Retry a missing direct_answer with only the forced answer tool.",
     )
     return parser.parse_args()
 
@@ -64,15 +74,24 @@ def _preview(value: str, limit: int = 160) -> str:
     return value if len(value) <= limit else value[:limit] + "..."
 
 
-def _request(client, settings, system_prompt, history, prompt):
+def _request(
+    client,
+    settings,
+    system_prompt,
+    history,
+    prompt,
+    *,
+    tools=None,
+    tool_choice="auto",
+):
     messages = [{"role": "system", "content": system_prompt}, *history]
     messages.append({"role": "user", "content": prompt})
     kwargs = {
         "model": settings["model"],
         "messages": messages,
         "modalities": ["text"],
-        "tools": get_tools(),
-        "tool_choice": "auto",
+        "tools": tools or get_multimodal_tools(),
+        "tool_choice": tool_choice,
         "stream": True,
         "stream_options": {"include_usage": True},
         "timeout": 15.0,
@@ -99,10 +118,14 @@ def _request(client, settings, system_prompt, history, prompt):
 
     calls = accumulator.flush()
     direct_answer = ""
+    heard_text = ""
     for call in calls:
         if call["name"] != DIRECT_ANSWER_TOOL_NAME:
             continue
         candidate = call["arguments"].get("response")
+        heard = call["arguments"].get("heard_text")
+        if isinstance(heard, str):
+            heard_text = heard.strip()
         if isinstance(candidate, str) and candidate.strip():
             direct_answer = candidate.strip()
     return {
@@ -110,6 +133,7 @@ def _request(client, settings, system_prompt, history, prompt):
         "raw_content": "".join(raw_content).strip(),
         "calls": calls,
         "direct_answer": direct_answer,
+        "heard_text": heard_text,
     }
 
 
@@ -143,17 +167,39 @@ def main():
         print(f"finish_reason={result['finish_reason']!r}")
         print(f"tool_calls={json.dumps(call_names, ensure_ascii=False)}")
         print(f"direct_answer={result['direct_answer']!r}")
+        print(f"heard_text={result['heard_text']!r}")
         print(f"raw_content={_preview(result['raw_content'])!r}")
         if not result["direct_answer"]:
-            failures += 1
             print("diagnosis=MISSING_DIRECT_ANSWER")
-            continue
+            if args.retry_missing:
+                try:
+                    result = _request(
+                        client,
+                        settings,
+                        system_prompt,
+                        [],
+                        prompt,
+                        tools=[MULTIMODAL_DIRECT_ANSWER_TOOL],
+                        tool_choice={
+                            "type": "function",
+                            "function": {"name": DIRECT_ANSWER_TOOL_NAME},
+                        },
+                    )
+                except Exception as exc:
+                    failures += 1
+                    print(f"retry_error={type(exc).__name__}: {_preview(exc)}")
+                    continue
+                print(f"retry_direct_answer={result['direct_answer']!r}")
+                print(f"retry_heard_text={result['heard_text']!r}")
+            if not result["direct_answer"]:
+                failures += 1
+                continue
 
         if args.history_mode == "robot":
             history.append({"role": "assistant", "content": result["direct_answer"]})
         elif args.history_mode == "paired":
             history.extend((
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": result["heard_text"] or prompt},
                 {"role": "assistant", "content": result["direct_answer"]},
             ))
 

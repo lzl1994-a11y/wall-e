@@ -39,9 +39,42 @@ DIRECT_ANSWER_TOOL = {
     },
 }
 
+MULTIMODAL_DIRECT_ANSWER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": DIRECT_ANSWER_TOOL_NAME,
+        "description": (
+            "每轮音频对话都必须调用一次。heard_text 写入你从本轮音频中听到的用户原话，"
+            "response 写入唯一允许播放给用户听的最终台词。如需调用身体动作工具，也仍"
+            "必须同时调用本工具。不要把台词写在普通 content 中。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "heard_text": {
+                    "type": "string",
+                    "description": "本轮音频中听到的用户原话，简洁转写，不要解释",
+                    "maxLength": 240,
+                },
+                "response": {
+                    "type": "string",
+                    "description": "给用户播报的完整、自然、简短的最终台词",
+                },
+            },
+            "required": ["heard_text", "response"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 def get_tools():
     """OpenAI function declarations, including the required speech outlet."""
     return [DIRECT_ANSWER_TOOL, *mcp.get_chat_tools()]
+
+
+def get_multimodal_tools():
+    """Tools for audio turns, including a transcript for paired history."""
+    return [MULTIMODAL_DIRECT_ANSWER_TOOL, *mcp.get_chat_tools()]
 
 
 class ToolCallAccumulator:

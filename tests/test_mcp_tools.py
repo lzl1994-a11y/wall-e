@@ -63,6 +63,14 @@ class FastMcpToolTests(unittest.TestCase):
             tools = tool_dispatcher.get_tools()
         self.assertEqual([tool["function"]["name"] for tool in tools], ["direct_answer"])
 
+    def test_multimodal_direct_answer_requires_transcript_and_response(self):
+        from services import tool_dispatcher
+
+        with patch.object(tool_dispatcher.mcp, "get_chat_tools", return_value=[]):
+            tools = tool_dispatcher.get_multimodal_tools()
+        parameters = tools[0]["function"]["parameters"]
+        self.assertEqual(parameters["required"], ["heard_text", "response"])
+
 
 class _ToolCallResponse:
     def __iter__(self):

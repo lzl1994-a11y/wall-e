@@ -4,6 +4,7 @@
   IDLE        ── 待机，等待唤醒词
   AWAKE       ── 已唤醒，VAD 监听语音
   LLM_PENDING ── 语音已发送，等待 LLM 回复
+  SPEAKING    ── 等待扬声器播放完成，麦克风保持暂停
 
 唤醒词触发 → 播放预合成语音 → TFT 切聊天页 → 进入 AWAKE
 LLM 40s 无回复 → 超时回到 IDLE，需重新唤醒
@@ -25,9 +26,10 @@ from services.llm_prompt import with_direct_speech_policy, with_structured_answe
 from services.llm_request_options import reasoning_request_options
 from services.tool_dispatcher import (
     DIRECT_ANSWER_TOOL_NAME,
+    MULTIMODAL_DIRECT_ANSWER_TOOL,
     ToolCallAccumulator,
     build_action_cmd,
-    get_tools,
+    get_multimodal_tools,
 )
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
@@ -57,6 +59,7 @@ class VoiceChatService:
     SAMPLE_RATE = AudioPipeline.SAMPLE_RATE
     API_TIMEOUT = 10.0
     LLM_IDLE_TIMEOUT = 40.0
+    FALLBACK_REPLY = "这次我没听清，请再说一遍。"
 
     def __init__(self, config_path="core/config.yaml"):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -261,84 +264,68 @@ class VoiceChatService:
 
     def _send_to_llm(self, audio_b64: str):
         """后台线程：拼 messages → 调 LLM → 流式回调。"""
+        audio_message = self.multimodal.build_audio_message(audio_b64)
         messages = [{"role": "system", "content": self.system_prompt}]
-        messages.extend(list(self._chat_history))
-        messages.append(self.multimodal.build_audio_message(audio_b64))
+        messages.extend(self._validated_history())
+        messages.append(audio_message)
 
         print(f"[VoiceChat] 发送音频 → {self.model}")
         t0 = time.time()
 
         try:
-            request_kwargs = {
-                "model": self.model,
-                "messages": messages,
-                "modalities": ["text"],
-                "tools": get_tools(),
-                "tool_choice": "auto",
-                "stream": True,
-                "stream_options": {"include_usage": True},
-                "timeout": self.API_TIMEOUT,
-                "max_tokens": self.max_tokens,
-                "frequency_penalty": 0.3,
-                "presence_penalty": 0.3,
-            }
-            request_kwargs.update(reasoning_request_options(self.llm_settings))
-            response = self.client.chat.completions.create(**request_kwargs)
+            streamed = self._stream_tool_calls(
+                messages,
+                tools=get_multimodal_tools(),
+                tool_choice="auto",
+            )
+            if streamed is None:
+                return
+            tool_calls, raw_content = streamed
+            heard_text, response_text = self._direct_answer(tool_calls)
+            structured_ok = bool(response_text)
 
-            acc = ToolCallAccumulator()
-            chunks = []
-            for chunk in response:
-                if self._cancel_llm.is_set():
-                    print("[VoiceChat] LLM 调用被中断")
-                    if hasattr(response, "close"):
-                        try:
-                            response.close()
-                        except Exception:
-                            pass
-                    return
-
-                if chunk.choices:
-                    delta = chunk.choices[0].delta
-                    acc.feed(delta)
-                    # The multimodal path has the same speech-safety contract
-                    # as LLMService: only direct_answer.response is spoken.
-
-            tool_calls = acc.flush()
-            direct_answers = [
-                tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
-            ]
-            response_text = ""
-            if direct_answers:
-                candidate = direct_answers[-1]["arguments"].get("response")
-                if isinstance(candidate, str):
-                    response_text = candidate.strip()
             if not response_text:
-                raise RuntimeError(
-                    "模型没有返回 direct_answer.response；请使用支持原生 Function Calling 的模型"
+                print(
+                    "[VoiceChat] 模型漏掉 direct_answer，使用无历史、无动作工具重试"
                 )
-            chunks.append(response_text)
+                retry_messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    audio_message,
+                ]
+                retry = self._stream_tool_calls(
+                    retry_messages,
+                    tools=[MULTIMODAL_DIRECT_ANSWER_TOOL],
+                    tool_choice={
+                        "type": "function",
+                        "function": {"name": DIRECT_ANSWER_TOOL_NAME},
+                    },
+                )
+                if retry is None:
+                    return
+                retry_calls, retry_raw_content = retry
+                heard_text, response_text = self._direct_answer(retry_calls)
+                structured_ok = bool(response_text)
+                if not response_text:
+                    print(
+                        "[VoiceChat] 结构化回答重试失败 "
+                        f"(raw_content={len(raw_content) + len(retry_raw_content)} chars)"
+                    )
+                    response_text = self.FALLBACK_REPLY
+
             if self.on_llm_chunk:
                 self.on_llm_chunk(response_text)
 
             elapsed = time.time() - t0
-            reply = "".join(chunks).strip()
+            reply = response_text
             print(f"[VoiceChat] LLM 回复 ({elapsed:.1f}s): {reply}")
 
-            # 解析 you/asr 文本存入对话历史
-            asr_text = ""
-            ai_text = reply
-            if reply.startswith("you:"):
-                lines = reply.split("\n", 1)
-                asr_text = lines[0][4:].strip()
-                ai_text = lines[1].strip() if len(lines) > 1 else ""
-                if ai_text.startswith("ai:"):
-                    ai_text = ai_text[3:].strip()
-            if asr_text:
-                self._chat_history.append({"role": "user", "content": asr_text})
-            if ai_text:
-                self._chat_history.append({"role": "assistant", "content": ai_text})
+            if heard_text and response_text != self.FALLBACK_REPLY:
+                self._append_history_turn(heard_text, response_text)
+                print(f"[VoiceChat] 听写: {heard_text}")
 
             for tc in tool_calls:
+                if not structured_ok:
+                    break
                 if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
                     continue
                 print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
@@ -353,6 +340,79 @@ class VoiceChatService:
             print(f"[VoiceChat] LLM 调用失败: {e}")
         finally:
             self._llm_done()
+
+    def _stream_tool_calls(self, messages, *, tools, tool_choice):
+        """Return parsed tool calls and untrusted content for one LLM request."""
+        request_kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "modalities": ["text"],
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "timeout": self.API_TIMEOUT,
+            "max_tokens": self.max_tokens,
+            "frequency_penalty": 0.3,
+            "presence_penalty": 0.3,
+        }
+        request_kwargs.update(reasoning_request_options(self.llm_settings))
+        response = self.client.chat.completions.create(**request_kwargs)
+        accumulator = ToolCallAccumulator()
+        raw_content = []
+        for chunk in response:
+            if self._cancel_llm.is_set():
+                print("[VoiceChat] LLM 调用被中断")
+                if hasattr(response, "close"):
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                return None
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            accumulator.feed(delta)
+            if delta.content:
+                raw_content.append(delta.content)
+            self._last_llm_activity = time.time()
+        return accumulator.flush(), "".join(raw_content).strip()
+
+    @staticmethod
+    def _direct_answer(tool_calls):
+        heard_text = ""
+        response_text = ""
+        for call in tool_calls:
+            if call["name"] != DIRECT_ANSWER_TOOL_NAME:
+                continue
+            arguments = call["arguments"]
+            heard = arguments.get("heard_text")
+            response = arguments.get("response")
+            if isinstance(heard, str):
+                heard_text = heard.strip()[:240]
+            if isinstance(response, str):
+                response_text = response.strip()
+        return heard_text, response_text
+
+    def _validated_history(self):
+        history = list(self._chat_history)
+        expected = "user"
+        for message in history:
+            if not isinstance(message, dict) or message.get("role") != expected:
+                print("[VoiceChat] 检测到不成对的旧对话历史，已清空")
+                self._chat_history.clear()
+                return []
+            expected = "assistant" if expected == "user" else "user"
+        if expected != "user":
+            print("[VoiceChat] 检测到未完成的旧对话回合，已清空")
+            self._chat_history.clear()
+            return []
+        return history
+
+    def _append_history_turn(self, heard_text, response_text):
+        self._validated_history()
+        self._chat_history.append({"role": "user", "content": heard_text})
+        self._chat_history.append({"role": "assistant", "content": response_text})
 
     def _llm_done(self):
         """LLM 调用结束，等待扬声器真正播完后再恢复采集。"""
