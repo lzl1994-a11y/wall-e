@@ -27,8 +27,23 @@ class DoaRosNode(Node):
 
     def _ensure_listener(self):
         selected_ports, configured = serial_ports_for_role("voice")
+        # Audio capture/playback can safely use the system default device, but
+        # DOA is a serial protocol.  Falling back to probing every ACM/USB port
+        # here also probes WALL_E_TFT, resets its serial buffers and races the
+        # screen/motion bridge.  Only start DOA discovery after the user has
+        # explicitly assigned a USB device to the voice role.
+        if not configured:
+            if self._listener:
+                self._listener.stop()
+                self._listener = None
+            now = self.get_clock().now().nanoseconds / 1e9
+            if now - self._last_wait_log >= 10.0:
+                self.get_logger().info("未配置 voice USB，跳过 ESP_MIC 串口探测")
+                self._last_wait_log = now
+            return
+
         if self._listener and self._listener.is_running:
-            if not configured or self._listener.port in selected_ports:
+            if self._listener.port in selected_ports:
                 return
             self.get_logger().info("语音 USB 配置已变化，重新连接 DOA")
             self._listener.stop()
