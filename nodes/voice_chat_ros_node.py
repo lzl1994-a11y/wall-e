@@ -37,6 +37,7 @@ from services.usb_devices import resolve_audio_device
 
 # 去掉 TTS 不需要的符号（保留中文标点和空格）
 TTS_CLEAN_RE = re.compile(r'[*#_~`>\[\]\(\)\{\}]')
+OUTPUT_ECHO_GUARD_SECONDS = 0.35
 
 class VoiceChatNode(Node):
     def __init__(self):
@@ -45,6 +46,7 @@ class VoiceChatNode(Node):
         self.tts_pub = self.create_publisher(String, "tts_text", 10)
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, "action_cmd", 10)
+        self.create_subscription(String, "llm_busy", self._on_playback_state, 10)
 
         self.get_logger().info("正在预热唤醒词 + Qwen-Omni 引擎...")
 
@@ -61,6 +63,10 @@ class VoiceChatNode(Node):
         self._punc_count = 0           # 标点计数
         self._correction_done = False  # 第一行纠错已提取
         self._active_turn_id = None
+        self._output_state_lock = threading.Lock()
+        self._awaiting_tts_playback = False
+        self._wake_response_active = False
+        self._resume_timer = None
         self.punctuations = {"。", "？", ".", "?", "！", "!"}
 
         # 唤醒应答 WAV 路径
@@ -75,6 +81,16 @@ class VoiceChatNode(Node):
     def _on_wake_word(self):
         """唤醒词触发：播放预合成语音 + 切 TFT 到聊天页。"""
         self.get_logger().info("唤醒词触发")
+
+        # The wake response uses the same speaker as TTS. Mute capture before
+        # starting it so the response itself cannot become the user's sentence.
+        with self._output_state_lock:
+            self._wake_response_active = True
+            self._awaiting_tts_playback = False
+            if self._resume_timer is not None:
+                self._resume_timer.cancel()
+                self._resume_timer = None
+        self.vc.begin_output_playback()
 
         # 切 TFT 到聊天页面
         try:
@@ -93,12 +109,12 @@ class VoiceChatNode(Node):
     def _play_wake_response(self):
         """播放 assets/wake_response.wav。"""
         with self._wake_play_lock:
-            if not os.path.exists(self._wake_wav):
-                self.get_logger().warn(f"唤醒应答文件不存在: {self._wake_wav}")
-                self.get_logger().warn("请先运行 generate_wake_response.py 生成语音文件")
-                return
-
             try:
+                if not os.path.exists(self._wake_wav):
+                    self.get_logger().warn(f"唤醒应答文件不存在: {self._wake_wav}")
+                    self.get_logger().warn("请先运行 generate_wake_response.py 生成语音文件")
+                    return
+
                 import sounddevice as sd
                 import numpy as np
                 from pydub import AudioSegment
@@ -130,6 +146,42 @@ class VoiceChatNode(Node):
                 self.get_logger().error("缺少音频播放依赖，无法播放唤醒应答")
             except Exception as e:
                 self.get_logger().error(f"播放唤醒应答失败: {e}")
+            finally:
+                with self._output_state_lock:
+                    self._wake_response_active = False
+                self._schedule_capture_resume()
+
+    def _on_playback_state(self, msg):
+        """Resume multimodal capture only after the queued TTS turn is done."""
+        if msg.data != "idle":
+            return
+        with self._output_state_lock:
+            if not self._awaiting_tts_playback:
+                return
+            self._awaiting_tts_playback = False
+            if self._wake_response_active:
+                return
+        self._schedule_capture_resume()
+
+    def _schedule_capture_resume(self):
+        """Discard the speaker's acoustic tail before reopening capture."""
+        with self._output_state_lock:
+            if self._resume_timer is not None:
+                self._resume_timer.cancel()
+            self._resume_timer = threading.Timer(
+                OUTPUT_ECHO_GUARD_SECONDS,
+                self._resume_capture_after_output,
+            )
+            self._resume_timer.daemon = True
+            self._resume_timer.start()
+
+    def _resume_capture_after_output(self):
+        with self._output_state_lock:
+            self._resume_timer = None
+            if self._wake_response_active or self._awaiting_tts_playback:
+                return
+        if self.vc.complete_output_playback():
+            self.get_logger().info("扬声器尾音已清除，恢复多模态录音")
 
     # ── LLM 回调 ──
     def _on_tool_call(self, name, arguments):
@@ -238,6 +290,8 @@ class VoiceChatNode(Node):
     def _on_llm_done(self):
         """关闭本轮 TTS；播放节点会在音频真正播完后结束回合。"""
         turn_id = self._ensure_turn_id()
+        with self._output_state_lock:
+            self._awaiting_tts_playback = True
         self.tts_pub.publish(String(data=encode_turn_end(turn_id)))
         self.get_logger().info(f"TTS turn queued: {turn_id}")
         self._sentence_buffer = ""
@@ -261,6 +315,10 @@ class VoiceChatNode(Node):
 
     def destroy_node(self):
         self.get_logger().info("正在关闭语音直聊节点...")
+        with self._output_state_lock:
+            if self._resume_timer is not None:
+                self._resume_timer.cancel()
+                self._resume_timer = None
         if hasattr(self, "vc"):
             self.vc.stop()
         super().destroy_node()

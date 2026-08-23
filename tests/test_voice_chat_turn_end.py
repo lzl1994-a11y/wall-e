@@ -1,5 +1,6 @@
 import importlib
 import sys
+import threading
 import types
 import unittest
 from unittest.mock import MagicMock, patch
@@ -57,6 +58,8 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         node._sentence_buffer = ""
         node._punc_count = 0
         node._correction_done = True
+        node._output_state_lock = threading.Lock()
+        node._awaiting_tts_playback = False
 
         node._on_llm_done()
 
@@ -66,6 +69,21 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         self.assertEqual(node._sentence_buffer, "")
         self.assertEqual(node._punc_count, 0)
         self.assertFalse(node._correction_done)
+        self.assertTrue(node._awaiting_tts_playback)
+        sys.modules.pop("nodes.voice_chat_ros_node", None)
+
+    def test_playback_idle_schedules_capture_resume(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node._output_state_lock = threading.Lock()
+        node._awaiting_tts_playback = True
+        node._wake_response_active = False
+        node._schedule_capture_resume = MagicMock()
+
+        node._on_playback_state(types.SimpleNamespace(data="idle"))
+
+        self.assertFalse(node._awaiting_tts_playback)
+        node._schedule_capture_resume.assert_called_once_with()
         sys.modules.pop("nodes.voice_chat_ros_node", None)
 
 

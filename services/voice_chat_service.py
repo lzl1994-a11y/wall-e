@@ -37,6 +37,7 @@ class _State(Enum):
     IDLE = auto()
     AWAKE = auto()
     LLM_PENDING = auto()
+    SPEAKING = auto()
 
 
 class VoiceChatService:
@@ -128,6 +129,24 @@ class VoiceChatService:
         self._pipe.resume()
         print("[VoiceChat] 已恢复")
 
+    def begin_output_playback(self):
+        """Mute capture while robot audio is playing through the speaker."""
+        with self._state_lock:
+            self._state = _State.SPEAKING
+        self._pipe.pause()
+        print("[VoiceChat] 播放期间暂停麦克风")
+
+    def complete_output_playback(self):
+        """Resume capture after playback and the acoustic echo tail are over."""
+        with self._state_lock:
+            if self._state != _State.SPEAKING:
+                return False
+            self._state = _State.AWAKE
+        self._last_llm_activity = time.time()
+        self._pipe.resume()
+        print("[VoiceChat] 播放完成，恢复麦克风")
+        return True
+
     # ================================================================
     # 状态机入口
     # ================================================================
@@ -157,15 +176,19 @@ class VoiceChatService:
 
     def _on_sentence(self, pcm_data: bytes):
         """VAD 断句回调：仅 AWAKE 状态时派发 LLM。"""
-        with self._state_lock:
-            state = self._state
-
-        if state != _State.AWAKE:
-            return  # IDLE 或 LLM_PENDING 时忽略
-
         duration_ms = len(pcm_data) // 2 * 1000 // self.SAMPLE_RATE
         if duration_ms < 200:
             return
+
+        with self._state_lock:
+            if self._state != _State.AWAKE:
+                return  # IDLE、LLM_PENDING 或 SPEAKING 时忽略
+            # Claim the turn before leaving the audio callback so a second VAD
+            # sentence cannot race with this one. Capture stays muted until the
+            # corresponding TTS turn has physically finished playing.
+            self._state = _State.LLM_PENDING
+
+        self._pipe.pause()
 
         # 转 WAV → base64，在新线程发 LLM
         wav_path = None
@@ -191,6 +214,9 @@ class VoiceChatService:
 
         except Exception as e:
             print(f"[VoiceChat] 语音编码失败: {e}")
+            # Complete the empty turn so the playback node can acknowledge it
+            # and reopen capture instead of leaving the microphone muted.
+            self._llm_done()
         finally:
             if wav_path and os.path.exists(wav_path):
                 try:
@@ -204,6 +230,8 @@ class VoiceChatService:
         self._cancel_llm.set()
         with self._state_lock:
             self._state = _State.IDLE
+        self._pipe.set_awake(False)
+        self._pipe.resume()
         if self.on_llm_timeout:
             try:
                 self.on_llm_timeout()
@@ -229,8 +257,6 @@ class VoiceChatService:
         self._llm_thread = threading.Thread(
             target=self._send_to_llm, args=(audio_b64,), daemon=True
         )
-        with self._state_lock:
-            self._state = _State.LLM_PENDING
         self._llm_thread.start()
 
     def _send_to_llm(self, audio_b64: str):
@@ -329,11 +355,11 @@ class VoiceChatService:
             self._llm_done()
 
     def _llm_done(self):
-        """LLM 调用结束，回到 AWAKE。"""
+        """LLM 调用结束，等待扬声器真正播完后再恢复采集。"""
         self._last_llm_activity = time.time()
         with self._state_lock:
             if self._state == _State.LLM_PENDING:
-                self._state = _State.AWAKE
+                self._state = _State.SPEAKING
         if self.on_llm_done:
             try:
                 self.on_llm_done()
