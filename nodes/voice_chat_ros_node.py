@@ -35,8 +35,13 @@ from services.audio_output import (
 )
 from services.tool_dispatcher import build_action_cmd
 from services.tft_preview_server import TftPreviewServer, load_tft_preview_settings
+from services.tracking_tft_preview import TrackingTftPreview
 from services.tts_protocol import encode_turn_end
 from services.usb_devices import resolve_audio_device
+from services.vision_pipeline_protocol import (
+    VISION_PIPELINE_COMMAND_TOPIC,
+    decode_vision_pipeline_command,
+)
 
 # 去掉 TTS 不需要的符号（保留中文标点和空格）
 TTS_CLEAN_RE = re.compile(r'[*#_~`>\[\]\(\)\{\}]')
@@ -69,6 +74,18 @@ class VoiceChatNode(Node):
         except Exception as exc:
             # Image analysis still works without a connected chest screen.
             self.get_logger().error(f"TFT preview service failed to start: {exc}")
+        self.tracking_tft_preview = TrackingTftPreview(
+            self.tft_preview,
+            self.camera_frames,
+            fps=self.tft_preview_settings.fps,
+            logger=self.get_logger(),
+        )
+        self.create_subscription(
+            String,
+            VISION_PIPELINE_COMMAND_TOPIC,
+            self._on_vision_pipeline_command,
+            10,
+        )
 
         self.get_logger().info("正在预热唤醒词 + Qwen-Omni 引擎...")
 
@@ -105,6 +122,25 @@ class VoiceChatNode(Node):
         ready = String()
         ready.data = "ready"
         self.tft_preview_ready_pub.publish(ready)
+
+    def _on_vision_pipeline_command(self, message):
+        command = decode_vision_pipeline_command(message.data)
+        if command is not None:
+            self.tracking_tft_preview.set_command(command)
+
+    def _run_camera_preview(self, *, duration_ms):
+        tracking_preview = getattr(self, "tracking_tft_preview", None)
+        was_tracking = tracking_preview.pause() if tracking_preview is not None else False
+        try:
+            return self.tft_preview.send_camera_preview(
+                self.camera_frames,
+                duration_ms=duration_ms,
+                hold_ms=self.tft_preview_settings.hold_ms,
+                fps=self.tft_preview_settings.fps,
+            )
+        finally:
+            if was_tracking:
+                tracking_preview.resume()
 
     # ── 唤醒词回调 ──
     def _on_wake_word(self):
@@ -232,11 +268,8 @@ class VoiceChatNode(Node):
                 question = value.strip()
 
         self.tts_pub.publish(String(data="好的，我看一下。"))
-        preview = self.tft_preview.send_camera_preview(
-            self.camera_frames,
+        preview = self._run_camera_preview(
             duration_ms=self.tft_preview_settings.recognition_duration_ms,
-            hold_ms=self.tft_preview_settings.hold_ms,
-            fps=self.tft_preview_settings.fps,
         )
         if preview.busy:
             return "我正在处理上一张画面，等一下再看。"
@@ -262,11 +295,8 @@ class VoiceChatNode(Node):
     def _process_camera_photo(self):
         """Voice-selected photo request: capture and save without vision LLM."""
         self.tts_pub.publish(String(data="好的，准备拍照。"))
-        preview = self.tft_preview.send_camera_preview(
-            self.camera_frames,
+        preview = self._run_camera_preview(
             duration_ms=self.tft_preview_settings.photo_duration_ms,
-            hold_ms=self.tft_preview_settings.hold_ms,
-            fps=self.tft_preview_settings.fps,
         )
         if preview.busy:
             return "我正在拍上一张，等一下再试。"
@@ -416,6 +446,8 @@ class VoiceChatNode(Node):
                 self._resume_timer = None
         if hasattr(self, "vc"):
             self.vc.stop()
+        if getattr(self, "tracking_tft_preview", None) is not None:
+            self.tracking_tft_preview.stop()
         if getattr(self, "tft_preview", None) is not None:
             self.tft_preview.stop()
         super().destroy_node()

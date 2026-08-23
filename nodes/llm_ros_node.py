@@ -24,7 +24,12 @@ from services.tft_preview_server import (
     TftPreviewServer,
     load_tft_preview_settings,
 )
+from services.tracking_tft_preview import TrackingTftPreview
 from services.tts_protocol import encode_turn_end
+from services.vision_pipeline_protocol import (
+    VISION_PIPELINE_COMMAND_TOPIC,
+    decode_vision_pipeline_command,
+)
 
 
 class LLMBrainNode(Node):
@@ -95,6 +100,18 @@ class LLMBrainNode(Node):
             # Camera/photo business remains available when port 9000 is busy or
             # the network stack is unavailable.
             self.get_logger().error(f'TFT preview service failed to start: {exc}')
+        self.tracking_tft_preview = TrackingTftPreview(
+            self.tft_preview,
+            self.camera_frames,
+            fps=self.tft_preview_settings.fps,
+            logger=self.get_logger(),
+        )
+        self.create_subscription(
+            String,
+            VISION_PIPELINE_COMMAND_TOPIC,
+            self._on_vision_pipeline_command,
+            10,
+        )
 
         try:
             self.llm = LLMService()
@@ -115,6 +132,11 @@ class LLMBrainNode(Node):
         ready = String()
         ready.data = 'ready'
         self.tft_preview_ready_publisher.publish(ready)
+
+    def _on_vision_pipeline_command(self, message):
+        command = decode_vision_pipeline_command(message.data)
+        if command is not None:
+            self.tracking_tft_preview.set_command(command)
 
     def voice_callback(self, msg):
         """Queue the request so the ROS callback thread is never blocked by LLM I/O."""
@@ -484,12 +506,18 @@ class LLMBrainNode(Node):
             return PreviewResult(
                 last_frame=self.camera_frames.capture(timeout=10.0, request_timeout=15.0)
             )
-        return preview_service.send_camera_preview(
-            self.camera_frames,
-            duration_ms=duration_ms,
-            hold_ms=self.tft_preview_settings.hold_ms,
-            fps=self.tft_preview_settings.fps,
-        )
+        tracking_preview = getattr(self, 'tracking_tft_preview', None)
+        was_tracking = tracking_preview.pause() if tracking_preview is not None else False
+        try:
+            return preview_service.send_camera_preview(
+                self.camera_frames,
+                duration_ms=duration_ms,
+                hold_ms=self.tft_preview_settings.hold_ms,
+                fps=self.tft_preview_settings.fps,
+            )
+        finally:
+            if was_tracking:
+                tracking_preview.resume()
 
     def _visual_history(self):
         """只保留文本形式的最近上下文，避免把旧 tool 消息传给视觉模型。"""
@@ -694,6 +722,8 @@ class LLMBrainNode(Node):
                 pass
         if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
+        if getattr(self, 'tracking_tft_preview', None) is not None:
+            self.tracking_tft_preview.stop()
         if getattr(self, 'tft_preview', None) is not None:
             self.tft_preview.stop()
         super().destroy_node()

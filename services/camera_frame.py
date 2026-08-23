@@ -222,6 +222,8 @@ class CameraFrameProvider:
         try:
             with self._condition:
                 while first_frame is None:
+                    if should_stop is not None and should_stop():
+                        return None
                     if self._frame is not None and self._frame_time >= requested_at:
                         if not first_fresh_frame_time:
                             first_fresh_frame_time = self._frame_time

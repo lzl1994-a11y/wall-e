@@ -326,6 +326,10 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 1.5 秒并把末帧交给视觉模型，“拍照”会预览 3 秒、保存末帧到本地且不调用模型。
 摄像头图像继续复用 `/camera_frame`，不会重复打开摄像头。默认配置如下：
 
+当语义动作启动“看着我/跟着我”的地平线跟踪管线时，管线的 `/image` 会同时保留给
+BPU 检测，并经 `camera_capture_node` 中继到 `/camera_frame`，持续推送到胸前 TFT。
+停止跟随即结束该流；期间发起一次性拍照或视觉问答会短暂让出胸前屏幕，完成后自动恢复。
+
 ```yaml
 tft_preview:
   bind_address: 0.0.0.0

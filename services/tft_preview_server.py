@@ -269,6 +269,7 @@ class TftPreviewServer:
         duration_ms: int = 3000,
         hold_ms: int = 3000,
         fps: int | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> PreviewResult:
         """Capture a preview, send it when a TFT is connected, and return the last source frame."""
         result = PreviewResult()
@@ -402,7 +403,8 @@ class TftPreviewServer:
                 on_frame=queue_source_frame,
                 on_source_frame=queue_source_frame,
                 on_no_new_frame=record_no_new_frame,
-                should_stop=network_failed.is_set,
+                should_stop=lambda: network_failed.is_set()
+                or (should_stop is not None and should_stop()),
                 timeout=10.0,
                 request_timeout=15.0,
             ) or result.last_frame
