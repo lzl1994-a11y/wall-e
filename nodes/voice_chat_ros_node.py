@@ -27,7 +27,7 @@ from std_msgs.msg import String
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
-from services.camera_frame import CameraFrameProvider
+from services.camera_frame import CameraFrameProvider, save_camera_photo
 from services.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
@@ -70,6 +70,8 @@ class VoiceChatNode(Node):
         self.vc.on_llm_chunk = self._on_llm_chunk
         self.vc.on_llm_reply = self._on_llm_reply
         self.vc.on_tool_call = self._on_tool_call
+        self.vc.on_photo_request = self._process_camera_photo
+        self.vc.on_inspection_request = self._process_heard_camera_inspection
         self.vc.on_llm_done = self._on_llm_done
         self.vc.on_llm_timeout = self._on_llm_timeout
 
@@ -240,6 +242,37 @@ class VoiceChatNode(Node):
                 f"Vision request failed: {exc}\n{traceback.format_exc()}"
             )
             return "这张图我没分析出来，你换个角度再让我看看。"
+
+    def _process_heard_camera_inspection(self, heard_text):
+        """Run inspection selected from the structured audio transcript."""
+        return self._process_camera_inspection({"question": heard_text})
+
+    def _process_camera_photo(self):
+        """Voice-selected photo request: capture and save without vision LLM."""
+        self.tts_pub.publish(String(data="好的，准备拍照。"))
+        preview = self.tft_preview.send_camera_preview(
+            self.camera_frames,
+            duration_ms=self.tft_preview_settings.photo_duration_ms,
+            hold_ms=self.tft_preview_settings.hold_ms,
+            fps=self.tft_preview_settings.fps,
+        )
+        if preview.busy:
+            return "我正在拍上一张，等一下再试。"
+        if not preview.last_frame:
+            self.get_logger().error(
+                f"Camera photo failed: {preview.error or 'camera_frame_unavailable'}"
+            )
+            return "我现在拍不到照片，检查一下摄像头连接。"
+        try:
+            saved = save_camera_photo(
+                preview.last_frame,
+                self.tft_preview_settings.photo_directory,
+            )
+            self.get_logger().info(f"Camera photo saved: {saved}")
+            return "拍好了，照片已经保存。"
+        except Exception as exc:
+            self.get_logger().error(f"Camera photo save failed: {exc}")
+            return "照片拍到了，但保存失败了。"
 
     def _on_llm_chunk(self, text):
         """流式文本块：跳过纠错首行，2 标点攒一句 → tts_text。"""

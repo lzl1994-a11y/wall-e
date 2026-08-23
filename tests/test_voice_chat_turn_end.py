@@ -117,6 +117,36 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         )
         sys.modules.pop("nodes.voice_chat_ros_node", None)
 
+    def test_photo_request_captures_and_saves_last_frame(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.tts_pub = MagicMock()
+        node.camera_frames = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(
+            photo_duration_ms=3000,
+            hold_ms=3000,
+            fps=10,
+            photo_directory="/tmp/wali-photos",
+        )
+        node.tft_preview = MagicMock()
+        node.tft_preview.send_camera_preview.return_value = types.SimpleNamespace(
+            busy=False,
+            last_frame=b"\xff\xd8photo\xff\xd9",
+            error="",
+        )
+        node.get_logger = lambda: MagicMock()
+        save = MagicMock(return_value="/tmp/wali-photos/photo.jpg")
+
+        with patch.dict(
+            node_class._process_camera_photo.__globals__,
+            {"save_camera_photo": save},
+        ):
+            answer = node._process_camera_photo()
+
+        self.assertEqual(answer, "拍好了，照片已经保存。")
+        save.assert_called_once_with(b"\xff\xd8photo\xff\xd9", "/tmp/wali-photos")
+        sys.modules.pop("nodes.voice_chat_ros_node", None)
+
 
 if __name__ == "__main__":
     unittest.main()

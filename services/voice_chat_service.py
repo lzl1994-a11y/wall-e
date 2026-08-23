@@ -32,6 +32,10 @@ from services.tool_dispatcher import (
     build_action_cmd,
     get_multimodal_tools,
 )
+from services.camera_frame import (
+    is_camera_inspection_request,
+    is_camera_photo_request,
+)
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
 
@@ -100,6 +104,8 @@ class VoiceChatService:
         self.on_llm_reply = None       # LLM 文本回复（最终完整回复）
         self.on_llm_chunk = None       # LLM 流式文本块
         self.on_tool_call = None       # LLM 工具调用
+        self.on_photo_request = None   # 多模态拍照请求（由 ROS 节点执行）
+        self.on_inspection_request = None  # 多模态看图请求（由 ROS 节点执行）
         self.on_llm_done = None        # LLM 本轮结束（成功、失败或取消）
         self.on_llm_timeout = None     # 40s 无回复超时
 
@@ -313,10 +319,49 @@ class VoiceChatService:
                     )
                     response_text = self.FALLBACK_REPLY
 
+            # Camera side effects require a complete structured response.  The
+            # deterministic matchers make photo/inspection work even when the
+            # audio model only says “好的” and omits inspect_camera.
+            handled_visual_tools = set()
+            photo_handler = getattr(self, "on_photo_request", None)
+            inspection_handler = getattr(self, "on_inspection_request", None)
+            if (
+                structured_ok
+                and heard_text
+                and is_camera_photo_request(heard_text)
+                and photo_handler
+            ):
+                handled_visual_tools.add("inspect_camera")
+                try:
+                    handled_response = photo_handler()
+                    if not isinstance(handled_response, str) or not handled_response.strip():
+                        raise RuntimeError("拍照处理器没有返回结果")
+                    response_text = handled_response.strip()
+                except Exception as exc:
+                    print(f"[VoiceChat] 拍照处理失败: {exc}")
+                    response_text = "这次没拍成功，请检查摄像头后再试。"
+            elif (
+                structured_ok
+                and heard_text
+                and is_camera_inspection_request(heard_text)
+                and inspection_handler
+            ):
+                handled_visual_tools.add("inspect_camera")
+                try:
+                    handled_response = inspection_handler(heard_text)
+                    if not isinstance(handled_response, str) or not handled_response.strip():
+                        raise RuntimeError("视觉查看处理器没有返回结果")
+                    response_text = handled_response.strip()
+                except Exception as exc:
+                    print(f"[VoiceChat] 视觉查看失败: {exc}")
+                    response_text = "这次没看清，请检查摄像头后再试。"
+
             for tc in tool_calls:
                 if not structured_ok:
                     break
                 if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
+                    continue
+                if tc["name"] in handled_visual_tools:
                     continue
                 print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
                 if self.on_tool_call:
