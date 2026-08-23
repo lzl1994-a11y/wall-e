@@ -236,9 +236,18 @@ class ConfigWebServerTests(unittest.TestCase):
             self.request(
                 "/api/config",
                 method="POST",
-                payload={"patch": {"tft_preview": {"fps": 25}}},
+                payload={"patch": {"tft_preview": {"fps": 31}}},
             )
         self.assertEqual(context.exception.code, 400)
+
+    def test_tft_preview_accepts_30_fps(self):
+        status, body = self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"tft_preview": {"fps": 30}}},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["config"]["tft_preview"]["fps"], 30)
 
     def test_camera_preview_api_starts_returns_frames_and_stops(self):
         preview = MagicMock()

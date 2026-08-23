@@ -187,6 +187,9 @@ class CameraFrameProvider:
         duration_ms: int,
         fps: int,
         on_frame: Callable[[bytes], None],
+        on_source_frame: Callable[[bytes, int], None] | None = None,
+        on_no_new_frame: Callable[[], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
         timeout: float = 8.0,
         request_timeout: float | None = None,
     ) -> bytes | None:
@@ -204,7 +207,7 @@ class CameraFrameProvider:
             else max(0.2, float(request_timeout))
         )
         duration_seconds = max(0.1, float(duration_ms) / 1000.0)
-        target_fps = min(20, max(1, int(fps)))
+        target_fps = min(30, max(1, int(fps)))
         frame_interval = 1.0 / target_fps
         client_id = f"tft-{uuid.uuid4().hex}"
         requested_at = time.monotonic()
@@ -253,8 +256,11 @@ class CameraFrameProvider:
             next_frame_at = stream_started
             last_renewed_at = stream_started
             last_frame = first_frame
+            last_delivered_sequence = -1
 
             while True:
+                if should_stop is not None and should_stop():
+                    break
                 now = time.monotonic()
                 if now >= stream_deadline:
                     break
@@ -267,10 +273,17 @@ class CameraFrameProvider:
                     continue
 
                 with self._condition:
-                    if self._frame is not None:
-                        last_frame = self._frame
-                if last_frame is not None:
-                    on_frame(last_frame)
+                    source_frame = self._frame
+                    source_sequence = self._frame_sequence
+                if source_frame is not None and source_sequence != last_delivered_sequence:
+                    last_frame = source_frame
+                    last_delivered_sequence = source_sequence
+                    if on_source_frame is not None:
+                        on_source_frame(source_frame, source_sequence)
+                    else:
+                        on_frame(source_frame)
+                elif on_no_new_frame is not None:
+                    on_no_new_frame()
 
                 now = time.monotonic()
                 if now - last_renewed_at >= 0.5:
@@ -282,8 +295,12 @@ class CameraFrameProvider:
                     # time slots instead of sending a burst of stale frames.
                     next_frame_at = now + frame_interval
 
-            # Return the last frame delivered to consumers. This keeps the
-            # saved/analysed photo identical to the frame the TFT holds.
+            # A frame may arrive after the final pacing slot. Return that
+            # newest complete source frame for photo/vision consumers without
+            # sending it outside the requested stream cadence.
+            with self._condition:
+                if self._frame is not None and self._frame_sequence > last_delivered_sequence:
+                    last_frame = self._frame
             return last_frame
         finally:
             self._publish_command("release", client_id)

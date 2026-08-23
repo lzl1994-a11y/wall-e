@@ -25,10 +25,12 @@ from services.tft_preview_server import (
     TftPreviewSettings,
     decode_header,
     encode_message,
+    prepare_tft_jpeg,
 )
+from services.web_server import _validate_tft_preview
 
 
-def _source_jpeg(width=640, height=360):
+def _source_jpeg(width=640, height=480):
     image = np.zeros((height, width, 3), dtype=np.uint8)
     image[:, : width // 2] = (0, 0, 255)
     image[:, width // 2:] = (0, 255, 0)
@@ -140,6 +142,45 @@ class TftProtocolTests(unittest.TestCase):
         self.assertEqual(packet[12:16], b"\x00\x00\x00\x04")
         self.assertEqual(decode_header(packet[:16]), (JPEG_FRAME, 0, 0x01020304, 4))
 
+    def test_landscape_jpeg_is_fitted_without_crop_or_padding(self):
+        jpeg = prepare_tft_jpeg(_source_jpeg(640, 480), quality=70)
+
+        self.assertIsNotNone(jpeg)
+        self.assertLessEqual(len(jpeg), 256 * 1024)
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(decoded.shape[:2], (180, 240))
+        self.assertEqual(_sof_marker(jpeg), 0xC0)
+
+    def test_portrait_jpeg_preserves_aspect_ratio_within_tft_bounds(self):
+        jpeg = prepare_tft_jpeg(_source_jpeg(360, 640), quality=70)
+
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(decoded.shape[:2], (240, 135))
+        self.assertLessEqual(decoded.shape[0], 240)
+        self.assertLessEqual(decoded.shape[1], 240)
+
+    def test_tft_preview_config_accepts_30_fps_and_rejects_31(self):
+        values = {
+            "bind_address": "0.0.0.0",
+            "port": 9000,
+            "frame_provider": "ros_camera_frame",
+            "fps": 30,
+            "recognition_duration_ms": 1500,
+            "photo_duration_ms": 3000,
+            "hold_ms": 3000,
+            "jpeg_quality": 70,
+            "max_frame_bytes": 256 * 1024,
+            "photo_directory": "~/.wali/photos",
+        }
+        errors = []
+        _validate_tft_preview(values, errors)
+        self.assertEqual(errors, [])
+
+        values["fps"] = 31
+        errors = []
+        _validate_tft_preview(values, errors)
+        self.assertTrue(any("tft_preview.fps" in error for error in errors))
+
 
 class TftPreviewServerTests(unittest.TestCase):
     def setUp(self):
@@ -218,8 +259,86 @@ class TftPreviewServerTests(unittest.TestCase):
             self.assertTrue(jpeg.endswith(b"\xff\xd9"))
             self.assertLessEqual(len(jpeg), 256 * 1024)
             decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-            self.assertEqual(decoded.shape[:2], (240, 240))
+            self.assertEqual(decoded.shape[:2], (180, 240))
             self.assertEqual(_sof_marker(jpeg), 0xC0, "JPEG must use baseline SOF0")
+
+    def test_duplicate_source_sequences_are_not_sent_twice(self):
+        client = self._connect()
+        frame = _source_jpeg()
+
+        class DuplicateSequenceProvider:
+            def capture_stream(self, **kwargs):
+                callback = kwargs["on_source_frame"]
+                callback(frame, 41)
+                time.sleep(0.05)
+                callback(frame, 41)
+                callback(frame, 42)
+                time.sleep(0.05)
+                return frame
+
+        result = self.server.send_camera_preview(DuplicateSequenceProvider(), fps=30)
+        messages = [_recv_message(client) for _ in range(4)]
+
+        self.assertEqual([item[0] for item in messages], [
+            STREAM_START_MESSAGE,
+            JPEG_FRAME,
+            JPEG_FRAME,
+            STREAM_END,
+        ])
+        self.assertEqual(result.source_frames, 2)
+        self.assertEqual(result.encoded_frames, 2)
+        self.assertEqual(result.sent_frames, 2)
+        self.assertEqual(result.no_new_frame_skips, 1)
+
+    def test_slow_sender_keeps_only_the_latest_pending_frame(self):
+        client = self._connect()
+        frames = [
+            _source_jpeg(640, 480),
+            _source_jpeg(480, 640),
+            _source_jpeg(320, 240),
+            _source_jpeg(360, 640),
+        ]
+        first_send_started = threading.Event()
+        release_first_send = threading.Event()
+        original_send_packet = self.server._send_packet
+
+        def slow_send_packet(sock, message_type, sequence, payload=b""):
+            if message_type == JPEG_FRAME and not first_send_started.is_set():
+                first_send_started.set()
+                release_first_send.wait(timeout=1.0)
+            return original_send_packet(sock, message_type, sequence, payload)
+
+        self.server._send_packet = slow_send_packet
+
+        class BurstProvider:
+            def capture_stream(self, **kwargs):
+                callback = kwargs["on_source_frame"]
+                callback(frames[0], 1)
+                if not first_send_started.wait(timeout=1.0):
+                    raise AssertionError("sender did not start")
+                callback(frames[1], 2)
+                callback(frames[2], 3)
+                callback(frames[3], 4)
+                release_first_send.set()
+                return frames[-1]
+
+        result = self.server.send_camera_preview(BurstProvider(), fps=30)
+        messages = [_recv_message(client) for _ in range(4)]
+
+        self.assertEqual([item[0] for item in messages], [
+            STREAM_START_MESSAGE,
+            JPEG_FRAME,
+            JPEG_FRAME,
+            STREAM_END,
+        ])
+        self.assertEqual(result.source_frames, 4)
+        self.assertEqual(result.encoded_frames, 4)
+        self.assertEqual(result.sent_frames, 2)
+        self.assertEqual(result.backpressure_drops, 2)
+        first = cv2.imdecode(np.frombuffer(messages[1][3], np.uint8), cv2.IMREAD_COLOR)
+        latest = cv2.imdecode(np.frombuffer(messages[2][3], np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(first.shape[:2], (180, 240))
+        self.assertEqual(latest.shape[:2], (240, 135))
 
     def test_disconnect_then_reconnect_can_send_another_preview(self):
         first = self._connect()

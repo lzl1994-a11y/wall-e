@@ -83,7 +83,7 @@ class TftPreviewSettings:
             bind_address=str(config.get("bind_address", cls.bind_address)),
             port=int(config.get("port", cls.port)),
             frame_provider=str(config.get("frame_provider", cls.frame_provider)),
-            fps=min(20, max(1, int(config.get("fps", cls.fps)))),
+            fps=min(30, max(1, int(config.get("fps", cls.fps)))),
             recognition_duration_ms=max(
                 100, int(config.get("recognition_duration_ms", cls.recognition_duration_ms))
             ),
@@ -113,23 +113,37 @@ def load_tft_preview_settings(
 @dataclass
 class PreviewResult:
     last_frame: bytes | None = None
+    source_frames: int = 0
+    encoded_frames: int = 0
     sent_frames: int = 0
+    no_new_frame_skips: int = 0
+    backpressure_drops: int = 0
+    encode_drops: int = 0
     total_bytes: int = 0
     elapsed_seconds: float = 0.0
-    dropped_frames: int = 0
     connected: bool = False
     busy: bool = False
     error: str = ""
 
     @property
-    def average_fps(self) -> float:
+    def actual_fps(self) -> float:
         if self.elapsed_seconds <= 0:
             return 0.0
         return self.sent_frames / self.elapsed_seconds
 
+    @property
+    def average_fps(self) -> float:
+        """Backward-compatible name for actual transmitted FPS."""
+        return self.actual_fps
+
+    @property
+    def dropped_frames(self) -> int:
+        """Backward-compatible aggregate for older status consumers."""
+        return self.encode_drops + self.backpressure_drops
+
 
 def prepare_tft_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
-    """Center-crop a JPEG, resize it to 240x240 and encode baseline JPEG."""
+    """Fit a complete image within 240x240 without cropping or padding."""
     try:
         import cv2
         import numpy as np
@@ -146,12 +160,15 @@ def prepare_tft_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
     if image is None or image.size == 0:
         return None
     height, width = image.shape[:2]
-    side = min(height, width)
-    top = (height - side) // 2
-    left = (width - side) // 2
-    square = image[top:top + side, left:left + side]
-    interpolation = cv2.INTER_AREA if side >= 240 else cv2.INTER_LINEAR
-    resized = cv2.resize(square, (240, 240), interpolation=interpolation)
+    scale = min(240.0 / width, 240.0 / height)
+    target_width = min(240, max(1, int(width * scale + 0.5)))
+    target_height = min(240, max(1, int(height * scale + 0.5)))
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(
+        image,
+        (target_width, target_height),
+        interpolation=interpolation,
+    )
     options = [int(cv2.IMWRITE_JPEG_QUALITY), min(100, max(1, int(quality)))]
     if hasattr(cv2, "IMWRITE_JPEG_PROGRESSIVE"):
         options.extend([int(cv2.IMWRITE_JPEG_PROGRESSIVE), 0])
@@ -261,38 +278,85 @@ class TftPreviewServer:
             self._log("warn", "已有 TFT 预览流正在发送，忽略重复请求")
             return result
 
-        target_fps = self.settings.fps if fps is None else min(20, max(1, int(fps)))
+        requested_fps = self.settings.fps if fps is None else fps
+        target_fps = min(30, max(1, int(requested_fps)))
         duration_ms = max(100, int(duration_ms))
         hold_ms = max(0, int(hold_ms))
         operation_started_at = self._clock()
         stream_started_at: float | None = None
-        client = self._verified_client()
-        result.connected = client is not None
         stream_sequence = self._next_stream_sequence()
-        network_active = False
-        network_failed = False
-        frame_index = 0
+        slot_condition = threading.Condition()
+        latest_slot: tuple[int, bytes] | None = None
+        capture_done = False
+        network_failed = threading.Event()
+        synthetic_source_sequence = 0
+        last_source_sequence: int | None = None
 
-        try:
-            def on_frame(source_jpeg: bytes) -> None:
-                nonlocal client, frame_index, network_active, network_failed, stream_started_at
-                if stream_started_at is None:
-                    stream_started_at = self._clock()
-                if source_jpeg:
-                    result.last_frame = bytes(source_jpeg)
+        def record_no_new_frame() -> None:
+            with slot_condition:
+                result.no_new_frame_skips += 1
+
+        def queue_source_frame(source_jpeg: bytes, source_sequence: int | None = None) -> None:
+            nonlocal latest_slot, synthetic_source_sequence, last_source_sequence, stream_started_at
+            if stream_started_at is None:
+                stream_started_at = self._clock()
+            if source_sequence is None:
+                synthetic_source_sequence += 1
+                source_sequence = synthetic_source_sequence
+            if source_sequence == last_source_sequence:
+                record_no_new_frame()
+                return
+            last_source_sequence = source_sequence
+            source = bytes(source_jpeg or b"")
+            if not source:
+                result.encode_drops += 1
+                return
+            result.source_frames += 1
+            result.last_frame = source
+            preview_jpeg = prepare_tft_jpeg(
+                source,
+                quality=self.settings.jpeg_quality,
+            )
+            if preview_jpeg is None or len(preview_jpeg) > self.settings.max_frame_bytes:
+                result.encode_drops += 1
+                return
+            result.encoded_frames += 1
+            with slot_condition:
+                if latest_slot is not None:
+                    result.backpressure_drops += 1
+                latest_slot = (source_sequence, preview_jpeg)
+                slot_condition.notify()
+
+        def send_latest_frames() -> None:
+            nonlocal latest_slot
+            client: socket.socket | None = None
+            network_active = False
+            frame_index = 0
+            while True:
+                with slot_condition:
+                    while latest_slot is None and not capture_done and not network_failed.is_set():
+                        slot_condition.wait(timeout=0.2)
+                    if network_failed.is_set():
+                        return
+                    if latest_slot is None and capture_done:
+                        break
+                    slot = latest_slot
+                    latest_slot = None
+                if slot is None:
+                    continue
+                _source_sequence, preview_jpeg = slot
                 if client is None:
                     client = self._verified_client()
                     result.connected = client is not None
-                if client is None or network_failed or result.last_frame is None:
-                    return
-                if not network_active:
-                    try:
-                        payload = encode_stream_start(duration_ms, hold_ms, target_fps)
+                if client is None:
+                    continue
+                try:
+                    if not network_active:
                         self._send_packet(
                             client,
                             STREAM_START_MESSAGE,
                             stream_sequence,
-                            payload,
+                            encode_stream_start(duration_ms, hold_ms, target_fps),
                         )
                         network_active = True
                         self._log(
@@ -300,68 +364,71 @@ class TftPreviewServer:
                             f"TFT 预览开始: duration={duration_ms}ms "
                             f"hold={hold_ms}ms fps={target_fps}",
                         )
-                    except (ConnectionError, OSError) as exc:
-                        network_failed = True
-                        result.error = str(exc)
-                        self._log("error", f"TFT STREAM_START 发送失败: {exc}")
-                        self._disconnect_client(client, reason="开始消息发送失败")
-                        return
-                preview_jpeg = prepare_tft_jpeg(
-                    result.last_frame,
-                    quality=self.settings.jpeg_quality,
-                )
-                if preview_jpeg is None:
-                    result.dropped_frames += 1
-                    self._log("warn", "TFT 预览丢帧：JPEG 解码或编码失败")
-                    return
-                if len(preview_jpeg) > self.settings.max_frame_bytes:
-                    result.dropped_frames += 1
-                    self._log(
-                        "warn",
-                        f"TFT 预览丢弃超大 JPEG: {len(preview_jpeg)} > "
-                        f"{self.settings.max_frame_bytes} bytes",
-                    )
-                    return
-                sequence = ((stream_sequence & 0xFFFF) << 16) | (frame_index & 0xFFFF)
-                try:
+                    sequence = ((stream_sequence & 0xFFFF) << 16) | (frame_index & 0xFFFF)
                     self._send_packet(client, JPEG_FRAME, sequence, preview_jpeg)
+                    result.sent_frames += 1
+                    result.total_bytes += len(preview_jpeg)
+                    frame_index += 1
                 except (ConnectionError, OSError) as exc:
-                    network_active = False
-                    network_failed = True
                     result.error = str(exc)
-                    self._log("error", f"TFT 预览网络发送失败: {exc}")
-                    self._disconnect_client(client, reason="图像发送失败")
+                    network_failed.set()
+                    with slot_condition:
+                        latest_slot = None
+                        slot_condition.notify_all()
+                    self._disconnect_client(client, reason="预览发送失败")
                     return
-                result.sent_frames += 1
-                result.total_bytes += len(preview_jpeg)
-                frame_index += 1
+            if network_active and client is not None:
+                try:
+                    self._send_packet(client, STREAM_END, stream_sequence, b"")
+                except (ConnectionError, OSError) as exc:
+                    result.error = result.error or str(exc)
+                    network_failed.set()
+                    self._disconnect_client(client, reason="结束消息发送失败")
 
+        sender = threading.Thread(
+            target=send_latest_frames,
+            name="tft-preview-latest-frame-sender",
+            daemon=True,
+        )
+        sender.start()
+
+        try:
             capture = getattr(frame_provider, "capture_stream", None)
             if not callable(capture):
                 raise TypeError("frame_provider must provide capture_stream()")
             result.last_frame = capture(
                 duration_ms=duration_ms,
                 fps=target_fps,
-                on_frame=on_frame,
+                on_frame=queue_source_frame,
+                on_source_frame=queue_source_frame,
+                on_no_new_frame=record_no_new_frame,
+                should_stop=network_failed.is_set,
                 timeout=10.0,
                 request_timeout=15.0,
             ) or result.last_frame
-            if client is None:
-                self._log(
-                    "warn",
-                    "拍照/识别已完成，但 WALL_E_TFT 未连接；本地摄像头流程未受影响",
-                )
         except Exception as exc:
             result.error = str(exc)
             self._log("error", f"TFT 预览摄像头错误: {exc}")
         finally:
-            if network_active and not network_failed:
-                try:
-                    self._send_packet(client, STREAM_END, stream_sequence, b"")
-                except (ConnectionError, OSError) as exc:
-                    result.error = result.error or str(exc)
-                    self._log("error", f"TFT STREAM_END 发送失败: {exc}")
-                    self._disconnect_client(client, reason="结束消息发送失败")
+            with slot_condition:
+                capture_done = True
+                slot_condition.notify_all()
+            sender.join(timeout=2.0)
+            if sender.is_alive():
+                result.error = result.error or "preview_sender_timeout"
+                network_failed.set()
+                with slot_condition:
+                    latest_slot = None
+                    slot_condition.notify_all()
+                client = self._verified_client()
+                if client is not None:
+                    self._disconnect_client(client, reason="预览发送超时")
+                sender.join(timeout=1.0)
+            if not result.connected:
+                self._log(
+                    "warn",
+                    "拍照/识别已完成，但 WALL_E_TFT 未连接；本地摄像头流程未受影响",
+                )
             elapsed_from = stream_started_at or operation_started_at
             result.elapsed_seconds = max(0.0, self._clock() - elapsed_from)
             # Release first: logging must never leave the preview permanently
@@ -371,9 +438,12 @@ class TftPreviewServer:
             self._log(
                 "info",
                 "TFT 预览结束: "
-                f"frames={result.sent_frames} bytes={result.total_bytes} "
-                f"elapsed={result.elapsed_seconds:.3f}s avg_fps={result.average_fps:.2f} "
-                f"dropped={result.dropped_frames}",
+                f"source={result.source_frames} encoded={result.encoded_frames} "
+                f"sent={result.sent_frames} no_new={result.no_new_frame_skips} "
+                f"backpressure_drops={result.backpressure_drops} "
+                f"encode_drops={result.encode_drops} bytes={result.total_bytes} "
+                f"elapsed={result.elapsed_seconds:.3f}s actual_fps={result.actual_fps:.2f} "
+                f"error={result.error or '-'}",
             )
         return result
 

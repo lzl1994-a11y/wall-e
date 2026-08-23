@@ -394,7 +394,7 @@ def _validate_tft_preview(value: Any, errors: list[str]) -> None:
     _check_string(value, "frame_provider", "tft_preview.frame_provider", errors)
     if value.get("frame_provider") != "ros_camera_frame":
         errors.append("tft_preview.frame_provider 目前只能是 ros_camera_frame")
-    _check_number(value, "fps", "tft_preview.fps", errors, 1, 20, integer=True)
+    _check_number(value, "fps", "tft_preview.fps", errors, 1, 30, integer=True)
     for key in ("recognition_duration_ms", "photo_duration_ms"):
         _check_number(value, key, f"tft_preview.{key}", errors, 100, 60000, integer=True)
     _check_number(value, "hold_ms", "tft_preview.hold_ms", errors, 0, 60000, integer=True)
