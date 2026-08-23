@@ -27,12 +27,20 @@ import yaml
 try:
     from services.usb_devices import USB_ROLES, list_usb_devices
     from services.camera_preview import CameraPreview
-    from services.esp32_netcfg import NetworkConfigError
+    from services.esp32_netcfg import (
+        NetworkConfigError,
+        network_settings_to_payload,
+        validate_network_payload,
+    )
     from services.esp32_netcfg_rpc import Esp32NetworkRpcClient
 except ImportError:  # Supports: python services/web_server.py
     from usb_devices import USB_ROLES, list_usb_devices
     from camera_preview import CameraPreview
-    from esp32_netcfg import NetworkConfigError
+    from esp32_netcfg import (
+        NetworkConfigError,
+        network_settings_to_payload,
+        validate_network_payload,
+    )
     from esp32_netcfg_rpc import Esp32NetworkRpcClient
 
 
@@ -556,6 +564,12 @@ def validate_config(config: Any) -> list[str]:
     if config.get("tft_preview") is not None:
         _validate_tft_preview(config.get("tft_preview"), errors)
 
+    if config.get("esp32_network") is not None:
+        try:
+            validate_network_payload(config.get("esp32_network"))
+        except NetworkConfigError as exc:
+            errors.append(f"esp32_network 配置无效：{exc}")
+
     _validate_servos(config.get("servos"), errors)
     _validate_motors(config.get("motors"), errors)
     _validate_web(config.get("web"), errors)
@@ -864,13 +878,33 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
 
         if route == "/api/esp32-network/save-and-apply":
             try:
-                result = self.server.get_network_configurator().save_and_apply(payload)
+                settings = validate_network_payload(payload)
+                retained_payload = network_settings_to_payload(settings)
+                result = self.server.get_network_configurator().save_and_apply(retained_payload)
             except NetworkConfigError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
+            try:
+                # Persist only after firmware reports APPLY|2|0. Passwords are
+                # required for startup SET/APPLY but are redacted from all Web
+                # snapshots by the generic secret-field filter.
+                self.server.store.save_patch({"esp32_network": retained_payload})
+            except ConfigError as exc:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "ok": False,
+                        "error": f"ESP32 已应用配置，但上位机未能保留启动配置：{exc}",
+                    },
+                )
+                return
             self._send_json(
                 HTTPStatus.OK,
-                {"ok": True, "message": "网络配置已验证、应用并保存到 ESP32", **result},
+                {
+                    "ok": True,
+                    "message": "网络配置已应用到 ESP32，并保留供上位机启动时同步",
+                    **result,
+                },
             )
             return
 

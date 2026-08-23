@@ -139,6 +139,36 @@ def validate_network_payload(payload: Any) -> NetworkSettings:
     return NetworkSettings(wifi=(pairs[0], pairs[1], pairs[2]), host=host, port=port)
 
 
+def network_settings_to_payload(settings: NetworkSettings) -> dict[str, Any]:
+    """Build the canonical persisted/RPC payload; callers must never log it."""
+    return {
+        "wifi": [
+            {"ssid": credential.ssid, "password": credential.password}
+            for credential in settings.wifi
+        ],
+        "host": settings.host,
+        "port": settings.port,
+    }
+
+
+def load_saved_network_settings(
+    config_path: Path | str = DEFAULT_CONFIG_PATH,
+) -> NetworkSettings | None:
+    """Load credentials retained after a successful Web SET/APPLY operation."""
+    try:
+        config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        return None
+    except (OSError, yaml.YAMLError) as exc:
+        raise NetworkConfigError(f"读取已保存的 ESP32 网络配置失败: {exc}") from exc
+    if not isinstance(config, dict):
+        raise NetworkConfigError("配置文件根节点必须是对象")
+    payload = config.get("esp32_network")
+    if payload is None:
+        return None
+    return validate_network_payload(payload)
+
+
 class Esp32NetworkConfigurator:
     """Execute SET/APPLY/QUERY transactions and correlate all responses by seq."""
 

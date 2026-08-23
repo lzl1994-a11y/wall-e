@@ -1067,7 +1067,7 @@ async function saveEsp32Network() {
     });
     // Firmware never returns passwords; remove entered copies after success too.
     [1, 2, 3].forEach((index) => { $(`#esp32-wifi-password-${index}`).value = ""; });
-    setEsp32NetworkStatus(`配置成功：ESP32 已验证连接并写入 NVS（SET #${result.set_seq}，APPLY #${result.apply_seq}）。`, "success");
+    setEsp32NetworkStatus(`配置成功：ESP32 已验证连接并写入 NVS（SET #${result.set_seq}，APPLY #${result.apply_seq}）；上位机已保留完整配置，今后启动会自动同步。`, "success");
     showToast("ESP32 网络配置已成功应用并保存");
   } catch (error) {
     setEsp32NetworkStatus(`配置失败：${error.message}`, "error");

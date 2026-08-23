@@ -52,6 +52,9 @@ class VoiceChatNode(Node):
         self.create_subscription(String, "llm_busy", self._on_playback_state, 10)
 
         self.camera_frames = CameraFrameProvider(self)
+        self.tft_preview_ready_pub = self.create_publisher(
+            String, "tft_preview_ready", 10
+        )
         self.tft_preview_settings = load_tft_preview_settings()
         self.tft_preview = TftPreviewServer(
             self.tft_preview_settings,
@@ -59,6 +62,10 @@ class VoiceChatNode(Node):
         )
         try:
             self.tft_preview.start()
+            self._publish_tft_preview_ready()
+            self.tft_preview_ready_timer = self.create_timer(
+                1.0, self._publish_tft_preview_ready
+            )
         except Exception as exc:
             # Image analysis still works without a connected chest screen.
             self.get_logger().error(f"TFT preview service failed to start: {exc}")
@@ -93,6 +100,11 @@ class VoiceChatNode(Node):
 
         self.vc.start()
         self.get_logger().info("语音直聊节点已上线")
+
+    def _publish_tft_preview_ready(self):
+        ready = String()
+        ready.data = "ready"
+        self.tft_preview_ready_pub.publish(ready)
 
     # ── 唤醒词回调 ──
     def _on_wake_word(self):

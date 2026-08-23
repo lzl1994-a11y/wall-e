@@ -210,6 +210,12 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["apply_seq"], 1002)
         self.assertEqual(fake.saved, payload)
+        retained = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))["esp32_network"]
+        self.assertEqual(retained, payload)
+        status, snapshot = self.request("/api/config")
+        self.assertEqual(status, 200)
+        self.assertEqual(snapshot["config"]["esp32_network"]["wifi"][0]["password"], "")
+        self.assertTrue(snapshot["secret_fields"]["esp32_network.wifi.0.password"])
         status, result = self.request("/api/esp32-network/query", method="POST", payload={})
         self.assertEqual(status, 200)
         self.assertTrue(fake.queried)

@@ -13,13 +13,19 @@ hardware_bridge_node 发送；ubuntu_i2c 模式下本节点只负责屏幕通信
 
 import json
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
 from services.serial_bridge import SerialBridge
-from services.esp32_netcfg import Esp32NetworkConfigurator, NetworkConfigError, validate_network_payload
+from services.esp32_netcfg import (
+    Esp32NetworkConfigurator,
+    NetworkConfigError,
+    load_saved_network_settings,
+    validate_network_payload,
+)
 from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
 
 
@@ -31,6 +37,8 @@ class SerialNode(Node):
         self.bridge = SerialBridge(device_name="WALL_E_TFT")
         self.netcfg = Esp32NetworkConfigurator()
         self._netcfg_request_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+        self._tft_preview_ready = threading.Event()
 
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')
@@ -41,8 +49,63 @@ class SerialNode(Node):
         self.create_subscription(String, 'pca9685_raw', self.pca9685_callback, 10)
         self._netcfg_response_publisher = self.create_publisher(String, RESPONSE_TOPIC, 10)
         self.create_subscription(String, REQUEST_TOPIC, self.netcfg_request_callback, 10)
+        self._tft_ready_subscription = self.create_subscription(
+            String,
+            "tft_preview_ready",
+            self._on_tft_preview_ready,
+            10,
+        )
 
         self.get_logger().info('Serial ROS node is online (sole serial owner).')
+        self._startup_netcfg_thread = threading.Thread(
+            target=self._apply_saved_network_on_start,
+            name="esp32-netcfg-startup",
+            daemon=True,
+        )
+        self._startup_netcfg_thread.start()
+
+    def _on_tft_preview_ready(self, _message):
+        self._tft_preview_ready.set()
+
+    def _apply_saved_network_on_start(self):
+        """Synchronize the retained full Wi-Fi/TCP configuration after startup."""
+        try:
+            settings = load_saved_network_settings()
+        except NetworkConfigError as exc:
+            self.get_logger().error(f"启动时 ESP32 网络配置无效: {exc}")
+            return
+        if settings is None:
+            self.get_logger().info("未保存 ESP32 网络配置，跳过启动时 SET/APPLY")
+            return
+        deadline = time.monotonic() + 30.0
+        while not self._tft_preview_ready.is_set():
+            if self._shutdown_event.wait(0.2):
+                return
+            if time.monotonic() >= deadline:
+                self.get_logger().error(
+                    "等待 TFT TCP 服务监听就绪超时，未向 ESP32 应用网络配置"
+                )
+                return
+        if not self._netcfg_request_lock.acquire(timeout=5.0):
+            self.get_logger().warning("ESP32 网络配置正忙，跳过启动时重复应用")
+            return
+        try:
+            self.get_logger().info(
+                f"启动时同步 ESP32 图像服务器: {settings.host}:{settings.port}"
+            )
+            result = self.bridge.run_exclusive(
+                lambda stream: self.netcfg.save_and_apply(settings, stream=stream)
+            )
+            self.get_logger().info(
+                f"启动时 ESP32 网络配置成功: SET #{result['set_seq']}, "
+                f"APPLY #{result['apply_seq']}"
+            )
+        except (NetworkConfigError, RuntimeError) as exc:
+            self.get_logger().error(f"启动时 ESP32 网络配置失败: {exc}")
+        except Exception:
+            self.get_logger().error("启动时 ESP32 网络配置串口通信失败")
+        finally:
+            self._netcfg_request_lock.release()
 
     # ------------------------------------------------------------------
     # screen_dialog: 屏幕文字
@@ -164,6 +227,7 @@ class SerialNode(Node):
     # ------------------------------------------------------------------
     def destroy_node(self):
         self.get_logger().info('Closing serial bridge...')
+        self._shutdown_event.set()
         if hasattr(self, 'bridge'):
             self.bridge.close()
         super().destroy_node()

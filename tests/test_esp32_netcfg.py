@@ -1,6 +1,10 @@
 import unittest
 import threading
 import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import yaml
 
 from services.esp32_netcfg import (
     APPLY_FINAL_TIMEOUT_SECONDS,
@@ -8,6 +12,8 @@ from services.esp32_netcfg import (
     NetworkConfigError,
     decode_urlsafe_base64,
     encode_urlsafe_base64,
+    load_saved_network_settings,
+    network_settings_to_payload,
     validate_network_payload,
 )
 
@@ -59,6 +65,27 @@ class Esp32NetworkProtocolTests(unittest.TestCase):
             {"wifi": [{"ssid": "MyWiFi", "password": "do-not-print"}] + [{"ssid": "", "password": ""}] * 2, "host": "host", "port": 9000}
         )
         self.assertIn("MyWiFi", repr(settings))
+        self.assertNotIn("do-not-print", repr(settings))
+
+    def test_saved_full_credentials_can_be_loaded_for_startup_without_repr_leak(self):
+        payload = {
+            "wifi": [
+                {"ssid": "MyWiFi", "password": "do-not-print"},
+                {"ssid": "", "password": ""},
+                {"ssid": "", "password": ""},
+            ],
+            "host": "192.168.0.155",
+            "port": 9000,
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text(
+                yaml.safe_dump({"esp32_network": payload}, allow_unicode=True),
+                encoding="utf-8",
+            )
+            settings = load_saved_network_settings(path)
+
+        self.assertEqual(network_settings_to_payload(settings), payload)
         self.assertNotIn("do-not-print", repr(settings))
 
     def test_set_then_apply_ignores_logs_and_other_sequences(self):

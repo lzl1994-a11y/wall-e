@@ -77,6 +77,9 @@ class LLMBrainNode(Node):
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
         self.busy_publisher = self.create_publisher(String, 'llm_busy', 10)
         self.camera_frames = CameraFrameProvider(self)
+        self.tft_preview_ready_publisher = self.create_publisher(
+            String, 'tft_preview_ready', 10
+        )
         self.tft_preview_settings = load_tft_preview_settings()
         self.tft_preview = TftPreviewServer(
             self.tft_preview_settings,
@@ -84,6 +87,10 @@ class LLMBrainNode(Node):
         )
         try:
             self.tft_preview.start()
+            self._publish_tft_preview_ready()
+            self.tft_preview_ready_timer = self.create_timer(
+                1.0, self._publish_tft_preview_ready
+            )
         except Exception as exc:
             # Camera/photo business remains available when port 9000 is busy or
             # the network stack is unavailable.
@@ -103,6 +110,11 @@ class LLMBrainNode(Node):
             daemon=True,
         )
         self._worker_thread.start()
+
+    def _publish_tft_preview_ready(self):
+        ready = String()
+        ready.data = 'ready'
+        self.tft_preview_ready_publisher.publish(ready)
 
     def voice_callback(self, msg):
         """Queue the request so the ROS callback thread is never blocked by LLM I/O."""
