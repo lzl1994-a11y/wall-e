@@ -49,13 +49,27 @@ class VisionPipelineControlTests(unittest.TestCase):
     def test_start_and_stop_commands_toggle_pipeline(self):
         module = _load_module()
         control = module.VisionPipelineControl()
-        self.assertTrue(control.enabled)
-        control._on_command(_FakeString("stop"))
         self.assertFalse(control.enabled)
         control._on_command(_FakeString("start"))
         self.assertTrue(control.enabled)
+        control._on_command(_FakeString("stop"))
+        self.assertFalse(control.enabled)
         control._on_command(_FakeString("invalid"))
-        self.assertTrue(control.enabled)
+        self.assertFalse(control.enabled)
+
+    def test_stop_reaps_known_descendants_after_process_group(self):
+        module = _load_module()
+        process = Mock()
+        process.poll.return_value = None
+
+        with (
+            patch.object(module.os, "getpgid", return_value=123, create=True),
+            patch.object(module.os, "killpg", create=True),
+            patch.object(module, "cleanup_old_processes") as cleanup,
+        ):
+            module._stop_pipeline(process)
+
+        cleanup.assert_called_once_with()
 
     def test_every_pipeline_command_inherits_tros_environment(self):
         module = _load_module()

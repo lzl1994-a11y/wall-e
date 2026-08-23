@@ -101,6 +101,50 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_tool_call.assert_not_called()
         self.assertEqual(list(service._chat_history), [])
 
+    def test_camera_skill_replaces_acknowledgement_with_visual_answer(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock(return_value="前面有一只杯子。")
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(return_value=([
+            {
+                "name": "direct_answer",
+                "arguments": {"heard_text": "前面有什么", "response": "我看看。"},
+            },
+            {"name": "inspect_camera", "arguments": {"question": "前面有什么"}},
+        ], ""))
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_llm_chunk.assert_called_once_with("前面有一只杯子。")
+        service.on_llm_reply.assert_called_once_with("前面有一只杯子。")
+        self.assertEqual(service._chat_history[-1]["content"], "前面有一只杯子。")
+
+    def test_image_analysis_forces_direct_answer_only(self):
+        service = self._service()
+        service.system_prompt = "system"
+        service._stream_tool_calls = MagicMock(return_value=([
+            {
+                "name": "direct_answer",
+                "arguments": {"response": "桌上有一只杯子。"},
+            }
+        ], ""))
+
+        answer = service.analyze_image("桌上有什么", "aW1hZ2U=")
+
+        self.assertEqual(answer, "桌上有一只杯子。")
+        request = service._stream_tool_calls.call_args
+        self.assertEqual(len(request.kwargs["tools"]), 1)
+        image_url = request.args[0][1]["content"][1]["image_url"]["url"]
+        self.assertEqual(image_url, "data:image/jpeg;base64,aW1hZ2U=")
+
 
 if __name__ == "__main__":
     unittest.main()

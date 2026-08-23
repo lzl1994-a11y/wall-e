@@ -86,6 +86,37 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         node._schedule_capture_resume.assert_called_once_with()
         sys.modules.pop("nodes.voice_chat_ros_node", None)
 
+    def test_semantic_camera_tool_captures_then_calls_visual_model(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.tts_pub = MagicMock()
+        node.camera_frames = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(
+            recognition_duration_ms=1500,
+            hold_ms=3000,
+            fps=10,
+        )
+        node.tft_preview = MagicMock()
+        node.tft_preview.send_camera_preview.return_value = types.SimpleNamespace(
+            busy=False,
+            last_frame=b"\xff\xd8vision\xff\xd9",
+            error="",
+        )
+        node.vc = MagicMock()
+        node.vc.analyze_image.return_value = "前面有一只杯子。"
+        node.get_logger = lambda: MagicMock()
+
+        answer = node._on_tool_call(
+            "inspect_camera", {"question": "前面有什么"}
+        )
+
+        self.assertEqual(answer, "前面有一只杯子。")
+        self.assertEqual(node.tts_pub.publish.call_args.args[0].data, "好的，我看一下。")
+        node.vc.analyze_image.assert_called_once_with(
+            "前面有什么", "/9h2aXNpb27/2Q=="
+        )
+        sys.modules.pop("nodes.voice_chat_ros_node", None)
+
 
 if __name__ == "__main__":
     unittest.main()

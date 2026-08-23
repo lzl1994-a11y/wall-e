@@ -541,7 +541,11 @@ def validate_config(config: Any) -> list[str]:
     vision = _require_mapping(config, "vision", errors)
     _check_number(vision, "camera_index", "vision.camera_index", errors, 0, 32, integer=True)
     _check_string(vision, "model_path", "vision.model_path", errors)
-    _check_bool(vision, "enabled_on_start", "vision.enabled_on_start", errors)
+    # Kept as an optional legacy field for existing config files.  Runtime
+    # activation is exclusively controlled by semantic voice commands; the Web
+    # page never starts the vision pipeline directly.
+    if "enabled_on_start" in vision:
+        _check_bool(vision, "enabled_on_start", "vision.enabled_on_start", errors)
     pid = vision.get("pid")
     if not isinstance(pid, dict):
         errors.append("vision.pid 必须是配置对象")

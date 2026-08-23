@@ -32,7 +32,11 @@ class VisionPipelineControl(Node):
 
     def __init__(self):
         super().__init__("hobot_vision_control")
-        self.enabled = True
+        # ``launch.tracking`` only loads this controller so semantic voice
+        # commands can use it later.  The expensive camera/detector pipeline
+        # must remain off until wali_tracking_node publishes an explicit
+        # VISION_PIPELINE_START command.
+        self.enabled = False
         command_qos = QoSProfile(depth=1)
         command_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.create_subscription(
@@ -122,7 +126,10 @@ def _start_pipeline(video_device):
 
 
 def _stop_pipeline(proc):
-    if not proc or proc.poll() is not None:
+    if not proc:
+        return
+    if proc.poll() is not None:
+        cleanup_old_processes()
         return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGINT)
@@ -132,6 +139,11 @@ def _stop_pipeline(proc):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
+    finally:
+        # Some ``ros2 run`` wrappers create descendants that can outlive the
+        # parent process group.  Reap those known vision-only processes so a
+        # stopped voice tracking session cannot keep the camera/model alive.
+        cleanup_old_processes()
 
 
 def main():

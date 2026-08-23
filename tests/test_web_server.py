@@ -180,6 +180,15 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('data-usb-role="screen_motion"', html)
         self.assertIn('data-usb-role="voice"', html)
 
+    def test_web_only_enables_voice_controlled_tracking_capability(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+
+        self.assertIn("允许语音视觉跟踪", html)
+        self.assertIn('data-path="launch.tracking"', html)
+        self.assertNotIn('data-path="vision.enabled_on_start"', html)
+        self.assertIn("不会直接启动摄像头或检测模型", html)
+
     def test_esp32_network_ui_has_fixed_three_wifi_groups_and_safe_actions(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")

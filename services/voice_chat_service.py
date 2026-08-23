@@ -25,6 +25,7 @@ from openai import OpenAI
 from services.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
 from services.llm_request_options import reasoning_request_options
 from services.tool_dispatcher import (
+    DIRECT_ANSWER_TOOL,
     DIRECT_ANSWER_TOOL_NAME,
     MULTIMODAL_DIRECT_ANSWER_TOOL,
     ToolCallAccumulator,
@@ -312,6 +313,20 @@ class VoiceChatService:
                     )
                     response_text = self.FALLBACK_REPLY
 
+            for tc in tool_calls:
+                if not structured_ok:
+                    break
+                if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
+                    continue
+                print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
+                if self.on_tool_call:
+                    handled_response = self.on_tool_call(tc["name"], tc["arguments"])
+                    # A node-side semantic skill such as inspect_camera may
+                    # perform a second model request and replace the initial
+                    # acknowledgement with the actual visual result.
+                    if isinstance(handled_response, str) and handled_response.strip():
+                        response_text = handled_response.strip()
+
             if self.on_llm_chunk:
                 self.on_llm_chunk(response_text)
 
@@ -323,15 +338,6 @@ class VoiceChatService:
                 self._append_history_turn(heard_text, response_text)
                 print(f"[VoiceChat] 听写: {heard_text}")
 
-            for tc in tool_calls:
-                if not structured_ok:
-                    break
-                if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
-                    continue
-                print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
-                if self.on_tool_call:
-                    self.on_tool_call(tc["name"], tc["arguments"])
-
             # 通知外部完整回复
             if self.on_llm_reply:
                 self.on_llm_reply(reply)
@@ -340,6 +346,54 @@ class VoiceChatService:
             print(f"[VoiceChat] LLM 调用失败: {e}")
         finally:
             self._llm_done()
+
+    def analyze_image(self, question: str, image_base64: str) -> str:
+        """Analyze one camera JPEG using the configured multimodal model.
+
+        This request exposes only the trusted direct_answer outlet.  It is
+        called after the audio model semantically selects inspect_camera, so
+        camera activation remains voice-driven.
+        """
+        prompt = (
+            "请根据附带的摄像头画面回答问题。只依据图片内容；看不清时明确说看不清。"
+            "回答必须简短、自然、适合直接播报。\n"
+            f"用户问题：{(question or '看看当前画面').strip()}"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": with_structured_answer_policy(
+                    with_direct_speech_policy(
+                        "你是瓦力的视觉，只负责观察当前摄像头图片并回答问题。"
+                    )
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                    },
+                ],
+            },
+        ]
+        streamed = self._stream_tool_calls(
+            messages,
+            tools=[DIRECT_ANSWER_TOOL],
+            tool_choice={
+                "type": "function",
+                "function": {"name": DIRECT_ANSWER_TOOL_NAME},
+            },
+        )
+        if streamed is None:
+            raise RuntimeError("视觉分析请求被中断")
+        tool_calls, _raw_content = streamed
+        _heard_text, response_text = self._direct_answer(tool_calls)
+        if not response_text:
+            raise RuntimeError("视觉模型没有返回 direct_answer.response")
+        return response_text
 
     def _stream_tool_calls(self, messages, *, tools, tool_choice):
         """Return parsed tool calls and untrusted content for one LLM request."""

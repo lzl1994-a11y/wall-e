@@ -9,6 +9,7 @@
   on_llm_timeout → TFT 切待机页 + 日志
 """
 
+import base64
 import json
 import os
 import re
@@ -26,12 +27,14 @@ from std_msgs.msg import String
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
+from services.camera_frame import CameraFrameProvider
 from services.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
     OUTPUT_SAMPLE_WIDTH,
 )
 from services.tool_dispatcher import build_action_cmd
+from services.tft_preview_server import TftPreviewServer, load_tft_preview_settings
 from services.tts_protocol import encode_turn_end
 from services.usb_devices import resolve_audio_device
 
@@ -47,6 +50,18 @@ class VoiceChatNode(Node):
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, "action_cmd", 10)
         self.create_subscription(String, "llm_busy", self._on_playback_state, 10)
+
+        self.camera_frames = CameraFrameProvider(self)
+        self.tft_preview_settings = load_tft_preview_settings()
+        self.tft_preview = TftPreviewServer(
+            self.tft_preview_settings,
+            logger=self.get_logger(),
+        )
+        try:
+            self.tft_preview.start()
+        except Exception as exc:
+            # Image analysis still works without a connected chest screen.
+            self.get_logger().error(f"TFT preview service failed to start: {exc}")
 
         self.get_logger().info("正在预热唤醒词 + Qwen-Omni 引擎...")
 
@@ -185,11 +200,46 @@ class VoiceChatNode(Node):
 
     # ── LLM 回调 ──
     def _on_tool_call(self, name, arguments):
+        if name == "inspect_camera":
+            return self._process_camera_inspection(arguments)
         payload = build_action_cmd(name, arguments)
         msg = String()
         msg.data = payload
         self.action_pub.publish(msg)
         self.get_logger().info(f"Tool: {name}({arguments})")
+        return None
+
+    def _process_camera_inspection(self, arguments):
+        """Voice-selected camera inspection: preview, capture, then analyze."""
+        question = "看看当前画面"
+        if isinstance(arguments, dict):
+            value = arguments.get("question")
+            if isinstance(value, str) and value.strip():
+                question = value.strip()
+
+        self.tts_pub.publish(String(data="好的，我看一下。"))
+        preview = self.tft_preview.send_camera_preview(
+            self.camera_frames,
+            duration_ms=self.tft_preview_settings.recognition_duration_ms,
+            hold_ms=self.tft_preview_settings.hold_ms,
+            fps=self.tft_preview_settings.fps,
+        )
+        if preview.busy:
+            return "我正在处理上一张画面，等一下再看。"
+        if not preview.last_frame:
+            self.get_logger().error(
+                f"Camera inspection failed: {preview.error or 'camera_frame_unavailable'}"
+            )
+            return "我现在看不到画面，检查一下摄像头连接。"
+
+        try:
+            image_base64 = base64.b64encode(preview.last_frame).decode("ascii")
+            return self.vc.analyze_image(question, image_base64)
+        except Exception as exc:
+            self.get_logger().error(
+                f"Vision request failed: {exc}\n{traceback.format_exc()}"
+            )
+            return "这张图我没分析出来，你换个角度再让我看看。"
 
     def _on_llm_chunk(self, text):
         """流式文本块：跳过纠错首行，2 标点攒一句 → tts_text。"""
@@ -321,6 +371,8 @@ class VoiceChatNode(Node):
                 self._resume_timer = None
         if hasattr(self, "vc"):
             self.vc.stop()
+        if getattr(self, "tft_preview", None) is not None:
+            self.tft_preview.stop()
         super().destroy_node()
 
 

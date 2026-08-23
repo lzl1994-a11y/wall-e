@@ -63,7 +63,7 @@
             <div class="card-heading-row"><h3>启动开关</h3><button class="button secondary small module-save" data-save-module="runtime" type="button">保存本模块</button></div>
             <div class="switch-grid">
               <label class="switch-row"><span><strong>屏幕与运动控制</strong><small>启动屏幕通信、动作编排和所选硬件后端</small></span><input data-path="launch.serial" type="checkbox"><i></i></label>
-              <label class="switch-row"><span><strong>视觉跟踪</strong><small>启动看着我、跟着我相关节点</small></span><input data-path="launch.tracking" type="checkbox"><i></i></label>
+              <label class="switch-row"><span><strong>允许语音视觉跟踪</strong><small>只加载待命节点；摄像头与检测模型仅在 AI 识别到“看着我、跟着我”等指令后启动</small></span><input data-path="launch.tracking" type="checkbox"><i></i></label>
             </div>
           </article>
         </div>
@@ -348,7 +348,7 @@
           </article>
           <article class="card span-two" data-module="vision">
             <div class="card-heading-row"><h3>视觉</h3><button class="button secondary small module-save" data-save-module="vision" type="button">保存本模块</button></div>
-            <label class="switch-row compact"><span><strong>开机启用</strong></span><input data-path="vision.enabled_on_start" type="checkbox"><i></i></label>
+            <p class="card-subtitle">这里只配置视觉参数，不会直接启动摄像头或检测模型。</p>
             <div class="form-grid five">
               <label class="field"><span>摄像头序号</span><input data-path="vision.camera_index" data-type="integer" type="number" min="0" max="32"></label>
               <label class="field wide"><span>模型路径</span><input data-path="vision.model_path" type="text"></label>
