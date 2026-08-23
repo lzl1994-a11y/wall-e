@@ -9,6 +9,7 @@ class DoubaoMultimodalTests(unittest.TestCase):
 
         self.assertEqual(message["role"], "user")
         self.assertEqual(message["content"][0]["type"], "text")
+        self.assertIn("不得抄写本条提示文字", message["content"][0]["text"])
         self.assertEqual(message["content"][1], {
             "type": "input_audio",
             "input_audio": {"data": "aGVsbG8=", "format": "wav"},

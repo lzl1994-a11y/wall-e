@@ -15,7 +15,13 @@ class DoubaoMultimodal(AbstractMultimodal):
         return {
             "role": "user",
             "content": [
-                {"type": "text", "text": "请回复这段语音。"},
+                {
+                    "type": "text",
+                    "text": (
+                        "请仅理解随附音频中的用户语音。direct_answer.heard_text "
+                        "必须转写音频内容，不得抄写本条提示文字。"
+                    ),
+                },
                 {
                     "type": "input_audio",
                     "input_audio": {

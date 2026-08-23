@@ -364,6 +364,10 @@ class TftPreviewServer:
                     self._disconnect_client(client, reason="结束消息发送失败")
             elapsed_from = stream_started_at or operation_started_at
             result.elapsed_seconds = max(0.0, self._clock() - elapsed_from)
+            # Release first: logging must never leave the preview permanently
+            # busy, especially on ROS distributions whose logger can reject a
+            # severity change from the same Python call site.
+            self._stream_lock.release()
             self._log(
                 "info",
                 "TFT 预览结束: "
@@ -371,7 +375,6 @@ class TftPreviewServer:
                 f"elapsed={result.elapsed_seconds:.3f}s avg_fps={result.average_fps:.2f} "
                 f"dropped={result.dropped_frames}",
             )
-            self._stream_lock.release()
         return result
 
     def _accept_loop(self) -> None:
@@ -522,11 +525,28 @@ class TftPreviewServer:
         if logger is None:
             print(f"[TFT Preview] {message}")
             return
-        method = getattr(logger, level, None)
-        if method is None and level == "warn":
-            method = getattr(logger, "warning", None)
-        if callable(method):
-            method(message)
+        # rclpy identifies a log caller by its source location and rejects
+        # changing severity at that same location.  Dynamic ``method(message)``
+        # dispatch put every level on one line and triggered
+        # "Logger severity cannot be changed between calls" on the RDK image.
+        # Keep one stable source line per severity.
+        try:
+            if level == "error":
+                logger.error(message)
+            elif level in {"warn", "warning"}:
+                method = getattr(logger, "warning", None) or getattr(logger, "warn", None)
+                if callable(method):
+                    method(message)
+            elif level == "debug":
+                method = getattr(logger, "debug", None)
+                if callable(method):
+                    method(message)
+            else:
+                logger.info(message)
+        except Exception as exc:
+            # Logging is diagnostic only; a platform logger bug must not abort
+            # capture or leave the preview lock held.
+            print(f"[TFT Preview] {message} (logger failed: {exc})")
 
 
 __all__ = [

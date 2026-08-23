@@ -73,6 +73,15 @@ class _Logger:
         self.messages.append(("error", message))
 
 
+class _SeveritySensitiveLogger(_Logger):
+    """Emulate the RDK rclpy logger failure seen on severity changes."""
+
+    def info(self, message):
+        if "预览结束" in message:
+            raise RuntimeError("Logger severity cannot be changed between calls.")
+        super().info(message)
+
+
 def _recv_exact(client, size):
     output = bytearray()
     while len(output) < size:
@@ -275,6 +284,21 @@ class TftPreviewServerTests(unittest.TestCase):
 
         self.assertTrue(second.busy)
         self.assertEqual(len(first_result), 1)
+
+    def test_logger_failure_does_not_abort_capture_or_leave_preview_busy(self):
+        self.server._logger = _SeveritySensitiveLogger()
+        frame = _source_jpeg()
+
+        first = self.server.send_camera_preview(
+            _FakeFrameProvider(frame), duration_ms=1500
+        )
+        second = self.server.send_camera_preview(
+            _FakeFrameProvider(frame), duration_ms=1500
+        )
+
+        self.assertEqual(first.last_frame, frame)
+        self.assertEqual(second.last_frame, frame)
+        self.assertFalse(second.busy)
 
 
 if __name__ == "__main__":
