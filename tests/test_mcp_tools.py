@@ -47,6 +47,17 @@ class FastMcpToolTests(unittest.TestCase):
             self.assertTrue(function["description"])
             self.assertIsInstance(function["parameters"], dict)
             self.assertEqual(function["parameters"]["type"], "object")
+            self.assertFalse(function["parameters"]["additionalProperties"])
+
+        by_name = {item["function"]["name"]: item["function"] for item in tools}
+        self.assertEqual(
+            set(by_name["move_chassis"]["parameters"]["properties"]["direction"]["enum"]),
+            {"forward", "backward", "spin", "left", "right"},
+        )
+        self.assertEqual(
+            set(by_name["set_tracking_mode"]["parameters"]["properties"]["mode"]["enum"]),
+            {"follow_me", "look_at_me", "idle"},
+        )
 
     def test_empty_fastmcp_registry_is_diagnostic_error_not_silent_empty_tools(self):
         async def no_tools():
@@ -56,12 +67,28 @@ class FastMcpToolTests(unittest.TestCase):
             with self.assertRaisesRegex(mcp_service.MCPToolDiscoveryError, "未枚举"):
                 mcp_service.get_chat_tools()
 
-    def test_dispatcher_adds_required_direct_answer_tool(self):
+    def test_dispatcher_separates_structured_answer_from_real_action_tools(self):
         from services import tool_dispatcher
 
-        with patch.object(tool_dispatcher.mcp, "get_chat_tools", return_value=[]):
-            tools = tool_dispatcher.get_tools()
-        self.assertEqual([tool["function"]["name"] for tool in tools], ["direct_answer"])
+        action = {
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }
+        with patch.object(tool_dispatcher.mcp, "get_chat_tools", return_value=[action]):
+            structured_tools = tool_dispatcher.get_tools()
+            action_tools = tool_dispatcher.get_action_tools()
+        self.assertEqual(
+            [tool["function"]["name"] for tool in structured_tools],
+            ["direct_answer", "play_sequence"],
+        )
+        self.assertEqual(
+            [tool["function"]["name"] for tool in action_tools],
+            ["play_sequence"],
+        )
 
     def test_multimodal_direct_answer_requires_transcript_and_response(self):
         from services import tool_dispatcher
@@ -78,13 +105,6 @@ class _ToolCallResponse:
             types.SimpleNamespace(
                 index=0,
                 function=types.SimpleNamespace(
-                    name="direct_answer",
-                    arguments='{"response":"好的，我来转头。"}',
-                ),
-            ),
-            types.SimpleNamespace(
-                index=1,
-                function=types.SimpleNamespace(
                     name="play_sequence",
                     arguments='{"sequence_name":"turn_head_left"}',
                 ),
@@ -92,9 +112,61 @@ class _ToolCallResponse:
         ]
         yield types.SimpleNamespace(
             choices=[types.SimpleNamespace(
-                delta=types.SimpleNamespace(content=None, tool_calls=tool_call),
+                delta=types.SimpleNamespace(content="好的，我来转头。", tool_calls=tool_call),
                 finish_reason="tool_calls",
             )]
+        )
+
+
+class _DirectAnswerResponse:
+    def __iter__(self):
+        tool_call = types.SimpleNamespace(
+            index=0,
+            function=types.SimpleNamespace(
+                name="direct_answer",
+                arguments='{"response":"看起来是一只杯子。"}',
+            ),
+        )
+        yield types.SimpleNamespace(
+            choices=[types.SimpleNamespace(
+                delta=types.SimpleNamespace(content=None, tool_calls=[tool_call]),
+                finish_reason="tool_calls",
+            )]
+        )
+
+
+class ToolCallAccumulatorTests(unittest.TestCase):
+    @staticmethod
+    def _delta(calls):
+        return types.SimpleNamespace(tool_calls=calls)
+
+    @staticmethod
+    def _call(index, name, arguments):
+        return types.SimpleNamespace(
+            index=index,
+            function=types.SimpleNamespace(name=name, arguments=arguments),
+        )
+
+    def test_malformed_arguments_are_discarded_instead_of_becoming_empty_object(self):
+        from services.tool_dispatcher import ToolCallAccumulator
+
+        accumulator = ToolCallAccumulator()
+        accumulator.feed(self._delta([
+            self._call(0, "move_chassis", '{"direction":'),
+        ]))
+        self.assertEqual(accumulator.flush(), [])
+
+    def test_provider_call_order_is_preserved(self):
+        from services.tool_dispatcher import ToolCallAccumulator
+
+        accumulator = ToolCallAccumulator()
+        accumulator.feed(self._delta([
+            self._call(0, "play_sequence", '{"sequence_name":"wave_hello"}'),
+            self._call(1, "express_emotion", '{"emotion":"happy"}'),
+        ]))
+        self.assertEqual(
+            [call["name"] for call in accumulator.flush()],
+            ["play_sequence", "express_emotion"],
         )
 
 
@@ -114,15 +186,15 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         from services.llm_service import ToolCallingUnavailableError
 
         service = self._service()
-        with patch("services.llm_service.get_tools", return_value=[]):
+        with patch("services.llm_service.get_action_tools", return_value=[]):
             with self.assertRaisesRegex(ToolCallingUnavailableError, "动作工具为空"):
                 list(service.chat_stream("转个头", tools_enabled=True))
         service.client.chat.completions.create.assert_not_called()
 
-    def test_streamed_tool_call_has_action_ready_name_and_arguments(self):
+    def test_tool_branch_discards_mixed_content_and_emits_action(self):
         service = self._service()
         service.client.chat.completions.create.return_value = _ToolCallResponse()
-        with patch("services.llm_service.get_tools", return_value=[{
+        with patch("services.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -131,17 +203,12 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             {"type": "tool_call", "name": "play_sequence", "arguments": '{"sequence_name": "turn_head_left"}'},
             events,
         )
-        self.assertIn(
-            {"type": "text", "content": "好的，我来转头。"},
-            events,
-        )
+        self.assertFalse(any(event["type"] == "text" for event in events))
         request = service.client.chat.completions.create.call_args.kwargs
         self.assertEqual(request["tool_choice"], "auto")
         self.assertIn("tools", request)
 
-    def test_tools_enabled_response_requires_direct_answer(self):
-        from services.llm_service import StructuredAnswerUnavailableError
-
+    def test_action_only_response_is_valid_without_direct_answer(self):
         class ActionOnlyResponse:
             def __iter__(self):
                 tool_call = types.SimpleNamespace(
@@ -160,12 +227,161 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = ActionOnlyResponse()
-        with patch("services.llm_service.get_tools", return_value=[{
+        with patch("services.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
-            with self.assertRaisesRegex(StructuredAnswerUnavailableError, "direct_answer.response"):
-                list(service.chat_stream("转个头", tools_enabled=True))
+            events = list(service.chat_stream("转个头", tools_enabled=True))
+        self.assertEqual(
+            events[0],
+            {"type": "tool_call", "name": "play_sequence", "arguments": '{"sequence_name": "turn_head_left"}'},
+        )
+        self.assertEqual(events[-1], {"type": "done", "finish_reason": "tool_calls"})
+
+    def test_plain_content_is_valid_with_action_tools_enabled(self):
+        class PlainResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content="你好，我在。", tool_calls=None),
+                        finish_reason="stop",
+                    )]
+                )
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = PlainResponse()
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
+        }]):
+            events = list(service.chat_stream("你好", tools_enabled=True))
+        self.assertEqual(events[0], {"type": "text", "content": "你好，我在。"})
+        self.assertEqual(events[-1], {"type": "done", "finish_reason": "stop"})
+
+    def test_tool_call_wins_even_when_provider_streams_text_first(self):
+        class TextThenToolResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content="我可以转头呀。", tool_calls=None),
+                        finish_reason=None,
+                    )]
+                )
+                yield types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content=None, tool_calls=[
+                            types.SimpleNamespace(
+                                index=0,
+                                function=types.SimpleNamespace(
+                                    name="play_sequence",
+                                    arguments='{"sequence_name":"turn_head_left"}',
+                                ),
+                            ),
+                        ]),
+                        finish_reason="tool_calls",
+                    )]
+                )
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = TextThenToolResponse()
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
+        }]):
+            events = list(service.chat_stream("你能转头吗？", tools_enabled=True))
+        self.assertFalse(any(event["type"] == "text" for event in events))
+        self.assertEqual(
+            events[0],
+            {
+                "type": "tool_call",
+                "name": "play_sequence",
+                "arguments": '{"sequence_name": "turn_head_left"}',
+            },
+        )
+
+    def test_tool_call_wins_after_multiple_prior_text_chunks(self):
+        class MultiTextThenToolResponse:
+            def __iter__(self):
+                for content in ("好的。", "我来转头。"):
+                    yield types.SimpleNamespace(
+                        choices=[types.SimpleNamespace(
+                            delta=types.SimpleNamespace(content=content, tool_calls=None),
+                            finish_reason=None,
+                        )]
+                    )
+                yield types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content=None, tool_calls=[
+                            types.SimpleNamespace(
+                                index=0,
+                                function=types.SimpleNamespace(
+                                    name="play_sequence",
+                                    arguments='{"sequence_name":"turn_head_left"}',
+                                ),
+                            ),
+                        ]),
+                        finish_reason="tool_calls",
+                    )]
+                )
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = MultiTextThenToolResponse()
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
+        }]):
+            events = list(service.chat_stream("向左转头", tools_enabled=True))
+        self.assertFalse(any(event["type"] == "text" for event in events))
+        self.assertTrue(any(event["type"] == "tool_call" for event in events))
+
+    def test_structured_request_does_not_poison_action_tool_cache(self):
+        service = self._service()
+        service.client.chat.completions.create.side_effect = [
+            _DirectAnswerResponse(),
+            _ToolCallResponse(),
+        ]
+        visual_events = list(service.chat_stream(
+            "看图",
+            tools_enabled=False,
+            structured_answer=True,
+        ))
+        self.assertEqual(visual_events[0]["content"], "看起来是一只杯子。")
+        self.assertIsNone(service._tools)
+
+        action_schema = [{
+            "type": "function",
+            "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
+        }]
+        with patch("services.llm_service.get_action_tools", return_value=action_schema):
+            list(service.chat_stream("转个头", tools_enabled=True))
+        second_request = service.client.chat.completions.create.call_args_list[1].kwargs
+        self.assertEqual(second_request["tools"], action_schema)
+
+    def test_structured_answer_still_rejects_plain_content(self):
+        from services.llm_service import StructuredAnswerUnavailableError
+
+        class PlainResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content="untrusted", tool_calls=None),
+                        finish_reason="stop",
+                    )]
+                )
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = PlainResponse()
+        with self.assertRaisesRegex(StructuredAnswerUnavailableError, "direct_answer.response"):
+            list(service.chat_stream(
+                "看看画面",
+                tools_enabled=False,
+                structured_answer=True,
+            ))
+        request = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(
+            request["tool_choice"],
+            {"type": "function", "function": {"name": "direct_answer"}},
+        )
 
     def test_primary_model_is_used_when_no_tool_model_is_configured(self):
         service = self._service()
@@ -174,7 +390,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]
-        with patch("services.llm_service.get_tools", return_value=tool_schema):
+        with patch("services.llm_service.get_action_tools", return_value=tool_schema):
             list(service.chat_stream("转个头", tools_enabled=True))
         self.assertEqual(
             service.client.chat.completions.create.call_args.kwargs["model"],
@@ -192,7 +408,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         service = self._service()
         service.settings["tool_model"] = "glm-4-flash-250414"
         service.client.chat.completions.create.return_value = _ToolCallResponse()
-        with patch("services.llm_service.get_tools", return_value=[{
+        with patch("services.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -206,7 +422,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         service = self._service()
         service.settings.update({"provider": "zhipu", "tool_model": "glm-4.7", "reasoning_effort": "fast"})
         service.client.chat.completions.create.return_value = _ToolCallResponse()
-        with patch("services.llm_service.get_tools", return_value=[{
+        with patch("services.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -223,7 +439,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.side_effect = ApiToolRejection("unsupported tools parameter")
-        with patch("services.llm_service.get_tools", return_value=[{
+        with patch("services.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -233,7 +449,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
     def test_network_or_auth_error_is_not_misreported_as_tool_incompatibility(self):
         service = self._service()
         service.client.chat.completions.create.side_effect = RuntimeError("network timeout")
-        with patch("services.llm_service.get_tools", return_value=[{
+        with patch("services.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):

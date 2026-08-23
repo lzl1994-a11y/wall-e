@@ -9,10 +9,19 @@ Markdown、括号说明、工具名、工具参数或工具调用过程。需要
 """.strip()
 
 
+ACTION_TOOL_POLICY = """
+动作工具只用于用户明确要求瓦力现在执行现实动作的命令。能力询问、疑问句、假设、
+故事、引用、词义解释、过去发生的事、第三方行为和单纯提到动作，都不能触发工具。
+用户明确要求停止正在进行的移动、注视或跟随时属于动作命令。不确定时不要调用工具，
+应直接简短回答或询问用户。不要因为想让回复更生动而自行添加动作。如果调用任何动作工具，
+本轮普通 content 必须留空，动作确认台词由系统另行生成。
+""".strip()
+
+
 STRUCTURED_ANSWER_POLICY = """
 本轮必须调用 direct_answer 工具一次，把唯一可播报的最终台词写入 response 参数。
-即使还需要调用身体动作工具，也必须同时调用 direct_answer。不要在普通 content 中输出
-台词、思考或解释；普通 content 不会被播放。
+本轮不提供也不得调用身体动作工具。不要在普通 content 中输出台词、思考或解释；
+普通 content 不会被播放。
 """.strip()
 
 
@@ -27,3 +36,9 @@ def with_structured_answer_policy(system_prompt):
     """Require a native tool-call answer for a tools-enabled voice turn."""
     base = str(system_prompt or "").strip()
     return f"{base}\n\n{STRUCTURED_ANSWER_POLICY}" if base else STRUCTURED_ANSWER_POLICY
+
+
+def with_action_tool_policy(system_prompt):
+    """Describe the semantic boundary for real robot side-effect tools."""
+    base = str(system_prompt or "").strip()
+    return f"{base}\n\n{ACTION_TOOL_POLICY}" if base else ACTION_TOOL_POLICY

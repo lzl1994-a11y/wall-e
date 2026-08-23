@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -27,10 +28,21 @@ from services.camera_capture_protocol import (
 )
 
 
+def _is_negated_camera_request(text: str) -> bool:
+    """Do not let keyword fast paths turn a user's refusal into capture."""
+    camera_words = r"拍|照相|摄影|看|观察|识别|辨认|认一下"
+    if re.search(rf"(?:别|不要|不用|不必|不想|不需要|停止|取消).{{0,8}}(?:{camera_words})", text):
+        return True
+    return bool(re.search(
+        rf"(?:{camera_words}).*(?:不用了?|不要了?|不必|算了|取消|作罢)",
+        text,
+    ))
+
+
 def is_camera_photo_request(user_prompt: str) -> bool:
     """识别只拍照保存、不调用视觉模型的请求。"""
     text = (user_prompt or "").strip().lower()
-    if not text:
+    if not text or _is_negated_camera_request(text):
         return False
     markers = (
         "拍照", "拍张照", "拍一张", "照张相", "照一张", "给我拍", "帮我拍",
@@ -42,7 +54,7 @@ def is_camera_photo_request(user_prompt: str) -> bool:
 def is_camera_inspection_request(user_prompt: str) -> bool:
     """快速识别常见的一次性视觉问题，持续注视/跟随不在此范围。"""
     text = (user_prompt or "").strip().lower()
-    if not text or is_camera_photo_request(text) or any(word in text for word in (
+    if not text or _is_negated_camera_request(text) or is_camera_photo_request(text) or any(word in text for word in (
         "看着我", "看我", "盯着我", "跟着我", "跟随我", "look at me", "follow me"
     )):
         return False

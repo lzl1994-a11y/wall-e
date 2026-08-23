@@ -9,14 +9,13 @@
 """
 
 import json
+import logging
 import services.mcp_service as mcp
 from services.action_command import build_action_cmd, parse_action_cmd
 
 
-import yaml
-
-
 DIRECT_ANSWER_TOOL_NAME = "direct_answer"
+LOGGER = logging.getLogger(__name__)
 DIRECT_ANSWER_TOOL = {
     "type": "function",
     "function": {
@@ -72,6 +71,11 @@ def get_tools():
     return [DIRECT_ANSWER_TOOL, *mcp.get_chat_tools()]
 
 
+def get_action_tools():
+    """Return only tools that represent real robot actions or observations."""
+    return mcp.get_chat_tools()
+
+
 def get_multimodal_tools():
     """Tools for audio turns, including a transcript for paired history."""
     return [MULTIMODAL_DIRECT_ANSWER_TOOL, *mcp.get_chat_tools()]
@@ -105,15 +109,26 @@ class ToolCallAccumulator:
                 self._buffer[idx]["arguments"] += tc.function.arguments
 
     def flush(self):
-        """返回已完成的 tool_call 列表，arguments 已解析为 dict。"""
+        """Return valid calls in provider order; malformed arguments fail closed."""
         result = []
-        for tc in sorted(self._buffer.values(), key=lambda x: x["name"]):
+        for index in sorted(self._buffer):
+            tc = self._buffer[index]
             raw = tc["arguments"].strip()
-            if not raw:
+            if not raw or not tc["name"]:
                 continue
             try:
                 args = json.loads(raw)
             except json.JSONDecodeError:
-                args = {}
+                LOGGER.warning(
+                    "Discarded malformed tool call %s: invalid JSON arguments",
+                    tc["name"],
+                )
+                continue
+            if not isinstance(args, dict):
+                LOGGER.warning(
+                    "Discarded malformed tool call %s: arguments are not an object",
+                    tc["name"],
+                )
+                continue
             result.append({"name": tc["name"], "arguments": args})
         return result

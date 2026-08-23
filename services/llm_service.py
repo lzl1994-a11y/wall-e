@@ -4,32 +4,28 @@ import logging
 import yaml
 from openai import OpenAI
 from services.llm_output_filter import VisibleAnswerFilter
-from services.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
+from services.llm_prompt import (
+    with_action_tool_policy,
+    with_direct_speech_policy,
+    with_structured_answer_policy,
+)
 from services.llm_request_options import reasoning_request_options
-from services.tool_dispatcher import ToolCallAccumulator, get_tools
+from services.tool_dispatcher import (
+    DIRECT_ANSWER_TOOL,
+    DIRECT_ANSWER_TOOL_NAME,
+    ToolCallAccumulator,
+    get_action_tools,
+)
 
 
 LOGGER = logging.getLogger(__name__)
-DIRECT_ANSWER_TOOL_NAME = "direct_answer"
-DIRECT_ANSWER_TOOL = {
-    "type": "function",
-    "function": {
-        "name": DIRECT_ANSWER_TOOL_NAME,
-        "description": "将唯一允许播放给用户听的最终台词写入 response。",
-        "parameters": {
-            "type": "object",
-            "properties": {"response": {"type": "string"}},
-            "required": ["response"],
-            "additionalProperties": False,
-        },
-    },
-}
+
 class ToolCallingUnavailableError(RuntimeError):
     """The configured model or MCP registry cannot service a tools-enabled turn."""
 
 
 class StructuredAnswerUnavailableError(RuntimeError):
-    """A tools-enabled model did not return the required direct_answer call."""
+    """A structured-only request did not return the required direct_answer."""
 
 
 def _is_tool_calling_rejection(exc: Exception) -> bool:
@@ -109,8 +105,15 @@ class LLMService:
         selected_system_prompt = (
             self.system_prompt if system_prompt is None else system_prompt
         )
-        requires_structured_answer = tools_enabled or structured_answer
+        if tools_enabled and structured_answer:
+            raise ValueError(
+                "structured_answer is reserved for direct-answer-only requests; "
+                "disable action tools for this request"
+            )
+        requires_structured_answer = bool(structured_answer)
         system_content = with_direct_speech_policy(selected_system_prompt)
+        if tools_enabled:
+            system_content = with_action_tool_policy(system_content)
         if requires_structured_answer:
             system_content = with_structured_answer_policy(system_content)
         messages = [{
@@ -145,16 +148,24 @@ class LLMService:
             ),
             "stream": True,
         }
-        if requires_structured_answer:
+        tools = []
+        if tools_enabled:
             if getattr(self, "_tools", None) is None:
-                self._tools = get_tools() if tools_enabled else [DIRECT_ANSWER_TOOL]
-            tools = self._tools if tools_enabled else [DIRECT_ANSWER_TOOL]
+                self._tools = get_action_tools()
+            tools = self._tools
             if not tools:
                 raise ToolCallingUnavailableError(
                     "动作工具为空；拒绝以无工具模式发送请求。请检查 FastMCP 2.x 工具注册。"
                 )
             request_kwargs["tools"] = tools
             request_kwargs["tool_choice"] = "auto"
+        elif requires_structured_answer:
+            tools = [DIRECT_ANSWER_TOOL]
+            request_kwargs["tools"] = tools
+            request_kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": DIRECT_ANSWER_TOOL_NAME},
+            }
         request_settings = (
             self.settings
             if request_model == self.model
@@ -164,7 +175,7 @@ class LLMService:
         try:
             response = self.client.chat.completions.create(**request_kwargs)
         except Exception as exc:
-            if requires_structured_answer and _is_tool_calling_rejection(exc):
+            if tools and _is_tool_calling_rejection(exc):
                 raise ToolCallingUnavailableError(
                     f"模型 {request_model!r} 拒绝或不支持 function calling；"
                     "请检查模型能力和兼容 API 的 tools 支持。"
@@ -174,6 +185,8 @@ class LLMService:
         acc = ToolCallAccumulator()
         answer_filter = VisibleAnswerFilter()
         finish_reason = ""
+        pending_tool_text = []
+        tool_call_seen = False
 
         for chunk in response:
             if not chunk.choices:
@@ -184,22 +197,32 @@ class LLMService:
                 finish_reason = str(chunk_finish_reason)
             delta = choice.delta
 
+            if getattr(delta, "tool_calls", None):
+                tool_call_seen = True
             acc.feed(delta)
 
-            # A tools-enabled turn has one trusted speech outlet only:
-            # direct_answer.response.  Never stream unstructured content into
-            # TTS; it can contain reasoning, tags, or provider control tokens.
+            # Ordinary ASR+LLM turns follow the native tool protocol: visible
+            # content is speech, while tool_calls are side-effect proposals.
+            # Tools-disabled visual/retry requests use filtered plain content.
             if delta.content and not requires_structured_answer:
                 visible = answer_filter.feed(delta.content)
                 if visible:
-                    yield {"type": "text", "content": visible}
-
+                    if not tools_enabled:
+                        yield {"type": "text", "content": visible}
+                    elif not tool_call_seen:
+                        pending_tool_text.append(visible)
         if not requires_structured_answer:
             visible_tail = answer_filter.flush()
-            if visible_tail:
+            if not tools_enabled and visible_tail:
                 yield {"type": "text", "content": visible_tail}
+            elif tools_enabled and not tool_call_seen:
+                if visible_tail:
+                    pending_tool_text.append(visible_tail)
 
         tool_calls = acc.flush()
+        if tools_enabled and not tool_calls:
+            for visible in pending_tool_text:
+                yield {"type": "text", "content": visible}
         if requires_structured_answer:
             direct_answers = [
                 tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
@@ -215,8 +238,16 @@ class LLMService:
                 )
             yield {"type": "text", "content": response}
 
+        offered_action_names = {
+            tool["function"]["name"]
+            for tool in tools
+            if tools_enabled and isinstance(tool.get("function"), dict)
+        }
         for tc in tool_calls:
             if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
+                continue
+            if not tools_enabled or tc["name"] not in offered_action_names:
+                LOGGER.warning("Discarded unoffered tool call: %s", tc["name"])
                 continue
             yield {
                 "type": "tool_call", 

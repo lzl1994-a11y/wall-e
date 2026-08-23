@@ -12,6 +12,8 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from pypinyin import Style, pinyin
 
+from services.action_acknowledgement import action_acknowledgement
+from services.action_intent_guard import validate_action_call
 from services.llm_service import LLMService
 from services.camera_frame import (
     CameraFrameProvider,
@@ -297,14 +299,33 @@ class LLMBrainNode(Node):
                             sentence_buffer = ''
 
                 elif data_type == 'tool_call':
-                    if data.get('name') == 'inspect_camera':
+                    action_name = data.get('name')
+                    try:
+                        action_arguments = json.loads(data.get('arguments') or '{}')
+                    except (TypeError, json.JSONDecodeError):
+                        self.get_logger().warning(
+                            f'[{turn_id}] Rejected malformed tool arguments: {action_name}'
+                        )
+                        continue
+                    allowed, rejection_reason = validate_action_call(
+                        user_prompt,
+                        action_name,
+                        action_arguments,
+                    )
+                    if not allowed:
+                        self.get_logger().warning(
+                            f'[{turn_id}] Rejected tool proposal: '
+                            f'name={action_name} reason={rejection_reason}'
+                        )
+                        continue
+                    if action_name == 'inspect_camera':
                         self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
                         self._process_camera_inspection(turn_id, user_prompt)
                         return
                     action_payload = {
                         'turn_id': turn_id,
-                        'name': data.get('name'),
-                        'arguments': data.get('arguments', '{}'),
+                        'name': action_name,
+                        'arguments': json.dumps(action_arguments, ensure_ascii=False),
                     }
                     actions.append(action_payload)
 
@@ -341,6 +362,8 @@ class LLMBrainNode(Node):
 
         if not clean_text and spoken_parts:
             clean_text = ''.join(spoken_parts).strip()
+        if not clean_text and actions:
+            clean_text = action_acknowledgement(actions)
         if not clean_text:
             clean_text = self._retry_empty_answer(
                 turn_id,
@@ -353,10 +376,6 @@ class LLMBrainNode(Node):
 
         self.chat_history.append({'role': 'user', 'content': final_user_memory})
         
-        assistant_msg = {'role': 'assistant', 'content': clean_text}
-        
-        # If tools were called, we must append them to the assistant message in OpenAI format
-        # and also provide a mock 'tool' response to satisfy the conversation schema.
         if actions:
             openai_tool_calls = []
             for i, act in enumerate(actions):
@@ -371,9 +390,17 @@ class LLMBrainNode(Node):
                         "arguments": act.get("arguments", "{}")
                     }
                 })
-            assistant_msg['tool_calls'] = openai_tool_calls
-
-        self.chat_history.append(assistant_msg)
+            # Keep the history protocol-valid and reinforce the same contract
+            # used by the system prompt: action proposals have no speech
+            # content; the deterministic acknowledgement is a following
+            # assistant message after all tool results.
+            self.chat_history.append({
+                'role': 'assistant',
+                'content': None,
+                'tool_calls': openai_tool_calls,
+            })
+        else:
+            self.chat_history.append({'role': 'assistant', 'content': clean_text})
 
         if clean_text:
             full_msg = String()
@@ -387,8 +414,9 @@ class LLMBrainNode(Node):
                     'role': 'tool',
                     'tool_call_id': act['id'],
                     'name': act['name'],
-                    'content': '{"status": "success"}'
+                    'content': '{"status": "accepted"}'
                 })
+            self.chat_history.append({'role': 'assistant', 'content': clean_text})
 
         self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
 
@@ -436,7 +464,7 @@ class LLMBrainNode(Node):
                 self._visual_history(),
                 image_base64=image_b64,
                 tools_enabled=False,
-                structured_answer=True,
+                structured_answer=False,
                 system_prompt=(
                     '你是瓦力的视觉。只依据当前摄像头图片回答问题；看不清时明确说看不清，'
                     '不要猜测。答案使用简短自然的中文，不能输出分析过程或任何标签。'
@@ -580,7 +608,7 @@ class LLMBrainNode(Node):
                 retry_prompt,
                 self._history_for_request(),
                 tools_enabled=False,
-                structured_answer=True,
+                structured_answer=False,
                 max_tokens_override=retry_tokens,
             ):
                 if data.get('type') == 'text' and data.get('content'):

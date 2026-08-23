@@ -374,9 +374,11 @@ Web 配置中的 `launch.tracking` 只决定是否加载视觉跟踪能力。开
 - `/servo_cmd`：底层的舵机驱动指令 (JSON)。
 - `/motor_cmd/joystick`、`/motor_cmd/tracking`、`/motor_cmd/autonomy`：手柄、视觉跟踪和自主动作的分源电机指令。
 - `/motor_cmd`：`motion_arbiter_node` 按“手柄 > 跟踪 > 自主动作”选出的唯一硬件电机指令；上游心跳超过 300ms 未刷新时自动停车。串口与 I²C 硬件后端还各有独立的 300ms watchdog，仲裁器失联时同样会强制停车。
-- `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。普通对话始终向模型提供已注册的动作工具，由模型做语义意图判断。模型选择 `inspect_camera` 后，文本与多模态语音链路都会按需启动摄像头、获取画面并发起仅包含 `direct_answer` 的视觉回答请求。
+- `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。普通对话始终向模型提供已注册的动作工具，由模型做语义意图判断。模型选择 `inspect_camera` 后，文本与多模态语音链路都会按需启动摄像头、获取画面并发起不含动作工具的视觉回答请求。
 
-普通语音对话、动作调用和多模态直聊都要求主模型支持原生 Function Calling。瓦力会要求模型调用虚拟工具 `direct_answer(response)`，并且只朗读该 `response` 字段；普通 `content` 永不播放，因此推理文本、标签或服务商控制标记不会泄漏到扬声器。模型若没有返回该工具调用，本轮会明确报错，而不会退回朗读非结构化文本。
+`asr_llm` 文本对话遵循原生 Function Calling 分支：请求只向模型提供真实动作工具，`tool_choice=auto`；完整响应没有 `tool_calls` 时，经关闭思考模式和可见答案过滤后的 `content` 就是普通回复；有 `tool_calls` 时才把它们当作动作提案，模型在工具调用前混出的文本不会抢先播报。每个提案在发往 ROS 前还会检查工具白名单、参数范围，以及用户原话中与参数一致的明确动作证据；畸形 JSON、越界或方向错误、能力询问、否定、假设、故事和第三方行为等均 fail closed，不会下发硬件。
+
+视觉图片分析不提供任何动作工具，使用专用视觉提示词和可见答案过滤后读取标准 `content`，以兼容不能稳定返回 `direct_answer` 的模型。原始音频多模态直聊仍保留 `direct_answer(response)` 结构化出口。
 
 ### 豆包（火山方舟）LLM
 
@@ -386,7 +388,7 @@ LLM 服务已适配火山方舟的 OpenAI 兼容接口。请在火山方舟控�
 llm:
   provider: doubao
   # 填写火山方舟控制台中可用的模型名或 ep- 开头的推理接入点 ID
-  model: doubao-seed-2-0-lite-260428
+  model: doubao-seed-2-1-turbo-260628
   url: https://ark.cn-beijing.volces.com/api/v3
   key: ${ARK_API_KEY}
   temperature: 0.4

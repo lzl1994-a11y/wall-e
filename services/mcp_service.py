@@ -4,6 +4,7 @@
 # LLM 返回 tool_call → llm_ros_node 发到 /action_cmd → 对应节点执行
 
 import asyncio
+import copy
 import logging
 import os
 import yaml
@@ -15,6 +16,12 @@ LOGGER = logging.getLogger(__name__)
 
 class MCPToolDiscoveryError(RuntimeError):
     """Raised when function tools cannot be supplied to an LLM request."""
+
+
+_ACTION_TOOL_BOUNDARY = (
+    "仅当用户明确命令瓦力现在执行该动作时调用。能力询问、疑问、假设、故事、引用、"
+    "词义解释、过去事件、第三方行为或单纯提到动作时禁止调用；不确定时直接回答或澄清。"
+)
 
 # 已知动作的中英文语义映射字典（用于增强大模型的语义理解）
 _semantic_mappings = {
@@ -39,9 +46,9 @@ _semantic_mappings = {
 # 动态读取动作编排文件，生成动作菜单
 def _build_sequence_prompt():
     base_prompt = (
-        "控制瓦力的物理躯体做出各种动作。这是你控制身体动作的唯一指定工具！\n\n"
-        "【核心智能要求】：你应当具备语义意图识别能力！当用户的要求（例如“抬手”、“伸个手”、“向右看”）"
-        "与下方列表并非字面完全一致时，你必须自己理解意图，并选择一个最接近的动作调用，绝对不要因为字面不一致就拒绝调用工具！\n\n"
+        f"{_ACTION_TOOL_BOUNDARY}\n"
+        "控制瓦力的头、手臂或身体做一次预设表演动作。只在明确动作命令中，根据语义"
+        "选择最接近的预设；向左/右看属于转头，不是移动底盘。\n\n"
         "sequence_name 必须是以下预设动作之一：\n"
     )
     
@@ -78,7 +85,8 @@ _play_sequence_doc = _build_sequence_prompt()
 @mcp.tool()
 def express_emotion(emotion: str) -> str:
     """
-    控制瓦力表达情绪。
+    仅当用户明确命令瓦力现在表达某种情绪时，控制瓦力用身体表达情绪。
+    询问瓦力是否开心、讨论情绪或普通闲聊时不能为了生动而自行调用。
     
     emotion 可选：
       - "curious"  : 好奇，眼睛微动
@@ -105,7 +113,8 @@ def play_sequence(sequence_name: str) -> str:
 @mcp.tool()
 def move_chassis(direction: str, duration: int = 1) -> str:
     """
-    控制瓦力履带底盘移动。
+    仅当用户明确命令瓦力现在移动时，控制瓦力履带底盘短距离移动。能力询问、
+    疑问、假设、故事、过去事件或单纯提到移动时禁止调用。
     
     【警告】：如果用户只是让你“向左看”、“向右看”或者“转头”，请调用 play_sequence 工具！只有当用户明确要求“走动”、“移动身体”、“转身”、“前进后退”时，才使用本底盘控制工具！
     
@@ -116,7 +125,7 @@ def move_chassis(direction: str, duration: int = 1) -> str:
       - "left"     : 左转弯
       - "right"    : 右转弯
     
-    duration: 持续秒数，默认 1 秒，建议 1~3 秒。
+    duration: 持续秒数，只允许 1~3 秒，默认 1 秒。
     
     通过 ROS /action_cmd 下发，由 sequence_ros_node 执行。
     """
@@ -130,12 +139,12 @@ def move_chassis(direction: str, duration: int = 1) -> str:
 @mcp.tool()
 def set_tracking_mode(mode: str) -> str:
     """
-    切换瓦力视觉跟踪模式（AI视觉锁定）。
-    
-    【极度重要！最高优先级意图匹配】：
-      - 只要用户说出“看着我”、“盯着我”、“看我”、“注视我”或“look me”等短语，你【必须】立刻调用本工具，传入 mode="look_at_me"！绝对不要去调用 play_sequence，也绝对不要只回正头部！
-      - 只要用户说出“跟着我”、“跟随我”等短语，必须调用本工具并传入 mode="follow_me"
-      - 只要用户说“别看了”、“停止跟随”、“停下”，传入 mode="idle"
+    仅当用户明确命令瓦力现在切换持续视觉跟踪模式时调用。仅仅询问、引用、
+    解释或提到“看着我/跟着我”等短语不能调用。
+
+      - 明确命令“看着我/盯着我/注视我”时传入 mode="look_at_me"
+      - 明确命令“跟着我/跟随我”时传入 mode="follow_me"
+      - 明确命令“别看了/停止跟随/退出跟踪”时传入 mode="idle"
       
     参数 mode 可选值:
       "follow_me"  : 人体跟随，底盘保持人在画面中央并控制距离
@@ -150,7 +159,7 @@ def set_tracking_mode(mode: str) -> str:
 @mcp.tool()
 def set_vision_gate(enabled: bool) -> str:
     """
-    打开或关闭视觉跟踪。
+    仅当用户明确命令瓦力现在打开或关闭视觉跟踪总开关时调用。
     enabled=True 默认进入 body_follow，False 退出所有跟踪。
     通过 ROS /action_cmd 下发，由 wali_tracking_node 执行。
     """
@@ -159,13 +168,12 @@ def set_vision_gate(enabled: bool) -> str:
 
 @mcp.tool()
 def inspect_camera(question: str = "") -> str:
-    """拍摄一帧当前摄像头画面并回答用户的视觉问题。
+    """仅当用户明确要求瓦力现在观察、拍摄或识别眼前现实画面时调用。
 
-    当用户说“看一下这是什么”“你前面有什么”“帮我看看”等要求
-    瓦力观察现实世界时调用。调用前先给用户一句简短确认，例如“好的，
-    我看一下”，然后系统会自动抓取一帧画面并把它交给视觉模型。question
-    应保留用户想知道的内容。不要把“看着我/跟着我”当成此工具，那些
-    属于持续视觉跟随，应使用 set_tracking_mode。
+    拍摄一帧当前摄像头画面并回答用户的视觉问题。谈论视觉或询问瓦力是否能看见
+    不等于要求立即拍摄。系统会自动抓取一帧画面并交给视觉模型，question 应保留
+    用户想知道的内容。不要把“看着我/跟着我”当成此工具，那些属于持续视觉跟随，
+    应使用 set_tracking_mode。
     """
     return "ok"
 
@@ -173,6 +181,46 @@ def inspect_camera(question: str = "") -> str:
 # ==========================================
 # 桥接接口（供 llm_service.py 调用）
 # ==========================================
+
+
+def _configured_sequence_names():
+    yaml_path = os.path.join(os.path.dirname(__file__), '../core/sequences.yaml')
+    try:
+        with open(yaml_path, 'r', encoding='utf-8') as file:
+            config = yaml.safe_load(file) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    return [
+        *map(str, (config.get('sequences') or {}).keys()),
+        *map(str, (config.get('poses') or {}).keys()),
+    ]
+
+
+def _tighten_tool_schema(name, parameters):
+    """Add provider-visible constraints; runtime validation remains mandatory."""
+    schema = copy.deepcopy(parameters)
+    schema['additionalProperties'] = False
+    properties = schema.setdefault('properties', {})
+    if name == 'express_emotion' and 'emotion' in properties:
+        properties['emotion']['enum'] = sorted({
+            'curious', 'happy', 'sad', 'surprised', 'disdain', 'angry'
+        })
+    elif name == 'play_sequence' and 'sequence_name' in properties:
+        sequence_names = _configured_sequence_names()
+        if sequence_names:
+            properties['sequence_name']['enum'] = sequence_names
+    elif name == 'move_chassis':
+        if 'direction' in properties:
+            properties['direction']['enum'] = [
+                'forward', 'backward', 'spin', 'left', 'right'
+            ]
+        if 'duration' in properties:
+            properties['duration'].update({'minimum': 1, 'maximum': 3})
+    elif name == 'set_tracking_mode' and 'mode' in properties:
+        properties['mode']['enum'] = ['follow_me', 'look_at_me', 'idle']
+    elif name == 'inspect_camera' and 'question' in properties:
+        properties['question']['maxLength'] = 500
+    return schema
 
 def get_chat_tools():
     """Return FastMCP 2.x tools as OpenAI function-calling declarations.
@@ -208,7 +256,7 @@ def get_chat_tools():
                 "function": {
                     "name": name,
                     "description": description,
-                    "parameters": parameters,
+                    "parameters": _tighten_tool_schema(name, parameters),
                 },
             })
         if not tools:

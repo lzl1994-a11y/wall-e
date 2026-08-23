@@ -334,6 +334,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         llm_call = node.llm.chat_stream.call_args
         expected_image = base64.b64encode(b"\xff\xd8vision\xff\xd9").decode("ascii")
         self.assertEqual(llm_call.kwargs["image_base64"], expected_image)
+        self.assertFalse(llm_call.kwargs["structured_answer"])
         messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
         self.assertEqual(messages[:2], ["好的，我看一下。", "前面是一只杯子。"])
         self.assertEqual(decode_turn_end(messages[2]), "turn-vision")
@@ -482,6 +483,72 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(published["name"], "play_sequence")
         # sequence_ros_node accepts this string form and parses it to the same dict.
         self.assertEqual(json.loads(published["arguments"]), {"sequence_name": "turn_head_left"})
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_capability_question_tool_proposal_is_not_published(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "我可以转头呀。"},
+            {"type": "tool_call", "name": "play_sequence", "arguments": '{"sequence_name":"turn_head_left"}'},
+            {"type": "done", "finish_reason": "tool_calls"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        logger = MagicMock()
+        node.get_logger = lambda: logger
+
+        node._process_voice_task("turn-question", "你能转头吗？")
+
+        node.action_publisher.publish.assert_not_called()
+        self.assertEqual(
+            node.tts_publisher.publish.call_args_list[0].args[0].data,
+            "我可以转头呀。",
+        )
+        self.assertTrue(logger.warning.called)
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_action_only_turn_uses_local_ack_without_second_llm_request(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "tool_call", "name": "play_sequence", "arguments": '{"sequence_name":"turn_head_right"}'},
+            {"type": "done", "finish_reason": "tool_calls"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_voice_task("turn-action-only", "看看右边")
+
+        self.assertEqual(node.llm.chat_stream.call_count, 1)
+        self.assertEqual(
+            node.tts_publisher.publish.call_args_list[0].args[0].data,
+            "好的，我向右看。",
+        )
+        node.action_publisher.publish.assert_called_once()
+        history = list(node.chat_history)
+        self.assertEqual(
+            [item["role"] for item in history],
+            ["user", "assistant", "tool", "assistant"],
+        )
+        self.assertIsNone(history[1]["content"])
+        self.assertEqual(history[2]["content"], '{"status": "accepted"}')
+        self.assertEqual(history[3]["content"], "好的，我向右看。")
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_request_history_is_limited_and_starts_with_user(self):

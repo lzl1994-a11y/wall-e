@@ -11,6 +11,24 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def _complete_fake_dispatcher(module):
+    module.DIRECT_ANSWER_TOOL_NAME = "direct_answer"
+    module.DIRECT_ANSWER_TOOL = {
+        "type": "function",
+        "function": {
+            "name": "direct_answer",
+            "description": "trusted answer",
+            "parameters": {
+                "type": "object",
+                "properties": {"response": {"type": "string"}},
+                "required": ["response"],
+            },
+        },
+    }
+    module.get_action_tools = lambda: []
+    return module
+
+
 class _FakeResponse:
     def __iter__(self):
         delta = types.SimpleNamespace(content="看起来是一只杯子。", tool_calls=None)
@@ -35,8 +53,10 @@ class _FakeStructuredResponse:
 
 
 class LLMServiceVisionTests(unittest.TestCase):
-    def test_image_is_sent_as_openai_vision_content_with_structured_answer(self):
-        fake_dispatcher = types.ModuleType("services.tool_dispatcher")
+    def test_image_is_sent_as_openai_vision_content_without_answer_tool(self):
+        fake_dispatcher = _complete_fake_dispatcher(
+            types.ModuleType("services.tool_dispatcher")
+        )
         fake_dispatcher.get_tools = lambda: []
 
         class FakeAccumulator:
@@ -67,14 +87,14 @@ class LLMServiceVisionTests(unittest.TestCase):
         service.system_prompt = "你是瓦力。"
         service.model = "glm-4.1v-thinking-flashx"
         service.client = MagicMock()
-        service.client.chat.completions.create.return_value = _FakeStructuredResponse()
+        service.client.chat.completions.create.return_value = _FakeResponse()
 
         payload = base64.b64encode(b"jpeg").decode("ascii")
         result = list(service.chat_stream(
             "这是什么？",
             image_base64=payload,
             tools_enabled=False,
-            structured_answer=True,
+            structured_answer=False,
         ))
 
         kwargs = service.client.chat.completions.create.call_args.kwargs
@@ -85,15 +105,17 @@ class LLMServiceVisionTests(unittest.TestCase):
             user_message["content"][1]["image_url"]["url"],
             "data:image/jpeg;base64," + payload,
         )
-        self.assertEqual(kwargs["tools"][0]["function"]["name"], "direct_answer")
-        self.assertEqual(kwargs["tool_choice"], "auto")
+        self.assertNotIn("tools", kwargs)
+        self.assertNotIn("tool_choice", kwargs)
         self.assertNotIn("extra_body", kwargs)
         self.assertEqual(result[0]["content"], "看起来是一只杯子。")
-        self.assertEqual(result[-1], {"type": "done", "finish_reason": "tool_calls"})
+        self.assertEqual(result[-1], {"type": "done", "finish_reason": "stop"})
         sys.modules.pop("services.llm_service", None)
 
     def test_aliyun_fast_mode_disables_thinking(self):
-        fake_dispatcher = types.ModuleType("services.tool_dispatcher")
+        fake_dispatcher = _complete_fake_dispatcher(
+            types.ModuleType("services.tool_dispatcher")
+        )
         fake_dispatcher.get_tools = lambda: []
 
         class FakeAccumulator:
@@ -128,7 +150,9 @@ class LLMServiceVisionTests(unittest.TestCase):
         sys.modules.pop("services.llm_service", None)
 
     def test_zhipu_toggle_model_fast_mode_disables_thinking(self):
-        fake_dispatcher = types.ModuleType("services.tool_dispatcher")
+        fake_dispatcher = _complete_fake_dispatcher(
+            types.ModuleType("services.tool_dispatcher")
+        )
         fake_dispatcher.get_tools = lambda: []
 
         class FakeAccumulator:
@@ -209,7 +233,9 @@ class LLMServiceVisionTests(unittest.TestCase):
         self.assertEqual(options, {})
 
     def test_retry_can_raise_token_budget_without_changing_config(self):
-        fake_dispatcher = types.ModuleType("services.tool_dispatcher")
+        fake_dispatcher = _complete_fake_dispatcher(
+            types.ModuleType("services.tool_dispatcher")
+        )
         fake_dispatcher.get_tools = lambda: []
 
         class FakeAccumulator:
@@ -253,6 +279,10 @@ class CameraIntentTests(unittest.TestCase):
         self.assertTrue(is_camera_photo_request("take a picture"))
         self.assertFalse(is_camera_inspection_request("瓦力看着我"))
         self.assertFalse(is_camera_inspection_request("跟着我"))
+        self.assertFalse(is_camera_photo_request("别拍照"))
+        self.assertFalse(is_camera_photo_request("不需要帮我拍张照"))
+        self.assertFalse(is_camera_inspection_request("不要看一下前面"))
+        self.assertFalse(is_camera_inspection_request("看看前面就不用了"))
 
 
 class CameraFrameProviderTests(unittest.TestCase):
