@@ -448,6 +448,26 @@ def validate_config(config: Any) -> list[str]:
     for key in ("serial", "tracking"):
         _check_bool(launch, key, f"launch.{key}", errors)
 
+    mcp = config.get("mcp")
+    if mcp is not None:
+        if not isinstance(mcp, dict):
+            errors.append("mcp 必须是配置对象")
+        else:
+            _check_bool(mcp, "enabled", "mcp.enabled", errors)
+            _check_string(mcp, "host", "mcp.host", errors)
+            _check_number(mcp, "port", "mcp.port", errors, 1, 65535, integer=True)
+            _check_string(mcp, "path", "mcp.path", errors)
+            if isinstance(mcp.get("path"), str) and not mcp["path"].startswith("/"):
+                errors.append("mcp.path 必须以 / 开头")
+            _check_number(
+                mcp,
+                "command_timeout_sec",
+                "mcp.command_timeout_sec",
+                errors,
+                1,
+                120,
+            )
+
     hardware = config.get("hardware")
     if hardware is not None:
         if not isinstance(hardware, dict):

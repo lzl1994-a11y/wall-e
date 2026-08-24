@@ -182,6 +182,8 @@ def _valid_arguments(name, arguments):
             and isinstance(question, str)
             and len(question) <= 500
         )
+    elif name == "stop_all":
+        valid = not keys
     else:
         return False, "unknown_tool"
     return (True, "") if valid else (False, "invalid_arguments")
@@ -320,3 +322,14 @@ def validate_action_call(user_text, name, arguments):
     if not _matches_action_intent(compact, name, arguments):
         return False, "intent_mismatch"
     return True, ""
+
+
+def validate_action_arguments(name, arguments):
+    """Validate an already-authorized structured action request.
+
+    This is intentionally narrower than :func:`validate_action_call`: an MCP
+    server must not trust client-supplied natural-language evidence. Identity,
+    approval, and rate limits belong at the transport/gateway boundary, while
+    this function enforces the robot's argument allowlist and physical limits.
+    """
+    return _valid_arguments(name, arguments)

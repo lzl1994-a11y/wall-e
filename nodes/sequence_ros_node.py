@@ -4,7 +4,8 @@
 import time
 import json
 import yaml
-from services.action_command import parse_action_cmd
+from services.action_command import parse_action_request
+from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -50,12 +51,15 @@ class SequenceRosNode(Node):
         self._sequence_start_time = 0.0
         self._active_motor_cmd = None
         self._motor_stop_at = 0.0
+        self._motor_request = None
+        self._sequence_request = None
         self._auto_reset_timer = None
 
         # 3. ROS 接口
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
         self.motor_pub = self.create_publisher(String, MOTOR_AUTONOMY_TOPIC, 10)
         self.tft_pub   = self.create_publisher(String, '/tft_cmd', 10)
+        self.action_status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 10)
 
         # 4. 核心 50Hz 插值定时器
         self.create_timer(0.02, self._tick)
@@ -92,12 +96,25 @@ class SequenceRosNode(Node):
         return float(cfg.get('init', fallback))
 
     def _on_action_cmd(self, msg):
-        decoded = parse_action_cmd(msg.data)
-        if decoded is None:
+        request = parse_action_request(msg.data)
+        if request is None:
             return
-        tool, args = decoded
+        tool = request["name"]
+        args = request["arguments"]
+        request_id = request.get("request_id")
+
+        # Tracking and camera tools have separate owners. Ignoring them here
+        # also prevents an unrelated tool call from interrupting a sequence.
+        if tool not in {
+            "express_emotion", "move_chassis", "manual_servo",
+            "play_sequence", "stop_all",
+        }:
+            return
 
         # ===== 外部打断机制核心：清空队列，并清零步长 =====
+        self._interrupt_sequence("superseded_by_new_command")
+        if self._active_motor_cmd is not None:
+            self._stop_motors(status="interrupted", detail="superseded_by_new_command")
         self._current_sequence = [] # 打断成组动作
         for name in self._steps:
             self._steps[name] = 0.0 # 清零步长，平滑运动瞬间停止
@@ -108,21 +125,31 @@ class SequenceRosNode(Node):
 
         # ===== 指令分发 =====
         if tool == "express_emotion":
+            self._publish_request_status(request, "accepted")
             self._dispatch_action({"type": "express_emotion", "emotion": args.get("emotion", "happy")})
+            self._publish_request_status(request, "completed")
             
         elif tool == "move_chassis":
+            direction = args.get("direction", "")
+            if direction not in self.MOTION_TO_MOTOR:
+                self._publish_request_status(request, "rejected", "invalid_direction")
+                return
+            self._motor_request = request if request_id else None
+            self._publish_request_status(request, "accepted")
             self._dispatch_action({
                 "type": "motor", 
-                "direction": args.get("direction", "forward"), 
+                "direction": direction,
                 "duration": float(args.get("duration", 1.0))
             })
             
         elif tool == "manual_servo":
+            self._publish_request_status(request, "accepted")
             self._dispatch_action({
                 "type": "manual_servo",
                 "targets": args.get("targets", {}),
                 "step_size": args.get("step_size", 30.0)
             })
+            self._publish_request_status(request, "completed")
             
 
         elif tool == "play_sequence":
@@ -135,9 +162,34 @@ class SequenceRosNode(Node):
                 flattened_frames.sort(key=lambda x: x['time'])
                 self._current_sequence = flattened_frames
                 self._sequence_start_time = time.time()
+                self._sequence_request = request if request_id else None
+                self._publish_request_status(request, "accepted")
                 self.get_logger().info(f"[Sequence] Playing sequence: {seq_name} ({len(flattened_frames)} frames)")
             else:
                 self.get_logger().warn(f"[Sequence] Sequence '{seq_name}' not found or empty")
+                self._publish_request_status(request, "rejected", "unknown_or_empty_sequence")
+
+        elif tool == "stop_all":
+            self._stop_motors(status="interrupted", detail="stop_all")
+            self._publish_request_status(request, "completed")
+
+    def _publish_request_status(self, request, status, detail=""):
+        request_id = request.get("request_id") if isinstance(request, dict) else None
+        if not request_id:
+            return
+        self.action_status_pub.publish(String(data=build_action_status(
+            request_id,
+            request.get("name", "unknown"),
+            status,
+            source="sequence_ros_node",
+            detail=detail,
+        )))
+
+    def _interrupt_sequence(self, detail):
+        request = self._sequence_request
+        self._sequence_request = None
+        if request is not None:
+            self._publish_request_status(request, "interrupted", detail)
 
     def _flatten_sequence(self, seq_name, offset_time=0.0, depth=0):
         """递归解析序列，将其扁平化为一维时间轴"""
@@ -246,12 +298,16 @@ class SequenceRosNode(Node):
                         self._targets[s_name] = target_pwm
                         self._steps[s_name] = step_size
 
-    def _stop_motors(self):
+    def _stop_motors(self, status="completed", detail=""):
         msg = String()
         msg.data = json.dumps(STOP_COMMAND, ensure_ascii=False)
         self.motor_pub.publish(msg)
         self._active_motor_cmd = None
         self._motor_stop_at = 0.0
+        request = self._motor_request
+        self._motor_request = None
+        if request is not None:
+            self._publish_request_status(request, status, detail)
 
     def _publish_active_motor(self):
         if self._active_motor_cmd is None:
@@ -381,6 +437,20 @@ class SequenceRosNode(Node):
             msg = String()
             msg.data = json.dumps({"name": name, "pwm": int(self._virtual_state[name])})
             self.servo_pub.publish(msg)
+
+        if (
+            self._sequence_request is not None
+            and not self._current_sequence
+            and self._active_motor_cmd is None
+            and all(
+                self._steps.get(name, 0.0) <= 0.0
+                or self._virtual_state.get(name) == self._targets.get(name)
+                for name in self._virtual_state
+            )
+        ):
+            request = self._sequence_request
+            self._sequence_request = None
+            self._publish_request_status(request, "completed")
 
 def main(args=None):
     rclpy.init(args=args)

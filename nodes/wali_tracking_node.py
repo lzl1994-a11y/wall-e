@@ -15,6 +15,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String, Int32
+from services.action_command import parse_action_request
+from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.motion_arbiter import MOTOR_TRACKING_TOPIC
 
 from services.vision_pipeline_protocol import (
@@ -121,6 +123,7 @@ class WaliTrackingNode(Node):
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
 
         self._action_pub = self.create_publisher(String, '/action_cmd', 10)
+        self._action_status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 10)
         self._motor_pub = self.create_publisher(String, MOTOR_TRACKING_TOPIC, 10)
         pipeline_qos = QoSProfile(depth=1)
         pipeline_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -434,6 +437,7 @@ class WaliTrackingNode(Node):
             self._publish_camera_lease("acquire")
             self._last_camera_renew = now
             self.get_logger().info(f"Entered tracking mode: {mode} (requested: {mode_key})")
+            return True
         elif mode == self.MODE_IDLE:
             self.mode = self.MODE_IDLE
             self._search_active = False
@@ -443,37 +447,56 @@ class WaliTrackingNode(Node):
             self._set_vision_pipeline_enabled(False)
             self._publish_camera_lease("release")
             self.get_logger().info("Tracking mode: IDLE")
+            return True
         else:
             self.get_logger().warn(f"Unknown tracking mode: {requested_mode}")
+            return False
+
+    def _publish_action_status(self, request, status, detail=""):
+        request_id = request.get("request_id") if isinstance(request, dict) else None
+        if not request_id:
+            return
+        self._action_status_pub.publish(String(data=build_action_status(
+            request_id,
+            request.get("name", "unknown"),
+            status,
+            source="wali_tracking_node",
+            detail=detail,
+        )))
 
     # ===================================================================
     # 模式切换监听
     # ===================================================================
     def _on_action_cmd(self, msg):
         self.get_logger().info(f"[TrackingNode] Received action_cmd: {msg.data}")
-        try:
-            payload = json.loads(msg.data)
-        except Exception as e: 
-            self.get_logger().error(f"[TrackingNode] Failed to parse JSON: {e}")
+        request = parse_action_request(msg.data)
+        if request is None:
+            self.get_logger().error("[TrackingNode] Failed to parse action request")
             return
-
-        name = payload.get("name", "")
-        args_str = payload.get("arguments", "{}")
-        try:
-            args = json.loads(args_str) if isinstance(args_str, str) else args_str
-        except Exception as e: 
-            self.get_logger().error(f"[TrackingNode] Failed to parse arguments: {e}")
-            args = {}
+        name = request["name"]
+        args = request["arguments"]
 
         self.get_logger().info(f"[TrackingNode] Action name: '{name}', args: {args}")
 
         if name == "set_tracking_mode":
-            self._set_tracking_mode(args.get("mode", ""))
+            self._publish_action_status(request, "accepted")
+            ok = self._set_tracking_mode(args.get("mode", ""))
+            self._publish_action_status(
+                request,
+                "completed" if ok else "rejected",
+                "" if ok else "invalid_tracking_mode",
+            )
         elif name == "set_vision_gate":
             enabled = args.get("enabled", False)
             if isinstance(enabled, str):
                 enabled = enabled.strip().lower() in ("1", "true", "yes", "on")
-            self._set_tracking_mode(self.MODE_BODY_FOLLOW if enabled else self.MODE_IDLE)
+            self._publish_action_status(request, "accepted")
+            ok = self._set_tracking_mode(self.MODE_BODY_FOLLOW if enabled else self.MODE_IDLE)
+            self._publish_action_status(
+                request,
+                "completed" if ok else "rejected",
+                "" if ok else "vision_gate_update_failed",
+            )
 
 
 def main(args=None):

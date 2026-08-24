@@ -17,6 +17,55 @@
 4. **控制板**：基于 ESP32/Arduino，通过串口与旭日派通信，挂载 PCA9685 (舵机) 和 TB6612 (电机驱动)。
 5. **手柄**：标准 USB 无线游戏手柄。
 
+## 🔌 外部 Agent MCP 接入（可选）
+
+项目保留原有的实时语音 `Function Calling → ROS` 链路，同时提供独立的
+FastMCP 2.x Streamable HTTP 网关。网关默认关闭，不会增加普通对话的请求次数或
+延迟；启用后，Codex 等 MCP Client 可以发现并调用经过白名单限制的机器人能力。
+
+当前外部工具包括：短时底盘移动、预设动作、情绪表达、视觉跟踪开关以及停止动作。
+网关不会暴露任意 ROS Topic、Service 或 Shell。所有调用都带 `request_id`，并通过
+`/action_status` 返回 `accepted`、`completed`、`rejected` 或 `interrupted`，避免把
+“消息已发布”误报为“机器人已执行完成”。
+
+局域网接入示例：
+
+```yaml
+# core/config.yaml
+mcp:
+  enabled: true
+  host: 0.0.0.0
+  port: 5555
+  path: /mcp
+  command_timeout_sec: 12.0
+```
+
+令牌只通过环境变量提供，不要写入 YAML：
+
+```bash
+export WALI_MCP_TOKEN='replace-with-a-random-token-at-least-32-chars'
+python3 launch_nodes.py
+```
+
+也可以保持 `enabled: false`，仅在本次启动时打开：
+
+```bash
+export WALI_MCP_TOKEN='replace-with-a-random-token-at-least-32-chars'
+python3 launch_nodes.py --mcp
+```
+
+客户端配置 Streamable HTTP URL：
+
+```text
+http://<机器人局域网IP>:5555/mcp
+Authorization: Bearer <WALI_MCP_TOKEN>
+```
+
+局域网 HTTP Bearer Token 只适合受信网络。跨公网部署时应使用 HTTPS、VPN 或反向代理
+并采用正式 OAuth/JWT 验证，禁止直接暴露机器人端口。
+`WALI_MCP_TOKEN` 必须是 32～512 位、无空白字符的 ASCII 随机令牌，可用
+`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` 生成。
+
 ## 🚀 安装与配置
 
 ### 1. 旭日派 AI 模型安装

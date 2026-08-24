@@ -19,6 +19,8 @@ def launcher_args(
     no_hardware=False,
     tracking=False,
     keyboard_stt=False,
+    mcp=False,
+    no_mcp=False,
 ):
     return Namespace(
         voice_chat=False,
@@ -29,6 +31,8 @@ def launcher_args(
         no_doa=False,
         no_hardware=no_hardware,
         no_web=no_web,
+        mcp=mcp,
+        no_mcp=no_mcp,
     )
 
 
@@ -123,6 +127,37 @@ class LaunchNodesTests(unittest.TestCase):
         entries = launch_nodes.build_node_list(launcher_args(no_web=True))
 
         self.assertNotIn("config_web", [entry.name for entry in entries])
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "asr_llm"},
+            "launch": {"serial": True, "tracking": False},
+            "mcp": {"enabled": False},
+        },
+    )
+    def test_mcp_flag_adds_gateway_after_action_owner(self, _load_config):
+        names = [
+            entry.name
+            for entry in launch_nodes.build_node_list(launcher_args(mcp=True))
+        ]
+        self.assertIn("mcp_gateway", names)
+        self.assertLess(names.index("action"), names.index("mcp_gateway"))
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "asr_llm"},
+            "launch": {"serial": True, "tracking": False},
+            "mcp": {"enabled": True},
+        },
+    )
+    def test_no_mcp_flag_overrides_enabled_config(self, _load_config):
+        names = [
+            entry.name
+            for entry in launch_nodes.build_node_list(launcher_args(no_mcp=True))
+        ]
+        self.assertNotIn("mcp_gateway", names)
 
     @patch("launch_nodes.subprocess.Popen")
     def test_child_process_can_import_project_packages(self, popen):

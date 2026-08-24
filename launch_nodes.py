@@ -51,6 +51,9 @@ def build_node_list(args):
     config = load_config()
     launch_cfg = config.get("launch", {})
     hardware_cfg = config.get("hardware", {})
+    mcp_cfg = config.get("mcp", {})
+    if not isinstance(mcp_cfg, dict):
+        mcp_cfg = {}
     if not isinstance(hardware_cfg, dict):
         hardware_cfg = {}
     hardware_backend = hardware_cfg.get("backend", "serial_mcu")
@@ -83,6 +86,15 @@ def build_node_list(args):
             nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
         nodes.append(NodeEntry("motion_arbiter", ROOT / "nodes" / "motion_arbiter_node.py"))
         nodes.append(NodeEntry("action", ROOT / "nodes" / "sequence_ros_node.py"))
+        mcp_enabled = (
+            getattr(args, "mcp", False)
+            or (
+                mcp_cfg.get("enabled", False)
+                and not getattr(args, "no_mcp", False)
+            )
+        )
+        if mcp_enabled:
+            nodes.append(NodeEntry("mcp_gateway", ROOT / "nodes" / "wali_mcp_server.py"))
         nodes.append(NodeEntry("joy_control", ROOT / "nodes" / "joy_control_node.py"))
         if not args.no_hardware:
             if hardware_backend == "ubuntu_i2c":
@@ -244,6 +256,17 @@ def main():
         "--no-web",
         action="store_true",
         help="Do not start the config web service.",
+    )
+    mcp_group = parser.add_mutually_exclusive_group()
+    mcp_group.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Start the authenticated Streamable HTTP MCP gateway.",
+    )
+    mcp_group.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Do not start MCP even when mcp.enabled is true.",
     )
     args = parser.parse_args()
 

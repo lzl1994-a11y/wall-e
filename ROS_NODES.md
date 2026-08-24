@@ -146,6 +146,8 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | `services/camera_capture_protocol.py` | 定义唯一摄像头源话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 启动命令。 |
 | `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
 | `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
+| `nodes/wali_mcp_server.py` | 可选的外部 Agent 网关；提供带鉴权的 Streamable HTTP MCP，将白名单工具转换为带回执的 `/action_cmd`。默认关闭。 |
+| `services/mcp_gateway.py` | 外部 MCP 的配置、安全启动检查和工具白名单；不暴露任意 ROS Topic、Service 或 Shell。 |
 | `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
 | `services/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |
 | `services/serial_broker.py` | 串口设备挂载/管理相关逻辑。 |
