@@ -55,13 +55,16 @@ def is_camera_inspection_request(user_prompt: str) -> bool:
     """快速识别常见的一次性视觉问题，持续注视/跟随不在此范围。"""
     text = (user_prompt or "").strip().lower()
     if not text or _is_negated_camera_request(text) or is_camera_photo_request(text) or any(word in text for word in (
-        "看着我", "看我", "盯着我", "跟着我", "跟随我", "look at me", "follow me"
+        "看着我", "看住我", "盯着我", "注视我", "跟着我", "跟随我",
+        "look at me", "follow me",
     )):
         return False
     markers = (
         "看一下", "看一看", "帮我看看", "你看看", "请看看", "看下", "看一眼",
         "看什么", "是什么东西", "前面有什么", "面前有什么", "眼前有什么",
         "看到了什么", "看见了什么", "识别一下", "辨认一下", "认一下",
+        "瞅瞅", "瞧瞧", "手里拿", "手上拿", "拿了什么", "拿的是什么",
+        "这是啥", "是啥东西", "有啥东西", "你认识吗", "你认得吗",
         "what is this", "what do you see",
     )
     return any(marker in text for marker in markers)

@@ -1,8 +1,10 @@
-"""Fail-closed validation for LLM-proposed robot actions.
+"""Safety validation for LLM-proposed robot actions.
 
-The LLM remains the semantic router.  This module does not choose an action;
-it only accepts a proposal when its arguments are valid and the user's own
-words contain matching command evidence before anything reaches ROS hardware.
+The LLM is the positive semantic router.  This module deliberately does not
+try to recognize every valid Chinese command a second time.  It validates the
+tool shape and rejects only high-confidence unsafe contexts (negation,
+quotation, third-party narration) or arguments that explicitly contradict the
+user's words.
 """
 
 from __future__ import annotations
@@ -49,14 +51,14 @@ _CANCEL_EXPLICIT_STOP_RE = re.compile(
 _NEGATED_ACTION_RE = re.compile(
     r"(?:别再?|不要再?|不准|禁止|停止|停下|不需要|不用|不想).*(?:"
     r"拍(?:张|一张|个)?照|拍摄|"
-    r"观察|识别|打开|开启|关闭|关掉|走|移动|前进|后退|左转|右转|转弯|"
+    r"观察|识别|打开|开启|关闭|关掉|走|挪|移动|前进|后退|左转|右转|转弯|"
     r"转圈|转头|歪头|低头|点头|抬手|举手|放下|挥手|招手|跳舞|表达|"
     r"做动作|跟着|跟随|看着|盯着|注视|回正|看|动)"
 )
 
 _ACTION_WORDS = (
-    r"拍照|拍摄|观察|识别|走|移动|前进|后退|左转|右转|转弯|转圈|转头|歪头|低头|"
-    r"抬手|举手|挥手|招手|跳舞|点头|跟着|跟随|看着|盯着|注视|开心|"
+    r"拍照|拍摄|观察|识别|走|挪|移动|前进|后退|左转|右转|转弯|转圈|转头|歪头|低头|"
+    r"抬手|举手|挥手|招手|跳舞|点头|跟着|跟随|陪我走|看着|盯着|盯住|注视|开心|"
     r"难过|生气|惊讶"
 )
 _THIRD_PARTY_ACTION_RE = re.compile(
@@ -116,8 +118,8 @@ _SEQUENCE_PATTERNS = {
 }
 
 _MOVE_PATTERNS = {
-    "forward": r"(?:向|往)前(?:走|移动|开|进)|前进",
-    "backward": r"后退|倒退|(?:向|往)后(?:走|移动|退)",
+    "forward": r"(?:向|往|朝)前(?:走|挪|移动|开|进)|前进",
+    "backward": r"后退|倒退|(?:向|往|朝)后(?:走|挪|移动|退)",
     "spin": r"(?:原地)?(?:转|旋转)(?:一|个)?圈|转圈",
     "left": r"左转弯|(?:向|往)左拐|底盘向左|身体向左转|(?:向|往)左(?:走|移动)|"
             r"(?:向)?左转(?:一下)?(?:吧|啊|呀|[。！!]|$)",
@@ -126,8 +128,8 @@ _MOVE_PATTERNS = {
 }
 
 _TRACKING_PATTERNS = {
-    "follow_me": r"跟着我|跟随我|跟我走|追踪我",
-    "look_at_me": r"看着我|看住我|盯着我|注视我|看我",
+    "follow_me": r"跟着我|跟随我|跟我走|跟我来|陪我走|追踪我",
+    "look_at_me": r"看着我|看住我|盯着我|盯住我|注视我|看我",
 }
 
 
@@ -191,6 +193,8 @@ def _valid_arguments(name, arguments):
 
 def _obvious_non_command(user_text):
     compact = "".join(str(user_text or "").split())
+    if re.fullmatch(r"(?:你好|您好|嗨|哈喽|早上好|中午好|晚上好)[！!。.]?", compact):
+        return True
     if re.search(r"(?:没有|没|并未)(?:让|叫|要求|命令)", compact):
         return True
     if re.search(r"(?:故事|什么意思|什么是|怎么读|如何理解|为什么)", compact):
@@ -223,22 +227,6 @@ def _requested_duration(compact):
     return {"一": 1, "二": 2, "两": 2, "三": 3}[token]
 
 
-def _matches_emotion_intent(compact, emotion):
-    pattern = _EMOTION_PATTERNS.get(emotion)
-    if not pattern or not re.search(pattern, compact):
-        return False
-    return bool(
-        re.search(
-            r"(?:做|摆|来|表现|表达|装|变|给我|请).*(?:" + pattern + r")",
-            compact,
-        )
-        or re.search(
-            r"(?:" + pattern + r").*(?:一点|一下|表情|样子|动作)",
-            compact,
-        )
-    )
-
-
 def _matches_sequence_intent(compact, sequence_name):
     pattern = _SEQUENCE_PATTERNS.get(sequence_name)
     if not pattern:
@@ -252,22 +240,39 @@ def _matches_sequence_intent(compact, sequence_name):
     return bool(re.search(pattern, compact))
 
 
-def _matches_action_intent(compact, name, arguments):
-    if name == "express_emotion":
-        return _matches_emotion_intent(compact, arguments["emotion"])
-    if name == "play_sequence":
-        return _matches_sequence_intent(compact, arguments["sequence_name"])
+def _has_explicit_argument_conflict(compact, name, arguments):
+    """Return True only when text clearly contradicts proposed arguments.
+
+    Absence of a hard-coded synonym is not a conflict: the model has already
+    performed the semantic selection.  Keeping this check conflict-based makes
+    colloquial and mildly corrupted ASR text usable without giving up concrete
+    direction, duration, mode, or polarity checks.
+    """
     if name == "move_chassis":
-        if not re.search(_MOVE_PATTERNS[arguments["direction"]], compact):
-            return False
+        mentioned = {
+            direction
+            for direction, pattern in _MOVE_PATTERNS.items()
+            if re.search(pattern, compact)
+        }
+        if mentioned and arguments["direction"] not in mentioned:
+            return True
         duration = _requested_duration(compact)
         proposed_duration = arguments.get("duration", 1)
-        return proposed_duration == 1 if duration is None else duration == proposed_duration
+        return proposed_duration != 1 if duration is None else duration != proposed_duration
+    if name == "play_sequence":
+        mentioned = {
+            sequence_name
+            for sequence_name in _SEQUENCE_PATTERNS
+            if _matches_sequence_intent(compact, sequence_name)
+        }
+        return bool(mentioned and arguments["sequence_name"] not in mentioned)
     if name == "set_tracking_mode":
-        mode = arguments["mode"]
-        return mode in _TRACKING_PATTERNS and bool(
-            re.search(_TRACKING_PATTERNS[mode], compact)
-        )
+        mentioned = {
+            mode
+            for mode, pattern in _TRACKING_PATTERNS.items()
+            if re.search(pattern, compact)
+        }
+        return bool(mentioned and arguments["mode"] not in mentioned)
     if name == "set_vision_gate":
         opening = (
             r"(?:打开|开启|启动|启用).*(?:视觉|跟踪)|"
@@ -277,14 +282,19 @@ def _matches_action_intent(compact, name, arguments):
             r"(?:关闭|关掉|停止|退出).*(?:视觉|跟踪)|"
             r"(?:视觉|跟踪).*(?:关闭|关掉|停止|退出)"
         )
-        return bool(re.search(opening if arguments["enabled"] else closing, compact))
-    if name == "inspect_camera":
-        return bool(re.search(
-            r"拍(?:张|一张|个)?照|拍摄|照相|观察|识别|认一下|认出|"
-            r"看看|看一下|看下|眼前|面前|前面.*(?:什么|有啥|是什么)|"
-            r"这(?:个)?是(?:什么|谁)|摄像头.*(?:看|拍)",
-            compact,
-        ))
+        explicitly_open = bool(re.search(opening, compact))
+        explicitly_closed = bool(re.search(closing, compact))
+        return (
+            (explicitly_open and arguments["enabled"] is False)
+            or (explicitly_closed and arguments["enabled"] is True)
+        )
+    if name == "express_emotion":
+        mentioned = {
+            emotion
+            for emotion, pattern in _EMOTION_PATTERNS.items()
+            if re.search(pattern, compact)
+        }
+        return bool(mentioned and arguments["emotion"] not in mentioned)
     return False
 
 
@@ -315,12 +325,14 @@ def validate_action_call(user_text, name, arguments):
         if name == "set_vision_gate" and arguments.get("enabled") is False:
             return True, ""
         return False, "stop_command_mismatch"
-    if _POSTPOSED_NEGATION_RE.search(compact):
+    # “盯住我别乱看” negates wandering, not the requested tracking action.
+    negation_text = compact.replace("别乱看", "").replace("不要乱看", "")
+    if _POSTPOSED_NEGATION_RE.search(negation_text):
         return False, "negated_action"
-    if _NEGATED_ACTION_RE.search(compact):
+    if _NEGATED_ACTION_RE.search(negation_text):
         return False, "negated_action"
-    if not _matches_action_intent(compact, name, arguments):
-        return False, "intent_mismatch"
+    if _has_explicit_argument_conflict(compact, name, arguments):
+        return False, "argument_conflict"
     return True, ""
 
 

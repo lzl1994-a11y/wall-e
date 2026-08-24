@@ -33,6 +33,27 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         self.assertEqual(service._validated_history(), [])
         self.assertEqual(list(service._chat_history), [])
 
+    def test_validated_history_removes_image_blocks_from_storage(self):
+        service = self._service()
+        service._chat_history.extend([
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "刚才看到了什么"},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/jpeg;base64,old-image",
+                    }},
+                ],
+            },
+            {"role": "assistant", "content": "一个杯子。"},
+        ])
+
+        history = service._validated_history()
+
+        self.assertEqual(history[0]["content"], "刚才看到了什么")
+        self.assertNotIn("old-image", repr(history))
+        self.assertNotIn("old-image", repr(list(service._chat_history)))
+
     def test_direct_answer_extracts_transcript_and_response(self):
         heard, response = VoiceChatService._direct_answer([{
             "name": "direct_answer",

@@ -515,6 +515,34 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertTrue(logger.warning.called)
         sys.modules.pop("nodes.llm_ros_node", None)
 
+    def test_rejected_camera_tool_clarifies_without_vision_hallucination_retry(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "tool_call", "name": "inspect_camera", "arguments": '{"question":"你能看见吗？"}'},
+            {"type": "done", "finish_reason": "tool_calls"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_voice_task("camera-question", "你能看见吗？")
+
+        self.assertEqual(node.llm.chat_stream.call_count, 1)
+        self.assertEqual(
+            node.tts_publisher.publish.call_args_list[0].args[0].data,
+            "你是想让我打开摄像头看一下吗？",
+        )
+        node.action_publisher.publish.assert_not_called()
+        sys.modules.pop("nodes.llm_ros_node", None)
+
     def test_action_only_turn_uses_local_ack_without_second_llm_request(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)
@@ -565,6 +593,28 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertLessEqual(len(selected), node_class.CHAT_HISTORY_MESSAGES)
         self.assertEqual(selected[0]["role"], "user")
         self.assertEqual(selected[-1]["content"], "a9")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_request_history_keeps_text_but_drops_image_blocks(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.chat_history = deque([
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "上一轮看到了什么"},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/jpeg;base64,old-image",
+                    }},
+                ],
+            },
+            {"role": "assistant", "content": "一个杯子。"},
+        ], maxlen=40)
+
+        selected = node._history_for_request()
+
+        self.assertEqual(selected[0]["content"], "上一轮看到了什么")
+        self.assertNotIn("old-image", repr(selected))
         sys.modules.pop("nodes.llm_ros_node", None)
 
 

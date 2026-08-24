@@ -495,18 +495,39 @@ class VoiceChatService:
 
     def _validated_history(self):
         history = list(self._chat_history)
+        cleaned = []
         expected = "user"
         for message in history:
             if not isinstance(message, dict) or message.get("role") != expected:
                 print("[VoiceChat] 检测到不成对的旧对话历史，已清空")
                 self._chat_history.clear()
                 return []
+            content = message.get("content")
+            if isinstance(content, list):
+                # Keep only transcript text.  Images/audio are current-turn
+                # inputs and must never survive into conversational context.
+                content = "\n".join(
+                    block["text"].strip()
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                    and block["text"].strip()
+                )
+            if not isinstance(content, str):
+                print("[VoiceChat] 检测到非文本旧对话历史，已清空")
+                self._chat_history.clear()
+                return []
+            cleaned.append({"role": message["role"], "content": content})
             expected = "assistant" if expected == "user" else "user"
         if expected != "user":
             print("[VoiceChat] 检测到未完成的旧对话回合，已清空")
             self._chat_history.clear()
             return []
-        return history
+        if cleaned != history:
+            self._chat_history.clear()
+            self._chat_history.extend(cleaned)
+        return cleaned
 
     def _append_history_turn(self, heard_text, response_text):
         self._validated_history()

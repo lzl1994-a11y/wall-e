@@ -201,24 +201,24 @@ class ActionIntentGuardTests(unittest.TestCase):
             {"enabled": False},
         )
 
-    def test_plain_chat_third_party_and_mismatched_actions_fail_closed(self):
+    def test_plain_chat_third_party_and_explicit_conflicts_fail_closed(self):
         self.assertRejected(
             "你好。",
             "move_chassis",
             {"direction": "forward", "duration": 3},
-            "intent_mismatch",
+            "non_command_context",
         )
         self.assertRejected(
             "后退。",
             "move_chassis",
             {"direction": "forward", "duration": 1},
-            "intent_mismatch",
+            "argument_conflict",
         )
         self.assertRejected(
             "跟着我。",
             "set_tracking_mode",
             {"mode": "idle"},
-            "intent_mismatch",
+            "argument_conflict",
         )
         self.assertRejected(
             "他正在向前走。",
@@ -267,13 +267,19 @@ class ActionIntentGuardTests(unittest.TestCase):
             "向前走两秒。",
             "move_chassis",
             {"direction": "forward", "duration": 1},
-            "intent_mismatch",
+            "argument_conflict",
         )
         self.assertRejected(
             "向前走。",
             "move_chassis",
             {"direction": "forward", "duration": 3},
-            "intent_mismatch",
+            "argument_conflict",
+        )
+        self.assertRejected(
+            "往前挪一点。",
+            "move_chassis",
+            {"direction": "backward", "duration": 1},
+            "argument_conflict",
         )
         self.assertAllowed(
             "看着我。",
@@ -284,20 +290,40 @@ class ActionIntentGuardTests(unittest.TestCase):
             "看着我。",
             "set_tracking_mode",
             {"mode": "follow_me"},
-            "intent_mismatch",
+            "argument_conflict",
         )
 
-    def test_visual_and_emotion_commands_require_matching_positive_evidence(self):
+    def test_model_is_positive_router_for_flexible_commands(self):
         self.assertAllowed(
             "看看你前面有什么。",
             "inspect_camera",
             {"question": "看看你前面有什么。"},
         )
-        self.assertRejected(
-            "今天天气怎么样？",
+        self.assertAllowed(
+            "你从看我手里拿的是什么？",
             "inspect_camera",
-            {"question": "今天天气怎么样？"},
-            "intent_mismatch",
+            {"question": "你从看我手里拿的是什么？"},
+        )
+        self.assertAllowed(
+            "往前挪一点。",
+            "move_chassis",
+            {"direction": "forward", "duration": 1},
+        )
+        self.assertAllowed(
+            "脑袋往左转转。",
+            "play_sequence",
+            {"sequence_name": "turn_head_left"},
+        )
+        self.assertAllowed(
+            "盯住我别乱看。",
+            "set_tracking_mode",
+            {"mode": "look_at_me"},
+        )
+        self.assertRejected(
+            "别往前挪。",
+            "move_chassis",
+            {"direction": "forward", "duration": 1},
+            "negated_action",
         )
         self.assertAllowed(
             "做个开心的表情。",

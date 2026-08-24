@@ -28,6 +28,34 @@ class StructuredAnswerUnavailableError(RuntimeError):
     """A structured-only request did not return the required direct_answer."""
 
 
+def _text_only_chat_history(chat_history):
+    """Copy history without carrying prior image/audio payloads forward.
+
+    A current image may still be attached explicitly by ``chat_stream`` below,
+    but data URLs from earlier turns never become model context or retained
+    history through this service boundary.
+    """
+    cleaned = []
+    for item in chat_history or []:
+        if not isinstance(item, dict):
+            continue
+        message = dict(item)
+        content = message.get("content")
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    continue
+                value = block.get("text")
+                if isinstance(value, str) and value.strip():
+                    text_parts.append(value.strip())
+            message["content"] = "\n".join(text_parts)
+        elif content is not None and not isinstance(content, str):
+            message["content"] = ""
+        cleaned.append(message)
+    return cleaned
+
+
 def _is_tool_calling_rejection(exc: Exception) -> bool:
     """Identify only explicit provider rejections of tools/function parameters."""
     status_code = getattr(exc, "status_code", None)
@@ -120,7 +148,7 @@ class LLMService:
             "role": "system",
             "content": system_content,
         }]
-        messages.extend(chat_history)
+        messages.extend(_text_only_chat_history(chat_history))
         if image_base64:
             messages.append({
                 "role": "user",

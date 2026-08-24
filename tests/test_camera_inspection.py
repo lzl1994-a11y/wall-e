@@ -53,6 +53,24 @@ class _FakeStructuredResponse:
 
 
 class LLMServiceVisionTests(unittest.TestCase):
+    def test_prior_image_blocks_are_removed_from_history_context(self):
+        from services.llm_service import _text_only_chat_history
+
+        history = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "上一轮的问题"},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/jpeg;base64,old-image",
+                }},
+            ],
+        }]
+
+        cleaned = _text_only_chat_history(history)
+
+        self.assertEqual(cleaned, [{"role": "user", "content": "上一轮的问题"}])
+        self.assertNotIn("old-image", repr(cleaned))
+
     def test_image_is_sent_as_openai_vision_content_without_answer_tool(self):
         fake_dispatcher = _complete_fake_dispatcher(
             types.ModuleType("services.tool_dispatcher")
@@ -274,6 +292,9 @@ class CameraIntentTests(unittest.TestCase):
 
         self.assertTrue(is_camera_inspection_request("瓦力你看一下这是个什么东西"))
         self.assertTrue(is_camera_inspection_request("你前面有什么"))
+        self.assertTrue(is_camera_inspection_request("你看我手里拿了什么？"))
+        self.assertTrue(is_camera_inspection_request("你从看我手里拿的是什么？"))
+        self.assertTrue(is_camera_inspection_request("瞅瞅我拿的是啥"))
         self.assertFalse(is_camera_inspection_request("帮我拍张照片"))
         self.assertTrue(is_camera_photo_request("帮我拍张照片"))
         self.assertTrue(is_camera_photo_request("take a picture"))
@@ -283,6 +304,7 @@ class CameraIntentTests(unittest.TestCase):
         self.assertFalse(is_camera_photo_request("不需要帮我拍张照"))
         self.assertFalse(is_camera_inspection_request("不要看一下前面"))
         self.assertFalse(is_camera_inspection_request("看看前面就不用了"))
+        self.assertFalse(is_camera_inspection_request("别看我手里的东西"))
 
 
 class CameraFrameProviderTests(unittest.TestCase):

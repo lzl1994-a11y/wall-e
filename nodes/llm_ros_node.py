@@ -244,6 +244,7 @@ class LLMBrainNode(Node):
         corrected_text = ''
         corrected_text_published = False
         actions = []
+        rejected_actions = []
         spoken_parts = []
 
         def publish_corrected(value):
@@ -313,6 +314,7 @@ class LLMBrainNode(Node):
                         action_arguments,
                     )
                     if not allowed:
+                        rejected_actions.append((action_name, rejection_reason))
                         self.get_logger().warning(
                             f'[{turn_id}] Rejected tool proposal: '
                             f'name={action_name} reason={rejection_reason}'
@@ -364,6 +366,8 @@ class LLMBrainNode(Node):
             clean_text = ''.join(spoken_parts).strip()
         if not clean_text and actions:
             clean_text = action_acknowledgement(actions)
+        if not clean_text and rejected_actions:
+            clean_text = self._rejected_action_reply(rejected_actions)
         if not clean_text:
             clean_text = self._retry_empty_answer(
                 turn_id,
@@ -558,10 +562,41 @@ class LLMBrainNode(Node):
         return history
 
     def _history_for_request(self):
-        history = list(self.chat_history)[-self.CHAT_HISTORY_MESSAGES:]
+        history = [
+            message
+            for item in list(self.chat_history)[-self.CHAT_HISTORY_MESSAGES:]
+            if (message := self._text_only_history_message(item)) is not None
+        ]
         while history and history[0].get('role') != 'user':
             history.pop(0)
         return history
+
+    @staticmethod
+    def _text_only_history_message(item):
+        """Copy one history item while permanently dropping image blocks."""
+        if not isinstance(item, dict):
+            return None
+        message = dict(item)
+        content = message.get('content')
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if not isinstance(block, dict) or block.get('type') != 'text':
+                    continue
+                value = block.get('text')
+                if isinstance(value, str) and value.strip():
+                    text_parts.append(value.strip())
+            message['content'] = '\n'.join(text_parts)
+        elif content is not None and not isinstance(content, str):
+            message['content'] = ''
+        return message
+
+    @staticmethod
+    def _rejected_action_reply(rejected_actions):
+        names = {name for name, _reason in rejected_actions}
+        if 'inspect_camera' in names:
+            return '你是想让我打开摄像头看一下吗？'
+        return '我不太确定你是不是要我执行这个动作，可以再明确说一下吗？'
 
     @staticmethod
     def _clean_visual_answer(text):
