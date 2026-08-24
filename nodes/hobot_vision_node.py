@@ -141,16 +141,17 @@ def _ensure_padder_binary(root_dir: Path, env: dict[str, str]) -> Path:
     return binary
 
 
-def _start_pipeline():
+def _start_pipeline(padder_bin: Path | None = None):
     env = os.environ.copy()
     node_dir = Path(__file__).resolve().parent
     root_dir = node_dir.parent
     ros_python = os.environ.get("WALI_ROS_PYTHON", "/usr/bin/python_backup")
-    try:
-        padder_bin = _ensure_padder_binary(root_dir, env)
-    except RuntimeError as exc:
-        print(f"[hobot_vision_node] Error: {exc}")
-        return None
+    if padder_bin is None:
+        try:
+            padder_bin = _ensure_padder_binary(root_dir, env)
+        except RuntimeError as exc:
+            print(f"[hobot_vision_node] Error: {exc}")
+            return None
     scaler_script = shlex.quote(str(node_dir / "ai_msg_scaler_node.py"))
     print("[hobot_vision_node] Cleaning up any zombie vision processes...")
     cleanup_old_processes()
@@ -201,6 +202,15 @@ def _stop_pipeline(proc):
 def main():
     stopping = False
     proc = None
+    root_dir = Path(__file__).resolve().parent.parent
+    try:
+        # Build before subscribing to the transient tracking command. If a
+        # command arrives during compilation, DDS retains it and delivers it
+        # as soon as this control node comes online.
+        padder_bin = _ensure_padder_binary(root_dir, os.environ.copy())
+    except RuntimeError as exc:
+        print(f"[hobot_vision_node] Error: {exc}")
+        return
     rclpy.init()
     control = VisionPipelineControl()
     last_health_log = time.monotonic()
@@ -248,7 +258,7 @@ def main():
                 proc = None
 
             if proc is None:
-                proc = _start_pipeline()
+                proc = _start_pipeline(padder_bin)
     finally:
         print("\n[hobot_vision_node] Stopping vision pipeline...")
         _stop_pipeline(proc)

@@ -139,6 +139,7 @@ class WaliTrackingNodeTests(unittest.TestCase):
         self.assertEqual(node.mode, node.MODE_BODY_FOLLOW)
 
         with patch.object(module.time, "monotonic", return_value=160.1):
+            node._last_detection_message = 100.0
             node._control_tick()
         self.assertEqual(node.mode, node.MODE_IDLE)
         pipeline_messages = node.publishers["/vision_pipeline_cmd"].messages
@@ -146,6 +147,17 @@ class WaliTrackingNodeTests(unittest.TestCase):
         camera_messages = node.publishers["/camera_capture_cmd"].messages
         self.assertIn('"action":"acquire"', camera_messages[0].data)
         self.assertIn('"action":"release"', camera_messages[-1].data)
+
+    def test_detector_startup_does_not_use_target_loss_timeout(self):
+        module = _load_tracking_module()
+        with patch.object(module.time, "monotonic", return_value=100.0):
+            node = module.WaliTrackingNode()
+            node._set_tracking_mode("follow_me")
+
+        with patch.object(module.time, "monotonic", return_value=160.1):
+            node._control_tick()
+
+        self.assertEqual(node.mode, node.MODE_BODY_FOLLOW)
 
     def test_look_at_me_never_rotates_chassis_while_detection_is_missing(self):
         module = _load_tracking_module()

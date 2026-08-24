@@ -82,6 +82,7 @@ class WaliTrackingNode(Node):
     SEARCH_START_DELAY_SEC = 1.0
     SEARCH_STOP_DELAY_SEC = 5.0
     TRACKING_SHUTDOWN_DELAY_SEC = 60.0
+    PIPELINE_STARTUP_TIMEOUT_SEC = 180.0
     CAMERA_CLIENT_ID = "tracking-vision"
     CAMERA_LEASE_SEC = 30.0
     CAMERA_RENEW_SEC = 10.0
@@ -168,7 +169,15 @@ class WaliTrackingNode(Node):
             return
 
         now = time.monotonic()
+        detector_was_ready = (
+            self._last_detection_message > 0.0
+            and self._last_detection_message >= self._mode_started_at
+        )
         self._last_detection_message = now
+        if not detector_was_ready:
+            # Target-loss timeout starts when inference actually comes online,
+            # not while its native dependencies are still starting/building.
+            self._last_target_seen = now
         dt = now - self._last_time
         self._last_time = now
 
@@ -304,10 +313,24 @@ class WaliTrackingNode(Node):
 
         self._renew_camera_lease()
 
-        lost_seconds = time.monotonic() - self._last_target_seen
-        if lost_seconds >= self.TRACKING_SHUTDOWN_DELAY_SEC:
+        now = time.monotonic()
+        lost_seconds = now - self._last_target_seen
+        detector_ready = (
+            self._last_detection_message > 0.0
+            and self._last_detection_message >= self._mode_started_at
+        )
+        if detector_ready and lost_seconds >= self.TRACKING_SHUTDOWN_DELAY_SEC:
             self.get_logger().warning(
                 "目标丢失超过60秒，退出视觉跟随并关闭跟踪摄像头"
+            )
+            self._set_tracking_mode(self.MODE_IDLE)
+            return
+        if (
+            not detector_ready
+            and now - self._mode_started_at >= self.PIPELINE_STARTUP_TIMEOUT_SEC
+        ):
+            self.get_logger().warning(
+                "视觉检测管线启动超过180秒仍无消息，退出跟踪并释放摄像头"
             )
             self._set_tracking_mode(self.MODE_IDLE)
             return
