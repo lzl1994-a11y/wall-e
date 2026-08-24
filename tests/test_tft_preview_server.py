@@ -370,6 +370,7 @@ class TftPreviewServerTests(unittest.TestCase):
 
         self.assertFalse(result.connected)
         self.assertEqual(result.sent_frames, 0)
+        self.assertEqual(result.encoded_frames, 0)
         self.assertEqual(result.last_frame, frame)
         with TemporaryDirectory() as directory:
             saved = save_camera_photo(result.last_frame, directory)

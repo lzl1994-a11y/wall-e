@@ -22,8 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
+    CAMERA_SOURCE_TOPIC,
     CAMERA_STATUS_TOPIC,
-    TRACKING_IMAGE_TOPIC,
     CameraLeaseBook,
     build_hobot_camera_command,
     decode_camera_command,
@@ -33,8 +33,9 @@ from services.usb_devices import resolve_camera_device
 
 
 class CameraCaptureNode(Node):
-    SOURCE_FRESH_SEC = 0.8
     RETRY_DELAY_SEC = 1.0
+    FRAME_TIMEOUT_SEC = 3.0
+    DECODE_VALIDATION_INTERVAL_SEC = 1.0
     # ros2 run + hobot_usb_cam may spend several seconds enumerating V4L2
     # nodes before it publishes the first ROS image. Keep this watchdog longer
     # than device initialization so a slow first open is not mistaken for a
@@ -48,14 +49,17 @@ class CameraCaptureNode(Node):
         self._camera_device = ""
         self._last_source_frame = 0.0
         self._last_output_frame = 0.0
+        self._last_decode_validation = 0.0
         self._process_started_at = 0.0
         self._retry_after = 0.0
         self._last_status_signature: tuple | None = None
         self._last_status_publish = 0.0
 
-        # hobot_usb_cam publishes CompressedImage on its remapped /image topic.
-        # Keep the public on-demand topic homogeneous so every consumer can
-        # subscribe with the same ROS message type.
+        # ``hobot_usb_cam`` is launched only here and publishes the canonical
+        # raw JPEG Image stream on /image.  The detector consumes that stream
+        # directly.  This node only adapts it to the established
+        # CompressedImage preview topic, so photo/TFT/web consumers never open
+        # the V4L2 device themselves.
         self._frame_pub = self.create_publisher(
             CompressedImage,
             CAMERA_FRAME_TOPIC,
@@ -63,11 +67,10 @@ class CameraCaptureNode(Node):
         )
         self._status_pub = self.create_publisher(String, CAMERA_STATUS_TOPIC, 10)
         self.create_subscription(String, CAMERA_COMMAND_TOPIC, self._on_command, 10)
-        self.create_subscription(Image, TRACKING_IMAGE_TOPIC, self._on_tracking_image, qos_profile_sensor_data)
         self.create_subscription(
-            CompressedImage,
-            CAMERA_FRAME_TOPIC,
-            self._on_camera_frame,
+            Image,
+            CAMERA_SOURCE_TOPIC,
+            self._on_source_image,
             qos_profile_sensor_data,
         )
         self._timer = self.create_timer(0.2, self._tick)
@@ -87,14 +90,22 @@ class CameraCaptureNode(Node):
             self._leases.acquire(command["client_id"], command["lease_sec"])
         self._tick()
 
-    def _on_tracking_image(self, message: Image) -> None:
-        self._last_source_frame = time.monotonic()
-        if not self._leases.active:
-            return
-        if self._camera_process is not None:
-            self._stop_camera_process()
-        jpeg = jpeg_from_ros_image(message)
+    def _on_source_image(self, message: Image) -> None:
+        now = time.monotonic()
+        validate_decode = (
+            self._last_decode_validation <= 0.0
+            or now - self._last_decode_validation
+            >= self.DECODE_VALIDATION_INTERVAL_SEC
+        )
+        jpeg = jpeg_from_ros_image(message, validate_decode=validate_decode)
         if not jpeg:
+            return
+        # A running process alone is not healthy: only a complete, decodable
+        # JPEG counts as a source frame for the first-frame watchdog.
+        self._last_source_frame = now
+        if validate_decode:
+            self._last_decode_validation = now
+        if not self._leases.active:
             return
         self._frame_pub.publish(
             CompressedImage(
@@ -103,21 +114,8 @@ class CameraCaptureNode(Node):
                 data=jpeg,
             )
         )
-        self._publish_status("streaming", source=TRACKING_IMAGE_TOPIC)
-
-    def _on_camera_frame(self, _message: CompressedImage) -> None:
         self._last_output_frame = time.monotonic()
-        if self._leases.active and not self._tracking_source_fresh():
-            self._publish_status("streaming", source=CAMERA_FRAME_TOPIC)
-
-    def _tracking_source_fresh(self) -> bool:
-        return time.monotonic() - self._last_source_frame <= self.SOURCE_FRESH_SEC
-
-    def _tracking_publisher_present(self) -> bool:
-        try:
-            return self.count_publishers(TRACKING_IMAGE_TOPIC) > 0
-        except Exception:
-            return False
+        self._publish_status("streaming", source=CAMERA_SOURCE_TOPIC)
 
     def _tick(self) -> None:
         now = time.monotonic()
@@ -131,7 +129,7 @@ class CameraCaptureNode(Node):
             self._retry_after = now + self.RETRY_DELAY_SEC
             self._publish_status(
                 "error",
-                source=CAMERA_FRAME_TOPIC,
+                source=CAMERA_SOURCE_TOPIC,
                 error=f"hobot_usb_cam 已退出，退出码 {code}",
                 force=True,
             )
@@ -141,18 +139,9 @@ class CameraCaptureNode(Node):
             self._publish_status("idle", source="")
             return
 
-        tracking_fresh = self._tracking_source_fresh()
-        if tracking_fresh or self._tracking_publisher_present():
-            self._stop_camera_process()
-            self._publish_status(
-                "streaming" if tracking_fresh else "starting",
-                source=TRACKING_IMAGE_TOPIC,
-            )
-            return
-
         if (
             self._camera_process is not None
-            and self._last_output_frame < self._process_started_at
+            and self._last_source_frame < self._process_started_at
             and now - self._process_started_at > self.FIRST_FRAME_TIMEOUT_SEC
         ):
             waited = now - self._process_started_at
@@ -162,10 +151,30 @@ class CameraCaptureNode(Node):
             self._retry_after = now + self.RETRY_DELAY_SEC
             self._publish_status(
                 "error",
-                source=CAMERA_FRAME_TOPIC,
+                source=CAMERA_SOURCE_TOPIC,
                 error=(
                     f"hobot_usb_cam 首帧等待超时（设备 {device}，已等待 {waited:.1f}s）"
                     f"{('；' + topic_diagnostic) if topic_diagnostic else ''}"
+                ),
+                force=True,
+            )
+            return
+
+        if (
+            self._camera_process is not None
+            and self._last_source_frame >= self._process_started_at
+            and now - self._last_source_frame > self.FRAME_TIMEOUT_SEC
+        ):
+            stalled = now - self._last_source_frame
+            device = self._camera_device or "未知设备"
+            self._stop_camera_process()
+            self._retry_after = now + self.RETRY_DELAY_SEC
+            self._publish_status(
+                "error",
+                source=CAMERA_SOURCE_TOPIC,
+                error=(
+                    f"hobot_usb_cam 画面中断（设备 {device}，"
+                    f"{stalled:.1f}s 没有有效新帧）"
                 ),
                 force=True,
             )
@@ -177,7 +186,7 @@ class CameraCaptureNode(Node):
 
         if self._camera_process is not None:
             state = "streaming" if now - self._last_output_frame <= 1.0 else "starting"
-            self._publish_status(state, source=CAMERA_FRAME_TOPIC)
+            self._publish_status(state, source=CAMERA_SOURCE_TOPIC)
 
     def _camera_topic_diagnostic(self) -> str:
         """Report graph state without assuming the camera message type."""
@@ -186,7 +195,7 @@ class CameraCaptureNode(Node):
         except Exception:
             return "ROS 图谱查询失败"
         details = []
-        for topic in (CAMERA_FRAME_TOPIC, TRACKING_IMAGE_TOPIC):
+        for topic in (CAMERA_SOURCE_TOPIC, CAMERA_FRAME_TOPIC):
             types = ",".join(graph.get(topic, [])) or "无类型"
             try:
                 publishers = self.count_publishers(topic)
@@ -201,7 +210,7 @@ class CameraCaptureNode(Node):
             self._retry_after = time.monotonic() + self.RETRY_DELAY_SEC
             self._publish_status(
                 "error",
-                source=CAMERA_FRAME_TOPIC,
+                source=CAMERA_SOURCE_TOPIC,
                 error="未找到已配置的摄像头设备",
                 force=True,
             )
@@ -219,17 +228,19 @@ class CameraCaptureNode(Node):
             self._retry_after = time.monotonic() + self.RETRY_DELAY_SEC
             self._publish_status(
                 "error",
-                source=CAMERA_FRAME_TOPIC,
+                source=CAMERA_SOURCE_TOPIC,
                 error=f"启动 hobot_usb_cam 失败: {exc}",
                 force=True,
             )
             return
         self._camera_device = str(device)
+        self._last_source_frame = 0.0
         self._last_output_frame = 0.0
+        self._last_decode_validation = 0.0
         self._process_started_at = time.monotonic()
-        self._publish_status("starting", source=CAMERA_FRAME_TOPIC, force=True)
+        self._publish_status("starting", source=CAMERA_SOURCE_TOPIC, force=True)
         self.get_logger().info(
-            f"按需启动 hobot_usb_cam: {device} -> {CAMERA_FRAME_TOPIC}"
+            f"启动唯一 hobot_usb_cam: {device} -> {CAMERA_SOURCE_TOPIC}"
         )
 
     def _stop_camera_process(self) -> None:

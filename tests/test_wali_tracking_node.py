@@ -92,6 +92,29 @@ def _load_tracking_module():
 
 
 class WaliTrackingNodeTests(unittest.TestCase):
+    def test_detector_waits_for_streaming_camera_status(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        initial_count = len(node.publishers["/vision_pipeline_cmd"].messages)
+
+        node._set_tracking_mode("look_at_me")
+        self.assertEqual(
+            len(node.publishers["/vision_pipeline_cmd"].messages),
+            initial_count,
+        )
+
+        node._on_camera_status(_FakeString('{"state":"streaming"}'))
+        self.assertEqual(
+            node.publishers["/vision_pipeline_cmd"].messages[-1].data,
+            "start",
+        )
+
+        node._on_camera_status(_FakeString('{"state":"error"}'))
+        self.assertEqual(
+            node.publishers["/vision_pipeline_cmd"].messages[-1].data,
+            "stop",
+        )
+
     def test_loss_search_stops_then_disables_tracking_pipeline(self):
         module = _load_tracking_module()
         with patch.object(module.time, "monotonic", return_value=100.0):
@@ -116,6 +139,9 @@ class WaliTrackingNodeTests(unittest.TestCase):
         self.assertEqual(node.mode, node.MODE_IDLE)
         pipeline_messages = node.publishers["/vision_pipeline_cmd"].messages
         self.assertEqual(pipeline_messages[-1].data, "stop")
+        camera_messages = node.publishers["/camera_capture_cmd"].messages
+        self.assertIn('"action":"acquire"', camera_messages[0].data)
+        self.assertIn('"action":"release"', camera_messages[-1].data)
 
     def test_largest_face_box_is_selected(self):
         module = _load_tracking_module()

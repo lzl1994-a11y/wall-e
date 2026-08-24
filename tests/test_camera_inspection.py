@@ -330,7 +330,7 @@ class CameraFrameProviderTests(unittest.TestCase):
         jpeg_patch = patch.object(
             camera_frame,
             "jpeg_from_ros_image",
-            side_effect=lambda message, quality=85: (
+            side_effect=lambda message, quality=85, validate_decode=True: (
                 None if message.data == b"broken-jpeg" else bytes(message.data)
             ),
         )

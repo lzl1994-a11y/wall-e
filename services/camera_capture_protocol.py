@@ -12,7 +12,11 @@ from typing import Any
 CAMERA_FRAME_TOPIC = "/camera_frame"
 CAMERA_COMMAND_TOPIC = "/camera_capture_cmd"
 CAMERA_STATUS_TOPIC = "/camera_capture_status"
-TRACKING_IMAGE_TOPIC = "/image"
+# The one canonical stream produced by the only ``hobot_usb_cam`` process.
+# Tracking consumes it directly; the capture manager adapts it to the public
+# CompressedImage preview topic for legacy preview/photo consumers.
+CAMERA_SOURCE_TOPIC = "/image"
+TRACKING_IMAGE_TOPIC = CAMERA_SOURCE_TOPIC  # Backwards-compatible import name.
 DEFAULT_ROS_SETUP = Path("/opt/tros/humble/setup.bash")
 
 
@@ -95,8 +99,6 @@ def build_hobot_camera_command(
         "image_width:=640",
         "-p",
         "image_height:=480",
-        "-r",
-        f"/image:={CAMERA_FRAME_TOPIC}",
     ]
     setup_path = str(ros_setup or "").strip()
     if os.name != "nt" and setup_path and Path(setup_path).is_file():
@@ -111,7 +113,12 @@ def build_hobot_camera_command(
     return command
 
 
-def jpeg_from_ros_image(message: Any, *, quality: int = 85) -> bytes | None:
+def jpeg_from_ros_image(
+    message: Any,
+    *,
+    quality: int = 85,
+    validate_decode: bool = True,
+) -> bytes | None:
     """Convert an Image or CompressedImage payload to JPEG bytes."""
     encoding = str(getattr(message, "encoding", "")).lower()
     image_format = str(getattr(message, "format", "")).lower()
@@ -132,6 +139,8 @@ def jpeg_from_ros_image(message: Any, *, quality: int = 85) -> bytes | None:
         if eoi < 2:
             return None
         jpeg = raw[:eoi + 2]
+        if not validate_decode:
+            return jpeg
         try:
             import cv2
             import numpy as np

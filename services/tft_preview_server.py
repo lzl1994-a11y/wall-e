@@ -314,6 +314,10 @@ class TftPreviewServer:
                 return
             result.source_frames += 1
             result.last_frame = source
+            # Keep the original frame for photo/cloud consumers, but avoid a
+            # pointless decode-resize-encode cycle without a verified TFT.
+            if not self.device_connected:
+                return
             preview_jpeg = prepare_tft_jpeg(
                 source,
                 quality=self.settings.jpeg_quality,

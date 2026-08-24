@@ -54,21 +54,21 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 
 ### 按需看图/拍照链路
 
-`camera_capture_node` 始终启动，是 `/dev/video*` 的按需生命周期管理者：
+`camera_capture_node` 始终启动，是 `/dev/video*` 的唯一生命周期管理者：
 
 ```text
 LLM / Web -> /camera_capture_cmd -> camera_capture_node
-                                      ├─ 跟踪已运行: /image -> /camera_frame
-                                      └─ 跟踪未运行: 临时 hobot_usb_cam -> /camera_frame
+                                      └─ 唯一 hobot_usb_cam -> /image
+                                                           └-> /camera_frame
 
 /camera_frame -> CameraFrameProvider -> 1.5 秒 TFT 预览 -> 云端视觉 LLM
               -> CameraFrameProvider -> 3 秒 TFT 预览 -> 本地照片
               -> Config Web preview
 ```
 
-消费者只订阅 `/camera_frame`，不直接打开摄像头，也不依赖
-`/image_padded_jpeg`。客户端使用带超时的租约；全部租约释放或过期后，
-临时 `hobot_usb_cam` 会自动停止。
+预览消费者只订阅 `/camera_frame`，不直接打开摄像头。客户端使用带超时的租约；全部租约释放或过期后，
+`wali_tracking_node` 在跟随/注视期间持有独立租约；拍照和预览只增加、
+释放自己的租约。全部租约释放或过期后，唯一的 `hobot_usb_cam` 才会停止。
 
 ### 视觉跟踪链路（--tracking）
 
@@ -86,7 +86,7 @@ wali_tracking_node  -> /servo_cmd --------------------------------> 当前硬件
 sequence_ros_node   -> /motor_cmd/autonomy ├-> motion_arbiter_node -> /motor_cmd
 joy_control_node    -> /motor_cmd/joystick ┘                         ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
                                                                     └─ ubuntu_i2c: i2c_hardware_node -> 板载 I2C -> PCA9685
-                    -> /vision_pipeline_cmd -> hobot_vision_node -> USB 摄像头 + RDK BPU 检测
+                    -> /vision_pipeline_cmd -> hobot_vision_node -> RDK BPU 检测（订阅 `/image`）
         ^
         ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
         ├─ /action_cmd                    (LLM 模式切换)
@@ -97,9 +97,9 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
-| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image`, `/camera_frame` | `/camera_frame`, `/camera_capture_status` | 按需摄像头唯一所有者；启动临时 `hobot_usb_cam`，或复用跟踪链路的 `/image`。 |
-| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd/tracking`, `/vision_pipeline_cmd` | 视觉跟踪中枢。接收 BPU 感知结果，运行 BODY_FOLLOW / FACE_FOLLOW 状态机，发布舵机、电机和视觉管线控制指令。 |
-| `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd` | `/image`, `/hobot_mono2d_body_detection` | 启停 USB 摄像头和 RDK `mono2d_body_detection` 进程组。 |
+| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：启动/停止 `hobot_usb_cam`，将 `/image` 适配为预览 JPEG。 |
+| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd/tracking`, `/vision_pipeline_cmd`, `/camera_capture_cmd` | 视觉跟踪中枢。跟随/注视时持有摄像头租约，并控制检测管线。 |
+| `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd`, `/image` | `/hobot_mono2d_body_detection` | 启停 RDK 编解码、补边和 `mono2d_body_detection`；不打开 USB 摄像头。 |
 | `nodes/motion_arbiter_node.py` | `motion_arbiter_node` | 运动控制启用时 | `/motor_cmd/joystick`, `/motor_cmd/tracking`, `/motor_cmd/autonomy` | `/motor_cmd` | 唯一电机命令仲裁器，执行手柄 > 跟踪 > 自主动作的优先级，并在上游命令超时后停车。 |
 | `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机；300ms 收不到仲裁心跳时强制写入停车状态。 |
 | `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685；300ms 收不到仲裁心跳时直接停车。 |
@@ -110,7 +110,8 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | 话题 | 发布者 | 订阅者 | 作用 |
 | --- | --- | --- | --- |
 | `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
-| `/camera_frame` | `camera_capture_node` 或临时 `hobot_usb_cam` | LLM、Web preview | `sensor_msgs/msg/CompressedImage` 格式的独立按需 JPEG 图像话题。 |
+| `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | RDK 解码器、`camera_capture_node` | 摄像头唯一原始 JPEG 图像源，可被检测和预览适配器同时消费。 |
+| `/camera_frame` | `camera_capture_node` | LLM、Web preview | 从 `/image` 适配出的 `sensor_msgs/msg/CompressedImage` 预览 JPEG。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
 | `/motor_cmd/joystick` | `joy_control_node` | `motion_arbiter_node` | 最高优先级手柄电机心跳。 |
@@ -119,7 +120,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/motor_cmd` | `motion_arbiter_node` | 当前硬件后端 | 仲裁后的唯一电机输出；JSON: `{"left":{"action":1,"throttle":30},"right":{...}}`。 |
 | `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
 | `/hobot_mono2d_body_detection` | RDK X3 `mono2d_body_detection` | `wali_tracking_node` | `ai_msgs/PerceptionTargets`，BPU 检测结果（body/face/head/hand 框 + track_id） |
-| `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control` | `std_msgs/String`：`start` 启动摄像头与 BPU 检测，`stop` 关闭整个视觉跟踪管线。 |
+| `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control` | `std_msgs/String`：`start` 启动 BPU 检测消费者，`stop` 关闭检测管线。 |
 
 ### 跟随模式切换
 
@@ -132,7 +133,7 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 {"turn_id":"...","name":"set_vision_gate","arguments":{"enabled":false}}   // 关闭跟踪
 ```
 
-进入跟随或注视模式时会自动启动摄像头和 BPU 检测。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并关闭视觉管线。多张人脸同时出现时，注视模式选择面积最大的人脸。
+进入跟随或注视模式时先申请摄像头；`/camera_capture_status` 确认收到有效帧后才启动 BPU 检测。运行中连续 3 秒无有效帧时，管理节点停止摄像头、发布错误并自动重启，检测管线等待画面恢复后再启动。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并关闭视觉管线。多张人脸同时出现时，注视模式选择面积最大的人脸。
 
 ## 辅助服务文件
 
@@ -142,7 +143,7 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | --- | --- |
 | `services/llm_service.py` | 封装 OpenAI/Kimi 兼容接口，提供流式大模型回复和工具调用结果。 |
 | `services/camera_frame.py` | 请求摄像头租约，支持单帧或限时帧流，完成后立即释放；不会直接打开摄像头。 |
-| `services/camera_capture_protocol.py` | 定义按需摄像头话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 重映射命令。 |
+| `services/camera_capture_protocol.py` | 定义唯一摄像头源话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 启动命令。 |
 | `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
 | `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
 | `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |

@@ -99,7 +99,11 @@ def stream_camera_frames(frame_rate: float, *, lease_sec: float = 4.0) -> int:
             now = time.monotonic()
             if now - last_emit_at < frame_interval:
                 return
-            jpeg = jpeg_from_ros_image(message, quality=82)
+            jpeg = jpeg_from_ros_image(
+                message,
+                quality=82,
+                validate_decode=False,
+            )
             if not jpeg:
                 return
             last_emit_at = now

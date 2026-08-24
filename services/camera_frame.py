@@ -108,7 +108,7 @@ class CameraFrameProvider:
         ]
 
     def _on_image(self, message: Any) -> None:
-        jpeg = jpeg_from_ros_image(message, quality=85)
+        jpeg = jpeg_from_ros_image(message, quality=85, validate_decode=False)
         if not jpeg:
             return
         with self._condition:

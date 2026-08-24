@@ -137,30 +137,26 @@ class CameraCaptureNodeTests(unittest.TestCase):
             node = module.CameraCaptureNode()
             self.assertIs(node.publisher_types["/camera_frame"], _FakeCompressedImage)
             self.assertIs(node.subscription_types["/image"], _FakeImage)
-            self.assertIs(
-                node.subscription_types["/camera_frame"],
-                _FakeCompressedImage,
-            )
             node._on_command(_FakeString(encode_camera_command("acquire", "llm", 5)))
             command = popen.call_args.args[0]
             self.assertIn("video_device:=/dev/video2", command)
-            self.assertIn("/image:=/camera_frame", command)
+            self.assertNotIn("/image:=/camera_frame", command)
 
             node._on_command(_FakeString(encode_camera_command("release", "llm")))
 
         self.assertTrue(process.terminated)
         self.assertIsNone(node._camera_process)
 
-    def test_active_tracking_image_is_relayed_without_starting_second_camera(self):
+    def test_source_image_is_relayed_without_starting_second_camera(self):
         module = _load_camera_capture_module()
         with (
             patch.object(module.subprocess, "Popen") as popen,
             patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
         ):
             node = module.CameraCaptureNode()
-            node._on_tracking_image(_FakeImage())
+            node._on_source_image(_FakeImage())
             node._on_command(_FakeString(encode_camera_command("acquire", "web", 5)))
-            node._on_tracking_image(_FakeImage())
+            node._on_source_image(_FakeImage())
 
         popen.assert_not_called()
         frames = node.publishers["/camera_frame"].messages
@@ -169,18 +165,16 @@ class CameraCaptureNodeTests(unittest.TestCase):
         self.assertEqual(frames[0].format, "jpeg")
         self.assertEqual(frames[0].data, b"frame")
 
-    def test_tracking_publisher_prevents_a_second_camera_during_startup(self):
+    def test_acquire_starts_the_single_camera_without_external_source_probe(self):
         module = _load_camera_capture_module()
+        process = _FakeProcess()
         with (
-            patch.object(module.CameraCaptureNode, "count_publishers", return_value=1),
-            patch.object(module.subprocess, "Popen") as popen,
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", return_value=process) as popen,
         ):
             node = module.CameraCaptureNode()
-            node._on_command(_FakeString(encode_camera_command("acquire", "llm", 5)))
-
-        popen.assert_not_called()
-        status = node.publishers["/camera_capture_status"].messages[-1]
-        self.assertIn('"source":"/image"', status.data)
+            node._on_command(_FakeString(encode_camera_command("acquire", "tracking", 5)))
+        popen.assert_called_once()
 
     def test_camera_without_first_frame_is_reaped(self):
         module = _load_camera_capture_module()
@@ -198,6 +192,27 @@ class CameraCaptureNodeTests(unittest.TestCase):
         self.assertIsNone(node._camera_process)
         status = node.publishers["/camera_capture_status"].messages[-1]
         self.assertIn("首帧等待超时", status.data)
+
+    def test_camera_that_stalls_after_first_frame_is_restarted(self):
+        module = _load_camera_capture_module()
+        process = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video0"),
+            patch.object(module.subprocess, "Popen", return_value=process),
+            patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
+        ):
+            node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "tracking", 10)))
+            node._on_source_image(_FakeImage())
+            now = time.monotonic()
+            node._process_started_at = now - node.FRAME_TIMEOUT_SEC - 5.0
+            node._last_source_frame = now - node.FRAME_TIMEOUT_SEC - 1.0
+            node._tick()
+
+        self.assertTrue(process.terminated)
+        self.assertIsNone(node._camera_process)
+        status = node.publishers["/camera_capture_status"].messages[-1]
+        self.assertIn("画面中断", status.data)
 
 
 if __name__ == "__main__":

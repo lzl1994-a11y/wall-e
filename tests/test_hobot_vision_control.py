@@ -82,7 +82,7 @@ class VisionPipelineControlTests(unittest.TestCase):
             patch.object(module.os, "setsid", create=True),
             patch.object(module.subprocess, "Popen", return_value=process) as popen,
         ):
-            self.assertIs(module._start_pipeline("/dev/video-test"), process)
+            self.assertIs(module._start_pipeline(), process)
 
         command = popen.call_args.args[0]
         self.assertEqual(command[:2], ["bash", "-c"])
@@ -94,8 +94,15 @@ class VisionPipelineControlTests(unittest.TestCase):
         )
         self.assertTrue(pipeline_script.endswith("wait; }"))
         self.assertIn("ros2 run hobot_codec", pipeline_script)
+        self.assertNotIn("hobot_usb_cam", pipeline_script)
         self.assertIn("ros2 run mono2d_body_detection", pipeline_script)
-        self.assertIn("ros2 run websocket", pipeline_script)
+        self.assertNotIn("ros2 run websocket", pipeline_script)
+        self.assertNotIn("/image_padded_jpeg", pipeline_script)
+        self.assertIn("image_topic:=/image_padded_nv12", pipeline_script)
+
+    def test_detector_cleanup_does_not_kill_the_camera_owner(self):
+        module = _load_module()
+        self.assertNotIn("hobot_usb_cam", module.cleanup_old_processes.__code__.co_consts)
 
 
 if __name__ == "__main__":

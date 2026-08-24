@@ -2,6 +2,7 @@ import unittest
 
 from services.camera_capture_protocol import (
     CAMERA_FRAME_TOPIC,
+    CAMERA_SOURCE_TOPIC,
     CameraLeaseBook,
     build_hobot_camera_command,
     decode_camera_command,
@@ -46,10 +47,11 @@ class CameraCaptureProtocolTests(unittest.TestCase):
         leases.release("web")
         self.assertFalse(leases.active)
 
-    def test_hobot_camera_is_remapped_to_dedicated_topic(self):
+    def test_hobot_camera_keeps_the_canonical_image_topic(self):
         command = build_hobot_camera_command("/dev/video2", ros_setup=None)
         self.assertIn("video_device:=/dev/video2", command)
-        self.assertIn(f"/image:={CAMERA_FRAME_TOPIC}", command)
+        self.assertEqual(CAMERA_SOURCE_TOPIC, "/image")
+        self.assertNotIn("/image:=/camera_frame", command)
 
     def test_jpeg_ros_image_is_forwarded_without_opening_a_device(self):
         self.assertEqual(jpeg_from_ros_image(_JpegImage()), _JpegImage.data)
@@ -74,6 +76,16 @@ class CameraCaptureProtocolTests(unittest.TestCase):
         })()
 
         self.assertEqual(jpeg_from_ros_image(message), _JpegImage.data)
+
+    def test_trusted_internal_jpeg_can_skip_full_decode(self):
+        message = type("Image", (), {
+            "encoding": "jpeg",
+            "data": b"\xff\xd8structurally-complete\xff\xd9",
+        })()
+        self.assertEqual(
+            jpeg_from_ros_image(message, validate_decode=False),
+            message.data,
+        )
 
 
 if __name__ == "__main__":

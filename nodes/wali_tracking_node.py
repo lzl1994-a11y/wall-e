@@ -22,6 +22,11 @@ from services.vision_pipeline_protocol import (
     VISION_PIPELINE_START,
     VISION_PIPELINE_STOP,
 )
+from services.camera_capture_protocol import (
+    CAMERA_COMMAND_TOPIC,
+    CAMERA_STATUS_TOPIC,
+    encode_camera_command,
+)
 
 try:
     from ai_msgs.msg import PerceptionTargets
@@ -74,6 +79,9 @@ class WaliTrackingNode(Node):
     SEARCH_START_DELAY_SEC = 1.0
     SEARCH_STOP_DELAY_SEC = 5.0
     TRACKING_SHUTDOWN_DELAY_SEC = 60.0
+    CAMERA_CLIENT_ID = "tracking-vision"
+    CAMERA_LEASE_SEC = 30.0
+    CAMERA_RENEW_SEC = 10.0
 
     def __init__(self):
         super().__init__('wali_tracking_node')
@@ -121,6 +129,10 @@ class WaliTrackingNode(Node):
             VISION_PIPELINE_COMMAND_TOPIC,
             pipeline_qos,
         )
+        self._camera_command_pub = self.create_publisher(String, CAMERA_COMMAND_TOPIC, 10)
+        self.create_subscription(String, CAMERA_STATUS_TOPIC, self._on_camera_status, 10)
+        self._last_camera_renew = 0.0
+        self._vision_pipeline_started = False
 
         # 丢失目标的搜索定时器
         self._timer = self.create_timer(0.1, self._control_tick)
@@ -270,6 +282,8 @@ class WaliTrackingNode(Node):
         if self.mode == self.MODE_IDLE or self._joy_override:
             return
 
+        self._renew_camera_lease()
+
         lost_seconds = time.monotonic() - self._last_target_seen
         if lost_seconds >= self.TRACKING_SHUTDOWN_DELAY_SEC:
             self.get_logger().warning(
@@ -332,6 +346,41 @@ class WaliTrackingNode(Node):
     def _publish_vision_pipeline_command(self, command):
         self._vision_pipeline_pub.publish(String(data=command))
 
+    def _set_vision_pipeline_enabled(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self._vision_pipeline_started:
+            return
+        self._publish_vision_pipeline_command(
+            VISION_PIPELINE_START if enabled else VISION_PIPELINE_STOP
+        )
+        self._vision_pipeline_started = enabled
+
+    def _on_camera_status(self, message):
+        try:
+            status = json.loads(message.data)
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(status, dict) or self.mode == self.MODE_IDLE:
+            return
+        state = str(status.get("state", ""))
+        if state == "streaming":
+            self._set_vision_pipeline_enabled(True)
+        elif state in {"error", "idle"}:
+            self._set_vision_pipeline_enabled(False)
+
+    def _publish_camera_lease(self, action):
+        self._camera_command_pub.publish(
+            String(data=encode_camera_command(
+                action, self.CAMERA_CLIENT_ID, self.CAMERA_LEASE_SEC
+            ))
+        )
+
+    def _renew_camera_lease(self):
+        now = time.monotonic()
+        if now - self._last_camera_renew >= self.CAMERA_RENEW_SEC:
+            self._publish_camera_lease("renew")
+            self._last_camera_renew = now
+
     def _publish_head_and_neck(self, x_error, pitch_val):
         """
         x_error: [-1.0, 1.0] 目标在左侧则为负
@@ -379,7 +428,11 @@ class WaliTrackingNode(Node):
             self._pid_chassis_yaw.reset()
             self._pid_chassis_dist.reset()
             self._pid_neck_pitch.reset()
-            self._publish_vision_pipeline_command(VISION_PIPELINE_START)
+            # The camera manager is the sole V4L2 owner.  Acquire it before
+            # starting consumers so the detector can wait for /image instead
+            # of racing a second hobot_usb_cam instance.
+            self._publish_camera_lease("acquire")
+            self._last_camera_renew = now
             self.get_logger().info(f"Entered tracking mode: {mode} (requested: {mode_key})")
         elif mode == self.MODE_IDLE:
             self.mode = self.MODE_IDLE
@@ -387,7 +440,8 @@ class WaliTrackingNode(Node):
             self._search_halted = False
             self._stop_motor()
             self._publish_head_and_neck(0.0, 0.0) # 回中
-            self._publish_vision_pipeline_command(VISION_PIPELINE_STOP)
+            self._set_vision_pipeline_enabled(False)
+            self._publish_camera_lease("release")
             self.get_logger().info("Tracking mode: IDLE")
         else:
             self.get_logger().warn(f"Unknown tracking mode: {requested_mode}")
