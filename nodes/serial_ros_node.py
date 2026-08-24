@@ -17,6 +17,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile
 from std_msgs.msg import String
 
 from services.serial_bridge import SerialBridge
@@ -24,6 +25,7 @@ from services.esp32_netcfg import (
     Esp32NetworkConfigurator,
     NetworkConfigError,
     load_saved_network_settings,
+    network_settings_match_status,
     validate_network_payload,
 )
 from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
@@ -46,7 +48,14 @@ class SerialNode(Node):
         # 订阅 Topic
         self.create_subscription(String, 'screen_dialog', self.screen_dialog_callback, 10)
         self.create_subscription(String, 'tft_cmd', self.tft_cmd_callback, 10)
-        self.create_subscription(String, 'pca9685_raw', self.pca9685_callback, 10)
+        # Motion state is latest-wins. Keeping ten stale states here causes a
+        # visible catch-up burst after an exclusive serial transaction.
+        self.create_subscription(
+            String,
+            'pca9685_raw',
+            self.pca9685_callback,
+            QoSProfile(depth=1),
+        )
         self._netcfg_response_publisher = self.create_publisher(String, RESPONSE_TOPIC, 10)
         self.create_subscription(String, REQUEST_TOPIC, self.netcfg_request_callback, 10)
         self._tft_ready_subscription = self.create_subscription(
@@ -90,6 +99,14 @@ class SerialNode(Node):
             self.get_logger().warning("ESP32 网络配置正忙，跳过启动时重复应用")
             return
         try:
+            status = self.bridge.run_exclusive(
+                lambda stream: self.netcfg.query(stream=stream)
+            )
+            if network_settings_match_status(settings, status):
+                self.get_logger().info(
+                    "ESP32 网络配置已一致，跳过启动时 SET/APPLY"
+                )
+                return
             self.get_logger().info(
                 f"启动时同步 ESP32 图像服务器: {settings.host}:{settings.port}"
             )
@@ -159,7 +176,9 @@ class SerialNode(Node):
     # ------------------------------------------------------------------
     def pca9685_callback(self, msg):
         payload = msg.data + '\n'
-        if self.bridge.send_raw(payload):
+        # NETCFG may temporarily own the serial stream. Never block the ROS
+        # executor or queue stale servo positions behind that transaction.
+        if self.bridge.send_raw(payload, block=False):
             self.get_logger().debug(f'[Serial] PCA9685 forwarded ({len(msg.data)} bytes)')
 
     # ------------------------------------------------------------------

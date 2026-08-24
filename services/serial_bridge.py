@@ -2,6 +2,7 @@
 import serial
 import threading
 import time
+from pathlib import Path
 from services.serial_broker import SerialBroker
 from services.usb_devices import DEFAULT_CONFIG_PATH, serial_ports_for_role
 
@@ -18,6 +19,7 @@ class SerialBridge:
         self.broker = SerialBroker(config_path=config_path)
         self._next_reconnect_at = 0.0
         self._next_selection_check_at = 0.0
+        self._selection_config_mtime_ns = self._config_mtime_ns()
         # All serial reads/writes, including long NETCFG APPLY transactions, use
         # this one lock. This is the sole holder of the ESP32 USB device.
         self._io_lock = threading.RLock()
@@ -53,19 +55,28 @@ class SerialBridge:
             print(f"🔴 [Serial Bridge] 未能在物理总线上找到设备 '{self.device_name}'")
             self.ser = None
 
+    def _config_mtime_ns(self):
+        try:
+            return Path(self.broker.config_path).stat().st_mtime_ns
+        except OSError:
+            return None
+
     def _ensure_connected(self):
         now = time.monotonic()
-        if now >= self._next_selection_check_at:
+        if self.ser and self.ser.is_open and now >= self._next_selection_check_at:
             self._next_selection_check_at = now + 1.0
-            selected_ports, configured = serial_ports_for_role(
-                "screen_motion", self.broker.config_path
-            )
-            if configured and self.ser and self.ser.port not in selected_ports:
-                try:
-                    self.ser.close()
-                except Exception:
-                    pass
-                self.ser = None
+            config_mtime_ns = self._config_mtime_ns()
+            if config_mtime_ns != self._selection_config_mtime_ns:
+                self._selection_config_mtime_ns = config_mtime_ns
+                selected_ports, configured = serial_ports_for_role(
+                    "screen_motion", self.broker.config_path
+                )
+                if configured and self.ser.port not in selected_ports:
+                    try:
+                        self.ser.close()
+                    except Exception:
+                        pass
+                    self.ser = None
         if self.ser and self.ser.is_open:
             return True
         if now < self._next_reconnect_at:
@@ -89,9 +100,11 @@ class SerialBridge:
         
         return ""
 
-    def send_raw(self, payload: str):
+    def send_raw(self, payload: str, *, block=True):
         """Send normal screen/motion traffic while holding the shared USB lock."""
-        with self._io_lock:
+        if not self._io_lock.acquire(blocking=block):
+            return False
+        try:
             if not self._ensure_connected():
                 print("⚠️ [Serial Bridge] 串口未连接，指令丢弃。")
                 self.is_screen_awake = False
@@ -111,6 +124,8 @@ class SerialBridge:
                     pass
                 self.ser = None
                 return False
+        finally:
+            self._io_lock.release()
 
     def run_exclusive(self, operation):
         """Run a serial transaction without injecting screen wake/display commands.

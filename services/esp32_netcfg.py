@@ -151,6 +151,30 @@ def network_settings_to_payload(settings: NetworkSettings) -> dict[str, Any]:
     }
 
 
+def network_settings_match_status(
+    settings: NetworkSettings, status: dict[str, Any]
+) -> bool:
+    """Return whether QUERY already reports the saved routable configuration.
+
+    QUERY deliberately never returns passwords, so this comparison covers the
+    SSID order and image-server endpoint. Password changes made through the web
+    still use the explicit save/apply operation.
+    """
+    if not isinstance(status, dict) or status.get("apply_running"):
+        return False
+    wifi = status.get("wifi")
+    if not isinstance(wifi, list) or len(wifi) != len(settings.wifi):
+        return False
+    reported_ssids = [
+        item.get("ssid") if isinstance(item, dict) else None for item in wifi
+    ]
+    return (
+        reported_ssids == [credential.ssid for credential in settings.wifi]
+        and status.get("host") == settings.host
+        and status.get("port") == settings.port
+    )
+
+
 def load_saved_network_settings(
     config_path: Path | str = DEFAULT_CONFIG_PATH,
 ) -> NetworkSettings | None:
