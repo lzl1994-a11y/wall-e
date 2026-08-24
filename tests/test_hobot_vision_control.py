@@ -92,7 +92,7 @@ class VisionPipelineControlTests(unittest.TestCase):
                 "source /opt/tros/humble/setup.bash && { "
             )
         )
-        self.assertTrue(pipeline_script.endswith("wait; }"))
+        self.assertTrue(pipeline_script.endswith("wait -n; }"))
         self.assertIn("ros2 run hobot_codec", pipeline_script)
         self.assertNotIn("hobot_usb_cam", pipeline_script)
         self.assertIn("ros2 run mono2d_body_detection", pipeline_script)

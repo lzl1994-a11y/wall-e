@@ -20,22 +20,26 @@ class _FakePublisher:
 
 
 class _FakeLogger:
+    def __init__(self):
+        self.messages = []
+
     def info(self, _message):
-        pass
+        self.messages.append(("info", _message))
 
     def warning(self, _message):
-        pass
+        self.messages.append(("warning", _message))
 
     def warn(self, _message):
-        pass
+        self.messages.append(("warning", _message))
 
     def error(self, _message):
-        pass
+        self.messages.append(("error", _message))
 
 
 class _FakeNode:
     def __init__(self, _name):
         self.publishers = {}
+        self.logger = _FakeLogger()
 
     def create_publisher(self, _message_type, topic, _qos):
         publisher = _FakePublisher()
@@ -49,7 +53,7 @@ class _FakeNode:
         return object()
 
     def get_logger(self):
-        return _FakeLogger()
+        return self.logger
 
     def destroy_node(self):
         pass
@@ -143,6 +147,32 @@ class WaliTrackingNodeTests(unittest.TestCase):
         self.assertIn('"action":"acquire"', camera_messages[0].data)
         self.assertIn('"action":"release"', camera_messages[-1].data)
 
+    def test_look_at_me_never_rotates_chassis_while_detection_is_missing(self):
+        module = _load_tracking_module()
+        with patch.object(module.time, "monotonic", return_value=100.0):
+            node = module.WaliTrackingNode()
+            node._set_tracking_mode("look_at_me")
+
+        with patch.object(module.time, "monotonic", return_value=101.1):
+            node._control_tick()
+
+        motor = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
+        self.assertEqual(motor["left"]["action"], 0)
+        self.assertEqual(motor["right"]["action"], 0)
+
+    def test_missing_detection_stage_emits_actionable_warning(self):
+        module = _load_tracking_module()
+        with patch.object(module.time, "monotonic", return_value=100.0):
+            node = module.WaliTrackingNode()
+            node._set_tracking_mode("look_at_me")
+
+        with patch.object(module.time, "monotonic", return_value=105.1):
+            node._control_tick()
+
+        self.assertEqual(node.mode, node.MODE_FACE_FOLLOW)
+        warnings = [text for level, text in node.logger.messages if level == "warning"]
+        self.assertTrue(any("视觉检测话题尚无消息" in text for text in warnings))
+
     def test_largest_face_box_is_selected(self):
         module = _load_tracking_module()
         boxes = [
@@ -151,6 +181,18 @@ class WaliTrackingNodeTests(unittest.TestCase):
             (800.0, 300.0, 0.10),
         ]
         self.assertEqual(module.WaliTrackingNode._largest_box(boxes), boxes[1])
+
+    def test_head_targets_use_dedicated_latest_value_topic(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+
+        node._publish_head_and_neck(0.5, -0.25)
+
+        messages = node.publishers["/servo_targets/tracking"].messages
+        self.assertEqual(len(messages), 1)
+        payload = json.loads(messages[0].data)
+        self.assertEqual(payload["targets"]["head_yaw"], 3700)
+        self.assertNotIn("name", payload)
 
     def test_main_keeps_context_alive_for_fail_safe_shutdown(self):
         module = _load_tracking_module()

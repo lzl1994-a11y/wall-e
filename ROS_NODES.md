@@ -81,7 +81,7 @@ python launch_nodes.py --tracking
 此时在默认链路基础上附加:
 
 ```text
-wali_tracking_node  -> /servo_cmd --------------------------------> 当前硬件后端
+wali_tracking_node  -> /servo_targets/tracking -> sequence_ros_node -> /servo_cmd -> 当前硬件后端
                     -> /motor_cmd/tracking ┐
 sequence_ros_node   -> /motor_cmd/autonomy ├-> motion_arbiter_node -> /motor_cmd
 joy_control_node    -> /motor_cmd/joystick ┘                         ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
@@ -98,7 +98,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
 | `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：启动/停止 `hobot_usb_cam`，将 `/image` 适配为预览 JPEG。 |
-| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_cmd`, `/motor_cmd/tracking`, `/vision_pipeline_cmd`, `/camera_capture_cmd` | 视觉跟踪中枢。跟随/注视时持有摄像头租约，并控制检测管线。 |
+| `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_targets/tracking`, `/motor_cmd/tracking`, `/vision_pipeline_cmd`, `/camera_capture_cmd` | 视觉跟踪中枢。跟随/注视时持有摄像头租约，并控制检测管线。 |
 | `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd`, `/image` | `/hobot_mono2d_body_detection` | 启停 RDK 编解码、补边和 `mono2d_body_detection`；不打开 USB 摄像头。 |
 | `nodes/motion_arbiter_node.py` | `motion_arbiter_node` | 运动控制启用时 | `/motor_cmd/joystick`, `/motor_cmd/tracking`, `/motor_cmd/autonomy` | `/motor_cmd` | 唯一电机命令仲裁器，执行手柄 > 跟踪 > 自主动作的优先级，并在上游命令超时后停车。 |
 | `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机；300ms 收不到仲裁心跳时强制写入停车状态。 |
@@ -113,6 +113,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | RDK 解码器、`camera_capture_node` | 摄像头唯一 JPEG 图像源，类型为 `sensor_msgs/msg/CompressedImage`。 |
 | `/camera_frame` | `camera_capture_node` | LLM、Web preview | 从 `/image` 适配出的 `sensor_msgs/msg/CompressedImage` 预览 JPEG。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
+| `/servo_targets/tracking` | `wali_tracking_node` | `sequence_ros_node` | 深度为 1 的最新头颈目标；只更新插值目标，不打断高层动作。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
 | `/motor_cmd/joystick` | `joy_control_node` | `motion_arbiter_node` | 最高优先级手柄电机心跳。 |
 | `/motor_cmd/tracking` | `wali_tracking_node` | `motion_arbiter_node` | 视觉跟踪电机心跳。 |

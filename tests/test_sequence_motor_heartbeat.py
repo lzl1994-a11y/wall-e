@@ -36,13 +36,15 @@ class _Logger:
 class _Node:
     def __init__(self, _name):
         self.publishers = {}
+        self.subscriptions = {}
 
     def create_publisher(self, _message_type, topic, _qos):
         publisher = _Publisher()
         self.publishers[topic] = publisher
         return publisher
 
-    def create_subscription(self, *_args):
+    def create_subscription(self, _message_type, topic, callback, _qos):
+        self.subscriptions[topic] = callback
         return object()
 
     def create_timer(self, *_args):
@@ -72,6 +74,25 @@ def _load_module():
 
 
 class SequenceMotorHeartbeatTests(unittest.TestCase):
+    def test_tracking_targets_do_not_interrupt_sequence_interpolation(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        pending_frame = {"time": 9.0, "actions": []}
+        node._current_sequence = [pending_frame]
+        node._steps["eye_r"] = 7.0
+
+        node.subscriptions["/servo_targets/tracking"](
+            _String(data=json.dumps({
+                "targets": {"head_yaw": 6200, "neck_top": 4300},
+                "step_size": 40.0,
+            }))
+        )
+
+        self.assertEqual(node._current_sequence, [pending_frame])
+        self.assertEqual(node._steps["eye_r"], 7.0)
+        self.assertEqual(node._targets["head_yaw"], 6200)
+        self.assertEqual(node._steps["head_yaw"], 40.0)
+
     def test_motor_action_is_refreshed_until_deadline_then_stopped(self):
         module = _load_module()
         with patch.object(module.time, "monotonic", return_value=10.0):

@@ -10,6 +10,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 from services.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
+from services.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
 
 class SequenceRosNode(Node):
     # 所有的动作预设已迁移至 sequences.yaml，由 _flatten_sequence 处理
@@ -66,6 +67,14 @@ class SequenceRosNode(Node):
 
         # 统一订阅 /action_cmd，负责动作编排和运动指令分发
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
+        # Tracking produces targets at detector frame rate. Depth 1 makes this
+        # a latest-value stream and avoids replaying stale head positions.
+        self.create_subscription(
+            String,
+            TRACKING_SERVO_TARGET_TOPIC,
+            self._on_tracking_servo_targets,
+            1,
+        )
         
         self._first_tick = True
         self.get_logger().info('Sequence ROS Node online, taking over /action_cmd. 50Hz interpolation running.')
@@ -172,6 +181,19 @@ class SequenceRosNode(Node):
         elif tool == "stop_all":
             self._stop_motors(status="interrupted", detail="stop_all")
             self._publish_request_status(request, "completed")
+
+    def _on_tracking_servo_targets(self, msg):
+        """Update interpolated tracking targets without interrupting actions."""
+        try:
+            payload = json.loads(msg.data)
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        self._apply_servo_targets(
+            payload.get("targets", {}),
+            payload.get("step_size", 40.0),
+        )
 
     def _publish_request_status(self, request, status, detail=""):
         request_id = request.get("request_id") if isinstance(request, dict) else None
@@ -289,14 +311,24 @@ class SequenceRosNode(Node):
             self.tft_pub.publish(msg)
             
         elif t == 'manual_servo':
-            targets = act.get('targets', {})
-            step_size = float(act.get('step_size', 30.0))
-            for s_name, s_pwm in targets.items():
-                if s_name in self._servos_config:
-                    target_pwm = self._clamp_pwm(s_name, s_pwm)
-                    if target_pwm is not None:
-                        self._targets[s_name] = target_pwm
-                        self._steps[s_name] = step_size
+            self._apply_servo_targets(
+                act.get('targets', {}),
+                act.get('step_size', 30.0),
+            )
+
+    def _apply_servo_targets(self, targets, step_size):
+        if not isinstance(targets, dict):
+            return
+        try:
+            step_size = max(1.0, min(float(step_size), 1000.0))
+        except (TypeError, ValueError):
+            return
+        for s_name, s_pwm in targets.items():
+            if s_name in self._servos_config:
+                target_pwm = self._clamp_pwm(s_name, s_pwm)
+                if target_pwm is not None:
+                    self._targets[s_name] = target_pwm
+                    self._steps[s_name] = step_size
 
     def _stop_motors(self, status="completed", detail=""):
         msg = String()

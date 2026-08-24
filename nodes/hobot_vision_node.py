@@ -107,7 +107,10 @@ def _start_pipeline():
         f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=true -p flip_horizontal:=true & "
         "(cd /opt/tros/humble/lib/mono2d_body_detection && ros2 run mono2d_body_detection mono2d_body_detection --ros-args --log-level WARN -p is_shared_mem_sub:=0 -p ros_img_topic_name:=/image_padded_nv12 -p ai_msg_pub_topic_name:=/hobot_mono2d_body_detection_raw) & "
         f"{shlex.quote(ros_python)} {scaler_script} --ros-args --log-level WARN -p transform_mode:=none -p image_topic:=/image_padded_nv12 -p model_width:=960.0 -p model_height:=544.0 -p x_scale:=1.0 -p y_scale:=1.0 -p x_offset:=0.0 -p y_offset:=0.0 -p clip_width:=960.0 -p clip_height:=544.0 & "
-        "wait; }"
+        # Treat every stage as critical. If codec, padder, detector, or scaler
+        # exits, let the wrapper reap the remaining group and restart a clean
+        # pipeline instead of leaving a video-only zombie chain alive.
+        "wait -n; }"
     )
     cmd = ["bash", "-c", pipeline_script]
     
@@ -166,6 +169,10 @@ def main():
                 continue
 
             if proc and proc.poll() is not None:
+                print(
+                    "[hobot_vision_node] Detector pipeline exited "
+                    f"with code {proc.returncode}; restarting..."
+                )
                 cleanup_old_processes()
                 proc = None
 

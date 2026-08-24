@@ -20,6 +20,7 @@ from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.motion_arbiter import MOTOR_TRACKING_TOPIC
 
 from services.vision_pipeline_protocol import (
+    TRACKING_SERVO_TARGET_TOPIC,
     VISION_PIPELINE_COMMAND_TOPIC,
     VISION_PIPELINE_START,
     VISION_PIPELINE_STOP,
@@ -84,6 +85,7 @@ class WaliTrackingNode(Node):
     CAMERA_CLIENT_ID = "tracking-vision"
     CAMERA_LEASE_SEC = 30.0
     CAMERA_RENEW_SEC = 10.0
+    DETECTION_WARNING_INTERVAL_SEC = 5.0
 
     def __init__(self):
         super().__init__('wali_tracking_node')
@@ -99,6 +101,10 @@ class WaliTrackingNode(Node):
         self._joy_override = False # 若未来恢复 joy_override 机制
         self._search_active = False
         self._search_halted = False
+        self._mode_started_at = time.monotonic()
+        self._last_detection_message = 0.0
+        self._last_nonempty_detection = 0.0
+        self._last_detection_warning = 0.0
 
         # ── PID 控制器 ──
         # 底盘水平追踪 (模式1用)
@@ -122,7 +128,14 @@ class WaliTrackingNode(Node):
 
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
 
-        self._action_pub = self.create_publisher(String, '/action_cmd', 10)
+        # Detection updates are a high-rate latest-value control stream, not
+        # high-level actions. Sending them through /action_cmd repeatedly
+        # interrupted sequence_ros_node's 50 Hz interpolation.
+        self._tracking_servo_pub = self.create_publisher(
+            String,
+            TRACKING_SERVO_TARGET_TOPIC,
+            QoSProfile(depth=1),
+        )
         self._action_status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 10)
         self._motor_pub = self.create_publisher(String, MOTOR_TRACKING_TOPIC, 10)
         pipeline_qos = QoSProfile(depth=1)
@@ -155,6 +168,7 @@ class WaliTrackingNode(Node):
             return
 
         now = time.monotonic()
+        self._last_detection_message = now
         dt = now - self._last_time
         self._last_time = now
 
@@ -171,6 +185,9 @@ class WaliTrackingNode(Node):
                     body_boxes.append((cx, cy, area_ratio))
                 elif roi.type in ["face", "head"]:
                     face_boxes.append((cx, cy, area_ratio))
+
+        if body_boxes or face_boxes:
+            self._last_nonempty_detection = now
 
         if self.mode == self.MODE_BODY_FOLLOW:
             self._handle_body_follow(body_boxes, dt)
@@ -295,6 +312,19 @@ class WaliTrackingNode(Node):
             self._set_tracking_mode(self.MODE_IDLE)
             return
 
+        self._warn_if_detection_is_missing(lost_seconds)
+
+        # "look_at_me" is a stationary gaze mode. A detector warm-up or an
+        # empty result must never make the chassis rotate; keep sending the
+        # stop heartbeat so the motor watchdog also remains authoritative.
+        if self.mode == self.MODE_FACE_FOLLOW:
+            self._stop_motor()
+            if lost_seconds >= self.SEARCH_STOP_DELAY_SEC and not self._search_halted:
+                self._current_neck_pitch = 0.0
+                self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
+                self._search_halted = True
+            return
+
         if lost_seconds >= self.SEARCH_STOP_DELAY_SEC:
             if not self._search_halted:
                 self._stop_motor()
@@ -312,6 +342,23 @@ class WaliTrackingNode(Node):
                 self._current_neck_pitch = 0.0
                 self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
                 self._search_active = True
+
+    def _warn_if_detection_is_missing(self, lost_seconds):
+        if lost_seconds < self.SEARCH_STOP_DELAY_SEC:
+            return
+        now = time.monotonic()
+        if now - self._last_detection_warning < self.DETECTION_WARNING_INTERVAL_SEC:
+            return
+        self._last_detection_warning = now
+        if self._last_detection_message < self._mode_started_at:
+            self.get_logger().warning(
+                "视觉检测话题尚无消息：请检查 /image_nv12、"
+                "/image_padded_nv12 和 /hobot_mono2d_body_detection_raw"
+            )
+        elif self._last_nonempty_detection < self._mode_started_at:
+            self.get_logger().warning(
+                "视觉检测消息已到达，但人体/人脸结果持续为空"
+            )
 
     # ===================================================================
     # 执行层
@@ -404,17 +451,16 @@ class WaliTrackingNode(Node):
         else:
             targets['neck_bottom'] = int(4000 + pitch_val * 500) # pitch_val为负，结果是减
 
-        # 发送到 /action_cmd 的 manual_servo 接口
+        # Use the dedicated latest-value stream. sequence_ros_node keeps the
+        # normal interpolation and collision limits without globally
+        # interrupting its action state for every detector frame.
         payload = {
-            "name": "manual_servo",
-            "arguments": {
-                "targets": targets,
-                "step_size": 40.0
-            }
+            "targets": targets,
+            "step_size": 40.0,
         }
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
-        self._action_pub.publish(msg)
+        self._tracking_servo_pub.publish(msg)
 
     def _set_tracking_mode(self, requested_mode):
         mode_key = str(requested_mode or "").strip()
@@ -424,6 +470,10 @@ class WaliTrackingNode(Node):
             self.mode = mode
             self._current_neck_pitch = 0.0
             now = time.monotonic()
+            self._mode_started_at = now
+            self._last_detection_message = 0.0
+            self._last_nonempty_detection = 0.0
+            self._last_detection_warning = 0.0
             self._last_time = now
             self._last_target_seen = now
             self._search_active = False
