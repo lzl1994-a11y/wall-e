@@ -110,7 +110,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | 话题 | 发布者 | 订阅者 | 作用 |
 | --- | --- | --- | --- |
 | `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
-| `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | RDK 解码器、`camera_capture_node` | 摄像头唯一 JPEG 图像源；兼容不同 TogetherROS 版本发布的 `sensor_msgs/Image` 与 `sensor_msgs/CompressedImage`。 |
+| `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | RDK 解码器、`camera_capture_node` | 摄像头唯一 JPEG 图像源，类型为 `sensor_msgs/msg/CompressedImage`。 |
 | `/camera_frame` | `camera_capture_node` | LLM、Web preview | 从 `/image` 适配出的 `sensor_msgs/msg/CompressedImage` 预览 JPEG。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |

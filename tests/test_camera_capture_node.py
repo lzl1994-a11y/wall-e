@@ -138,7 +138,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
             self.assertIs(node.publisher_types["/camera_frame"], _FakeCompressedImage)
             self.assertEqual(
                 node.subscription_types["/image"],
-                [_FakeImage, _FakeCompressedImage],
+                [_FakeCompressedImage],
             )
             node._on_command(_FakeString(encode_camera_command("acquire", "llm", 5)))
             command = popen.call_args.args[0]
@@ -157,9 +157,13 @@ class CameraCaptureNodeTests(unittest.TestCase):
             patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
         ):
             node = module.CameraCaptureNode()
-            node._on_source_image(_FakeImage())
+            node._on_source_image(
+                _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            )
             node._on_command(_FakeString(encode_camera_command("acquire", "web", 5)))
-            node._on_source_image(_FakeImage())
+            node._on_source_image(
+                _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            )
 
         popen.assert_not_called()
         frames = node.publishers["/camera_frame"].messages
@@ -224,7 +228,9 @@ class CameraCaptureNodeTests(unittest.TestCase):
         ):
             node = module.CameraCaptureNode()
             node._on_command(_FakeString(encode_camera_command("acquire", "tracking", 10)))
-            node._on_source_image(_FakeImage())
+            node._on_source_image(
+                _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            )
             now = time.monotonic()
             node._process_started_at = now - node.FRAME_TIMEOUT_SEC - 5.0
             node._last_source_frame = now - node.FRAME_TIMEOUT_SEC - 1.0

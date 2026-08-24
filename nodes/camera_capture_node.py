@@ -14,7 +14,7 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import CompressedImage, Image
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -56,8 +56,8 @@ class CameraCaptureNode(Node):
         self._last_status_publish = 0.0
 
         # ``hobot_usb_cam`` is launched only here and publishes the canonical
-        # JPEG stream on /image.  TogetherROS releases expose that MJPEG as
-        # either Image or CompressedImage, so both DDS wire types are accepted.
+        # JPEG stream on /image.  The deployed TogetherROS hobot_usb_cam
+        # publishes that MJPEG as CompressedImage.
         # The detector consumes the same source directly. This node adapts it to the established
         # CompressedImage preview topic, so photo/TFT/web consumers never open
         # the V4L2 device themselves.
@@ -68,18 +68,9 @@ class CameraCaptureNode(Node):
         )
         self._status_pub = self.create_publisher(String, CAMERA_STATUS_TOPIC, 10)
         self.create_subscription(String, CAMERA_COMMAND_TOPIC, self._on_command, 10)
-        # ``hobot_usb_cam`` differs across RDK/TogetherROS releases: some
-        # builds publish the MJPEG stream as Image(encoding=mjpeg), while
-        # others publish CompressedImage directly.  Subscribe to both wire
-        # types and normalize them in the same relay callback.  DDS keeps the
-        # two type endpoints separate, so this does not create a duplicate
-        # camera process or change the public /camera_frame contract.
-        self.create_subscription(
-            Image,
-            CAMERA_SOURCE_TOPIC,
-            self._on_source_image,
-            qos_profile_sensor_data,
-        )
+        # ROS 2 Humble does not allow one node to subscribe to the same topic
+        # with incompatible message types. Keep this endpoint aligned with the
+        # actual hobot_usb_cam publisher instead of probing both wire types.
         self.create_subscription(
             CompressedImage,
             CAMERA_SOURCE_TOPIC,
@@ -103,7 +94,7 @@ class CameraCaptureNode(Node):
             self._leases.acquire(command["client_id"], command["lease_sec"])
         self._tick()
 
-    def _on_source_image(self, message: Image | CompressedImage) -> None:
+    def _on_source_image(self, message: CompressedImage) -> None:
         now = time.monotonic()
         validate_decode = (
             self._last_decode_validation <= 0.0
