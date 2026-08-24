@@ -151,6 +151,15 @@ class TftProtocolTests(unittest.TestCase):
         self.assertEqual(decoded.shape[:2], (180, 240))
         self.assertEqual(_sof_marker(jpeg), 0xC0)
 
+    def test_tft_jpeg_is_rotated_180_degrees(self):
+        jpeg = prepare_tft_jpeg(_source_jpeg(640, 480), quality=100)
+
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        # Source image is red on the left and green on the right. After the
+        # TFT-only 180-degree rotation, their horizontal positions swap.
+        self.assertGreater(int(decoded[90, 30, 1]), int(decoded[90, 30, 2]))
+        self.assertGreater(int(decoded[90, 210, 2]), int(decoded[90, 210, 1]))
+
     def test_portrait_jpeg_preserves_aspect_ratio_within_tft_bounds(self):
         jpeg = prepare_tft_jpeg(_source_jpeg(360, 640), quality=70)
 
