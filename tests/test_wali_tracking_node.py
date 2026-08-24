@@ -39,6 +39,7 @@ class _FakeLogger:
 class _FakeNode:
     def __init__(self, _name):
         self.publishers = {}
+        self.subscription_qos = {}
         self.logger = _FakeLogger()
 
     def create_publisher(self, _message_type, topic, _qos):
@@ -46,7 +47,8 @@ class _FakeNode:
         self.publishers[topic] = publisher
         return publisher
 
-    def create_subscription(self, _message_type, _topic, _callback, _qos):
+    def create_subscription(self, _message_type, topic, _callback, qos):
+        self.subscription_qos[topic] = qos
         return object()
 
     def create_timer(self, _period, _callback):
@@ -75,6 +77,7 @@ def _load_tracking_module():
     fake_qos = types.ModuleType("rclpy.qos")
     fake_qos.QoSProfile = _FakeQoSProfile
     fake_qos.DurabilityPolicy = types.SimpleNamespace(TRANSIENT_LOCAL="transient")
+    fake_qos.qos_profile_sensor_data = object()
     fake_signals = types.ModuleType("rclpy.signals")
     fake_signals.SignalHandlerOptions = types.SimpleNamespace(NO="no")
     fake_std = types.ModuleType("std_msgs.msg")
@@ -96,6 +99,36 @@ def _load_tracking_module():
 
 
 class WaliTrackingNodeTests(unittest.TestCase):
+    def test_detection_input_uses_sensor_qos_and_drives_head_target(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        node._set_tracking_mode("look_at_me")
+        rect = types.SimpleNamespace(
+            x_offset=650,
+            y_offset=170,
+            width=120,
+            height=120,
+        )
+        detection = types.SimpleNamespace(
+            targets=[types.SimpleNamespace(
+                rois=[types.SimpleNamespace(type="face", rect=rect)]
+            )]
+        )
+
+        node._on_detection(detection)
+
+        self.assertIs(
+            node.subscription_qos["/hobot_mono2d_body_detection"],
+            module.qos_profile_sensor_data,
+        )
+        payload = json.loads(
+            node.publishers["/servo_targets/tracking"].messages[-1].data
+        )
+        self.assertNotEqual(payload["targets"]["head_yaw"], 5000)
+        motor = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
+        self.assertEqual(motor["left"]["action"], 0)
+        self.assertEqual(motor["right"]["action"], 0)
+
     def test_detector_waits_for_streaming_camera_status(self):
         module = _load_tracking_module()
         node = module.WaliTrackingNode()

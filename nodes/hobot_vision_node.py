@@ -145,14 +145,12 @@ def _start_pipeline(padder_bin: Path | None = None):
     env = os.environ.copy()
     node_dir = Path(__file__).resolve().parent
     root_dir = node_dir.parent
-    ros_python = os.environ.get("WALI_ROS_PYTHON", "/usr/bin/python_backup")
     if padder_bin is None:
         try:
             padder_bin = _ensure_padder_binary(root_dir, env)
         except RuntimeError as exc:
             print(f"[hobot_vision_node] Error: {exc}")
             return None
-    scaler_script = shlex.quote(str(node_dir / "ai_msg_scaler_node.py"))
     print("[hobot_vision_node] Cleaning up any zombie vision processes...")
     cleanup_old_processes()
     time.sleep(1)
@@ -161,8 +159,10 @@ def _start_pipeline(padder_bin: Path | None = None):
         "source /opt/tros/humble/setup.bash && { "
         "ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:=/image -p pub_topic:=/image_nv12 & "
         f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=true -p flip_horizontal:=true & "
-        "(cd /opt/tros/humble/lib/mono2d_body_detection && ros2 run mono2d_body_detection mono2d_body_detection --ros-args --log-level WARN -p is_shared_mem_sub:=0 -p ros_img_topic_name:=/image_padded_nv12 -p ai_msg_pub_topic_name:=/hobot_mono2d_body_detection_raw) & "
-        f"{shlex.quote(ros_python)} {scaler_script} --ros-args --log-level WARN -p transform_mode:=none -p image_topic:=/image_padded_nv12 -p model_width:=960.0 -p model_height:=544.0 -p x_scale:=1.0 -p y_scale:=1.0 -p x_offset:=0.0 -p y_offset:=0.0 -p clip_width:=960.0 -p clip_height:=544.0 & "
+        # The padded image already matches the model's 960x544 coordinate
+        # space. Publish final detections directly instead of passing every AI
+        # message through a no-op Python scaler and another DDS boundary.
+        "(cd /opt/tros/humble/lib/mono2d_body_detection && ros2 run mono2d_body_detection mono2d_body_detection --ros-args --log-level WARN -p is_shared_mem_sub:=0 -p ros_img_topic_name:=/image_padded_nv12 -p ai_msg_pub_topic_name:=/hobot_mono2d_body_detection) & "
         # Treat every stage as critical. If codec, padder, detector, or scaler
         # exits, let the wrapper reap the remaining group and restart a clean
         # pipeline instead of leaving a video-only zombie chain alive.

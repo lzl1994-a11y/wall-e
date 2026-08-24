@@ -117,9 +117,15 @@ class VisionPipelineControlTests(unittest.TestCase):
         self.assertIn("ros2 run hobot_codec", pipeline_script)
         self.assertNotIn("hobot_usb_cam", pipeline_script)
         self.assertIn("ros2 run mono2d_body_detection", pipeline_script)
+        self.assertIn(
+            "ai_msg_pub_topic_name:=/hobot_mono2d_body_detection",
+            pipeline_script,
+        )
+        self.assertNotIn("hobot_mono2d_body_detection_raw", pipeline_script)
+        self.assertNotIn("ai_msg_scaler_node.py", pipeline_script)
         self.assertNotIn("ros2 run websocket", pipeline_script)
         self.assertNotIn("/image_padded_jpeg", pipeline_script)
-        self.assertIn("image_topic:=/image_padded_nv12", pipeline_script)
+        self.assertIn("ros_img_topic_name:=/image_padded_nv12", pipeline_script)
 
     def test_padder_uses_sensor_qos_input_and_reliable_model_output(self):
         source = (

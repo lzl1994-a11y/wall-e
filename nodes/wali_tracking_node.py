@@ -12,7 +12,7 @@ import json
 import signal
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String, Int32
 from services.action_command import parse_action_request
@@ -123,7 +123,15 @@ class WaliTrackingNode(Node):
 
         # ── 订阅与发布 ──
         if HAS_HOBOT_MSGS:
-            self.create_subscription(PerceptionTargets, '/hobot_mono2d_body_detection', self._on_detection, 10)
+            # Perception is a high-rate latest-value stream. Best-effort input
+            # is compatible with both reliable and sensor-data publishers,
+            # unlike a reliable subscriber paired with a best-effort model.
+            self.create_subscription(
+                PerceptionTargets,
+                '/hobot_mono2d_body_detection',
+                self._on_detection,
+                qos_profile_sensor_data,
+            )
         else:
             self.create_subscription(String, '/hobot_mono2d_body_detection', lambda x: None, 10)
 
@@ -197,6 +205,17 @@ class WaliTrackingNode(Node):
 
         if body_boxes or face_boxes:
             self._last_nonempty_detection = now
+
+        if not detector_was_ready:
+            roi_types = sorted({
+                str(roi.type)
+                for target in msg.targets
+                for roi in target.rois
+            })
+            self.get_logger().info(
+                "视觉检测链路已连通: "
+                f"targets={len(msg.targets)} roi_types={roi_types or '-'}"
+            )
 
         if self.mode == self.MODE_BODY_FOLLOW:
             self._handle_body_follow(body_boxes, dt)
