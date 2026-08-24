@@ -59,8 +59,8 @@ class _FakeNodeBase:
         return publisher
 
     def create_subscription(self, message_type, topic, callback, _qos):
-        self.subscriptions[topic] = callback
-        self.subscription_types[topic] = message_type
+        self.subscriptions.setdefault(topic, []).append(callback)
+        self.subscription_types.setdefault(topic, []).append(message_type)
         return object()
 
     def create_timer(self, _period, _callback):
@@ -136,7 +136,10 @@ class CameraCaptureNodeTests(unittest.TestCase):
         ):
             node = module.CameraCaptureNode()
             self.assertIs(node.publisher_types["/camera_frame"], _FakeCompressedImage)
-            self.assertIs(node.subscription_types["/image"], _FakeImage)
+            self.assertEqual(
+                node.subscription_types["/image"],
+                [_FakeImage, _FakeCompressedImage],
+            )
             node._on_command(_FakeString(encode_camera_command("acquire", "llm", 5)))
             command = popen.call_args.args[0]
             self.assertIn("video_device:=/dev/video2", command)
@@ -162,6 +165,24 @@ class CameraCaptureNodeTests(unittest.TestCase):
         frames = node.publishers["/camera_frame"].messages
         self.assertEqual(len(frames), 1)
         self.assertIsInstance(frames[0], _FakeCompressedImage)
+        self.assertEqual(frames[0].format, "jpeg")
+        self.assertEqual(frames[0].data, b"frame")
+
+    def test_compressed_source_image_is_relayed(self):
+        module = _load_camera_capture_module()
+        source = _FakeCompressedImage(
+            header=object(),
+            format="jpeg",
+            data=b"compressed-frame",
+        )
+        with patch.object(module, "jpeg_from_ros_image", return_value=b"frame"):
+            node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "web", 5)))
+            node._on_source_image(source)
+
+        frames = node.publishers["/camera_frame"].messages
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0].header, source.header)
         self.assertEqual(frames[0].format, "jpeg")
         self.assertEqual(frames[0].data, b"frame")
 
