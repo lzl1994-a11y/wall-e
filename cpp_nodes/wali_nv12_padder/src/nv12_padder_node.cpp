@@ -25,10 +25,17 @@ class Nv12PadderNode : public rclcpp::Node {
 
     reset_canvas();
 
-    auto qos = rclcpp::QoS(rclcpp::KeepLast(2)).reliable();
-    pub_ = create_publisher<sensor_msgs::msg::Image>(output_topic_, qos);
+    // hobot_codec publishes ROS image output with sensor-data QoS on current
+    // TogetherROS releases. A reliable subscription is incompatible with a
+    // best-effort publisher and silently receives zero frames. Accept the
+    // upstream sensor stream as best-effort, then expose a reliable output to
+    // mono2d_body_detection and the Python result scaler.
+    auto input_qos = rclcpp::SensorDataQoS();
+    input_qos.keep_last(2);
+    auto output_qos = rclcpp::QoS(rclcpp::KeepLast(2)).reliable();
+    pub_ = create_publisher<sensor_msgs::msg::Image>(output_topic_, output_qos);
     sub_ = create_subscription<sensor_msgs::msg::Image>(
-        input_topic_, qos,
+        input_topic_, input_qos,
         [this](sensor_msgs::msg::Image::ConstSharedPtr msg) { on_image(*msg); });
 
     RCLCPP_INFO(get_logger(), "Fast NV12 padder: %s -> %s, target=%dx%d, flip_v=%s, flip_h=%s",

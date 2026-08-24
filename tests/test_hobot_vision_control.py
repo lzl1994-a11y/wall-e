@@ -2,6 +2,7 @@ import importlib
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 
@@ -12,10 +13,10 @@ class _FakeString:
 
 class _FakeNode:
     def __init__(self, _name):
-        self.callback = None
+        self.callbacks = {}
 
-    def create_subscription(self, _message_type, _topic, callback, _qos):
-        self.callback = callback
+    def create_subscription(self, _message_type, topic, callback, _qos):
+        self.callbacks[topic] = callback
         return object()
 
 
@@ -32,13 +33,17 @@ def _load_module():
     fake_qos = types.ModuleType("rclpy.qos")
     fake_qos.QoSProfile = _FakeQoSProfile
     fake_qos.DurabilityPolicy = types.SimpleNamespace(TRANSIENT_LOCAL="transient")
+    fake_qos.qos_profile_sensor_data = object()
     fake_std = types.ModuleType("std_msgs.msg")
     fake_std.String = _FakeString
+    fake_sensor = types.ModuleType("sensor_msgs.msg")
+    fake_sensor.Image = type("Image", (), {})
     modules = {
         "rclpy": fake_rclpy,
         "rclpy.node": fake_node,
         "rclpy.qos": fake_qos,
         "std_msgs.msg": fake_std,
+        "sensor_msgs.msg": fake_sensor,
     }
     sys.modules.pop("nodes.hobot_vision_node", None)
     with patch.dict(sys.modules, modules):
@@ -56,6 +61,18 @@ class VisionPipelineControlTests(unittest.TestCase):
         self.assertFalse(control.enabled)
         control._on_command(_FakeString("invalid"))
         self.assertFalse(control.enabled)
+
+    def test_frame_health_counts_both_model_input_stages(self):
+        module = _load_module()
+        control = module.VisionPipelineControl()
+        control._on_command(_FakeString("start"))
+
+        control.callbacks["/image_nv12"](object())
+        control.callbacks["/image_nv12"](object())
+        control.callbacks["/image_padded_nv12"](object())
+
+        self.assertEqual(control.decoded_frames, 2)
+        self.assertEqual(control.padded_frames, 1)
 
     def test_stop_reaps_known_descendants_after_process_group(self):
         module = _load_module()
@@ -76,7 +93,11 @@ class VisionPipelineControlTests(unittest.TestCase):
         process = Mock()
 
         with (
-            patch.object(module.Path, "exists", return_value=True),
+            patch.object(
+                module,
+                "_ensure_padder_binary",
+                return_value=module.Path("/tmp/nv12_padder_node"),
+            ),
             patch.object(module, "cleanup_old_processes"),
             patch.object(module.time, "sleep"),
             patch.object(module.os, "setsid", create=True),
@@ -99,6 +120,22 @@ class VisionPipelineControlTests(unittest.TestCase):
         self.assertNotIn("ros2 run websocket", pipeline_script)
         self.assertNotIn("/image_padded_jpeg", pipeline_script)
         self.assertIn("image_topic:=/image_padded_nv12", pipeline_script)
+
+    def test_padder_uses_sensor_qos_input_and_reliable_model_output(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "cpp_nodes"
+            / "wali_nv12_padder"
+            / "src"
+            / "nv12_padder_node.cpp"
+        )
+        text = source.read_text(encoding="utf-8")
+
+        self.assertIn("auto input_qos = rclcpp::SensorDataQoS()", text)
+        self.assertIn(
+            "create_publisher<sensor_msgs::msg::Image>(output_topic_, output_qos)",
+            text,
+        )
 
     def test_detector_cleanup_does_not_kill_the_camera_owner(self):
         module = _load_module()

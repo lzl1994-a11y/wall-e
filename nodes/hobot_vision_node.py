@@ -16,7 +16,8 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -37,6 +38,8 @@ class VisionPipelineControl(Node):
         # must remain off until wali_tracking_node publishes an explicit
         # VISION_PIPELINE_START command.
         self.enabled = False
+        self.decoded_frames = 0
+        self.padded_frames = 0
         command_qos = QoSProfile(depth=1)
         command_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.create_subscription(
@@ -45,11 +48,34 @@ class VisionPipelineControl(Node):
             self._on_command,
             command_qos,
         )
+        self.create_subscription(
+            Image,
+            "/image_nv12",
+            self._on_decoded_frame,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            Image,
+            "/image_padded_nv12",
+            self._on_padded_frame,
+            qos_profile_sensor_data,
+        )
 
     def _on_command(self, message):
         command = decode_vision_pipeline_command(message.data)
         if command is not None:
+            if command == VISION_PIPELINE_START and not self.enabled:
+                self.decoded_frames = 0
+                self.padded_frames = 0
             self.enabled = command == VISION_PIPELINE_START
+
+    def _on_decoded_frame(self, _message):
+        if self.enabled:
+            self.decoded_frames += 1
+
+    def _on_padded_frame(self, _message):
+        if self.enabled:
+            self.padded_frames += 1
 
 
 def cleanup_old_processes():
@@ -77,26 +103,55 @@ def cleanup_old_processes():
             stderr=subprocess.DEVNULL,
         )
 
+
+def _ensure_padder_binary(root_dir: Path, env: dict[str, str]) -> Path:
+    """Build the local padder when its C++ source is newer than the binary."""
+    configured = str(env.get("WALI_NV12_PADDER", "")).strip()
+    if configured:
+        binary = Path(configured)
+        if not binary.exists():
+            raise RuntimeError(f"configured NV12 padder not found: {binary}")
+        return binary
+
+    binary = root_dir / "build" / "wali_nv12_padder" / "nv12_padder_node"
+    source_dir = root_dir / "cpp_nodes" / "wali_nv12_padder"
+    source_files = [
+        source_dir / "CMakeLists.txt",
+        source_dir / "src" / "nv12_padder_node.cpp",
+    ]
+    needs_build = not binary.exists()
+    if not needs_build:
+        try:
+            binary_time = binary.stat().st_mtime_ns
+            needs_build = any(
+                source.exists() and source.stat().st_mtime_ns > binary_time
+                for source in source_files
+            )
+        except OSError:
+            needs_build = True
+
+    if needs_build:
+        build_script = root_dir / "tools" / "build_nv12_padder.sh"
+        print("[hobot_vision_node] NV12 padder is missing or stale; rebuilding...")
+        result = subprocess.run(["bash", str(build_script)], env=env)
+        if result.returncode != 0 or not binary.exists():
+            raise RuntimeError(
+                f"failed to build NV12 padder (exit={result.returncode})"
+            )
+    return binary
+
+
 def _start_pipeline():
     env = os.environ.copy()
     node_dir = Path(__file__).resolve().parent
     root_dir = node_dir.parent
     ros_python = os.environ.get("WALI_ROS_PYTHON", "/usr/bin/python_backup")
-    padder_bin = Path(
-        os.environ.get(
-            "WALI_NV12_PADDER",
-            str(root_dir / "build" / "wali_nv12_padder" / "nv12_padder_node"),
-        )
-    )
+    try:
+        padder_bin = _ensure_padder_binary(root_dir, env)
+    except RuntimeError as exc:
+        print(f"[hobot_vision_node] Error: {exc}")
+        return None
     scaler_script = shlex.quote(str(node_dir / "ai_msg_scaler_node.py"))
-    if not padder_bin.exists():
-        print(
-            "[hobot_vision_node] Error: fast NV12 padder binary not found: "
-            f"{padder_bin}\n"
-            "[hobot_vision_node] Build it first with: bash tools/build_nv12_padder.sh"
-        )
-        sys.exit(1)
-    
     print("[hobot_vision_node] Cleaning up any zombie vision processes...")
     cleanup_old_processes()
     time.sleep(1)
@@ -148,6 +203,8 @@ def main():
     proc = None
     rclpy.init()
     control = VisionPipelineControl()
+    last_health_log = time.monotonic()
+    previous_health_counts = (0, 0)
 
     def handler(signum, frame):
         nonlocal stopping
@@ -161,11 +218,25 @@ def main():
         while not stopping:
             rclpy.spin_once(control, timeout_sec=0.2)
 
+            now = time.monotonic()
+            if control.enabled and now - last_health_log >= 5.0:
+                counts = (control.decoded_frames, control.padded_frames)
+                decoded_delta = counts[0] - previous_health_counts[0]
+                padded_delta = counts[1] - previous_health_counts[1]
+                print(
+                    "[hobot_vision_node] Frame health (last 5s): "
+                    f"decoded={decoded_delta} padded={padded_delta}"
+                )
+                previous_health_counts = counts
+                last_health_log = now
+
             if not control.enabled:
                 if proc:
                     print("[hobot_vision_node] Tracking disabled; stopping vision pipeline")
                     _stop_pipeline(proc)
                     proc = None
+                previous_health_counts = (0, 0)
+                last_health_log = now
                 continue
 
             if proc and proc.poll() is not None:
