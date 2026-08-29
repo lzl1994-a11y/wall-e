@@ -49,13 +49,15 @@ class _FakeNodeBase:
     def __init__(self, _name):
         self.publishers = {}
         self.publisher_types = {}
+        self.publisher_qos = {}
         self.subscriptions = {}
         self.subscription_types = {}
 
-    def create_publisher(self, message_type, topic, _qos):
+    def create_publisher(self, message_type, topic, qos):
         publisher = _FakePublisher(topic)
         self.publishers[topic] = publisher
         self.publisher_types[topic] = message_type
+        self.publisher_qos[topic] = qos
         return publisher
 
     def create_subscription(self, message_type, topic, callback, _qos):
@@ -136,6 +138,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
         ):
             node = module.CameraCaptureNode()
             self.assertIs(node.publisher_types["/camera_frame"], _FakeCompressedImage)
+            self.assertEqual(node.publisher_qos["/camera_frame"], 10)
             self.assertEqual(
                 node.subscription_types["/image"],
                 [_FakeCompressedImage],

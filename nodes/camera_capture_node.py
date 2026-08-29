@@ -64,7 +64,10 @@ class CameraCaptureNode(Node):
         self._frame_pub = self.create_publisher(
             CompressedImage,
             CAMERA_FRAME_TOPIC,
-            qos_profile_sensor_data,
+            # hobot_codec uses a Reliable subscription. A Reliable publisher
+            # remains compatible with Best Effort preview subscribers, while
+            # the reverse pairing drops every detector frame.
+            10,
         )
         self._status_pub = self.create_publisher(String, CAMERA_STATUS_TOPIC, 10)
         self.create_subscription(String, CAMERA_COMMAND_TOPIC, self._on_command, 10)
