@@ -22,6 +22,7 @@ import sounddevice as sd
 import yaml
 
 from services.usb_devices import resolve_audio_device
+from services.audio_apm import WebRTCApm
 
 
 class WakeWordDetector:
@@ -126,6 +127,7 @@ class AudioPipeline:
     """
 
     SAMPLE_RATE = 16000
+    DEVICE_SAMPLE_RATE = 48000
     FRAME_MS = 30  # WebRTC VAD 严格要求 10ms, 20ms, 或 30ms
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
     FRAME_BYTES = FRAME_SIZE * 2
@@ -160,6 +162,15 @@ class AudioPipeline:
             silence_sec = self.SILENCE_SEC
         self._silence_sec = min(2.0, max(0.3, silence_sec))
 
+        audio_capture = config.get("audio_capture", {})
+        if not isinstance(audio_capture, dict): audio_capture = {}
+        self._apm_enabled = bool(audio_capture.get("webrtc_apm_enabled", True))
+        try: self._apm_pre_gain_db = float(audio_capture.get("webrtc_pre_gain_db", 6.0))
+        except (TypeError, ValueError): self._apm_pre_gain_db = 6.0
+        self._apm_pre_gain_db = min(24.0, max(-12.0, self._apm_pre_gain_db))
+        self._apm: WebRTCApm | None = None
+        self._device_sample_rate = self.SAMPLE_RATE
+
         self.audio_queue = queue.Queue(maxsize=300)
         self._is_running = False
         self._is_paused = False
@@ -181,6 +192,9 @@ class AudioPipeline:
     def start(self):
         self._is_running = True
         self._paused_event.clear()
+        if self._apm_enabled:
+            self._apm = WebRTCApm(self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db)
+            self._apm.start(self.DEVICE_SAMPLE_RATE)
         self._listen_thread = threading.Thread(target=self._run, daemon=True)
         self._listen_thread.start()
         self._device_thread = threading.Thread(target=self._device_monitor, daemon=True)
@@ -191,6 +205,7 @@ class AudioPipeline:
         self._is_running = False
         self._paused_event.set()
         self._close_audio_stream()
+        if self._apm: self._apm.stop(); self._apm = None
         if self._listen_thread and self._listen_thread.is_alive():
             self._listen_thread.join(timeout=2.0)
         if self._device_thread and self._device_thread.is_alive():
@@ -306,29 +321,26 @@ class AudioPipeline:
                 pass
 
     def _open_audio_stream(self, device_index, identity):
-        for channels in (2, 1):
-            stream = None
-            try:
-                stream = sd.InputStream(
-                    device=device_index,
-                    channels=channels,
-                    dtype="float32",
-                    samplerate=self.SAMPLE_RATE,
-                    blocksize=self.FRAME_SIZE,
-                    callback=self._audio_callback,
-                )
-                stream.start()
-                with self._audio_stream_lock:
-                    self._audio_stream = stream
-                    self._audio_device_identity = identity
-                print(f"[AudioPipeline] microphone connected (device={device_index}, channels={channels})")
-                return True
-            except Exception:
-                if stream:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
+        rates = (self.DEVICE_SAMPLE_RATE, self.SAMPLE_RATE) if self._apm_enabled else (self.SAMPLE_RATE,)
+        for sample_rate in rates:
+            if self._apm: self._apm.start(sample_rate)
+            for channels in (2, 1):
+                stream = None
+                try:
+                    stream = sd.InputStream(
+                        device=device_index, channels=channels, dtype="float32", samplerate=sample_rate,
+                        blocksize=sample_rate * self.FRAME_MS // 1000, callback=self._audio_callback,
+                    )
+                    stream.start()
+                    self._device_sample_rate = sample_rate
+                    with self._audio_stream_lock:
+                        self._audio_stream = stream; self._audio_device_identity = identity
+                    print(f"[AudioPipeline] microphone connected (device={device_index}, channels={channels}, capture={sample_rate}Hz -> VAD/ASR=16000Hz)")
+                    return True
+                except Exception:
+                    if stream:
+                        try: stream.close()
+                        except Exception: pass
         return False
 
     def _device_monitor(self):
@@ -371,6 +383,11 @@ class AudioPipeline:
             except queue.Empty:
                 break
 
+    def _queue_processed_pcm(self, pcm: bytes):
+        if not self._is_running or self._is_paused: return
+        try: self.audio_queue.put_nowait(pcm)
+        except queue.Full: pass
+
     def _audio_callback(self, indata, frames, time_info, status):
         if not self._is_running or self._is_paused:
             return
@@ -384,10 +401,20 @@ class AudioPipeline:
             # 我们需要剔除直流偏置，防止极端情况下影响 WebRTC（虽然它天然抗 DC）
             mono_audio = mono_audio - np.mean(mono_audio)
                 
-            int16 = (mono_audio * 32767).astype(np.int16)
-            self.audio_queue.put_nowait(int16.tobytes())
+            int16 = np.clip(mono_audio * 32767, -32768, 32767).astype(np.int16)
+            pcm = int16.tobytes()
+            if self._apm and self._apm.submit(pcm): return
+            self._queue_processed_pcm(self._resample_fallback(int16).tobytes())
         except queue.Full:
             pass
+
+    def _resample_fallback(self, samples: np.ndarray) -> np.ndarray:
+        """Keep 16 kHz VAD/ASR working if the optional APM process is absent."""
+        if self._device_sample_rate == self.SAMPLE_RATE: return samples
+        if self._device_sample_rate % self.SAMPLE_RATE == 0:
+            return samples[:: self._device_sample_rate // self.SAMPLE_RATE]
+        count = max(1, round(samples.size * self.SAMPLE_RATE / self._device_sample_rate))
+        return np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples).astype(np.int16)
 
     def _run(self):
         silence_sec = getattr(self, "_silence_sec", self.SILENCE_SEC)

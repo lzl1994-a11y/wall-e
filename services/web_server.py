@@ -547,6 +547,16 @@ def validate_config(config: Any) -> list[str]:
             if "silence_sec" in vad:
                 _check_number(vad, "silence_sec", "vad.silence_sec", errors, 0.3, 2)
 
+    audio_capture = config.get("audio_capture")
+    if audio_capture is not None:
+        if not isinstance(audio_capture, dict):
+            errors.append("audio_capture 必须是配置对象")
+        else:
+            if "webrtc_apm_enabled" in audio_capture:
+                _check_bool(audio_capture, "webrtc_apm_enabled", "audio_capture.webrtc_apm_enabled", errors)
+            if "webrtc_pre_gain_db" in audio_capture:
+                _check_number(audio_capture, "webrtc_pre_gain_db", "audio_capture.webrtc_pre_gain_db", errors, -12, 24)
+
     if not isinstance(config.get("system_prompt"), str) or not config.get("system_prompt", "").strip():
         errors.append("system_prompt 不能为空")
     elif len(config["system_prompt"]) > 100000:

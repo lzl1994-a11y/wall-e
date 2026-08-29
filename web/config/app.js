@@ -40,6 +40,7 @@ const MODULE_ROOTS = Object.freeze({
   asr: "asr",
   wake_word: "wake_word",
   vad: "vad",
+  audio_capture: "audio_capture",
   tts: "tts",
   llm: "llm",
   system_prompt: "system_prompt",
@@ -60,6 +61,7 @@ const MODULE_LABELS = Object.freeze({
   asr: "ASR",
   wake_word: "唤醒词",
   vad: "VAD",
+  audio_capture: "WebRTC 人声增强",
   tts: "TTS",
   llm: "LLM",
   system_prompt: "系统提示词",
@@ -466,6 +468,22 @@ function ensureVadConfig() {
   if (!["webrtc", "silero"].includes(state.config.vad.provider)) {
     state.config.vad.provider = "webrtc";
   }
+}
+
+function ensureAudioCaptureConfig() {
+  const defaults = { webrtc_apm_enabled: true, webrtc_pre_gain_db: 6 };
+  if (!state.config.audio_capture || typeof state.config.audio_capture !== "object") {
+    state.config.audio_capture = {};
+  }
+  Object.entries(defaults).forEach(([key, value]) => {
+    if (state.config.audio_capture[key] === undefined) state.config.audio_capture[key] = value;
+  });
+}
+
+function updateWebRtcPreGainValue() {
+  const slider = $("#webrtc-pre-gain");
+  const output = $("#webrtc-pre-gain-value");
+  if (slider && output) output.textContent = `${slider.value || 6} dB`;
 }
 
 function ensureLlmConfig() {
@@ -891,6 +909,7 @@ function refreshModuleFromSnapshot(module, payload) {
   state.secretFields = payload.secret_fields || {};
   if (module === "asr") ensureAsrConfigs();
   if (module === "vad") ensureVadConfig();
+  if (module === "audio_capture") ensureAudioCaptureConfig();
   if (module === "llm") ensureLlmConfig();
   if (module === "hardware") ensureHardwareConfig();
   populateFields(moduleContainer(module));
@@ -900,6 +919,7 @@ function refreshModuleFromSnapshot(module, payload) {
     updateLocalAsrEnginePanels(state.config.asr.engine);
   }
   if (module === "vad") updateVadProviderPanels(state.config.vad.provider);
+  if (module === "audio_capture") updateWebRtcPreGainValue();
   if (module === "hardware") updateHardwareBackendPanels(state.config.hardware.backend);
   if (module === "servos") renderServos();
   if (module === "motors") renderMotors();
@@ -921,6 +941,7 @@ async function loadConfig() {
     ensureRemoteControlConfig();
     ensureHardwareConfig();
     ensureVadConfig();
+    ensureAudioCaptureConfig();
     ensureLlmConfig();
     ensureUsbDeviceConfig();
     ensureAsrConfigs();
@@ -929,6 +950,7 @@ async function loadConfig() {
     updateAsrProviderPanels(state.config.asr.provider);
     updateLocalAsrEnginePanels(state.config.asr.engine);
     updateVadProviderPanels(state.config.vad.provider);
+    updateWebRtcPreGainValue();
     updateHardwareBackendPanels(state.config.hardware.backend);
     renderServos();
     renderMotors();
@@ -1130,6 +1152,7 @@ function bindEvents() {
     updateVadProviderPanels(event.target.value);
     markDirty("vad");
   });
+  $("#webrtc-pre-gain").addEventListener("input", () => updateWebRtcPreGainValue());
   $("#hardware-backend").addEventListener("change", (event) => {
     if (state.config) state.config.hardware.backend = event.target.value;
     updateHardwareBackendPanels(event.target.value);

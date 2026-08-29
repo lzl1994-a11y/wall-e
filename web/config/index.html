@@ -205,6 +205,12 @@
             </div>
           </article>
 
+          <article class="card" data-module="audio_capture">
+            <div class="card-heading-row"><h3>WebRTC 人声增强</h3><button class="button secondary small module-save" data-save-module="audio_capture" type="button">保存本模块</button></div>
+            <label class="switch-row compact"><span><strong>启用常驻 WebRTC APM</strong><small>启动时运行 GStreamer：48 kHz 麦克风 → 16 kHz 人声增强 → VAD → ASR。</small></span><input data-path="audio_capture.webrtc_apm_enabled" type="checkbox"><i></i></label>
+            <label class="field full"><span>WebRTC 前置增益：<output id="webrtc-pre-gain-value">6 dB</output></span><input id="webrtc-pre-gain" data-path="audio_capture.webrtc_pre_gain_db" data-type="number" type="range" min="-12" max="24" step="1"></label>
+          </article>
+
           <article class="card span-two" data-module="tts">
             <div class="card-heading-row"><h3>TTS 语音合成</h3><button class="button secondary small module-save" data-save-module="tts" type="button">保存本模块</button></div>
             <div class="form-grid three">
