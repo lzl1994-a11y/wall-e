@@ -20,6 +20,7 @@ class WebRTCApmTests(unittest.TestCase):
         self.assertIn("sample-rate=48000", command)
         self.assertIn(caps, command)
         self.assertLess(command.index(caps), command.index("webrtcdsp"))
+        self.assertLess(command.index(caps), command.index("volume"))
         self.assertEqual(command[-3:], ["fdsink", "fd=1", "sync=false"])
 
     def test_fallback_resampler_keeps_vad_pcm_at_16khz(self):

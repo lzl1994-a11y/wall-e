@@ -87,8 +87,9 @@ class WebRTCApm:
         return [
             "gst-launch-1.0", "-q", "fdsrc", "fd=0", "blocksize=960", "!",
             "rawaudioparse", "format=pcm", "pcm-format=s16le", f"sample-rate={input_rate}", "num-channels=1", "!",
-            "audioconvert", "!", "volume", f"volume={gain:.9f}", "!", "audioresample", "!",
+            "audioconvert", "!", "audioresample", "!",
             "audio/x-raw,format=S16LE,layout=interleaved,rate=16000,channels=1", "!",
+            "volume", f"volume={gain:.9f}", "!",
             "webrtcdsp", "echo-cancel=false", "high-pass-filter=true", "noise-suppression=true",
             "noise-suppression-level=moderate", "gain-control=true", "gain-control-mode=fixed-digital",
             "target-level-dbfs=3", "limiter=true", "!", "fdsink", "fd=1", "sync=false",
