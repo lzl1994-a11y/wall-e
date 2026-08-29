@@ -52,7 +52,7 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `screen_dialog` | `walle_llm_brain` | `walle_serial_node` | 一整轮完整对话包，包含 `turn_id`、`corrected_text`、`ai_text`、`actions`。目前屏幕串口节点主要看这个。 |
 | `/wall_e/vision` | `yolo_brain_node` | 当前默认无人订阅 | 视觉识别结果演示话题。 |
 
-### 按需看图/拍照链路
+### 摄像头热备与按需看图/拍照链路
 
 `camera_capture_node` 始终启动，是 `/dev/video*` 的唯一生命周期管理者：
 
@@ -64,11 +64,14 @@ LLM / Web -> /camera_capture_cmd -> camera_capture_node
 /camera_frame -> CameraFrameProvider -> 1.5 秒 TFT 预览 -> 云端视觉 LLM
               -> CameraFrameProvider -> 3 秒 TFT 预览 -> 本地照片
               -> Config Web preview
+              -> 热备 BPU 检测进程（仅有租约时收到帧）
 ```
 
-预览消费者只订阅 `/camera_frame`，不直接打开摄像头。客户端使用带超时的租约；全部租约释放或过期后，
-`wali_tracking_node` 在跟随/注视期间持有独立租约；拍照和预览只增加、
-释放自己的租约。全部租约释放或过期后，唯一的 `hobot_usb_cam` 才会停止。
+`camera_capture_node` 启动时即拉起唯一的 `hobot_usb_cam` 并持续检查首帧、断流和进程退出；
+异常时自动重启。预览消费者只订阅 `/camera_frame`，不直接打开摄像头。客户端使用带超时的
+租约来控制帧转发：`wali_tracking_node` 在跟随/注视期间持有独立租约，拍照和预览只增加、
+释放自己的租约。全部租约释放或过期后停止向 `/camera_frame` 转发，但物理摄像头保持热备；
+只有 `camera_capture_node` 退出时才关闭 `hobot_usb_cam`。
 
 ### 视觉跟踪链路（--tracking）
 
@@ -86,7 +89,7 @@ wali_tracking_node  -> /servo_targets/tracking -> sequence_ros_node -> /servo_cm
 sequence_ros_node   -> /motor_cmd/autonomy ├-> motion_arbiter_node -> /motor_cmd
 joy_control_node    -> /motor_cmd/joystick ┘                         ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
                                                                     └─ ubuntu_i2c: i2c_hardware_node -> 板载 I2C -> PCA9685
-                    -> /vision_pipeline_cmd -> hobot_vision_node -> RDK BPU 检测（订阅 `/image`）
+                    -> /vision_pipeline_cmd -> hobot_vision_node -> 热备 RDK BPU 检测（订阅 `/camera_frame`）
         ^
         ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
         ├─ /action_cmd                    (LLM 模式切换)
@@ -97,9 +100,9 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
-| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：启动/停止 `hobot_usb_cam`，将 `/image` 适配为预览 JPEG。 |
+| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：保持 `hobot_usb_cam` 热备并自愈，按租约将 `/image` 适配为预览 JPEG。 |
 | `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_targets/tracking`, `/motor_cmd/tracking`, `/vision_pipeline_cmd`, `/camera_capture_cmd` | 视觉跟踪中枢。跟随/注视时持有摄像头租约，并控制检测管线。 |
-| `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd`, `/image` | `/hobot_mono2d_body_detection` | 启停 RDK 编解码、补边和 `mono2d_body_detection`；检测器在 960×544 坐标系直接发布最终结果，不打开 USB 摄像头。 |
+| `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd`, `/camera_frame` | `/hobot_mono2d_body_detection` | 热备 RDK 编解码、补边和 `mono2d_body_detection`；跟踪命令只切换结果使用状态，不反复加载模型。 |
 | `nodes/motion_arbiter_node.py` | `motion_arbiter_node` | 运动控制启用时 | `/motor_cmd/joystick`, `/motor_cmd/tracking`, `/motor_cmd/autonomy` | `/motor_cmd` | 唯一电机命令仲裁器，执行手柄 > 跟踪 > 自主动作的优先级，并在上游命令超时后停车。 |
 | `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机；300ms 收不到仲裁心跳时强制写入停车状态。 |
 | `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685；300ms 收不到仲裁心跳时直接停车。 |
@@ -110,8 +113,8 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | 话题 | 发布者 | 订阅者 | 作用 |
 | --- | --- | --- | --- |
 | `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
-| `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | RDK 解码器、`camera_capture_node` | 摄像头唯一 JPEG 图像源，类型为 `sensor_msgs/msg/CompressedImage`。 |
-| `/camera_frame` | `camera_capture_node` | LLM、Web preview | 从 `/image` 适配出的 `sensor_msgs/msg/CompressedImage` 预览 JPEG。 |
+| `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | `camera_capture_node` | 摄像头唯一原始 JPEG 图像源，类型为 `sensor_msgs/msg/CompressedImage`。 |
+| `/camera_frame` | `camera_capture_node` | LLM、Web preview、RDK 解码器 | 从 `/image` 按租约转发的 `sensor_msgs/msg/CompressedImage`；热备检测进程空闲时不收帧。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
 | `/servo_targets/tracking` | `wali_tracking_node` | `sequence_ros_node` | 深度为 1 的最新头颈目标；只更新插值目标，不打断高层动作。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
@@ -121,7 +124,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/motor_cmd` | `motion_arbiter_node` | 当前硬件后端 | 仲裁后的唯一电机输出；JSON: `{"left":{"action":1,"throttle":30},"right":{...}}`。 |
 | `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
 | `/hobot_mono2d_body_detection` | RDK X3 `mono2d_body_detection` | `wali_tracking_node` | `ai_msgs/PerceptionTargets`，BPU 检测结果（body/face/head/hand 框 + track_id） |
-| `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control` | `std_msgs/String`：`start` 启动 BPU 检测消费者，`stop` 关闭检测管线。 |
+| `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control` | `std_msgs/String`：`start`/`stop` 标记跟踪结果使用状态；检测进程保持热备。 |
 
 ### 跟随模式切换
 
@@ -134,7 +137,7 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 {"turn_id":"...","name":"set_vision_gate","arguments":{"enabled":false}}   // 关闭跟踪
 ```
 
-进入跟随或注视模式时先申请摄像头；`/camera_capture_status` 确认收到有效帧后才启动 BPU 检测。运行中连续 3 秒无有效帧时，管理节点停止摄像头、发布错误并自动重启，检测管线等待画面恢复后再启动。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并关闭视觉管线。多张人脸同时出现时，注视模式选择面积最大的人脸。
+进入跟随或注视模式时先申请摄像头；`/camera_capture_status` 确认收到有效帧后才允许使用 BPU 检测结果。物理摄像头与 BPU 检测进程均已热备，请求只打开 `/camera_frame` 帧转发。运行中连续 3 秒无有效帧时，摄像头管理节点发布错误并自动重启摄像头，检测进程保持存活并等待画面恢复。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并关闭帧转发。多张人脸同时出现时，注视模式选择面积最大的人脸。
 
 ## 辅助服务文件
 

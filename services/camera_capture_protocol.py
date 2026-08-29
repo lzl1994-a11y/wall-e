@@ -1,4 +1,4 @@
-"""Shared protocol and helpers for the on-demand ROS camera."""
+"""Shared protocol and helpers for the hot-standby ROS camera."""
 
 from __future__ import annotations
 

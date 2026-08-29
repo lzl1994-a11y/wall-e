@@ -195,7 +195,7 @@ function renderCameraPreviewStatus(status = {}) {
   state.cameraPreview.lastStatus = { ...status };
   const startingText = {
     launching: "正在启动采集进程",
-    requesting_camera: "正在请求按需摄像头",
+    requesting_camera: "正在请求摄像头画面",
     waiting_frame: "等待 /camera_frame 首帧",
   }[status.phase] || "正在连接";
   const statusText = {

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 地平线视觉推理进程的 Python 包装器
-通过 Python 脚本拉起跟踪检测进程组。
-物理摄像头由 camera_capture_node 独占；本节点只消费其 /image 帧源。
+通过 Python 脚本拉起并热备跟踪检测进程组。
+物理摄像头由 camera_capture_node 独占；本节点只消费其按租约转发的帧源。
 这样可以完美融入现有的 launch_nodes.py 进程管理池中，并在 Ctrl+C 时一并被干净地回收。
 """
 
@@ -26,17 +26,17 @@ from services.vision_pipeline_protocol import (
     VISION_PIPELINE_START,
     decode_vision_pipeline_command,
 )
+from services.camera_capture_protocol import CAMERA_FRAME_TOPIC
 
 
 class VisionPipelineControl(Node):
-    """Keep detector consumers alive while allowing tracking to stop."""
+    """Gate tracking health accounting without unloading detector processes."""
 
     def __init__(self):
         super().__init__("hobot_vision_control")
-        # ``launch.tracking`` only loads this controller so semantic voice
-        # commands can use it later.  The expensive camera/detector pipeline
-        # must remain off until wali_tracking_node publishes an explicit
-        # VISION_PIPELINE_START command.
+        # The detector process group is started by main() and remains hot. The
+        # command only marks whether tracking currently consumes its results;
+        # camera leases independently gate CAMERA_FRAME_TOPIC input frames.
         self.enabled = False
         self.decoded_frames = 0
         self.padded_frames = 0
@@ -157,7 +157,7 @@ def _start_pipeline(padder_bin: Path | None = None):
     
     pipeline_script = (
         "source /opt/tros/humble/setup.bash && { "
-        "ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:=/image -p pub_topic:=/image_nv12 & "
+        f"ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:={CAMERA_FRAME_TOPIC} -p pub_topic:=/image_nv12 & "
         f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=true -p flip_horizontal:=true & "
         # The padded image already matches the model's 960x544 coordinate
         # space. Publish final detections directly instead of passing every AI
@@ -170,7 +170,10 @@ def _start_pipeline(padder_bin: Path | None = None):
     )
     cmd = ["bash", "-c", pipeline_script]
     
-    print("[hobot_vision_node] Starting detector pipeline from /image...")
+    print(
+        "[hobot_vision_node] Starting hot-standby detector pipeline from "
+        f"{CAMERA_FRAME_TOPIC}..."
+    )
     try:
         return subprocess.Popen(cmd, env=env, preexec_fn=os.setsid)
     except FileNotFoundError:
@@ -223,7 +226,7 @@ def main():
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
     
-    cleanup_old_processes()
+    proc = _start_pipeline(padder_bin)
     try:
         while not stopping:
             rclpy.spin_once(control, timeout_sec=0.2)
@@ -241,17 +244,12 @@ def main():
                 last_health_log = now
 
             if not control.enabled:
-                if proc:
-                    print("[hobot_vision_node] Tracking disabled; stopping vision pipeline")
-                    _stop_pipeline(proc)
-                    proc = None
                 previous_health_counts = (0, 0)
                 last_health_log = now
-                continue
 
             if proc and proc.poll() is not None:
                 print(
-                    "[hobot_vision_node] Detector pipeline exited "
+                    "[hobot_vision_node] Hot-standby detector pipeline exited "
                     f"with code {proc.returncode}; restarting..."
                 )
                 cleanup_old_processes()

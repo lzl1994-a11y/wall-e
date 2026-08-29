@@ -305,6 +305,10 @@ class CameraPreview:
                 diagnostic = self._diagnostic if generation == self._generation else ""
             if diagnostic and diagnostic not in message:
                 message = f"{message}（{diagnostic}）"
+            # Do not expose the terminal error state while the worker still
+            # owns subscriptions and a camera lease. Callers may immediately
+            # retry after observing this state.
+            self._terminate_process(process)
             self._set_status(generation, state="error", phase="error", error=message)
             print(f"[CameraPreview] {message}")
         finally:

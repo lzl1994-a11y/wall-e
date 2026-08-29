@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single lifecycle owner for on-demand camera frames."""
+"""Single lifecycle owner for a hot-standby camera stream."""
 
 from __future__ import annotations
 
@@ -78,9 +78,12 @@ class CameraCaptureNode(Node):
             qos_profile_sensor_data,
         )
         self._timer = self.create_timer(0.2, self._tick)
-        self._publish_status("idle", source="", force=True)
+        # Keep the physical camera process warm for the lifetime of this node.
+        # Leases gate frame relay only; they must not reopen the V4L2 device for
+        # every visual request.
+        self._tick()
         self.get_logger().info(
-            f"按需摄像头节点上线: {CAMERA_COMMAND_TOPIC} -> {CAMERA_FRAME_TOPIC}"
+            f"摄像头热备节点上线: {CAMERA_SOURCE_TOPIC} -> {CAMERA_FRAME_TOPIC}"
         )
 
     def _on_command(self, message: String) -> None:
@@ -110,6 +113,7 @@ class CameraCaptureNode(Node):
         if validate_decode:
             self._last_decode_validation = now
         if not self._leases.active:
+            self._publish_status("standby", source=CAMERA_SOURCE_TOPIC)
             return
         self._frame_pub.publish(
             CompressedImage(
@@ -137,11 +141,6 @@ class CameraCaptureNode(Node):
                 error=f"hobot_usb_cam 已退出，退出码 {code}",
                 force=True,
             )
-
-        if not self._leases.active:
-            self._stop_camera_process()
-            self._publish_status("idle", source="")
-            return
 
         if (
             self._camera_process is not None
@@ -189,7 +188,14 @@ class CameraCaptureNode(Node):
             return
 
         if self._camera_process is not None:
-            state = "streaming" if now - self._last_output_frame <= 1.0 else "starting"
+            if self._leases.active:
+                state = "streaming" if now - self._last_output_frame <= 1.0 else "starting"
+            else:
+                state = (
+                    "standby"
+                    if self._last_source_frame >= self._process_started_at
+                    else "starting"
+                )
             self._publish_status(state, source=CAMERA_SOURCE_TOPIC)
 
     def _camera_topic_diagnostic(self) -> str:

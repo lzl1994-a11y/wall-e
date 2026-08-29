@@ -127,7 +127,7 @@ def _load_camera_capture_module():
 
 
 class CameraCaptureNodeTests(unittest.TestCase):
-    def test_acquire_starts_remapped_hobot_camera_and_release_stops_it(self):
+    def test_camera_starts_on_node_init_and_release_keeps_it_warm(self):
         module = _load_camera_capture_module()
         process = _FakeProcess()
         with (
@@ -140,6 +140,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
                 node.subscription_types["/image"],
                 [_FakeCompressedImage],
             )
+            popen.assert_called_once()
             node._on_command(_FakeString(encode_camera_command("acquire", "llm", 5)))
             command = popen.call_args.args[0]
             self.assertIn("video_device:=/dev/video2", command)
@@ -147,6 +148,10 @@ class CameraCaptureNodeTests(unittest.TestCase):
 
             node._on_command(_FakeString(encode_camera_command("release", "llm")))
 
+        self.assertFalse(process.terminated)
+        self.assertIs(node._camera_process, process)
+
+        node.destroy_node()
         self.assertTrue(process.terminated)
         self.assertIsNone(node._camera_process)
 
@@ -200,6 +205,60 @@ class CameraCaptureNodeTests(unittest.TestCase):
             node = module.CameraCaptureNode()
             node._on_command(_FakeString(encode_camera_command("acquire", "tracking", 5)))
         popen.assert_called_once()
+
+    def test_idle_source_frames_are_discarded_until_a_client_acquires(self):
+        module = _load_camera_capture_module()
+        process = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", return_value=process),
+            patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
+        ):
+            node = module.CameraCaptureNode()
+            node._on_source_image(
+                _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            )
+
+        self.assertEqual(node.publishers["/camera_frame"].messages, [])
+        status = node.publishers["/camera_capture_status"].messages[-1]
+        self.assertIn('"state":"standby"', status.data)
+
+    def test_expired_lease_keeps_camera_in_standby(self):
+        module = _load_camera_capture_module()
+        process = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", return_value=process),
+            patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
+        ):
+            node = module.CameraCaptureNode()
+            node._on_source_image(
+                _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            )
+            node._leases.acquire("web", 1.0, now=time.monotonic() - 2.0)
+            node._tick()
+
+        self.assertFalse(process.terminated)
+        self.assertIs(node._camera_process, process)
+        status = node.publishers["/camera_capture_status"].messages[-1]
+        self.assertIn('"state":"standby"', status.data)
+
+    def test_hot_camera_restarts_after_exit_without_active_clients(self):
+        module = _load_camera_capture_module()
+        first = _FakeProcess()
+        second = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", side_effect=[first, second]) as popen,
+        ):
+            node = module.CameraCaptureNode()
+            first.returncode = 1
+            node._tick()
+            node._retry_after = 0.0
+            node._tick()
+
+        self.assertEqual(popen.call_count, 2)
+        self.assertIs(node._camera_process, second)
 
     def test_camera_without_first_frame_is_reaped(self):
         module = _load_camera_capture_module()

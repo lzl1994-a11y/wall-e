@@ -1,4 +1,4 @@
-"""Control contract for the long-running RDK tracking vision pipeline."""
+"""Control contract for the hot-standby RDK tracking vision pipeline."""
 
 
 VISION_PIPELINE_COMMAND_TOPIC = "/vision_pipeline_cmd"
