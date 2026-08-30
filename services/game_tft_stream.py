@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 from services.tft_preview_server import (
     JPEG_FRAME,
     STREAM_END,
@@ -41,34 +39,23 @@ def prepare_game_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
 
 
 class GameTftStream:
-    DURATION_MS = 60_000
-    REFRESH_SECONDS = 45.0
+    PERSISTENT_DURATION = 0xFFFFFFFF
 
     def __init__(
         self,
         server: "GameTftStreamServer",
         client,
         sequence: int,
-        fps: int,
-        *,
-        clock=time.monotonic,
     ) -> None:
         self._server = server
         self._client = client
         self._stream_sequence = sequence
-        self._fps = fps
-        self._clock = clock
-        self._last_start = clock()
         self._frame_index = 0
         self._closed = False
 
     def send_jpeg(self, jpeg: bytes) -> bool:
         if self._closed:
             return False
-        if self._clock() - self._last_start >= self.REFRESH_SECONDS:
-            if not self._send_start():
-                self.close(send_end=False)
-                return False
         frame = prepare_game_jpeg(jpeg, quality=self._server.settings.jpeg_quality)
         if frame is None or len(frame) > self._server.settings.max_frame_bytes:
             return True
@@ -79,19 +66,6 @@ class GameTftStream:
             self.close(send_end=False)
             return False
         self._frame_index += 1
-        return True
-
-    def _send_start(self) -> bool:
-        try:
-            self._server._send_packet(
-                self._client,
-                STREAM_START_MESSAGE,
-                self._stream_sequence,
-                encode_stream_start(self.DURATION_MS, 0, self._fps),
-            )
-        except (ConnectionError, OSError):
-            return False
-        self._last_start = self._clock()
         return True
 
     def close(self, *, send_end: bool = True) -> None:
@@ -128,12 +102,12 @@ class GameTftStreamServer(TftPreviewServer):
                 client,
                 STREAM_START_MESSAGE,
                 stream_sequence,
-                encode_stream_start(GameTftStream.DURATION_MS, 0, target_fps),
+                encode_stream_start(GameTftStream.PERSISTENT_DURATION, 0, target_fps),
             )
         except (ConnectionError, OSError):
             self._stream_lock.release()
             return None
-        return GameTftStream(self, client, stream_sequence, target_fps)
+        return GameTftStream(self, client, stream_sequence)
 
 
 __all__ = ["GameTftStream", "GameTftStreamServer", "prepare_game_jpeg"]
