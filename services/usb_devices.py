@@ -231,6 +231,24 @@ class AudioDeviceResolution:
     available: bool
     index: int | None
     identity: str
+    native_device: str | None = None
+
+
+def resolve_alsa_capture_device(
+    config_path: Path | str = DEFAULT_CONFIG_PATH,
+) -> AudioDeviceResolution:
+    """Resolve a Linux ALSA PCM without asking PortAudio to enumerate devices."""
+
+    device, configured = find_selected_usb_device("voice", config_path)
+    if not configured:
+        return AudioDeviceResolution(False, True, None, "system-default", "default")
+    if device is None:
+        return AudioDeviceResolution(True, False, None, "selected-usb-offline")
+    cards = sorted(device["interfaces"].get("audio_cards", []))
+    if not cards:
+        return AudioDeviceResolution(True, False, None, device["id"])
+    pcm = f"plughw:{cards[0]},0"
+    return AudioDeviceResolution(True, True, None, f"{device['id']}:{pcm}", pcm)
 
 
 def resolve_audio_device(

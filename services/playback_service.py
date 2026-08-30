@@ -35,7 +35,6 @@ class PlaybackService:
         self._device = None
         self._device_identity = ""
         self._stream = None
-        self._refresh_device()
 
         self._queue = queue.Queue()
         self._worker = threading.Thread(target=self._play_worker, daemon=True)

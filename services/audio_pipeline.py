@@ -21,7 +21,8 @@ import numpy as np
 import sounddevice as sd
 import yaml
 
-from services.usb_devices import resolve_audio_device
+from services.alsa_capture import ArecordInputStream, native_capture_available
+from services.usb_devices import resolve_alsa_capture_device, resolve_audio_device
 from services.audio_apm import WebRTCApm
 
 
@@ -322,15 +323,28 @@ class AudioPipeline:
 
     def _open_audio_stream(self, device_index, identity):
         rates = (self.DEVICE_SAMPLE_RATE, self.SAMPLE_RATE) if self._apm_enabled else (self.SAMPLE_RATE,)
+        use_native_capture = native_capture_available()
+        # The deployed Walle Ear UAC capture interface is native 48 kHz mono.
+        # Asking ALSA for stereo first makes arecord exit immediately and can
+        # create a reconnect loop before the mono fallback is attempted.
+        channel_options = (1,) if use_native_capture else (2, 1)
         for sample_rate in rates:
             if self._apm: self._apm.start(sample_rate)
-            for channels in (2, 1):
+            for channels in channel_options:
                 stream = None
                 try:
-                    stream = sd.InputStream(
-                        device=device_index, channels=channels, dtype="float32", samplerate=sample_rate,
-                        blocksize=sample_rate * self.FRAME_MS // 1000, callback=self._audio_callback,
-                    )
+                    stream_args = {
+                        "channels": channels,
+                        "samplerate": sample_rate,
+                        "blocksize": sample_rate * self.FRAME_MS // 1000,
+                        "callback": self._audio_callback,
+                    }
+                    if use_native_capture:
+                        stream = ArecordInputStream(device=device_index, **stream_args)
+                    else:
+                        stream = sd.InputStream(
+                            device=device_index, dtype="float32", **stream_args
+                        )
                     stream.start()
                     self._device_sample_rate = sample_rate
                     with self._audio_stream_lock:
@@ -346,9 +360,14 @@ class AudioPipeline:
     def _device_monitor(self):
         last_wait_message = 0.0
         while self._is_running:
-            resolution = resolve_audio_device(
-                "input", self._config_path, sounddevice_module=sd
-            )
+            if native_capture_available():
+                resolution = resolve_alsa_capture_device(self._config_path)
+                device_index = resolution.native_device or "default"
+            else:
+                resolution = resolve_audio_device(
+                    "input", self._config_path, sounddevice_module=sd
+                )
+                device_index = resolution.index
             with self._audio_stream_lock:
                 stream = self._audio_stream
                 identity = self._audio_device_identity
@@ -369,7 +388,7 @@ class AudioPipeline:
             elif not active or identity != resolution.identity:
                 if stream:
                     self._close_audio_stream()
-                if not self._open_audio_stream(resolution.index, resolution.identity):
+                if not self._open_audio_stream(device_index, resolution.identity):
                     now = time.monotonic()
                     if now - last_wait_message >= 10.0:
                         print("[AudioPipeline] microphone unavailable; retrying")

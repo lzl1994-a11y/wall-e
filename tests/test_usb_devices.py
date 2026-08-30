@@ -127,6 +127,23 @@ class UsbDeviceSelectionTests(unittest.TestCase):
         self.assertTrue(resolution.available)
         self.assertIsNone(resolution.index)
 
+    @patch("services.usb_devices.list_usb_devices")
+    def test_native_alsa_capture_avoids_portaudio_enumeration(self, list_devices):
+        selector = {"vendor_id": "1234", "product_id": "5678", "serial_number": "voice"}
+        self.write_selector("voice", selector)
+        list_devices.return_value = [
+            {
+                **selector,
+                "id": "1234:5678:voice",
+                "interfaces": {"serial": [], "video": [], "audio_cards": [3]},
+            }
+        ]
+
+        resolution = usb_devices.resolve_alsa_capture_device(self.config_path)
+
+        self.assertTrue(resolution.available)
+        self.assertEqual(resolution.native_device, "plughw:3,0")
+
 
 if __name__ == "__main__":
     unittest.main()

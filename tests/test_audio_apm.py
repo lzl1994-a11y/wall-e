@@ -1,6 +1,8 @@
 import sys
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -37,6 +39,23 @@ class WebRTCApmTests(unittest.TestCase):
             "audio_capture": {"webrtc_apm_enabled": True, "webrtc_pre_gain_db": 25},
         }
         self.assertIn("audio_capture.webrtc_pre_gain_db 必须在 -12 到 24 之间", validate_config(config))
+
+    @patch("services.audio_pipeline.native_capture_available", return_value=True)
+    @patch("services.audio_pipeline.ArecordInputStream")
+    def test_linux_capture_opens_native_mono_without_portaudio(self, stream_class, _available):
+        pipeline = AudioPipeline.__new__(AudioPipeline)
+        pipeline._apm_enabled = True
+        pipeline._apm = None
+        pipeline._audio_stream = None
+        pipeline._audio_stream_lock = threading.Lock()
+        pipeline._audio_device_identity = ""
+        stream_class.return_value = MagicMock(active=True)
+
+        opened = pipeline._open_audio_stream("plughw:3,0", "voice-id")
+
+        self.assertTrue(opened)
+        self.assertEqual(stream_class.call_args.kwargs["channels"], 1)
+        self.assertEqual(stream_class.call_args.kwargs["samplerate"], 48000)
 
 
 if __name__ == "__main__":
