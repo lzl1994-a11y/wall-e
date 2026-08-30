@@ -26,8 +26,17 @@ class GamePlaybackAdapterTests(unittest.TestCase):
 
     def test_close_marks_the_existing_player_turn_complete(self):
         playback = _Playback()
-        GamePlaybackAdapter(playback).close()
+        adapter = GamePlaybackAdapter(playback)
+        adapter.close()
+        adapter.close()
         self.assertTrue(playback.ended)
+
+    def test_close_rejects_any_late_pcm(self):
+        playback = _Playback()
+        adapter = GamePlaybackAdapter(playback)
+        adapter.close()
+        adapter.push_sample(1000, 1000)
+        self.assertEqual(playback.items, [])
 
 
 if __name__ == "__main__":

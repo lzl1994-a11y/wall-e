@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -28,10 +29,12 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=120.0)
     parser.add_argument("--fps", type=float, default=10.0)
     parser.add_argument("--gain", type=float, default=0.4)
+    parser.add_argument("--audio-drain-timeout", type=float, default=15.0)
     args = parser.parse_args()
 
     server = GameTftStreamServer(load_tft_preview_settings())
-    player = PlaybackService(mode="game")
+    audio_finished = threading.Event()
+    player = PlaybackService(mode="game", on_turn_complete=audio_finished.set)
     audio = GamePlaybackAdapter(player, gain=args.gain)
     stream = relay = None
     last_sent = 0.0
@@ -80,6 +83,17 @@ def main() -> int:
             relay.stop()
         core.close()
         audio.close()
+        drain_started = time.monotonic()
+        drained = audio_finished.wait(timeout=max(0.0, args.audio_drain_timeout))
+        print(
+            "FC audio metrics:"
+            f" batches={audio.batches_submitted}"
+            f" frames={audio.frames_submitted}"
+            f" drain_s={time.monotonic() - drain_started:.3f}"
+            f" drained={drained}"
+        )
+        if not drained:
+            print("FC audio warning: playback did not finish before drain timeout")
         if stream is not None:
             stream.close()
         server.stop()
