@@ -83,16 +83,23 @@ class LibretroJoypad:
 class LibretroFc:
     """Load a libretro FC core and pass unbuffered XRGB frames to a callback."""
 
-    def __init__(self, core_path: str | Path, *, on_frame: Callable[[bytes, int, int, int], None]):
+    def __init__(
+        self,
+        core_path: str | Path,
+        *,
+        on_frame: Callable[[bytes, int, int, int], None],
+        audio_sink=None,
+    ):
         self._core = ctypes.CDLL(str(core_path))
         self._on_frame = on_frame
+        self._audio_sink = audio_sink
         self.joypad = LibretroJoypad()
         self._configure_api()
         self._callbacks = (
             EnvironmentCallback(self._environment),
             VideoCallback(self._video),
-            AudioSampleCallback(lambda _left, _right: None),
-            AudioBatchCallback(lambda _data, frames: frames),
+            AudioSampleCallback(self._audio_sample),
+            AudioBatchCallback(self._audio_batch),
             InputPollCallback(lambda: None),
             InputStateCallback(self.joypad.state),
         )
@@ -154,6 +161,15 @@ class LibretroFc:
         if not data or not width or not height:
             return
         self._on_frame(ctypes.string_at(data, pitch * height), width, height, pitch)
+
+    def _audio_sample(self, left: int, right: int) -> None:
+        if self._audio_sink is not None:
+            self._audio_sink.push_sample(left, right)
+
+    def _audio_batch(self, data, frames: int) -> int:
+        if self._audio_sink is not None:
+            self._audio_sink.push_batch(data, frames)
+        return frames
 
 
 __all__ = ["LibretroFc", "LibretroJoypad"]
