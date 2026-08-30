@@ -9,12 +9,11 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.fc_input import FcControllerRelay
 from services.game_audio_adapter import GamePlaybackAdapter
+from services.game_frame_adapter import GameFrameAdapter
 from services.game_tft_stream import GameTftStreamServer
 from services.libretro_fc import LibretroFc
 from services.playback_service import PlaybackService
@@ -36,20 +35,11 @@ def main() -> int:
     audio_finished = threading.Event()
     player = PlaybackService(mode="game", on_turn_complete=audio_finished.set)
     audio = GamePlaybackAdapter(player, gain=args.gain)
-    stream = relay = None
-    last_sent = 0.0
-    source_frames = source_skips = 0
+    stream = relay = frame_adapter = None
 
     def on_frame(raw: bytes, width: int, height: int, pitch: int) -> None:
-        nonlocal last_sent, source_frames, source_skips
-        source_frames += 1
-        now = time.monotonic()
-        if now - last_sent < 1.0 / max(1.0, args.fps):
-            source_skips += 1
-            return
-        image = np.frombuffer(raw, dtype=np.uint8).reshape(height, pitch // 4, 4)
-        if stream is not None and stream.send_bgr(image[:, :width, :3]):
-            last_sent = now
+        if frame_adapter is not None:
+            frame_adapter.submit_frame(raw, width, height, pitch)
 
     server.start()
     core = LibretroFc(args.core, on_frame=on_frame, audio_sink=audio)
@@ -62,26 +52,29 @@ def main() -> int:
         stream = server.open_jpeg_stream(fps=int(args.fps))
         if stream is None:
             raise RuntimeError("chest TFT stream unavailable")
+        frame_adapter = GameFrameAdapter(stream, fps=args.fps)
         relay = FcControllerRelay(args.controller, core.joypad)
         relay.start()
         core.load(args.rom)
         core.run_for(args.seconds)
         if relay.error is not None:
             raise relay.error
-        if stream is not None:
-            print(
-                "FC frame metrics:"
-                f" callbacks={source_frames}"
-                f" gated={source_skips}"
-                f" sent={stream._frame_index}"
-                f" tft_prepare_s={stream.prepare_seconds:.3f}"
-                f" tcp_send_s={stream.send_seconds:.3f}"
-            )
         return 0
     finally:
         if relay is not None:
             relay.stop()
         core.close()
+        if frame_adapter is not None:
+            frame_adapter.close()
+            print(
+                "FC frame metrics:"
+                f" callbacks={frame_adapter.callbacks}"
+                f" overwritten={frame_adapter.overwritten}"
+                f" encoded={frame_adapter.encoded}"
+                f" sent={stream._frame_index if stream is not None else 0}"
+                f" tft_prepare_s={stream.prepare_seconds if stream is not None else 0:.3f}"
+                f" tcp_send_s={stream.send_seconds if stream is not None else 0:.3f}"
+            )
         audio.close()
         drain_started = time.monotonic()
         drained = audio_finished.wait(timeout=max(0.0, args.audio_drain_timeout))
