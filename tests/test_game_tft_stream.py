@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import cv2
 import numpy as np
 
-from services.game_tft_stream import GameTftStreamServer, prepare_game_jpeg
+from services.game_tft_stream import GameTftStreamServer, prepare_game_bgr, prepare_game_jpeg
 from services.tft_preview_server import (
     JPEG_FRAME,
     STREAM_END,
@@ -28,6 +28,14 @@ class GameTftStreamTests(unittest.TestCase):
         image = cv2.imdecode(np.frombuffer(result, np.uint8), cv2.IMREAD_COLOR)
         self.assertGreater(int(image[5, 5, 0]), int(image[5, 5, 2]))
         self.assertGreater(int(image[-5, -5, 2]), int(image[-5, -5, 0]))
+
+    def test_raw_bgr_path_preserves_aspect_ratio(self):
+        source = cv2.imdecode(
+            np.frombuffer(_quadrant_jpeg(), np.uint8), cv2.IMREAD_COLOR
+        )
+        result = prepare_game_bgr(source, quality=100)
+        image = cv2.imdecode(np.frombuffer(result, np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(image.shape[:2], (160, 240))
 
     def test_one_start_many_frames_one_end(self):
         server = GameTftStreamServer()

@@ -8,7 +8,6 @@ import sys
 import time
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -36,22 +35,17 @@ def main() -> int:
     audio = GamePlaybackAdapter(player, gain=args.gain)
     stream = relay = None
     last_sent = 0.0
-    source_frames = source_encode_seconds = source_skips = 0
+    source_frames = source_skips = 0
 
     def on_frame(raw: bytes, width: int, height: int, pitch: int) -> None:
-        nonlocal last_sent, source_frames, source_encode_seconds, source_skips
+        nonlocal last_sent, source_frames, source_skips
         source_frames += 1
         now = time.monotonic()
         if now - last_sent < 1.0 / max(1.0, args.fps):
             source_skips += 1
             return
         image = np.frombuffer(raw, dtype=np.uint8).reshape(height, pitch // 4, 4)
-        started = time.perf_counter()
-        ok, jpeg = cv2.imencode(
-            ".jpg", image[:, :width, :3], [cv2.IMWRITE_JPEG_QUALITY, 75]
-        )
-        source_encode_seconds += time.perf_counter() - started
-        if ok and stream is not None and stream.send_jpeg(jpeg.tobytes()):
+        if stream is not None and stream.send_bgr(image[:, :width, :3]):
             last_sent = now
 
     server.start()
@@ -77,7 +71,6 @@ def main() -> int:
                 f" callbacks={source_frames}"
                 f" gated={source_skips}"
                 f" sent={stream._frame_index}"
-                f" source_jpeg_s={source_encode_seconds:.3f}"
                 f" tft_prepare_s={stream.prepare_seconds:.3f}"
                 f" tcp_send_s={stream.send_seconds:.3f}"
             )

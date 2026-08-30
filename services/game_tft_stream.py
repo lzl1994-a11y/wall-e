@@ -40,6 +40,28 @@ def prepare_game_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
     return encoded.tobytes() if ok else None
 
 
+def prepare_game_bgr(image, *, quality: int = 70) -> bytes | None:
+    """Fit a raw upright BGR frame to the TFT with one JPEG encode."""
+    try:
+        import cv2
+    except ImportError:
+        return None
+    if image is None or image.size == 0:
+        return None
+    height, width = image.shape[:2]
+    scale = min(240.0 / width, 240.0 / height)
+    target = (
+        min(240, max(1, int(width * scale + 0.5))),
+        min(240, max(1, int(height * scale + 0.5))),
+    )
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(image, target, interpolation=interpolation)
+    ok, encoded = cv2.imencode(
+        ".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), min(100, max(1, quality))]
+    )
+    return encoded.tobytes() if ok else None
+
+
 class GameTftStream:
     PERSISTENT_DURATION = 0xFFFFFFFF
 
@@ -63,6 +85,26 @@ class GameTftStream:
             return False
         started = time.perf_counter()
         frame = prepare_game_jpeg(jpeg, quality=self._server.settings.jpeg_quality)
+        self.prepare_seconds += time.perf_counter() - started
+        self.prepare_attempts += 1
+        if frame is None or len(frame) > self._server.settings.max_frame_bytes:
+            return True
+        sequence = ((self._stream_sequence & 0xFFFF) << 16) | (self._frame_index & 0xFFFF)
+        try:
+            started = time.perf_counter()
+            self._server._send_packet(self._client, JPEG_FRAME, sequence, frame)
+            self.send_seconds += time.perf_counter() - started
+        except (ConnectionError, OSError):
+            self.close(send_end=False)
+            return False
+        self._frame_index += 1
+        return True
+
+    def send_bgr(self, image) -> bool:
+        if self._closed:
+            return False
+        started = time.perf_counter()
+        frame = prepare_game_bgr(image, quality=self._server.settings.jpeg_quality)
         self.prepare_seconds += time.perf_counter() - started
         self.prepare_attempts += 1
         if frame is None or len(frame) > self._server.settings.max_frame_bytes:
@@ -120,4 +162,6 @@ class GameTftStreamServer(TftPreviewServer):
         return GameTftStream(self, client, stream_sequence)
 
 
-__all__ = ["GameTftStream", "GameTftStreamServer", "prepare_game_jpeg"]
+__all__ = [
+    "GameTftStream", "GameTftStreamServer", "prepare_game_bgr", "prepare_game_jpeg",
+]
