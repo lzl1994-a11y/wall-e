@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from services.tft_preview_server import (
     JPEG_FRAME,
     STREAM_END,
@@ -52,16 +54,24 @@ class GameTftStream:
         self._stream_sequence = sequence
         self._frame_index = 0
         self._closed = False
+        self.prepare_seconds = 0.0
+        self.send_seconds = 0.0
+        self.prepare_attempts = 0
 
     def send_jpeg(self, jpeg: bytes) -> bool:
         if self._closed:
             return False
+        started = time.perf_counter()
         frame = prepare_game_jpeg(jpeg, quality=self._server.settings.jpeg_quality)
+        self.prepare_seconds += time.perf_counter() - started
+        self.prepare_attempts += 1
         if frame is None or len(frame) > self._server.settings.max_frame_bytes:
             return True
         sequence = ((self._stream_sequence & 0xFFFF) << 16) | (self._frame_index & 0xFFFF)
         try:
+            started = time.perf_counter()
             self._server._send_packet(self._client, JPEG_FRAME, sequence, frame)
+            self.send_seconds += time.perf_counter() - started
         except (ConnectionError, OSError):
             self.close(send_end=False)
             return False
