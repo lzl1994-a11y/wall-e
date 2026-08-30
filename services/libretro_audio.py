@@ -22,9 +22,8 @@ class LibretroAudioPlayer:
         device: int | None = None,
         config_path=DEFAULT_CONFIG_PATH,
         sounddevice_module=None,
-        max_buffer_ms: int = 240,
-        prebuffer_ms: int = 80,
-        latency: float = 0.08,
+        max_buffer_ms: int = 160,
+        prebuffer_ms: int = 40,
     ) -> None:
         if sounddevice_module is None:
             import sounddevice as sounddevice_module
@@ -36,7 +35,6 @@ class LibretroAudioPlayer:
         self._prebuffer = min(
             self._limit, max(1, sample_rate * prebuffer_ms // 1_000) * 4
         )
-        self._latency = latency
         self._buffer = bytearray()
         self._playing = False
         self._lock = threading.Lock()
@@ -64,7 +62,7 @@ class LibretroAudioPlayer:
             device=self.device,
             channels=2,
             dtype="int16",
-            latency=self._latency,
+            latency="low",
             callback=self._output_callback,
         )
         self._stream.start()
