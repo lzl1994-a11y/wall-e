@@ -102,8 +102,8 @@ def require_safe_transport(settings: McpGatewaySettings, token: str | None) -> N
             )
     if not settings.is_loopback and token is None:
         raise RuntimeError(
-            f"MCP监听 {settings.host} 时必须设置 {MCP_TOKEN_ENV}；"
-            "令牌不得写入 config.yaml"
+            f"MCP监听 {settings.host} 时必须在 config.yaml 的 mcp.token 中设置令牌"
+            f"（兼容方式：{MCP_TOKEN_ENV}）"
         )
 
 
@@ -211,5 +211,14 @@ def create_mcp_gateway(
 
 
 def token_from_environment() -> str | None:
+    """Load the configured MCP token; an environment value remains a fallback."""
+    try:
+        config = yaml.safe_load(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        mcp = config.get("mcp", {}) if isinstance(config, dict) else {}
+        token = mcp.get("token") if isinstance(mcp, dict) else None
+        if isinstance(token, str) and token.strip():
+            return token.strip()
+    except (OSError, yaml.YAMLError):
+        pass
     value = os.environ.get(MCP_TOKEN_ENV, "").strip()
     return value or None

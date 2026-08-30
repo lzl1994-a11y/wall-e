@@ -601,6 +601,23 @@ class ConfigWebServerTests(unittest.TestCase):
                 )
             self.assertEqual(context.exception.code, 400)
 
+    def test_mcp_token_generation_is_saved_and_redacted(self):
+        status, result = self.request("/api/mcp-token/generate", method="POST", payload={})
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(len(result["token"]), 32)
+        self.assertTrue(result["token"].isascii())
+
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["mcp"]["token"], result["token"])
+        _, snapshot = self.request("/api/config")
+        self.assertEqual(snapshot["config"]["mcp"]["token"], "")
+        self.assertTrue(snapshot["secret_fields"]["mcp.token"])
+
+        _, token_status = self.request("/api/mcp-token/status")
+        self.assertTrue(token_status["configured"])
+        self.assertEqual(token_status["source"], "config")
+
     def test_get_redacts_secrets(self):
         status, body = self.request("/api/config")
         self.assertEqual(status, 200)

@@ -47,7 +47,7 @@
 新增 `services/mcp_gateway.py`：
 
 - 加载并校验 MCP 配置。
-- 非回环地址监听时强制要求 `WALI_MCP_TOKEN`。
+- 非回环地址监听时强制要求 `mcp.token`（兼容读取 `WALI_MCP_TOKEN`）。
 - Token 必须为 32～512 位 ASCII 且不能包含空白。
 - 创建带鉴权的 FastMCP Server。
 - 设置 `strict_input_validation=True` 与 `mask_error_details=True`。

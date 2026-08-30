@@ -38,9 +38,13 @@ mcp:
   port: 5555
   path: /mcp
   command_timeout_sec: 12.0
+  token: replace-with-a-random-token-at-least-32-chars
 ```
 
-令牌只通过环境变量提供，不要写入 YAML：
+也可以在 Web 设置页的“运行 → MCP 外部 Agent 网关”中生成令牌。网页读取配置时会
+自动脱敏 `mcp.token`；生成后的明文只显示一次，请立即保存。
+
+兼容旧部署时，未配置 `mcp.token` 会回退读取环境变量：
 
 ```bash
 export WALI_MCP_TOKEN='replace-with-a-random-token-at-least-32-chars'
@@ -63,7 +67,7 @@ Authorization: Bearer <WALI_MCP_TOKEN>
 
 局域网 HTTP Bearer Token 只适合受信网络。跨公网部署时应使用 HTTPS、VPN 或反向代理
 并采用正式 OAuth/JWT 验证，禁止直接暴露机器人端口。
-`WALI_MCP_TOKEN` 必须是 32～512 位、无空白字符的 ASCII 随机令牌，可用
+`mcp.token`（或兼容环境变量 `WALI_MCP_TOKEN`）必须是 32～512 位、无空白字符的 ASCII 随机令牌，可用
 `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` 生成。
 
 ## 🚀 安装与配置

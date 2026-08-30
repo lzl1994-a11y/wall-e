@@ -45,6 +45,15 @@ class McpGatewayTests(unittest.TestCase):
         with patch.dict(os.environ, {MCP_TOKEN_ENV: "  token-value  "}, clear=False):
             self.assertEqual(token_from_environment(), "token-value")
 
+    def test_config_token_is_preferred_over_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text("mcp:\n  token: " + "c" * 32 + "\n", encoding="utf-8")
+            with patch("services.mcp_gateway.DEFAULT_CONFIG_PATH", path), patch.dict(
+                os.environ, {MCP_TOKEN_ENV: "e" * 32}, clear=False
+            ):
+                self.assertEqual(token_from_environment(), "c" * 32)
+
     def test_invalid_settings_fail_safe_to_local_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"

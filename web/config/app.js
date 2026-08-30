@@ -36,6 +36,7 @@ const CAMERA_PREVIEW_PHASES = Object.freeze({
 
 const MODULE_ROOTS = Object.freeze({
   runtime: "launch",
+  mcp: "mcp",
   pipeline: "pipeline",
   asr: "asr",
   wake_word: "wake_word",
@@ -57,6 +58,7 @@ const MODULE_ROOTS = Object.freeze({
 
 const MODULE_LABELS = Object.freeze({
   runtime: "运行",
+  mcp: "MCP 网关",
   pipeline: "对话链路",
   asr: "ASR",
   wake_word: "唤醒词",
@@ -125,6 +127,14 @@ const LOCAL_ASR_DEFAULTS = Object.freeze({
     device: "cpu",
     compute_type: "int8",
   },
+});
+
+const MCP_DEFAULTS = Object.freeze({
+  enabled: false,
+  host: "127.0.0.1",
+  port: 5555,
+  path: "/mcp",
+  command_timeout_sec: 12,
 });
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -480,6 +490,16 @@ function ensureAudioCaptureConfig() {
   });
 }
 
+function ensureMcpConfig() {
+  if (!state.config.mcp || typeof state.config.mcp !== "object" || Array.isArray(state.config.mcp)) {
+    state.config.mcp = deepClone(MCP_DEFAULTS);
+    return;
+  }
+  Object.entries(MCP_DEFAULTS).forEach(([key, value]) => {
+    if (state.config.mcp[key] === undefined) state.config.mcp[key] = value;
+  });
+}
+
 function updateWebRtcPreGainValue() {
   const slider = $("#webrtc-pre-gain");
   const output = $("#webrtc-pre-gain-value");
@@ -702,6 +722,8 @@ function clearConfigurationView() {
   $("#config-path").textContent = "—";
   $("#config-path").title = "";
   $("#modified-at").textContent = "—";
+  if ($("#mcp-token-output")) $("#mcp-token-output").value = "";
+  if ($("#mcp-token-status")) $("#mcp-token-status").textContent = "配置尚未读取";
   updateAsrProviderPanels("");
   updateVadProviderPanels("");
   updateHardwareBackendPanels("");
@@ -939,6 +961,7 @@ async function loadConfig() {
     state.config = payload.config;
     state.secretFields = payload.secret_fields || {};
     ensureRemoteControlConfig();
+    ensureMcpConfig();
     ensureHardwareConfig();
     ensureVadConfig();
     ensureAudioCaptureConfig();
@@ -964,6 +987,7 @@ async function loadConfig() {
     $("#error-box").hidden = true;
     showToast("已读取 config.yaml 当前配置");
     loadUsbDevices({ quiet: true });
+    loadMcpTokenStatus();
   } catch (error) {
     clearConfigurationView();
     setConfigControlsEnabled(false);
@@ -1031,6 +1055,37 @@ async function saveModule(module) {
   } finally {
     button.disabled = false;
     button.textContent = "保存本模块";
+  }
+}
+
+async function loadMcpTokenStatus() {
+  const status = $("#mcp-token-status");
+  if (!status) return;
+  try {
+    const payload = await api("/api/mcp-token/status");
+    status.textContent = payload.configured ? "令牌已写入 config.yaml" : "尚未配置令牌";
+  } catch (_) {
+    status.textContent = "无法读取令牌状态";
+  }
+}
+
+async function generateMcpToken() {
+  const button = $("#generate-mcp-token-button");
+  const output = $("#mcp-token-output");
+  if (!button || !output) return;
+  button.disabled = true;
+  button.textContent = "生成中…";
+  try {
+    const payload = await api("/api/mcp-token/generate", { method: "POST", body: JSON.stringify({}) });
+    output.value = payload.token;
+    $("#mcp-token-status").textContent = "新令牌已写入 config.yaml；MCP 重启后使用新令牌";
+    showToast(payload.message);
+  } catch (error) {
+    showErrors(error);
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "生成新令牌";
   }
 }
 
@@ -1177,6 +1232,7 @@ function bindEvents() {
   $("#change-token-button").addEventListener("click", changeAccessToken);
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);
+  $("#generate-mcp-token-button")?.addEventListener("click", generateMcpToken);
   $("#access-token").addEventListener("input", () => {
     sessionStorage.setItem("waliConfigToken", getToken());
   });

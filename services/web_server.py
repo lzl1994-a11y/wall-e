@@ -14,6 +14,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -467,6 +468,17 @@ def validate_config(config: Any) -> list[str]:
                 1,
                 120,
             )
+            token = mcp.get("token")
+            if token is not None:
+                if not isinstance(token, str):
+                    errors.append("mcp.token 必须是字符串")
+                else:
+                    try:
+                        token.encode("ascii")
+                    except UnicodeEncodeError:
+                        errors.append("mcp.token 必须使用 ASCII 字符")
+                    if len(token) < 32 or len(token) > 512 or any(char.isspace() for char in token):
+                        errors.append("mcp.token 必须是 32-512 位且不含空白字符的随机令牌")
 
     hardware = config.get("hardware")
     if hardware is not None:
@@ -694,6 +706,25 @@ class ConfigStore:
             current["web"] = web
             return self._save_merged(current, {})
 
+    def generate_mcp_token(self) -> str:
+        """Generate and persist a new MCP credential in the MCP configuration."""
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            current = self.load()
+            mcp = current.get("mcp")
+            if not isinstance(mcp, dict):
+                mcp = {
+                    "enabled": False,
+                    "host": "127.0.0.1",
+                    "port": 5555,
+                    "path": "/mcp",
+                    "command_timeout_sec": 12.0,
+                }
+            mcp["token"] = token
+            current["mcp"] = mcp
+            self._save_merged(current, {})
+        return token
+
 
 class ConfigWebServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -824,6 +855,24 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, {"ok": True, **snapshot})
             return
+        if route == "/api/mcp-token/status":
+            if not self._require_api_auth():
+                return
+            try:
+                config = self.server.store.load()
+                mcp = config.get("mcp") if isinstance(config, dict) else None
+                configured = isinstance(mcp, dict) and bool(mcp.get("token"))
+            except ConfigError:
+                configured = False
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "configured": configured,
+                    "source": "config" if configured else None,
+                },
+            )
+            return
         if route == "/api/usb-devices":
             if not self._require_api_auth():
                 return
@@ -868,6 +917,7 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         if route not in {
             "/api/config",
             "/api/access-token",
+            "/api/mcp-token/generate",
             "/api/camera-preview/start",
             "/api/camera-preview/stop",
             "/api/esp32-network/save-and-apply",
@@ -965,6 +1015,22 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                     "message": "访问令牌已修改并立即生效",
                     "restart_required": False,
                     **snapshot,
+                },
+            )
+            return
+
+        if route == "/api/mcp-token/generate":
+            try:
+                token = self.server.store.generate_mcp_token()
+            except ConfigError as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "token": token,
+                    "message": "MCP 令牌已生成并保存到 config.yaml；请立即复制，之后不会再次显示。",
                 },
             )
             return

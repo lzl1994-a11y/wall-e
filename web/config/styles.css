@@ -183,6 +183,11 @@ input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacit
 .switch-row input:checked + i::after { transform: translateX(20px); background: #34755e; }
 
 .table-card { padding: 0; overflow: hidden; }
+.card-help { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.card-help.warning { color: #a85b35; }
+.mcp-token-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff8fb; }
+.mcp-token-row div { display: grid; gap: 3px; }
+.mcp-token-row small { color: var(--muted); }
 .table-toolbar { min-height: 58px; padding: 10px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px; }
 .table-actions { display: flex; align-items: center; gap: 8px; }
 .table-scroll { overflow-x: auto; }
@@ -228,6 +233,7 @@ tr:last-child td { border-bottom: 0; }
   .top-actions .button { flex: 1 1 0; min-width: 0; white-space: nowrap; }
   .token-settings .button { flex: 1 1 100%; }
   .table-toolbar { align-items: flex-start; flex-direction: column; }
+  .mcp-token-row { align-items: flex-start; flex-direction: column; }
   .table-actions { width: 100%; }
   .table-actions .button { flex: 1; }
   .status-strip { margin-top: 18px; }

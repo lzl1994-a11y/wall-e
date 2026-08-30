@@ -66,6 +66,25 @@
               <label class="switch-row"><span><strong>允许语音视觉跟踪</strong><small>只加载待命节点；摄像头与检测模型仅在 AI 识别到“看着我、跟着我”等指令后启动</small></span><input data-path="launch.tracking" type="checkbox"><i></i></label>
             </div>
           </article>
+          <article class="card span-two" data-module="mcp">
+            <div class="card-heading-row"><h3>MCP 外部 Agent 网关</h3><button class="button secondary small module-save" data-save-module="mcp" type="button">保存本模块</button></div>
+            <p class="card-help">供 Codex 等外部 Agent 通过 Streamable HTTP 控制机器人。监听局域网地址时必须配置令牌；保存配置或更换令牌后，重启主脑生效。</p>
+            <div class="switch-grid">
+              <label class="switch-row"><span><strong>启动 MCP 网关</strong><small>主脑启动时加载 MCP 服务</small></span><input data-path="mcp.enabled" type="checkbox"><i></i></label>
+            </div>
+            <div class="form-grid">
+              <label class="field"><span>监听地址</span><input data-path="mcp.host" type="text" placeholder="127.0.0.1 或 0.0.0.0"></label>
+              <label class="field"><span>端口</span><input data-path="mcp.port" data-type="integer" type="number" min="1" max="65535"></label>
+              <label class="field"><span>路径</span><input data-path="mcp.path" type="text" placeholder="/mcp"></label>
+              <label class="field"><span>命令超时（秒）</span><input data-path="mcp.command_timeout_sec" data-type="number" type="number" min="1" max="120" step="0.5"></label>
+            </div>
+            <div class="mcp-token-row">
+              <div><strong>访问令牌</strong><small id="mcp-token-status">配置尚未读取</small></div>
+              <button id="generate-mcp-token-button" class="button secondary small" type="button">生成新令牌</button>
+            </div>
+            <label class="field full"><span>刚生成的令牌（仅本次显示）</span><input id="mcp-token-output" type="text" readonly autocomplete="off" placeholder="点击“生成新令牌”后在此复制"></label>
+            <p class="card-help warning">令牌会保存到 config.yaml 的 mcp.token 字段；接口读取时会自动脱敏。生成新令牌会使旧令牌在 MCP 重启后失效。</p>
+          </article>
         </div>
       </section>
 
