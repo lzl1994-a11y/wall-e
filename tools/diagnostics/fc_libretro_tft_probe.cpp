@@ -36,7 +36,7 @@ class AudioOut {
   AudioOut(){ if(snd_pcm_open(&pcm_,"default",SND_PCM_STREAM_PLAYBACK,0)<0) throw std::runtime_error("cannot open ALSA default");
     if(snd_pcm_set_params(pcm_,SND_PCM_FORMAT_S16_LE,SND_PCM_ACCESS_RW_INTERLEAVED,2,48000,1,80000)<0) throw std::runtime_error("cannot configure ALSA"); worker_=std::thread(&AudioOut::run,this); }
   ~AudioOut(){ stop_=true; cv_.notify_all(); worker_.join(); snd_pcm_drop(pcm_); snd_pcm_close(pcm_); }
-  void push(const int16_t* p,size_t frames){ std::lock_guard<std::mutex> l(mu_); for(size_t i=0;i<frames*2;i++){ int v=int(p[i])*3/5; q_.push_back(int16_t(v)); } while(q_.size()>19200) q_.pop_front(); cv_.notify_one(); }
+  void push(const int16_t* p,size_t frames){ std::lock_guard<std::mutex> l(mu_); for(size_t i=0;i<frames*2;i++){ int v=int(p[i])*2/5; q_.push_back(int16_t(v)); } while(q_.size()>19200) q_.pop_front(); cv_.notify_one(); }
  private:
   void run(){ std::vector<int16_t> out(960); while(!stop_){ { std::unique_lock<std::mutex> l(mu_); cv_.wait_for(l,std::chrono::milliseconds(10),[&]{return stop_||q_.size()>=960;}); for(auto& x:out){ if(q_.empty()) x=0; else{x=q_.front();q_.pop_front();} } }
     int n=snd_pcm_writei(pcm_,out.data(),480); if(n<0) snd_pcm_prepare(pcm_); } }
