@@ -160,9 +160,13 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             def __init__(self, data=""):
                 self.data = data
 
+        class UInt8MultiArray(String):
+            pass
+
         fake_std_msgs = types.ModuleType("std_msgs")
         fake_std_msgs_msg = types.ModuleType("std_msgs.msg")
         fake_std_msgs_msg.String = String
+        fake_std_msgs_msg.UInt8MultiArray = UInt8MultiArray
 
         fake_pypinyin = types.ModuleType("pypinyin")
         fake_pypinyin.Style = types.SimpleNamespace(NORMAL="normal")
@@ -615,6 +619,38 @@ class LLMEmptyAnswerTests(unittest.TestCase):
 
         self.assertEqual(selected[0]["content"], "上一轮看到了什么")
         self.assertNotIn("old-image", repr(selected))
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_game_mode_ignores_microphone_text_but_accepts_game_vision(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node._game_mode = "playing"
+        node._request_queue = queue.Queue()
+        node.get_logger = lambda: MagicMock()
+
+        node.voice_callback(types.SimpleNamespace(data="这句不应进入大模型"))
+
+        self.assertTrue(node._request_queue.empty())
+
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "小心前面的敌人！"}
+        ])
+        node.busy_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node._publish_tts = MagicMock()
+        node._finish_tts_turn = MagicMock()
+        node._process_game_vision_task({
+            "turn_id": "game-1",
+            "jpeg": b"jpeg-data",
+        })
+
+        node._publish_tts.assert_called_once_with("小心前面的敌人！", "game-1")
+        self.assertEqual(
+            node.llm.chat_stream.call_args.kwargs["image_base64"],
+            base64.b64encode(b"jpeg-data").decode("ascii"),
+        )
+        node._finish_tts_turn.assert_called_once_with("game-1")
         sys.modules.pop("nodes.llm_ros_node", None)
 
 

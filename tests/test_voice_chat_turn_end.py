@@ -19,9 +19,13 @@ class VoiceChatTurnEndTests(unittest.TestCase):
             def __init__(self, data=""):
                 self.data = data
 
+        class UInt8MultiArray(String):
+            pass
+
         fake_std_msgs = types.ModuleType("std_msgs")
         fake_std_msgs_msg = types.ModuleType("std_msgs.msg")
         fake_std_msgs_msg.String = String
+        fake_std_msgs_msg.UInt8MultiArray = UInt8MultiArray
 
         fake_service = types.ModuleType("services.voice_chat_service")
         fake_service.VoiceChatService = object

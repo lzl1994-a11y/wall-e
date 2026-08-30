@@ -105,7 +105,12 @@ class GameModeController:
 
     def request_exit(self) -> GameMode:
         """Start save/teardown; robot input remains blocked until restoration."""
-        if self._mode not in {GameMode.MENU, GameMode.PLAYING, GameMode.PAUSED}:
+        if self._mode not in {
+            GameMode.ENTERING,
+            GameMode.MENU,
+            GameMode.PLAYING,
+            GameMode.PAUSED,
+        }:
             raise InvalidGameTransition(f"cannot exit from {self._mode.value}")
         self._mode = GameMode.EXITING
         return self._mode

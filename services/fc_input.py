@@ -135,6 +135,7 @@ class FcControllerRelay:
     ) -> None:
         self._device_path = device_path
         self._sink = sink
+        self._sink_lock = threading.Lock()
         self._mapper = mapper or FcInputMapper()
         self._device_factory = device_factory
         self._device: Any = None
@@ -176,7 +177,16 @@ class FcControllerRelay:
         if worker is not None and worker is not threading.current_thread():
             worker.join(timeout=2.0)
         self._worker = None
-        self._sink.close()
+        with self._sink_lock:
+            self._sink.close()
+
+    def switch_sink(self, sink) -> None:
+        """Route subsequent controller changes to another lifecycle-neutral sink."""
+        with self._sink_lock:
+            previous = self._sink
+            self._sink = sink
+            if previous is not sink:
+                previous.close()
 
     def _read_loop(self) -> None:
         device = self._device
@@ -187,7 +197,8 @@ class FcControllerRelay:
                 if self._stop.is_set():
                     return
                 for change in self._mapper.translate(event.type, event.code, event.value):
-                    self._sink.set_key(change.key, change.down)
+                    with self._sink_lock:
+                        self._sink.set_key(change.key, change.down)
         except OSError as exc:
             if not self._stop.is_set():
                 self.error = exc

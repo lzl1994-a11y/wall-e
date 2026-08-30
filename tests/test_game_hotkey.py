@@ -1,6 +1,6 @@
 import unittest
 
-from services.game_hotkey import StartSelectHold
+from services.game_hotkey import ButtonChordHold, StartSelectHold
 
 
 class StartSelectHoldTests(unittest.TestCase):
@@ -16,6 +16,15 @@ class StartSelectHoldTests(unittest.TestCase):
         self.assertFalse(self.hotkey.poll())
         self.now += 0.01
         self.assertTrue(self.hotkey.poll())
+
+    def test_generic_chord_supports_x_and_y_semantics(self):
+        now = [3.0]
+        hotkey = ButtonChordHold(hold_seconds=2.0, clock=lambda: now[0])
+        hotkey.set_first(True)
+        hotkey.set_second(True)
+        now[0] = 5.0
+
+        self.assertTrue(hotkey.poll())
         self.assertFalse(self.hotkey.poll())
 
     def test_release_before_deadline_cancels_the_hotkey(self):

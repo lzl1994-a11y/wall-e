@@ -16,6 +16,13 @@ from evdev import ecodes
 from services.motor_control import mix_differential_drive
 from services.motion_arbiter import MOTOR_JOYSTICK_TOPIC, STOP_COMMAND
 from services.remote_control_config import RemoteControlConfigWatcher
+from services.game_hotkey import ButtonChordHold
+from services.game_protocol import (
+    GAME_MODE_REQUEST_TOPIC,
+    GAME_MODE_STATE_TOPIC,
+    encode_game_request,
+    game_is_active,
+)
 
 # --- 按键/轴映射 ---
 AXIS_LX = 0  # 左摇杆 X
@@ -50,10 +57,17 @@ class JoyControlNode(Node):
 
         self.action_pub = self.create_publisher(String, '/action_cmd', 10)
         self.motor_pub = self.create_publisher(String, MOTOR_JOYSTICK_TOPIC, 10)
+        self.game_request_pub = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
+        self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
 
         self.device = None
         self.running = False
         self._scan_thread = None
+        self._game_active = False
+        self._game_hotkey = ButtonChordHold(hold_seconds=2.0)
+        self._game_hotkey_fired = False
+        self._x_down = False
+        self._y_down = False
 
         # 模拟轴归一化状态 (-1.0 到 1.0, 扳机为 0.0 到 1.0)
         self._axes = {
@@ -129,6 +143,9 @@ class JoyControlNode(Node):
                     self._run_control()
                     self.get_logger().info("手柄断开。")
                     self._stop_motors()
+                    self.game_request_pub.publish(
+                        String(data=encode_game_request("controller_disconnected"))
+                    )
                     self.device = None
                     try: dev.close()
                     except: pass
@@ -178,6 +195,32 @@ class JoyControlNode(Node):
                                 self._axes[code] = n_val
 
                 elif event.type == ecodes.EV_KEY:
+                    if event.code in {BTN_X, BTN_Y} and event.value in {0, 1}:
+                        down = event.value == 1
+                        if event.code == BTN_X:
+                            self._x_down = down
+                            self._game_hotkey.set_first(down)
+                        else:
+                            self._y_down = down
+                            self._game_hotkey.set_second(down)
+                        other_down = self._y_down if event.code == BTN_X else self._x_down
+                        if (
+                            not down
+                            and not other_down
+                            and not self._game_hotkey_fired
+                            and not self._game_active
+                        ):
+                            if event.code == BTN_X:
+                                self._send_action_cmd("wave_hello")
+                            else:
+                                self._send_action_cmd("raise_hand")
+                        if not self._x_down and not self._y_down:
+                            self._game_hotkey_fired = False
+                        continue
+
+                    if self._game_active:
+                        continue
+
                     if event.value == 1: # 按下
                         if event.code == BTN_L1:
                             self._auto_timers['eyebrow_l'] = time.time() + AUTO_RESET_DELAY
@@ -185,8 +228,6 @@ class JoyControlNode(Node):
                             self._auto_timers['eyebrow_r'] = time.time() + AUTO_RESET_DELAY
                         elif event.code == BTN_A: self._send_action_cmd("happy_dance")
                         elif event.code == BTN_B: self._send_action_cmd("sad_react")
-                        elif event.code == BTN_X: self._send_action_cmd("wave_hello")
-                        elif event.code == BTN_Y: self._send_action_cmd("raise_hand")
 
         except OSError:
             pass
@@ -194,6 +235,15 @@ class JoyControlNode(Node):
     def _tick_loop(self):
         self._refresh_remote_config()
         if self.device is None: return
+        if not self._game_active and self._game_hotkey.poll():
+            self._game_hotkey_fired = True
+            self._stop_motors()
+            self.game_request_pub.publish(String(data=encode_game_request(
+                "toggle", controller=getattr(self.device, "path", "/dev/input/event2")
+            )))
+            return
+        if self._game_active:
+            return
         now = time.time()
 
         # 1. 结算电机底盘 (左摇杆: LY前进, LX转向)
@@ -260,6 +310,14 @@ class JoyControlNode(Node):
         msg = String()
         msg.data = json.dumps(STOP_COMMAND)
         self.motor_pub.publish(msg)
+
+    def _on_game_state(self, message):
+        active = game_is_active(message.data)
+        if active and not self._game_active:
+            self._stop_motors()
+            for axis in self._axes:
+                self._axes[axis] = 0.0
+        self._game_active = active
 
     def shutdown(self):
         self.running = False

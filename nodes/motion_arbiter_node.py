@@ -12,7 +12,9 @@ from services.motion_arbiter import (
     OUTPUT_INTERVAL_SEC,
     SOURCE_TOPICS,
     MotionArbiter,
+    STOP_COMMAND,
 )
+from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 
 
 class MotionArbiterNode(Node):
@@ -21,6 +23,8 @@ class MotionArbiterNode(Node):
         self._arbiter = MotionArbiter()
         self._publisher = self.create_publisher(String, MOTOR_OUTPUT_TOPIC, 10)
         self._last_source = None
+        self._game_active = False
+        self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self._subscriptions = [
             self.create_subscription(
                 String,
@@ -37,6 +41,8 @@ class MotionArbiterNode(Node):
         )
 
     def _on_command(self, source, message):
+        if self._game_active:
+            return
         try:
             payload = json.loads(message.data)
         except (TypeError, json.JSONDecodeError):
@@ -46,13 +52,24 @@ class MotionArbiterNode(Node):
             self.get_logger().warning(f"拒绝无效 {source} 电机指令")
 
     def _publish_selected(self):
-        source, command = self._arbiter.select()
+        if self._game_active:
+            source, command = "game-safety", STOP_COMMAND
+        else:
+            source, command = self._arbiter.select()
         self._publisher.publish(
             String(data=json.dumps(command, ensure_ascii=False, separators=(",", ":")))
         )
         if source != self._last_source:
             self.get_logger().info(f"电机控制权切换为: {source}")
             self._last_source = source
+
+    def _on_game_state(self, message):
+        active = game_is_active(message.data)
+        if active and not self._game_active:
+            self._publisher.publish(
+                String(data=json.dumps(STOP_COMMAND, separators=(",", ":")))
+            )
+        self._game_active = active
 
     def destroy_node(self):
         self._publisher.publish(

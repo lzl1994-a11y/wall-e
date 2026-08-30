@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
+import base64
 import json
 import queue
+import random
 import re
 import threading
+import time
 import traceback
 import uuid
 from collections import deque
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt8MultiArray
 from pypinyin import Style, pinyin
 
 from services.action_acknowledgement import action_acknowledgement
@@ -21,9 +24,19 @@ from services.camera_frame import (
     is_camera_photo_request,
     save_camera_photo,
 )
+from services.game_frame_adapter import GameFrameAdapter
+from services.game_protocol import (
+    GAME_FRAME_TOPIC,
+    GAME_MODE_REQUEST_TOPIC,
+    GAME_MODE_STATE_TOPIC,
+    GAME_SURFACE_READY,
+    decode_game_frame,
+    encode_game_request,
+    game_mode_from_message,
+)
+from services.game_tft_stream import GameTftStreamServer, prepare_game_bgr
 from services.tft_preview_server import (
     PreviewResult,
-    TftPreviewServer,
     load_tft_preview_settings,
 )
 from services.tracking_tft_preview import TrackingTftPreview
@@ -68,6 +81,14 @@ class LLMBrainNode(Node):
         self.punctuations = {'。', '？', '.', '?', '！', '!'}
         self._request_queue = queue.Queue(maxsize=8)
         self._worker_running = False
+        self._game_mode = "robot"
+        self._game_stream = None
+        self._game_frame_adapter = None
+        self._game_frame_lock = threading.Lock()
+        self._latest_game_frame = None
+        self._next_game_commentary = None
+        self._game_commentary_pending = False
+        self._tracking_was_enabled = False
 
         # Create ROS endpoints before the slow LLM client init. This lets DDS
         # discover `voice_text` while the model service is warming up.
@@ -83,12 +104,13 @@ class LLMBrainNode(Node):
         self.full_ai_publisher = self.create_publisher(String, 'full_ai_text', 10)
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
         self.busy_publisher = self.create_publisher(String, 'llm_busy', 10)
+        self.game_request_publisher = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
         self.camera_frames = CameraFrameProvider(self)
         self.tft_preview_ready_publisher = self.create_publisher(
             String, 'tft_preview_ready', 10
         )
         self.tft_preview_settings = load_tft_preview_settings()
-        self.tft_preview = TftPreviewServer(
+        self.tft_preview = GameTftStreamServer(
             self.tft_preview_settings,
             logger=self.get_logger(),
         )
@@ -114,6 +136,9 @@ class LLMBrainNode(Node):
             self._on_vision_pipeline_command,
             10,
         )
+        self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
+        self.create_subscription(UInt8MultiArray, GAME_FRAME_TOPIC, self._on_game_frame, 1)
+        self.create_timer(1.0, self._game_commentary_tick)
 
         try:
             self.llm = LLMService()
@@ -140,8 +165,103 @@ class LLMBrainNode(Node):
         if command is not None:
             self.tracking_tft_preview.set_command(command)
 
+    def _on_game_state(self, message):
+        mode = game_mode_from_message(message.data)
+        if mode is None:
+            return
+        previous = self._game_mode
+        self._game_mode = mode
+        if mode != "robot":
+            if previous == "robot":
+                self._tracking_was_enabled = self.tracking_tft_preview.pause()
+            self._ensure_game_stream()
+            if mode == "playing" and previous != "playing":
+                self._schedule_next_game_commentary()
+            return
+
+        self._close_game_stream()
+        with self._game_frame_lock:
+            self._latest_game_frame = None
+        self._next_game_commentary = None
+        self._game_commentary_pending = False
+        if self._tracking_was_enabled:
+            self.tracking_tft_preview.resume()
+        self._tracking_was_enabled = False
+
+    def _ensure_game_stream(self):
+        if self._game_frame_adapter is not None:
+            return
+        stream = self.tft_preview.open_jpeg_stream(fps=10)
+        if stream is None:
+            self.get_logger().warning("游戏 TFT 流暂不可用")
+            return
+        self._game_stream = stream
+        self._game_frame_adapter = GameFrameAdapter(stream, fps=10)
+        self.game_request_publisher.publish(
+            String(data=encode_game_request(GAME_SURFACE_READY))
+        )
+
+    def _close_game_stream(self):
+        adapter = self._game_frame_adapter
+        self._game_frame_adapter = None
+        if adapter is not None:
+            adapter.close()
+        stream = self._game_stream
+        self._game_stream = None
+        if stream is not None:
+            stream.close()
+
+    def _on_game_frame(self, message):
+        if self._game_mode == "robot":
+            return
+        frame = decode_game_frame(bytes(message.data))
+        if frame is None:
+            return
+        raw, width, height, pitch = frame
+        with self._game_frame_lock:
+            self._latest_game_frame = (raw, width, height, pitch)
+        adapter = self._game_frame_adapter
+        if adapter is not None:
+            adapter.submit_frame(raw, width, height, pitch)
+
+    def _schedule_next_game_commentary(self):
+        self._next_game_commentary = time.monotonic() + random.uniform(50.0, 120.0)
+
+    def _game_commentary_tick(self):
+        if self._game_mode != "playing" or self._game_commentary_pending:
+            return
+        if self._next_game_commentary is None:
+            self._schedule_next_game_commentary()
+            return
+        if time.monotonic() < self._next_game_commentary:
+            return
+        with self._game_frame_lock:
+            frame = self._latest_game_frame
+        self._schedule_next_game_commentary()
+        if frame is None or self.llm is None:
+            return
+        import numpy as np
+
+        raw, width, height, pitch = frame
+        image = np.frombuffer(raw, dtype=np.uint8).reshape(height, pitch // 4, 4)
+        jpeg = prepare_game_bgr(image[:, :width, :3], quality=75)
+        if not jpeg:
+            return
+        self._game_commentary_pending = True
+        try:
+            self._request_queue.put_nowait({
+                'kind': 'game_vision',
+                'turn_id': 'game-' + uuid.uuid4().hex[:8],
+                'jpeg': jpeg,
+            })
+        except queue.Full:
+            self._game_commentary_pending = False
+
     def voice_callback(self, msg):
         """Queue the request so the ROS callback thread is never blocked by LLM I/O."""
+        if self._game_mode != "robot":
+            self.get_logger().info("游戏模式热备中，忽略语音 LLM 输入")
+            return
         user_prompt = (msg.data or '').strip()
         # 过滤掉常见的 ASR 噪声音译（如 #，或者单纯的标点符号）
         if not user_prompt or user_prompt == '#' or len(user_prompt.strip('.,?!。，？！# ')) == 0:
@@ -171,7 +291,10 @@ class LLMBrainNode(Node):
                 continue
 
             try:
-                self._process_voice_task(task['turn_id'], task['user_prompt'])
+                if task.get('kind') == 'game_vision':
+                    self._process_game_vision_task(task)
+                else:
+                    self._process_voice_task(task['turn_id'], task['user_prompt'])
             except Exception as e:
                 self.get_logger().error(f'Unhandled LLM worker error: {e}\n{traceback.format_exc()}')
                 failure_text = '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002'
@@ -185,7 +308,44 @@ class LLMBrainNode(Node):
                 )
                 self._finish_tts_turn(task.get('turn_id', ''))
             finally:
+                if task.get('kind') == 'game_vision':
+                    self._game_commentary_pending = False
                 self._request_queue.task_done()
+
+    def _process_game_vision_task(self, task):
+        if self._game_mode != "playing":
+            return
+        turn_id = task['turn_id']
+        self.busy_publisher.publish(String(data="busy"))
+        prompt = (
+            "观察这张正在运行的 FC 游戏画面，以瓦力的口吻说一句简短自然的中文评论。"
+            "可以提醒危险、鼓励玩家或描述关键局面；看不清时不要猜。只输出可直接播报的一句话。"
+        )
+        try:
+            chunks = []
+            for data in self.llm.chat_stream(
+                prompt,
+                [],
+                image_base64=base64.b64encode(task['jpeg']).decode('ascii'),
+                tools_enabled=False,
+                structured_answer=False,
+                system_prompt=(
+                    "你是陪主人玩 FC 游戏的瓦力。只依据当前游戏截图简短评论，"
+                    "不输出分析过程。"
+                ),
+                max_tokens_override=96,
+            ):
+                if data.get('type') == 'text' and data.get('content'):
+                    chunks.append(data['content'])
+            answer = self._clean_visual_answer(''.join(chunks))
+            if not answer:
+                raise RuntimeError('游戏视觉模型返回空答案')
+            self._publish_tts(answer, turn_id)
+            self.full_ai_publisher.publish(String(data=answer))
+        except Exception as exc:
+            self.get_logger().error(f'[{turn_id}] Game vision failed: {exc}')
+        finally:
+            self._finish_tts_turn(turn_id)
 
     def _process_voice_task(self, turn_id, user_prompt):
         # 通知 STT 节点暂停 ASR
@@ -785,6 +945,7 @@ class LLMBrainNode(Node):
                 pass
         if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
+        self._close_game_stream()
         if getattr(self, 'tracking_tft_preview', None) is not None:
             self.tracking_tft_preview.stop()
         if getattr(self, 'tft_preview', None) is not None:

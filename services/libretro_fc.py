@@ -143,6 +143,16 @@ class LibretroFc:
             if delay > 0:
                 time.sleep(delay)
 
+    def run_until(self, should_stop: Callable[[], bool], *, fps: float = 60.0) -> None:
+        """Run in real time until the session owner requests teardown."""
+        period = 1.0 / max(1.0, fps)
+        while not should_stop():
+            started = time.monotonic()
+            self._core.retro_run()
+            delay = period - (time.monotonic() - started)
+            if delay > 0:
+                time.sleep(delay)
+
     def close(self) -> None:
         if self._initialized:
             try:

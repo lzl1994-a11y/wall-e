@@ -6,23 +6,23 @@ import time
 from typing import Callable
 
 
-class StartSelectHold:
-    """Emit one event when Start and Select remain down for the hold interval."""
+class ButtonChordHold:
+    """Emit one event when two buttons remain down for the hold interval."""
 
     def __init__(self, *, hold_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic):
         self.hold_seconds = float(hold_seconds)
         self._clock = clock
-        self._start_down = False
-        self._select_down = False
+        self._first_down = False
+        self._second_down = False
         self._both_since: float | None = None
         self._fired = False
 
-    def set_start(self, down: bool) -> None:
-        self._start_down = bool(down)
+    def set_first(self, down: bool) -> None:
+        self._first_down = bool(down)
         self._refresh()
 
-    def set_select(self, down: bool) -> None:
-        self._select_down = bool(down)
+    def set_second(self, down: bool) -> None:
+        self._second_down = bool(down)
         self._refresh()
 
     def poll(self) -> bool:
@@ -36,7 +36,7 @@ class StartSelectHold:
         return True
 
     def _refresh(self) -> None:
-        if self._start_down and self._select_down:
+        if self._first_down and self._second_down:
             if self._both_since is None:
                 self._both_since = self._clock()
                 self._fired = False
@@ -45,4 +45,14 @@ class StartSelectHold:
         self._fired = False
 
 
-__all__ = ["StartSelectHold"]
+class StartSelectHold(ButtonChordHold):
+    """Backward-compatible named wrapper for the original hotkey."""
+
+    def set_start(self, down: bool) -> None:
+        self.set_first(down)
+
+    def set_select(self, down: bool) -> None:
+        self.set_second(down)
+
+
+__all__ = ["ButtonChordHold", "StartSelectHold"]

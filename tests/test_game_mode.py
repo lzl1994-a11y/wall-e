@@ -62,6 +62,13 @@ class GameModeControllerTests(unittest.TestCase):
         with self.assertRaises(InvalidGameTransition):
             self.controller.robot_surface_ready()
 
+    def test_controller_disconnect_can_abort_entering(self):
+        self.controller.request_enter()
+        self.controller.request_exit()
+        self.controller.robot_surface_ready()
+
+        self.assertEqual(self.controller.mode, GameMode.ROBOT)
+
 
 if __name__ == "__main__":
     unittest.main()

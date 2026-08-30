@@ -11,6 +11,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from services.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
 from services.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
+from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 
 class SequenceRosNode(Node):
     # 所有的动作预设已迁移至 sequences.yaml，由 _flatten_sequence 处理
@@ -55,6 +56,7 @@ class SequenceRosNode(Node):
         self._motor_request = None
         self._sequence_request = None
         self._auto_reset_timer = None
+        self._game_active = False
 
         # 3. ROS 接口
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
@@ -67,6 +69,7 @@ class SequenceRosNode(Node):
 
         # 统一订阅 /action_cmd，负责动作编排和运动指令分发
         self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
+        self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         # Tracking produces targets at detector frame rate. Depth 1 makes this
         # a latest-value stream and avoids replaying stale head positions.
         self.create_subscription(
@@ -105,6 +108,8 @@ class SequenceRosNode(Node):
         return float(cfg.get('init', fallback))
 
     def _on_action_cmd(self, msg):
+        if self._game_active:
+            return
         request = parse_action_request(msg.data)
         if request is None:
             return
@@ -184,6 +189,8 @@ class SequenceRosNode(Node):
 
     def _on_tracking_servo_targets(self, msg):
         """Update interpolated tracking targets without interrupting actions."""
+        if self._game_active:
+            return
         try:
             payload = json.loads(msg.data)
         except (AttributeError, TypeError, json.JSONDecodeError):
@@ -349,6 +356,8 @@ class SequenceRosNode(Node):
         )
 
     def _tick(self):
+        if self._game_active:
+            return
         if self._active_motor_cmd is not None:
             if time.monotonic() >= self._motor_stop_at:
                 self._stop_motors()
@@ -483,6 +492,19 @@ class SequenceRosNode(Node):
             request = self._sequence_request
             self._sequence_request = None
             self._publish_request_status(request, "completed")
+
+    def _on_game_state(self, message):
+        active = game_is_active(message.data)
+        if active and not self._game_active:
+            self._interrupt_sequence("game_mode")
+            self._current_sequence = []
+            for name in self._steps:
+                self._steps[name] = 0.0
+            if self._auto_reset_timer:
+                self.destroy_timer(self._auto_reset_timer)
+                self._auto_reset_timer = None
+            self._stop_motors(status="interrupted", detail="game_mode")
+        self._game_active = active
 
 def main(args=None):
     rclpy.init(args=args)
