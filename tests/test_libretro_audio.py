@@ -25,13 +25,28 @@ class _FakeSounddevice:
 
 class LibretroAudioPlayerTests(unittest.TestCase):
     def test_batches_are_stereo_pcm_and_output_is_zero_padded(self):
-        player = LibretroAudioPlayer(sounddevice_module=_FakeSounddevice(), max_buffer_ms=1)
+        player = LibretroAudioPlayer(
+            sounddevice_module=_FakeSounddevice(), sample_rate=1_000, max_buffer_ms=10, prebuffer_ms=1
+        )
         samples = (ctypes.c_short * 4)(1, 2, 3, 4)
         player.push_batch(samples, 2)
         output = bytearray(12)
         player._output_callback(output, 3, None, None)
         self.assertEqual(output[:8], ctypes.string_at(samples, 8))
         self.assertEqual(output[8:], b"\x00" * 4)
+
+    def test_output_waits_for_prebuffer_after_an_underflow(self):
+        player = LibretroAudioPlayer(
+            sounddevice_module=_FakeSounddevice(), sample_rate=1_000, max_buffer_ms=10, prebuffer_ms=2
+        )
+        samples = (ctypes.c_short * 2)(1, 2)
+        player.push_batch(samples, 1)
+        output = bytearray(4)
+        player._output_callback(output, 1, None, None)
+        self.assertEqual(output, b"\x00" * 4)
+        player.push_batch(samples, 1)
+        player._output_callback(output, 1, None, None)
+        self.assertEqual(output, ctypes.string_at(samples, 4))
 
     def test_buffer_is_bounded(self):
         player = LibretroAudioPlayer(

@@ -22,7 +22,8 @@ class LibretroAudioPlayer:
         device: int | None = None,
         config_path=DEFAULT_CONFIG_PATH,
         sounddevice_module=None,
-        max_buffer_ms: int = 120,
+        max_buffer_ms: int = 160,
+        prebuffer_ms: int = 40,
     ) -> None:
         if sounddevice_module is None:
             import sounddevice as sounddevice_module
@@ -31,7 +32,11 @@ class LibretroAudioPlayer:
         self.sample_rate = sample_rate
         self.device = device if device is not None else self._resolve_device(config_path)
         self._limit = max(1, sample_rate * max_buffer_ms // 1_000) * 4
+        self._prebuffer = min(
+            self._limit, max(1, sample_rate * prebuffer_ms // 1_000) * 4
+        )
         self._buffer = bytearray()
+        self._playing = False
         self._lock = threading.Lock()
         self._stream = None
 
@@ -88,8 +93,14 @@ class LibretroAudioPlayer:
     def _output_callback(self, outdata, frames, _time_info, _status) -> None:
         wanted = frames * 4
         with self._lock:
-            payload = bytes(self._buffer[:wanted])
+            if not self._playing and len(self._buffer) >= self._prebuffer:
+                self._playing = True
+            payload = bytes(self._buffer[:wanted]) if self._playing else b""
             del self._buffer[: len(payload)]
+            if len(payload) < wanted:
+                # A short silence is preferable to a partial, crackling frame.
+                # Resume only after enough PCM has accumulated again.
+                self._playing = False
         outdata[: len(payload)] = payload
         if len(payload) < wanted:
             outdata[len(payload) : wanted] = b"\x00" * (wanted - len(payload))
