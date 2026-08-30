@@ -11,13 +11,18 @@ from services.tft_preview_server import (
 )
 
 
-def prepare_game_bgr(image, *, quality: int = 70) -> bytes | None:
-    """Fit an upright BGR game frame to the TFT without cropping or rotation."""
+def prepare_game_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
+    """Fit an upright game frame to the TFT without the camera's rotation."""
     try:
         import cv2
+        import numpy as np
     except ImportError:
         return None
-    if image is None or getattr(image, "size", 0) == 0:
+    raw = bytes(jpeg or b"")
+    if not raw.startswith(b"\xff\xd8") or not raw.endswith(b"\xff\xd9"):
+        return None
+    image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
         return None
     height, width = image.shape[:2]
     scale = min(240.0 / width, 240.0 / height)
@@ -31,20 +36,6 @@ def prepare_game_bgr(image, *, quality: int = 70) -> bytes | None:
         ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), min(100, max(1, quality))]
     )
     return encoded.tobytes() if ok else None
-
-
-def prepare_game_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
-    """JPEG compatibility path for virtual-display sources."""
-    try:
-        import cv2
-        import numpy as np
-    except ImportError:
-        return None
-    raw = bytes(jpeg or b"")
-    if not raw.startswith(b"\xff\xd8") or not raw.endswith(b"\xff\xd9"):
-        return None
-    image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-    return prepare_game_bgr(image, quality=quality)
 
 
 class GameTftStream:
@@ -63,21 +54,9 @@ class GameTftStream:
         self._closed = False
 
     def send_jpeg(self, jpeg: bytes) -> bool:
-        try:
-            import cv2
-            import numpy as np
-        except ImportError:
-            return True
-        raw = bytes(jpeg or b"")
-        if not raw.startswith(b"\xff\xd8") or not raw.endswith(b"\xff\xd9"):
-            return True
-        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-        return self.send_bgr(image)
-
-    def send_bgr(self, image) -> bool:
         if self._closed:
             return False
-        frame = prepare_game_bgr(image, quality=self._server.settings.jpeg_quality)
+        frame = prepare_game_jpeg(jpeg, quality=self._server.settings.jpeg_quality)
         if frame is None or len(frame) > self._server.settings.max_frame_bytes:
             return True
         sequence = ((self._stream_sequence & 0xFFFF) << 16) | (self._frame_index & 0xFFFF)
@@ -131,4 +110,4 @@ class GameTftStreamServer(TftPreviewServer):
         return GameTftStream(self, client, stream_sequence)
 
 
-__all__ = ["GameTftStream", "GameTftStreamServer", "prepare_game_bgr", "prepare_game_jpeg"]
+__all__ = ["GameTftStream", "GameTftStreamServer", "prepare_game_jpeg"]

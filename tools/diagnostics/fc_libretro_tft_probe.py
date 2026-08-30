@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -42,7 +43,8 @@ def main() -> int:
         if now - last_sent < 1.0 / max(1.0, args.fps):
             return
         image = np.frombuffer(raw, dtype=np.uint8).reshape(height, pitch // 4, 4)
-        if stream is not None and stream.send_bgr(image[:, :width, :3]):
+        ok, jpeg = cv2.imencode(".jpg", image[:, :width, :3], [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if ok and stream is not None and stream.send_jpeg(jpeg.tobytes()):
             last_sent = now
 
     server.start()
