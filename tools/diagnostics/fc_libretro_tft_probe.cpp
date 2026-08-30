@@ -28,7 +28,8 @@ using Env = bool(*)(unsigned, void*); using Video = void(*)(const void*,unsigned
 using Audio = void(*)(int16_t,int16_t); using AudioBatch = size_t(*)(const int16_t*,size_t);
 using Poll = void(*)(); using Input = int16_t(*)(unsigned,unsigned,unsigned,unsigned);
 constexpr unsigned ENV_PIXEL=10, PIXEL_XRGB8888=1, DEV_JOYPAD=1;
-constexpr uint16_t A=1<<0,B=1<<1,SEL=1<<2,START=1<<3,UP=1<<4,DOWN=1<<5,LEFT=1<<6,RIGHT=1<<7;
+// libretro NES IDs: B=0, Select=2, Start=3, D-pad=4..7, A=8.
+constexpr uint16_t A=1<<8,B=1<<0,SEL=1<<2,START=1<<3,UP=1<<4,DOWN=1<<5,LEFT=1<<6,RIGHT=1<<7;
 
 class AudioOut {
  public:
