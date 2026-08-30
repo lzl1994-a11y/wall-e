@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
-import os
-import select
-import struct
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -44,17 +41,6 @@ _HAT_KEYS = {
     ABS_HAT0Y: ("KP_8", "KP_2"),
 }
 
-_JS_BUTTON_KEYS = {
-    0: "F", 3: "F",  # physical A/Y -> FC A
-    1: "D", 2: "D",  # physical B/X -> FC B
-    8: "S", 9: "Return",
-}
-_JS_HAT_AXES = {6: ("KP_4", "KP_6"), 7: ("KP_8", "KP_2")}
-_JS_EVENT_BUTTON = 0x01
-_JS_EVENT_AXIS = 0x02
-_JS_EVENT_INIT = 0x80
-_JS_EVENT = struct.Struct("<IhBB")
-
 
 class FcInputMapper:
     """Translate the confirmed red-mode evdev layout to FCEUX default keys."""
@@ -85,36 +71,6 @@ class FcInputMapper:
         elif value > 0:
             changes.append(FcKeyChange(positive_key, True))
         self._hat_values[code] = value
-        return changes
-
-
-class FcJoystickMapper:
-    """Map the confirmed joystick API layout without evdev sync/analog noise."""
-
-    def __init__(self) -> None:
-        self._hat_values = {axis: 0 for axis in _JS_HAT_AXES}
-
-    def translate(self, event_type: int, number: int, value: int) -> list[FcKeyChange]:
-        event_type &= ~_JS_EVENT_INIT
-        if event_type == _JS_EVENT_BUTTON and number in _JS_BUTTON_KEYS:
-            return [FcKeyChange(_JS_BUTTON_KEYS[number], value != 0)]
-        if event_type != _JS_EVENT_AXIS or number not in _JS_HAT_AXES:
-            return []
-        value = -1 if value < 0 else 1 if value > 0 else 0
-        previous = self._hat_values[number]
-        if value == previous:
-            return []
-        negative_key, positive_key = _JS_HAT_AXES[number]
-        changes: list[FcKeyChange] = []
-        if previous < 0:
-            changes.append(FcKeyChange(negative_key, False))
-        elif previous > 0:
-            changes.append(FcKeyChange(positive_key, False))
-        if value < 0:
-            changes.append(FcKeyChange(negative_key, True))
-        elif value > 0:
-            changes.append(FcKeyChange(positive_key, True))
-        self._hat_values[number] = value
         return changes
 
 
@@ -237,90 +193,4 @@ class FcControllerRelay:
                 self.error = exc
 
 
-class FcJoystickRelay:
-    """Read the lean joystick stream while evdev remains exclusively grabbed."""
-
-    def __init__(
-        self,
-        joystick_path: str,
-        sink,
-        *,
-        grab_device_path: str = "/dev/input/event2",
-        mapper: FcJoystickMapper | None = None,
-    ) -> None:
-        self._joystick_path = joystick_path
-        self._grab_device_path = grab_device_path
-        self._sink = sink
-        self._mapper = mapper or FcJoystickMapper()
-        self._grab_device: Any = None
-        self._fd: int | None = None
-        self._stop = threading.Event()
-        self._worker: threading.Thread | None = None
-        self.error: Exception | None = None
-
-    def start(self) -> None:
-        if self._worker is not None and self._worker.is_alive():
-            raise RuntimeError("FC joystick relay is already running")
-        from evdev import InputDevice
-
-        grab_device = InputDevice(self._grab_device_path)
-        try:
-            grab_device.grab()
-            fd = os.open(self._joystick_path, os.O_RDONLY | os.O_NONBLOCK)
-        except Exception:
-            try:
-                grab_device.ungrab()
-            finally:
-                grab_device.close()
-            raise
-        self._grab_device = grab_device
-        self._fd = fd
-        self._stop.clear()
-        self.error = None
-        self._worker = threading.Thread(target=self._read_loop, daemon=True)
-        self._worker.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        fd, self._fd = self._fd, None
-        if fd is not None:
-            os.close(fd)
-        worker = self._worker
-        if worker is not None and worker is not threading.current_thread():
-            worker.join(timeout=2.0)
-        self._worker = None
-        grab_device, self._grab_device = self._grab_device, None
-        if grab_device is not None:
-            try:
-                grab_device.ungrab()
-            except OSError:
-                pass
-            grab_device.close()
-        self._sink.close()
-
-    def _read_loop(self) -> None:
-        fd = self._fd
-        if fd is None:
-            return
-        remainder = b""
-        try:
-            while not self._stop.is_set():
-                readable, _, _ = select.select([fd], [], [], 0.1)
-                if not readable:
-                    continue
-                data = remainder + os.read(fd, 4096)
-                size = len(data) - (len(data) % _JS_EVENT.size)
-                remainder = data[size:]
-                for offset in range(0, size, _JS_EVENT.size):
-                    _, value, event_type, number = _JS_EVENT.unpack_from(data, offset)
-                    for change in self._mapper.translate(event_type, number, value):
-                        self._sink.set_key(change.key, change.down)
-        except OSError as exc:
-            if not self._stop.is_set():
-                self.error = exc
-
-
-__all__ = [
-    "FcControllerRelay", "FcInputMapper", "FcJoystickMapper", "FcJoystickRelay",
-    "FcKeyChange", "XTestKeySink",
-]
+__all__ = ["FcControllerRelay", "FcInputMapper", "FcKeyChange", "XTestKeySink"]

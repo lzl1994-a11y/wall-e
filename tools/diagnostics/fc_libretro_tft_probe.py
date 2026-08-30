@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from services.fc_input import FcJoystickRelay
+from services.fc_input import FcControllerRelay
 from services.libretro_audio import LibretroAudioPlayer
 from services.game_tft_stream import GameTftStreamServer
 from services.libretro_fc import LibretroFc
@@ -24,8 +24,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("rom")
     parser.add_argument("--core", default="/root/libretro-fceumm/fceumm_libretro.so")
-    parser.add_argument("--controller", default="/dev/input/js0")
-    parser.add_argument("--grab-controller", default="/dev/input/event2")
+    parser.add_argument("--controller", default="/dev/input/event2")
     parser.add_argument("--seconds", type=float, default=120.0)
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--audio", action="store_true", help="play FC PCM on the USB speaker")
@@ -63,9 +62,7 @@ def main() -> int:
         stream = server.open_jpeg_stream(fps=int(args.fps))
         if stream is None:
             raise RuntimeError("chest TFT stream unavailable")
-        relay = FcJoystickRelay(
-            args.controller, core.joypad, grab_device_path=args.grab_controller
-        )
+        relay = FcControllerRelay(args.controller, core.joypad)
         relay.start()
         core.load(args.rom)
         core.run_for(args.seconds)
