@@ -5,7 +5,12 @@ import cv2
 import numpy as np
 
 from services.game_tft_stream import GameTftStreamServer, prepare_game_jpeg
-from services.tft_preview_server import JPEG_FRAME, STREAM_END, STREAM_START_MESSAGE
+from services.tft_preview_server import (
+    JPEG_FRAME,
+    STREAM_END,
+    STREAM_START,
+    STREAM_START_MESSAGE,
+)
 
 
 def _quadrant_jpeg():
@@ -37,6 +42,26 @@ class GameTftStreamTests(unittest.TestCase):
         self.assertEqual(
             message_types,
             [STREAM_START_MESSAGE, JPEG_FRAME, JPEG_FRAME, STREAM_END],
+        )
+        start_payload = server._send_packet.call_args_list[0].args[3]
+        self.assertEqual(STREAM_START.unpack(start_payload), (60_000, 0, 15, 0))
+
+    def test_stream_renews_before_esp_duration_expires(self):
+        server = GameTftStreamServer()
+        server._send_packet = Mock()
+        now = [10.0]
+        from services.game_tft_stream import GameTftStream
+
+        server._stream_lock.acquire()
+        stream = GameTftStream(server, object(), 7, 15, clock=lambda: now[0])
+        stream.send_jpeg(_quadrant_jpeg())
+        now[0] += 45.0
+        stream.send_jpeg(_quadrant_jpeg())
+        stream.close()
+        message_types = [call.args[1] for call in server._send_packet.call_args_list]
+        self.assertEqual(
+            message_types,
+            [JPEG_FRAME, STREAM_START_MESSAGE, JPEG_FRAME, STREAM_END],
         )
 
 
