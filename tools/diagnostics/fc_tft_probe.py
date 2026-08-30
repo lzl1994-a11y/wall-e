@@ -11,7 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.fc_input import FcControllerRelay, XTestKeySink
-from services.tft_preview_server import TftPreviewServer, load_tft_preview_settings
+from services.game_tft_stream import GameTftStreamServer
+from services.tft_preview_server import load_tft_preview_settings
 from services.virtual_display import VirtualDisplaySettings
 from services.virtual_display_bridge import VirtualDisplayTftBridge
 
@@ -28,8 +29,8 @@ def main() -> int:
     if not rom.is_file():
         raise SystemExit(f"ROM not found: {rom}")
 
-    settings = VirtualDisplaySettings(fps=10)
-    server = TftPreviewServer(load_tft_preview_settings())
+    settings = VirtualDisplaySettings(width=512, height=480, fps=15)
+    server = GameTftStreamServer(load_tft_preview_settings())
     bridge = VirtualDisplayTftBridge(server, settings=settings)
     relay = None
     server.start()
@@ -42,7 +43,7 @@ def main() -> int:
 
         bridge.start([
             "fceux", "--sound", "0", "--no-config", "1",
-            "--xscale", "3", "--yscale", "3", "--noframe", "1",
+            "--xscale", "2", "--yscale", "2", "--noframe", "1",
             str(rom),
         ])
         sink = XTestKeySink(settings.display)
