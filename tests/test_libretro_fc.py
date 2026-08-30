@@ -29,6 +29,12 @@ class LibretroJoypadTests(unittest.TestCase):
         self.assertEqual(pad.state(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A), 0)
         self.assertEqual(pad.state(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A), 0)
 
+    def test_close_releases_all_buttons(self):
+        pad = LibretroJoypad()
+        pad.set_key("F", True)
+        pad.close()
+        self.assertEqual(pad.state(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,6 +75,10 @@ class LibretroJoypad:
             return 0
         return int(control in self._pressed)
 
+    def close(self) -> None:
+        """Match the relay sink lifecycle; no external resource is owned."""
+        self._pressed.clear()
+
 
 class LibretroFc:
     """Load a libretro FC core and pass unbuffered XRGB frames to a callback."""
