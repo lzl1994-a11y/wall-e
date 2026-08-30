@@ -11,6 +11,7 @@ from services.fc_input import (
     EV_ABS,
     EV_KEY,
     FcInputMapper,
+    FcJoystickMapper,
     FcKeyChange,
 )
 
@@ -65,6 +66,20 @@ class FcInputMapperTests(unittest.TestCase):
         self.assertEqual(self.mapper.translate(EV_KEY, BTN_SOUTH, 2), [])
         self.assertEqual(self.mapper.translate(EV_KEY, 310, 1), [])
         self.assertEqual(self.mapper.translate(EV_ABS, 0, 255), [])
+
+
+class FcJoystickMapperTests(unittest.TestCase):
+    def test_maps_confirmed_buttons_and_dpad_axes(self):
+        mapper = FcJoystickMapper()
+        self.assertEqual(mapper.translate(1, 0, 1), [FcKeyChange("F", True)])
+        self.assertEqual(mapper.translate(1, 1, 1), [FcKeyChange("D", True)])
+        self.assertEqual(mapper.translate(2, 6, -32767), [FcKeyChange("KP_4", True)])
+        self.assertEqual(mapper.translate(2, 6, 0), [FcKeyChange("KP_4", False)])
+
+    def test_ignores_analog_axes_and_understands_initial_events(self):
+        mapper = FcJoystickMapper()
+        self.assertEqual(mapper.translate(2, 0, 32767), [])
+        self.assertEqual(mapper.translate(0x81, 9, 1), [FcKeyChange("Return", True)])
 
 
 if __name__ == "__main__":
