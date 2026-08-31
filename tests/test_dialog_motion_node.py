@@ -29,6 +29,7 @@ class _Node:
     def __init__(self, _name):
         self.publishers = {}
         self.subscriptions = {}
+        self.timers = []
 
     def create_publisher(self, _message_type, topic, _qos):
         publisher = _Publisher()
@@ -37,6 +38,10 @@ class _Node:
 
     def create_subscription(self, _message_type, topic, callback, _qos):
         self.subscriptions[topic] = callback
+        return object()
+
+    def create_timer(self, interval, callback):
+        self.timers.append((interval, callback))
         return object()
 
     def get_logger(self):
@@ -60,23 +65,30 @@ def _load_module():
 
 
 class DialogMotionNodeTests(unittest.TestCase):
-    def test_listening_and_speaking_emit_one_coupled_manual_servo_target(self):
+    def test_listening_and_speaking_refresh_coupled_manual_servo_targets(self):
         module = _load_module()
         node = module.DialogMotionNode()
         publisher = node.publishers["/action_cmd"]
 
-        node.subscriptions["llm_busy"](_String("idle"))
+        interval, timer = node.timers[0]
+        self.assertEqual(interval, 1.0)
+        timer()
         node.subscriptions["llm_busy"](_String("idle"))
         node.subscriptions["tts_text"](_String("你好，我在。"))
         node.subscriptions["tts_text"](_String("第二个流式分段。"))
+        timer()
 
-        self.assertEqual(len(publisher.messages), 2)
-        listening, speaking = [json.loads(message.data) for message in publisher.messages]
+        self.assertEqual(len(publisher.messages), 3)
+        listening, speaking, speaking_refresh = [
+            json.loads(message.data) for message in publisher.messages
+        ]
         self.assertEqual(listening["name"], "manual_servo")
         self.assertEqual(listening["source"], "dialog_motion")
         self.assertEqual(listening["arguments"]["step_size"], 12.0)
+        self.assertEqual(speaking["source"], "dialog_motion")
+        self.assertEqual(speaking_refresh["source"], "dialog_motion")
 
-        for payload in (listening, speaking):
+        for payload in (listening, speaking, speaking_refresh):
             targets = payload["arguments"]["targets"]
             self.assertGreaterEqual(targets["eye_r"], 2000)
             self.assertLessEqual(targets["eye_r"], 4300)
@@ -87,6 +99,17 @@ class DialogMotionNodeTests(unittest.TestCase):
             self.assertLessEqual(targets["eyebrow_r"], 4200)
             self.assertGreaterEqual(targets["eyebrow_l"], 5700)
             self.assertLessEqual(targets["eyebrow_l"], 8000)
+
+    def test_busy_thinking_phase_pauses_periodic_motion(self):
+        module = _load_module()
+        node = module.DialogMotionNode()
+        publisher = node.publishers["/action_cmd"]
+        _, timer = node.timers[0]
+
+        node.subscriptions["llm_busy"](_String("busy"))
+        timer()
+
+        self.assertEqual(publisher.messages, [])
 
     def test_turn_end_marker_does_not_start_a_speaking_pose(self):
         module = _load_module()

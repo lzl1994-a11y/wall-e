@@ -25,6 +25,7 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "core" / "config.yaml"
 ACTION_TOPIC = "/action_cmd"
 BUSY_TOPIC = "llm_busy"
 TTS_TOPIC = "tts_text"
+MOTION_INTERVAL_SECONDS = 1.0
 
 
 class DialogPoseSampler:
@@ -127,11 +128,16 @@ class DialogMotionNode(Node):
     def __init__(self):
         super().__init__("dialog_motion_node")
         self._sampler = DialogPoseSampler(_load_dialog_servos())
-        self._state = "idle"
+        # The robot begins in its listening/waiting state. The periodic pose
+        # timer publishes after discovery, rather than sending a one-shot
+        # command during node construction that a late action subscriber could
+        # miss.
+        self._state = "listening"
         self._action_pub = self.create_publisher(String, ACTION_TOPIC, 10)
         self.create_subscription(String, BUSY_TOPIC, self._on_dialog_busy, 10)
         self.create_subscription(String, TTS_TOPIC, self._on_tts_text, 10)
-        self.get_logger().info("对话姿态节点上线：等待录音或播报状态")
+        self.create_timer(MOTION_INTERVAL_SECONDS, self._on_motion_timer)
+        self.get_logger().info("对话姿态节点上线：每秒更新倾听/说话姿态")
 
     def _publish_pose(self, state, targets):
         payload = build_action_cmd(
@@ -146,8 +152,10 @@ class DialogMotionNode(Node):
     def _on_dialog_busy(self, message):
         # Existing audio playback publishes idle only after the previous spoken
         # turn has physically finished; the next phase is listening/recording.
-        if message.data == "idle" and self._state != "listening":
-            self._publish_pose("listening", self._sampler.listening_pose())
+        if message.data == "idle":
+            self._state = "listening"
+        elif message.data == "busy":
+            self._state = "thinking"
 
     def _on_tts_text(self, message):
         text = (message.data or "").strip()
@@ -156,6 +164,13 @@ class DialogMotionNode(Node):
         # Streaming TTS may deliver several text segments.  One pose per
         # speaking transition is intentional; the trajectory node smooths it.
         if self._state != "speaking":
+            self._publish_pose("speaking", self._sampler.speaking_pose())
+
+    def _on_motion_timer(self):
+        """Refresh a conversational pose once a second during active phases."""
+        if self._state == "listening":
+            self._publish_pose("listening", self._sampler.listening_pose())
+        elif self._state == "speaking":
             self._publish_pose("speaking", self._sampler.speaking_pose())
 
 
