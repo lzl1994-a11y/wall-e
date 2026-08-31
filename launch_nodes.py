@@ -87,6 +87,7 @@ def build_node_list(args):
             nodes.append(NodeEntry("serial", ROOT / "nodes" / "serial_ros_node.py"))
         nodes.append(NodeEntry("motion_arbiter", ROOT / "nodes" / "motion_arbiter_node.py"))
         nodes.append(NodeEntry("action", ROOT / "nodes" / "sequence_ros_node.py"))
+        nodes.append(NodeEntry("dialog_motion", ROOT / "nodes" / "dialog_motion_node.py"))
         mcp_enabled = (
             getattr(args, "mcp", False)
             or (

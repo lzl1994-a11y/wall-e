@@ -68,6 +68,21 @@ class LaunchNodesTests(unittest.TestCase):
         return_value={
             "pipeline": {"mode": "asr_llm"},
             "launch": {"serial": True, "tracking": False},
+        },
+    )
+    def test_dialog_motion_starts_after_action_owner(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args(no_serial=False))
+        names = [entry.name for entry in entries]
+        dialog_motion = next(entry for entry in entries if entry.name == "dialog_motion")
+
+        self.assertTrue(dialog_motion.script.is_file())
+        self.assertLess(names.index("action"), names.index("dialog_motion"))
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "asr_llm"},
+            "launch": {"serial": True, "tracking": False},
             "hardware": {"backend": "ubuntu_i2c"},
         },
     )
