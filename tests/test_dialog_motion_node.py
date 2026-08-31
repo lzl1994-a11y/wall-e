@@ -104,6 +104,8 @@ class DialogMotionNodeTests(unittest.TestCase):
         sampler = module.DialogPoseSampler(
             module._load_dialog_servos(), rng=random.Random(7)
         )
+        self.assertEqual(sampler._eye_range, (-500, 500))
+        self.assertEqual(sampler._eyebrow_open_range, (0, 1140))
         for _ in range(100):
             for pose in (sampler.listening_pose(), sampler.speaking_pose()):
                 self.assertEqual(pose["eye_l"] - pose["eye_r"], 3500)

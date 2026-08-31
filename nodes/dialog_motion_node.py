@@ -31,10 +31,13 @@ class DialogPoseSampler:
     """Sample coupled eye/eyebrow poses within configuration-derived limits."""
 
     _STEP_SIZE = 12.0
+    _DIALOG_RANGE_FRACTION = 0.5
 
     def __init__(self, servos, rng=None):
         self._servos = servos
         self._rng = rng or random.Random()
+        self._eye_range = self._coupled_eye_range()
+        self._eyebrow_open_range = self._eyebrow_open_range()
 
     @staticmethod
     def _clamp(value, cfg):
@@ -42,7 +45,34 @@ class DialogPoseSampler:
             max(cfg["limit_1"], cfg["limit_2"]), value
         )))
 
-    def _pose(self, eye_range, eyebrow_range):
+    def _coupled_eye_range(self):
+        """Return half of the common safe range for equal eye offsets."""
+        lower = max(
+            min(self._servos[name]["limit_1"], self._servos[name]["limit_2"])
+            - self._servos[name]["init"]
+            for name in ("eye_r", "eye_l")
+        )
+        upper = min(
+            max(self._servos[name]["limit_1"], self._servos[name]["limit_2"])
+            - self._servos[name]["init"]
+            for name in ("eye_r", "eye_l")
+        )
+        return (
+            int(lower * self._DIALOG_RANGE_FRACTION),
+            int(upper * self._DIALOG_RANGE_FRACTION),
+        )
+
+    def _eyebrow_open_range(self):
+        """Return half of the common safe range for mirrored eyebrow opening."""
+        right = self._servos["eyebrow_r"]
+        left = self._servos["eyebrow_l"]
+        right_max = max(right["limit_1"], right["limit_2"])
+        left_min = min(left["limit_1"], left["limit_2"])
+        safe_open = min(right_max - right["init"], left["init"] - left_min)
+        return (0, int(safe_open * self._DIALOG_RANGE_FRACTION))
+
+    def _pose(self, eyebrow_range):
+        eye_range = self._eye_range
         eye_offset = self._rng.randint(*eye_range)
         eyebrow_offset = self._rng.randint(*eyebrow_range)
         targets = {
@@ -59,10 +89,12 @@ class DialogPoseSampler:
         }
 
     def listening_pose(self):
-        return self._pose((-180, 180), (80, 260))
+        # Listening holds the brows visibly open while looking to one side.
+        lower, upper = self._eyebrow_open_range
+        return self._pose((int(upper * 0.35), upper))
 
     def speaking_pose(self):
-        return self._pose((-280, 280), (0, 180))
+        return self._pose(self._eyebrow_open_range)
 
     @property
     def step_size(self):
