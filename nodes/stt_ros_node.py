@@ -6,6 +6,11 @@ from std_msgs.msg import String
 # 引入底层的听觉血肉引擎
 from services.stt_service import STTService
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
+from services.dialog_motion_protocol import (
+    DIALOG_MOTION_VAD_TOPIC,
+    VAD_SPEECH_ENDED,
+    VAD_SPEECH_STARTED,
+)
 
 class STTNode(Node):
     def __init__(self):
@@ -13,6 +18,9 @@ class STTNode(Node):
         
         # 1. 声明发布者：专往 'voice_text' 这个话题里扔字符串
         self.publisher_ = self.create_publisher(String, 'voice_text', 10)
+        self.dialog_motion_pub = self.create_publisher(
+            String, DIALOG_MOTION_VAD_TOPIC, 10
+        )
         self._game_active = False
         self._llm_busy = False
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
@@ -29,6 +37,8 @@ class STTNode(Node):
             self.stt_engine = STTService(
                 on_sentence_received=self.on_speech_detected
             )
+            self.stt_engine.on_speech_start = self._on_vad_speech_start
+            self.stt_engine.on_speech_end = self._on_vad_speech_end
             self.stt_engine.start()
             self.get_logger().info('✅ 听觉节点已上线，正在全天候监听环境声音...')
         except Exception as e:
@@ -46,6 +56,12 @@ class STTNode(Node):
         msg = String()
         msg.data = text
         self.publisher_.publish(msg)
+
+    def _on_vad_speech_start(self):
+        self.dialog_motion_pub.publish(String(data=VAD_SPEECH_STARTED))
+
+    def _on_vad_speech_end(self):
+        self.dialog_motion_pub.publish(String(data=VAD_SPEECH_ENDED))
 
     def _on_llm_busy(self, msg):
         """对话开始时暂停 ASR，AI 语音播放完成后恢复。"""

@@ -71,20 +71,21 @@ class DialogMotionNodeTests(unittest.TestCase):
         publisher = node.publishers["/action_cmd"]
 
         interval, timer = node.timers[0]
-        self.assertEqual(interval, 1.0)
+        self.assertEqual(interval, 2.0)
+        node.subscriptions["dialog_motion_vad"](_String("speech_started"))
         timer()
-        node.subscriptions["llm_busy"](_String("idle"))
         node.subscriptions["tts_text"](_String("你好，我在。"))
         node.subscriptions["tts_text"](_String("第二个流式分段。"))
         timer()
 
-        self.assertEqual(len(publisher.messages), 3)
-        listening, speaking, speaking_refresh = [
+        self.assertEqual(len(publisher.messages), 4)
+        listening, listening_refresh, speaking, speaking_refresh = [
             json.loads(message.data) for message in publisher.messages
         ]
         self.assertEqual(listening["name"], "manual_servo")
         self.assertEqual(listening["source"], "dialog_motion")
-        self.assertEqual(listening["arguments"]["step_size"], 12.0)
+        self.assertEqual(listening["arguments"]["step_size"], 35.0)
+        self.assertEqual(listening_refresh["source"], "dialog_motion")
         self.assertEqual(speaking["source"], "dialog_motion")
         self.assertEqual(speaking_refresh["source"], "dialog_motion")
 
@@ -99,17 +100,36 @@ class DialogMotionNodeTests(unittest.TestCase):
             self.assertLessEqual(targets["eyebrow_r"], 4200)
             self.assertGreaterEqual(targets["eyebrow_l"], 5700)
             self.assertLessEqual(targets["eyebrow_l"], 8000)
+            self.assertTrue(1920 <= targets["head_yaw"] <= 7600)
+            self.assertTrue(5000 <= targets["neck_top"] <= 6000)
+            self.assertTrue(2000 <= targets["neck_bottom"] <= 5500)
 
-    def test_busy_thinking_phase_pauses_periodic_motion(self):
+    def test_motion_is_quiet_before_wake_vad_and_after_speech_ends(self):
         module = _load_module()
         node = module.DialogMotionNode()
         publisher = node.publishers["/action_cmd"]
         _, timer = node.timers[0]
 
-        node.subscriptions["llm_busy"](_String("busy"))
+        timer()
+        node.subscriptions["dialog_motion_vad"](_String("speech_started"))
+        self.assertEqual(len(publisher.messages), 1)
+        timer()
+        node.subscriptions["dialog_motion_vad"](_String("speech_ended"))
         timer()
 
-        self.assertEqual(publisher.messages, [])
+        self.assertEqual(len(publisher.messages), 2)
+
+    def test_playback_completion_stops_speaking_motion_until_vad_detects_speech(self):
+        module = _load_module()
+        node = module.DialogMotionNode()
+        publisher = node.publishers["/action_cmd"]
+        _, timer = node.timers[0]
+
+        node.subscriptions["tts_text"](_String("我正在说话。"))
+        node.subscriptions["llm_busy"](_String("idle"))
+        timer()
+
+        self.assertEqual(len(publisher.messages), 1)
 
     def test_turn_end_marker_does_not_start_a_speaking_pose(self):
         module = _load_module()
@@ -129,6 +149,8 @@ class DialogMotionNodeTests(unittest.TestCase):
         )
         self.assertEqual(sampler._eye_range, (-500, 500))
         self.assertEqual(sampler._eyebrow_open_range, (0, 1140))
+        self.assertEqual(sampler._head_yaw_range, (-1540, 1300))
+        self.assertEqual(sampler._neck_pitch_range, (0, 500))
         for _ in range(100):
             for pose in (sampler.listening_pose(), sampler.speaking_pose()):
                 self.assertEqual(pose["eye_l"] - pose["eye_r"], 3500)
@@ -136,6 +158,9 @@ class DialogMotionNodeTests(unittest.TestCase):
                 self.assertTrue(5000 <= pose["eye_l"] <= 7500)
                 self.assertTrue(1920 <= pose["eyebrow_r"] <= 4200)
                 self.assertTrue(5700 <= pose["eyebrow_l"] <= 8000)
+                self.assertTrue(1920 <= pose["head_yaw"] <= 7600)
+                self.assertTrue(5000 <= pose["neck_top"] <= 6000)
+                self.assertTrue(2000 <= pose["neck_bottom"] <= 5500)
 
 
 if __name__ == "__main__":

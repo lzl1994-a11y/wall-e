@@ -51,6 +51,8 @@ class STTService:
 
         # 透传唤醒词回调
         self.on_wake_word = None
+        self.on_speech_start = None
+        self.on_speech_end = None
 
         # 唤醒词守门
         self._awake = False
@@ -150,12 +152,17 @@ class STTService:
     # 可选实时 ASR 传输
     # ===================================================================
     def _on_speech_start(self, initial_pcm: bytes):
-        if not getattr(self.asr_adapter, "supports_streaming", False):
-            return
         with self._awake_lock:
             if not self._awake:
                 return
             self._cancel_awake_timer_locked()
+
+        callback = getattr(self, "on_speech_start", None)
+        if callback:
+            callback()
+
+        if not getattr(self.asr_adapter, "supports_streaming", False):
+            return
 
         try:
             self.asr_adapter.start_stream(self.SAMPLE_RATE)
@@ -180,6 +187,9 @@ class STTService:
 
     def _on_speech_cancel(self):
         self._cancel_streaming()
+        callback = getattr(self, "on_speech_end", None)
+        if callback:
+            callback()
         with self._awake_lock:
             if self._awake:
                 self._reset_awake_timer()
@@ -225,6 +235,10 @@ class STTService:
             awake = self._awake
         if not awake:
             return  # 未唤醒，静默丢弃
+
+        callback = getattr(self, "on_speech_end", None)
+        if callback:
+            callback()
 
         # 一旦开始识别完整句子，挂起超时；成功时由播放完成事件重新计时。
         with self._awake_lock:

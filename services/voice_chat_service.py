@@ -91,6 +91,8 @@ class VoiceChatService:
         self._pipe = AudioPipeline(config_path)
         self._pipe.on_wake_word = self._on_wake_detected
         self._pipe.on_sentence = self._on_sentence
+        self._pipe.on_speech_start = self._on_speech_start
+        self._pipe.on_speech_cancel = self._on_speech_cancel
 
         # ── 状态机 ──
         self._state = _State.IDLE
@@ -101,6 +103,8 @@ class VoiceChatService:
 
         # ── 回调 ──
         self.on_wake_word = None       # 唤醒词触发（应播放应答语音、切 TFT 页面）
+        self.on_speech_start = None    # VAD 首帧（仅已唤醒状态）
+        self.on_speech_end = None      # VAD 断句或取消（仅已唤醒状态）
         self.on_llm_reply = None       # LLM 文本回复（最终完整回复）
         self.on_llm_chunk = None       # LLM 流式文本块
         self.on_tool_call = None       # LLM 工具调用
@@ -187,16 +191,23 @@ class VoiceChatService:
     def _on_sentence(self, pcm_data: bytes):
         """VAD 断句回调：仅 AWAKE 状态时派发 LLM。"""
         duration_ms = len(pcm_data) // 2 * 1000 // self.SAMPLE_RATE
-        if duration_ms < 200:
-            return
-
         with self._state_lock:
             if self._state != _State.AWAKE:
                 return  # IDLE、LLM_PENDING 或 SPEAKING 时忽略
-            # Claim the turn before leaving the audio callback so a second VAD
-            # sentence cannot race with this one. Capture stays muted until the
-            # corresponding TTS turn has physically finished playing.
-            self._state = _State.LLM_PENDING
+            if duration_ms < 200:
+                short_noise = True
+            else:
+                short_noise = False
+                # Claim the turn before leaving the audio callback so a second VAD
+                # sentence cannot race with this one. Capture stays muted until the
+                # corresponding TTS turn has physically finished playing.
+                self._state = _State.LLM_PENDING
+
+        callback = getattr(self, "on_speech_end", None)
+        if callback:
+            callback()
+        if short_noise:
+            return
 
         self._pipe.pause()
 
@@ -233,6 +244,22 @@ class VoiceChatService:
                     os.remove(wav_path)
                 except OSError:
                     pass
+
+    def _on_speech_start(self, _initial_pcm: bytes):
+        with self._state_lock:
+            if self._state != _State.AWAKE:
+                return
+        callback = getattr(self, "on_speech_start", None)
+        if callback:
+            callback()
+
+    def _on_speech_cancel(self):
+        with self._state_lock:
+            if self._state != _State.AWAKE:
+                return
+        callback = getattr(self, "on_speech_end", None)
+        if callback:
+            callback()
 
     def _on_timeout(self):
         """LLM 超时，回到 IDLE。"""

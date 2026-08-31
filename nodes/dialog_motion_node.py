@@ -18,6 +18,11 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from services.action_command import build_action_cmd
+from services.dialog_motion_protocol import (
+    DIALOG_MOTION_VAD_TOPIC,
+    VAD_SPEECH_ENDED,
+    VAD_SPEECH_STARTED,
+)
 from services.tts_protocol import decode_turn_end
 
 
@@ -25,13 +30,13 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "core" / "config.yaml"
 ACTION_TOPIC = "/action_cmd"
 BUSY_TOPIC = "llm_busy"
 TTS_TOPIC = "tts_text"
-MOTION_INTERVAL_SECONDS = 1.0
+MOTION_INTERVAL_SECONDS = 2.0
 
 
 class DialogPoseSampler:
-    """Sample coupled eye/eyebrow poses within configuration-derived limits."""
+    """Sample coupled face, head-yaw, and neck-pitch poses within limits."""
 
-    _STEP_SIZE = 12.0
+    _STEP_SIZE = 35.0
     _DIALOG_RANGE_FRACTION = 0.5
 
     def __init__(self, servos, rng=None):
@@ -39,6 +44,8 @@ class DialogPoseSampler:
         self._rng = rng or random.Random()
         self._eye_range = self._coupled_eye_range()
         self._eyebrow_open_range = self._eyebrow_open_range()
+        self._head_yaw_range = self._half_offset_range("head_yaw")
+        self._neck_pitch_range = self._neck_pitch_range()
 
     @staticmethod
     def _clamp(value, cfg):
@@ -72,10 +79,31 @@ class DialogPoseSampler:
         safe_open = min(right_max - right["init"], left["init"] - left_min)
         return (0, int(safe_open * self._DIALOG_RANGE_FRACTION))
 
+    def _half_offset_range(self, name):
+        cfg = self._servos[name]
+        return (
+            int((min(cfg["limit_1"], cfg["limit_2"]) - cfg["init"])
+                * self._DIALOG_RANGE_FRACTION),
+            int((max(cfg["limit_1"], cfg["limit_2"]) - cfg["init"])
+                * self._DIALOG_RANGE_FRACTION),
+        )
+
+    def _neck_pitch_range(self):
+        """Pitch both neck servos together, preserving their safe directions."""
+        top = self._servos["neck_top"]
+        bottom = self._servos["neck_bottom"]
+        safe_pitch = min(
+            max(top["limit_1"], top["limit_2"]) - top["init"],
+            bottom["init"] - min(bottom["limit_1"], bottom["limit_2"]),
+        )
+        return (0, int(safe_pitch * self._DIALOG_RANGE_FRACTION))
+
     def _pose(self, eyebrow_range):
         eye_range = self._eye_range
         eye_offset = self._rng.randint(*eye_range)
         eyebrow_offset = self._rng.randint(*eyebrow_range)
+        head_yaw_offset = self._rng.randint(*self._head_yaw_range)
+        neck_pitch = self._rng.randint(*self._neck_pitch_range)
         targets = {
             # Equal eye offsets preserve the installed eye-pair gap.
             "eye_r": self._servos["eye_r"]["init"] + eye_offset,
@@ -83,6 +111,9 @@ class DialogPoseSampler:
             # The eyebrow servos are mirrored, so opening is +/- PWM.
             "eyebrow_r": self._servos["eyebrow_r"]["init"] + eyebrow_offset,
             "eyebrow_l": self._servos["eyebrow_l"]["init"] - eyebrow_offset,
+            "head_yaw": self._servos["head_yaw"]["init"] + head_yaw_offset,
+            "neck_top": self._servos["neck_top"]["init"] + neck_pitch,
+            "neck_bottom": self._servos["neck_bottom"]["init"] - neck_pitch,
         }
         return {
             name: self._clamp(value, self._servos[name])
@@ -113,7 +144,10 @@ def _load_dialog_servos(config_path=CONFIG_PATH):
         for item in config.get("servos", [])
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
-    required = {"eye_r", "eye_l", "eyebrow_r", "eyebrow_l"}
+    required = {
+        "eye_r", "eye_l", "eyebrow_r", "eyebrow_l",
+        "head_yaw", "neck_top", "neck_bottom",
+    }
     missing = required - servos.keys()
     if missing:
         raise RuntimeError(f"对话姿态缺少舵机配置: {', '.join(sorted(missing))}")
@@ -128,16 +162,16 @@ class DialogMotionNode(Node):
     def __init__(self):
         super().__init__("dialog_motion_node")
         self._sampler = DialogPoseSampler(_load_dialog_servos())
-        # The robot begins in its listening/waiting state. The periodic pose
-        # timer publishes after discovery, rather than sending a one-shot
-        # command during node construction that a late action subscriber could
-        # miss.
-        self._state = "listening"
+        # No motion until the VAD reports actual human speech after wake-up.
+        self._state = "idle"
         self._action_pub = self.create_publisher(String, ACTION_TOPIC, 10)
-        self.create_subscription(String, BUSY_TOPIC, self._on_dialog_busy, 10)
+        self.create_subscription(
+            String, DIALOG_MOTION_VAD_TOPIC, self._on_vad_state, 10
+        )
+        self.create_subscription(String, BUSY_TOPIC, self._on_playback_state, 10)
         self.create_subscription(String, TTS_TOPIC, self._on_tts_text, 10)
         self.create_timer(MOTION_INTERVAL_SECONDS, self._on_motion_timer)
-        self.get_logger().info("对话姿态节点上线：每秒更新倾听/说话姿态")
+        self.get_logger().info("对话姿态节点上线：VAD 人声/说话期间每2秒更新姿态")
 
     def _publish_pose(self, state, targets):
         payload = build_action_cmd(
@@ -149,13 +183,14 @@ class DialogMotionNode(Node):
         self._state = state
         self.get_logger().info(f"对话姿态 -> {state}: {targets}")
 
-    def _on_dialog_busy(self, message):
-        # Existing audio playback publishes idle only after the previous spoken
-        # turn has physically finished; the next phase is listening/recording.
-        if message.data == "idle":
+    def _on_vad_state(self, message):
+        if message.data == VAD_SPEECH_STARTED:
             self._state = "listening"
-        elif message.data == "busy":
-            self._state = "thinking"
+            # Short utterances may end before the next two-second timer tick;
+            # move once immediately when VAD positively identifies speech.
+            self._publish_pose("listening", self._sampler.listening_pose())
+        elif message.data == VAD_SPEECH_ENDED and self._state == "listening":
+            self._state = "idle"
 
     def _on_tts_text(self, message):
         text = (message.data or "").strip()
@@ -166,8 +201,15 @@ class DialogMotionNode(Node):
         if self._state != "speaking":
             self._publish_pose("speaking", self._sampler.speaking_pose())
 
+    def _on_playback_state(self, message):
+        # This existing state is emitted only after the queued audio has
+        # physically drained. It ends body motion; it does not imply VAD is
+        # currently hearing a person, so it must not enter listening mode.
+        if message.data == "idle" and self._state == "speaking":
+            self._state = "idle"
+
     def _on_motion_timer(self):
-        """Refresh a conversational pose once a second during active phases."""
+        """Refresh a conversational pose every two seconds during active phases."""
         if self._state == "listening":
             self._publish_pose("listening", self._sampler.listening_pose())
         elif self._state == "speaking":

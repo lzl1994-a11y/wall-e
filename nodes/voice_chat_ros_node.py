@@ -48,6 +48,11 @@ from services.tool_dispatcher import build_action_cmd
 from services.tft_preview_server import load_tft_preview_settings
 from services.tracking_tft_preview import TrackingTftPreview
 from services.tts_protocol import encode_turn_end
+from services.dialog_motion_protocol import (
+    DIALOG_MOTION_VAD_TOPIC,
+    VAD_SPEECH_ENDED,
+    VAD_SPEECH_STARTED,
+)
 from services.usb_devices import resolve_audio_device
 from services.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
@@ -66,6 +71,9 @@ class VoiceChatNode(Node):
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, "action_cmd", 10)
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
+        self.dialog_motion_pub = self.create_publisher(
+            String, DIALOG_MOTION_VAD_TOPIC, 10
+        )
         self.game_request_pub = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
         self.create_subscription(String, "llm_busy", self._on_playback_state, 10)
 
@@ -115,6 +123,8 @@ class VoiceChatNode(Node):
 
         self.vc = VoiceChatService()
         self.vc.on_wake_word = self._on_wake_word
+        self.vc.on_speech_start = self._on_vad_speech_start
+        self.vc.on_speech_end = self._on_vad_speech_end
         self.vc.on_llm_chunk = self._on_llm_chunk
         self.vc.on_llm_reply = self._on_llm_reply
         self.vc.on_tool_call = self._on_tool_call
@@ -306,6 +316,14 @@ class VoiceChatNode(Node):
 
         # 播放预合成应答 WAV（后台线程，不阻塞主循环）
         threading.Thread(target=self._play_wake_response, daemon=True).start()
+
+    def _on_vad_speech_start(self):
+        if self._game_mode == "robot":
+            self.dialog_motion_pub.publish(String(data=VAD_SPEECH_STARTED))
+
+    def _on_vad_speech_end(self):
+        if self._game_mode == "robot":
+            self.dialog_motion_pub.publish(String(data=VAD_SPEECH_ENDED))
 
     def _play_wake_response(self):
         """播放 assets/wake_response.wav。"""
