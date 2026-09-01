@@ -85,8 +85,8 @@ poses:
       eyebrow_r: 1920
       eyebrow_l: 8000
       head_yaw: 5000
-      neck_top: 5000
-      neck_bottom: 3000
+      neck_top: init
+      neck_bottom: init
   expression_listening:
     default_step: 20.0
     targets:
@@ -95,8 +95,8 @@ poses:
       eyebrow_r: 2500
       eyebrow_l: 7420
       head_yaw: 5200
-      neck_top: 5000
-      neck_bottom: 3300
+      neck_top: init
+      neck_bottom: {toward: max, fraction: 0.17}
   expression_thinking:
     default_step: 18.0
     targets:
@@ -105,8 +105,8 @@ poses:
       eyebrow_r: 2800
       eyebrow_l: 7120
       head_yaw: 5800
-      neck_top: 5000
-      neck_bottom: 3600
+      neck_top: init
+      neck_bottom: {toward: max, fraction: 0.33}
   expression_happy:
     default_step: 24.0
     targets:
@@ -115,8 +115,8 @@ poses:
       eyebrow_r: 3400
       eyebrow_l: 6520
       head_yaw: 5000
-      neck_top: 5000
-      neck_bottom: 3400
+      neck_top: init
+      neck_bottom: {toward: max, fraction: 0.22}
   expression_sad:
     default_step: 18.0
     targets:
@@ -125,8 +125,8 @@ poses:
       eyebrow_r: 2050
       eyebrow_l: 7870
       head_yaw: 5000
-      neck_top: 5750
-      neck_bottom: 2400
+      neck_top: {toward: max, fraction: 0.75}
+      neck_bottom: {toward: min, fraction: 0.60}
   expression_surprised:
     default_step: 32.0
     targets:
@@ -135,8 +135,8 @@ poses:
       eyebrow_r: 4200
       eyebrow_l: 5700
       head_yaw: 5000
-      neck_top: 6000
-      neck_bottom: 4800
+      neck_top: max
+      neck_bottom: max
   expression_confused:
     default_step: 18.0
     targets:
@@ -145,8 +145,8 @@ poses:
       eyebrow_r: 3500
       eyebrow_l: 7600
       head_yaw: 6400
-      neck_top: 5000
-      neck_bottom: 3300
+      neck_top: init
+      neck_bottom: {toward: max, fraction: 0.17}
   expression_concerned:
     default_step: 18.0
     targets:
@@ -155,8 +155,8 @@ poses:
       eyebrow_r: 2300
       eyebrow_l: 7700
       head_yaw: 4700
-      neck_top: 5450
-      neck_bottom: 2600
+      neck_top: {toward: max, fraction: 0.45}
+      neck_bottom: {toward: min, fraction: 0.40}
 sequences:
   happy_dance:
   - time: 0.0

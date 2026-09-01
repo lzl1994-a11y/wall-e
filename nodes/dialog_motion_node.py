@@ -28,6 +28,7 @@ from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     decode_dialog_expression,
 )
+from services.servo_motion_config import resolve_servo_target
 from services.tts_protocol import decode_turn_end
 
 
@@ -180,9 +181,7 @@ class DialogMotionNode(Node):
             for name, value in (sequence_data.get("poses") or {}).items()
             if name.startswith("expression_") and isinstance(value, dict)
         }
-        self._neutral_targets = dict(
-            self._expression_poses.get("neutral", {}).get("targets", {})
-        )
+        self._neutral_targets = self._resolved_expression_targets("neutral")
         self._listening_choices = (
             "neutral", "listening", "thinking", "confused"
         )
@@ -244,7 +243,7 @@ class DialogMotionNode(Node):
 
     def _publish_expression_pose(self, expression, intensity, state):
         pose = self._expression_poses.get(expression) or self._expression_poses.get("neutral", {})
-        targets = dict(pose.get("targets", {}))
+        targets = self._resolved_expression_targets(expression)
         factors = {"low": 0.6, "medium": 0.85, "high": 1.0}
         factor = factors.get(intensity, 0.6)
         if self._neutral_targets and expression != "neutral":
@@ -260,6 +259,16 @@ class DialogMotionNode(Node):
             targets,
             step_size=pose.get("default_step", self._sampler.step_size),
         )
+
+    def _resolved_expression_targets(self, expression):
+        pose = self._expression_poses.get(expression) or self._expression_poses.get("neutral", {})
+        targets = {}
+        for name, raw_target in pose.get("targets", {}).items():
+            servo = self._servos.get(name)
+            target = resolve_servo_target(servo, raw_target) if servo else None
+            if target is not None:
+                targets[name] = target
+        return targets
 
     def _on_playback_state(self, message):
         # This existing state is emitted only after the queued audio has

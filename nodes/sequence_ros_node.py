@@ -12,6 +12,7 @@ from std_msgs.msg import String
 from services.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
 from services.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
 from services.dialog_expression_protocol import DIALOG_EXPRESSION_TARGET_TOPIC
+from services.servo_motion_config import resolve_servo_target
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 
 class SequenceRosNode(Node):
@@ -105,25 +106,7 @@ class SequenceRosNode(Node):
     def _clamp_pwm(self, name, raw_pwm):
         """将传入的原始 PWM 值限制在安全的硬件限位内"""
         cfg = self._servos_config.get(name)
-        if not cfg: return None
-        l1 = cfg['limit_1']
-        l2 = cfg['limit_2']
-        min_pwm = min(l1, l2)
-        max_pwm = max(l1, l2)
-        if isinstance(raw_pwm, str):
-            symbolic_targets = {
-                "init": cfg.get("init"),
-                "min": min_pwm,
-                "max": max_pwm,
-                "limit_1": l1,
-                "limit_2": l2,
-            }
-            raw_pwm = symbolic_targets.get(raw_pwm.strip().lower())
-        try:
-            raw_pwm = float(raw_pwm)
-        except (TypeError, ValueError):
-            return None
-        return max(min_pwm, min(max_pwm, raw_pwm))
+        return resolve_servo_target(cfg, raw_pwm) if cfg else None
 
     def _servo_init(self, name, fallback):
         cfg = self._servos_config.get(name, {})

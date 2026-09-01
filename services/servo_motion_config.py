@@ -71,6 +71,48 @@ def _calibration(item: Any, name: str) -> ServoCalibration:
     return ServoCalibration(initial=initial, low=low, high=high)
 
 
+def resolve_servo_target(servo: Any, target: Any) -> int | None:
+    """Resolve a numeric or calibration-relative pose target.
+
+    Relative targets use ``{"toward": "min|max", "fraction": 0..1}`` and
+    are measured from the servo's configured initial position.
+    """
+    try:
+        calibration = _calibration(
+            servo, str(servo.get("name", "unknown")) if isinstance(servo, dict) else "unknown"
+        )
+    except ValueError:
+        return None
+
+    symbolic = {
+        "init": calibration.initial,
+        "min": calibration.low,
+        "max": calibration.high,
+    }
+    if isinstance(target, str):
+        target = symbolic.get(target.strip().lower())
+    elif isinstance(target, dict):
+        destination = symbolic.get(str(target.get("toward", "")).strip().lower())
+        fraction = target.get("fraction")
+        if (
+            destination is None
+            or isinstance(fraction, bool)
+            or not isinstance(fraction, (int, float))
+            or not 0.0 <= float(fraction) <= 1.0
+        ):
+            return None
+        target = calibration.initial + (
+            destination - calibration.initial
+        ) * float(fraction)
+
+    try:
+        target = float(target)
+    except (TypeError, ValueError):
+        return None
+    target = max(calibration.low, min(calibration.high, target))
+    return int(round(target))
+
+
 def load_neck_kinematics(
     config_path: Path | str = DEFAULT_CONFIG_PATH,
 ) -> NeckKinematics:

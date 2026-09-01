@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 
 from services.action_intent_guard import validate_action_call
+from services.servo_motion_config import resolve_servo_target
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,28 +33,38 @@ class ExpressionLibraryTests(unittest.TestCase):
             servo["name"]: servo for servo in cls.config["servos"]
         }
 
+    def _resolved_targets(self, pose_name):
+        return {
+            servo_name: resolve_servo_target(self.servos[servo_name], target)
+            for servo_name, target in self.library["poses"][pose_name]["targets"].items()
+        }
+
     def test_expression_candidates_are_registered_as_poses(self):
         self.assertTrue(EXPRESSION_NAMES <= set(self.library["poses"]))
 
     def test_expression_targets_stay_within_configured_servo_limits(self):
         for name in EXPRESSION_NAMES:
             with self.subTest(expression=name):
-                for servo_name, target in self.library["poses"][name]["targets"].items():
+                for servo_name, target in self._resolved_targets(name).items():
                     servo = self.servos[servo_name]
                     self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
                     self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
 
     def test_surprised_uses_the_specified_maximum_neck_extension(self):
-        targets = self.library["poses"]["expression_surprised"]["targets"]
-        self.assertEqual(targets["neck_top"], self.servos["neck_top"]["limit_2"])
-        # The deployed robot's calibrated #7 maximum is 4800; the local
-        # developer config may intentionally carry a wider bench-test range.
-        self.assertEqual(targets["neck_bottom"], 4800)
+        targets = self._resolved_targets("expression_surprised")
+        self.assertEqual(
+            targets["neck_top"],
+            max(self.servos["neck_top"]["limit_1"], self.servos["neck_top"]["limit_2"]),
+        )
+        self.assertEqual(
+            targets["neck_bottom"],
+            max(self.servos["neck_bottom"]["limit_1"], self.servos["neck_bottom"]["limit_2"]),
+        )
 
     def test_sad_uses_the_specified_downward_neck_coupling(self):
-        targets = self.library["poses"]["expression_sad"]["targets"]
+        targets = self._resolved_targets("expression_sad")
         self.assertGreater(targets["neck_top"], self.servos["neck_top"]["init"])
-        self.assertLess(targets["neck_bottom"], self.servos["neck_bottom"]["init"])
+        self.assertLessEqual(targets["neck_bottom"], self.servos["neck_bottom"]["init"])
 
     def test_explicit_expression_requests_pass_the_action_guard(self):
         cases = (

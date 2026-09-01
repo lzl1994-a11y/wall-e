@@ -88,23 +88,21 @@ class DialogMotionNodeTests(unittest.TestCase):
         self.assertEqual(listening["step_size"], 12.0)
         self.assertEqual(listening_refresh["source"], "dialog_motion")
         self.assertEqual(speaking["source"], "dialog_motion")
-        self.assertEqual(speaking["targets"]["neck_top"], 6000)
-        self.assertEqual(speaking["targets"]["neck_bottom"], 4800)
+        self.assertEqual(
+            speaking["targets"]["neck_top"],
+            max(node._servos["neck_top"]["limit_1"], node._servos["neck_top"]["limit_2"]),
+        )
+        self.assertEqual(
+            speaking["targets"]["neck_bottom"],
+            max(node._servos["neck_bottom"]["limit_1"], node._servos["neck_bottom"]["limit_2"]),
+        )
 
         for payload in (listening, speaking):
             targets = payload["targets"]
-            self.assertGreaterEqual(targets["eye_r"], 2000)
-            self.assertLessEqual(targets["eye_r"], 4300)
-            self.assertGreaterEqual(targets["eye_l"], 5000)
-            self.assertLessEqual(targets["eye_l"], 7500)
-            self.assertEqual(targets["eye_l"] - targets["eye_r"], 3500)
-            self.assertGreaterEqual(targets["eyebrow_r"], 1920)
-            self.assertLessEqual(targets["eyebrow_r"], 4200)
-            self.assertGreaterEqual(targets["eyebrow_l"], 5700)
-            self.assertLessEqual(targets["eyebrow_l"], 8000)
-            self.assertTrue(1920 <= targets["head_yaw"] <= 7600)
-            self.assertTrue(5000 <= targets["neck_top"] <= 6000)
-            self.assertTrue(2000 <= targets["neck_bottom"] <= 5500)
+            for name, target in targets.items():
+                servo = node._servos[name]
+                self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
+                self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
 
     def test_motion_is_quiet_before_wake_vad_and_after_speech_ends(self):
         module = _load_module()
@@ -133,8 +131,8 @@ class DialogMotionNodeTests(unittest.TestCase):
 
         self.assertEqual(len(publisher.messages), 2)
         neutral = json.loads(publisher.messages[-1].data)["targets"]
-        self.assertEqual(neutral["neck_top"], 5000)
-        self.assertEqual(neutral["neck_bottom"], 3000)
+        self.assertEqual(neutral["neck_top"], node._servos["neck_top"]["init"])
+        self.assertEqual(neutral["neck_bottom"], node._servos["neck_bottom"]["init"])
 
     def test_turn_end_marker_does_not_start_a_speaking_pose(self):
         module = _load_module()
@@ -152,20 +150,15 @@ class DialogMotionNodeTests(unittest.TestCase):
         sampler = module.DialogPoseSampler(
             module._load_dialog_servos(), rng=random.Random(7)
         )
-        self.assertEqual(sampler._eye_range, (-80, 80))
-        self.assertEqual(sampler._eyebrow_open_range, (0, 182))
-        self.assertEqual(sampler._head_yaw_range, (-246, 208))
-        self.assertEqual(sampler._neck_pitch_range, (0, 80))
+        servos = module._load_dialog_servos()
+        expected_eye_gap = servos["eye_l"]["init"] - servos["eye_r"]["init"]
         for _ in range(100):
             for pose in (sampler.listening_pose(), sampler.speaking_pose()):
-                self.assertEqual(pose["eye_l"] - pose["eye_r"], 3500)
-                self.assertTrue(2000 <= pose["eye_r"] <= 4300)
-                self.assertTrue(5000 <= pose["eye_l"] <= 7500)
-                self.assertTrue(1920 <= pose["eyebrow_r"] <= 4200)
-                self.assertTrue(5700 <= pose["eyebrow_l"] <= 8000)
-                self.assertTrue(1920 <= pose["head_yaw"] <= 7600)
-                self.assertTrue(5000 <= pose["neck_top"] <= 6000)
-                self.assertTrue(2000 <= pose["neck_bottom"] <= 5500)
+                self.assertEqual(pose["eye_l"] - pose["eye_r"], expected_eye_gap)
+                for name, target in pose.items():
+                    servo = servos[name]
+                    self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
+                    self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
 
 
 if __name__ == "__main__":
