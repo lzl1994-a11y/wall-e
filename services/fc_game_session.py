@@ -10,8 +10,28 @@ import numpy as np
 
 from services.fc_input import FcControllerRelay
 from services.game_audio_adapter import GamePlaybackAdapter
+from services.game_hotkey import ButtonHold
 from services.game_menu import GameMenu, discover_roms
 from services.libretro_fc import LibretroFc
+
+
+class _ReturnToMenuSink:
+    """Relay gameplay input and recognise a long FC-A press as Back to menu."""
+
+    def __init__(self, sink, *, hold_seconds: float = 2.0) -> None:
+        self._sink = sink
+        self._return_hold = ButtonHold(hold_seconds=hold_seconds)
+
+    def set_key(self, key: str, down: bool) -> None:
+        self._sink.set_key(key, down)
+        if key == "F":  # FC A / the menu confirmation button
+            self._return_hold.set_down(down)
+
+    def should_return_to_menu(self) -> bool:
+        return self._return_hold.poll()
+
+    def close(self) -> None:
+        self._sink.close()
 
 
 class FcGameSession:
@@ -47,25 +67,43 @@ class FcGameSession:
         core: LibretroFc | None = None
         try:
             relay.start()
-            menu.emit()
             while not stop.wait(0.05):
                 if relay.error is not None:
                     self.disconnect_error = relay.error
                     return
-                if menu.chosen is not None:
-                    self.selected_rom = menu.chosen
-                    break
-            if stop.is_set() or self.selected_rom is None:
-                return
+                menu.emit()
+                while not stop.wait(0.05):
+                    if relay.error is not None:
+                        self.disconnect_error = relay.error
+                        return
+                    if menu.chosen is not None:
+                        self.selected_rom = menu.chosen
+                        break
+                if stop.is_set() or self.selected_rom is None:
+                    return
 
-            core = LibretroFc(self.core_path, on_frame=self.on_frame, audio_sink=audio)
-            relay.switch_sink(core.joypad)
-            core.load(self.selected_rom)
-            if self.on_game_started is not None:
-                self.on_game_started(self.selected_rom)
-            core.run_until(lambda: stop.is_set() or relay.error is not None)
-            if relay.error is not None:
-                self.disconnect_error = relay.error
+                core = LibretroFc(self.core_path, on_frame=self.on_frame, audio_sink=audio)
+                gameplay_sink = _ReturnToMenuSink(core.joypad)
+                relay.switch_sink(gameplay_sink)
+                core.load(self.selected_rom)
+                if self.on_game_started is not None:
+                    self.on_game_started(self.selected_rom)
+                core.run_until(
+                    lambda: stop.is_set()
+                    or relay.error is not None
+                    or gameplay_sink.should_return_to_menu()
+                )
+                if relay.error is not None:
+                    self.disconnect_error = relay.error
+                    return
+                if stop.is_set():
+                    return
+                core.close()
+                core = None
+                # The held A press that returned here does not select anything:
+                # GameMenu sees only its eventual release event.
+                menu = GameMenu(discover_roms(self.rom_directory), on_frame=self._emit_menu_frame)
+                relay.switch_sink(menu)
         finally:
             relay.stop()
             if core is not None:

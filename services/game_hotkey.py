@@ -45,6 +45,34 @@ class ButtonChordHold:
         self._fired = False
 
 
+class ButtonHold:
+    """Emit one event when one button remains down for the hold interval."""
+
+    def __init__(self, *, hold_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic):
+        self.hold_seconds = float(hold_seconds)
+        self._clock = clock
+        self._down_since: float | None = None
+        self._fired = False
+
+    def set_down(self, down: bool) -> None:
+        if down:
+            if self._down_since is None:
+                self._down_since = self._clock()
+                self._fired = False
+            return
+        self._down_since = None
+        self._fired = False
+
+    def poll(self) -> bool:
+        """Return true once for each completed long press."""
+        if self._fired or self._down_since is None:
+            return False
+        if self._clock() - self._down_since < self.hold_seconds:
+            return False
+        self._fired = True
+        return True
+
+
 class StartSelectHold(ButtonChordHold):
     """Backward-compatible named wrapper for the original hotkey."""
 
@@ -55,4 +83,4 @@ class StartSelectHold(ButtonChordHold):
         self.set_second(down)
 
 
-__all__ = ["ButtonChordHold", "StartSelectHold"]
+__all__ = ["ButtonChordHold", "ButtonHold", "StartSelectHold"]

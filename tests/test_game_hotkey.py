@@ -1,6 +1,6 @@
 import unittest
 
-from services.game_hotkey import ButtonChordHold, StartSelectHold
+from services.game_hotkey import ButtonChordHold, ButtonHold, StartSelectHold
 
 
 class StartSelectHoldTests(unittest.TestCase):
@@ -44,6 +44,17 @@ class StartSelectHoldTests(unittest.TestCase):
         self.hotkey.set_start(True)
         self.now += 2.0
         self.assertTrue(self.hotkey.poll())
+
+    def test_single_button_hold_emits_once_and_rearms_after_release(self):
+        hold = ButtonHold(hold_seconds=2.0, clock=lambda: self.now)
+        hold.set_down(True)
+        self.now += 2.0
+        self.assertTrue(hold.poll())
+        self.assertFalse(hold.poll())
+        hold.set_down(False)
+        hold.set_down(True)
+        self.now += 2.0
+        self.assertTrue(hold.poll())
 
 
 if __name__ == "__main__":
