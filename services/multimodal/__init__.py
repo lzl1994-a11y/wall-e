@@ -3,6 +3,7 @@ import yaml
 from .aliyun_multimodal import AliyunMultimodal
 from .baidu_multimodal import BaiduMultimodal
 from .doubao_multimodal import DoubaoMultimodal
+from .tencent_hunyuan_multimodal import TencentHunyuanMultimodal
 from .zhipu_multimodal import ZhipuMultimodal
 
 PROVIDERS = {
@@ -13,6 +14,9 @@ PROVIDERS = {
     "doubao": DoubaoMultimodal,
     "volcengine": DoubaoMultimodal,
     "ark": DoubaoMultimodal,
+    "tencent": TencentHunyuanMultimodal,
+    "tencent_hunyuan": TencentHunyuanMultimodal,
+    "hunyuan": TencentHunyuanMultimodal,
     "zhipu": ZhipuMultimodal,
 }
 

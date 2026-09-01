@@ -170,6 +170,16 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('<option value="baidu_qianfan">百度智能云 / 千帆</option>', html)
         self.assertIn("https://qianfan.baidubce.com/v2", html)
 
+    def test_llm_provider_selector_includes_tencent_hunyuan(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn(
+            '<option value="tencent_hunyuan">腾讯云 / 混元</option>',
+            html,
+        )
+        self.assertIn("https://api.hunyuan.cloud.tencent.com/v1", html)
+        self.assertIn("不支持音频直连", html)
+
     def test_remote_control_settings_are_on_servo_page(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")

@@ -475,3 +475,25 @@ llm:
 ```
 
 文本对话、摄像头图片理解和动作调用复用项目现有的流式 Chat Completions / Function Calling 协议。`pipeline.mode: multimodal` 的原始音频直聊还要求所选模型或自定义接入点同时支持 OpenAI `input_audio` 内容和 Function Calling；音频格式为 `16 kHz / Mono / WAV`。普通文本或视觉模型不具备音频输入能力时，请使用 `pipeline.mode: asr_llm`，可搭配项目已有的百度实时语音识别。
+
+### 腾讯混元 LLM / 视觉多模态
+
+腾讯混元通过 OpenAI 兼容 Chat Completions 接入。Web 配置页选择“腾讯云 / 混元”，填写混元 API Key（不是腾讯云 SecretKey）、模型名和接口根地址：
+
+```yaml
+pipeline:
+  mode: asr_llm
+llm:
+  provider: tencent_hunyuan
+  model: hunyuan-turbos-latest
+  url: https://api.hunyuan.cloud.tencent.com/v1
+  key: your-hunyuan-api-key
+  temperature: 0.4
+  max_tokens: 512
+  reasoning_effort: fast
+  tool_model: ''
+```
+
+文本对话和动作控制使用混元的标准 Function Calling。需要摄像头图片理解时，可将 `model` 换成账号可用的视觉模型，例如 `hunyuan-vision-1.5-instruct`；项目会以 `image_url` 数据 URI 发送 JPEG。若主视觉模型不支持动作工具，可在 `tool_model` 中配置另一个支持 Function Calling 的混元模型，普通视觉分析仍使用主模型。
+
+混元当前文档列出的 Chat 内容类型包含文本、图片和视频，但不包含 OpenAI `input_audio`，所以腾讯配置必须使用 `pipeline.mode: asr_llm`：先由项目已有 ASR 转写语音，再交给混元。若误选音频直连模式，适配器会明确拒绝并提示切换模式，避免把不受支持的音频结构发送给云端。
