@@ -86,7 +86,7 @@ poses:
       eyebrow_l: 8000
       head_yaw: 5000
       neck_top: 5000
-      neck_bottom: 4000
+      neck_bottom: 3000
   expression_listening:
     default_step: 20.0
     targets:
@@ -96,7 +96,7 @@ poses:
       eyebrow_l: 7420
       head_yaw: 5200
       neck_top: 5000
-      neck_bottom: 4300
+      neck_bottom: 3300
   expression_thinking:
     default_step: 18.0
     targets:
@@ -106,7 +106,7 @@ poses:
       eyebrow_l: 7120
       head_yaw: 5800
       neck_top: 5000
-      neck_bottom: 4600
+      neck_bottom: 3600
   expression_happy:
     default_step: 24.0
     targets:
@@ -116,7 +116,7 @@ poses:
       eyebrow_l: 6520
       head_yaw: 5000
       neck_top: 5000
-      neck_bottom: 4400
+      neck_bottom: 3400
   expression_sad:
     default_step: 18.0
     targets:
@@ -126,7 +126,7 @@ poses:
       eyebrow_l: 7870
       head_yaw: 5000
       neck_top: 5750
-      neck_bottom: 3250
+      neck_bottom: 2400
   expression_surprised:
     default_step: 32.0
     targets:
@@ -136,7 +136,7 @@ poses:
       eyebrow_l: 5700
       head_yaw: 5000
       neck_top: 6000
-      neck_bottom: 5500
+      neck_bottom: 4800
   expression_confused:
     default_step: 18.0
     targets:
@@ -146,7 +146,7 @@ poses:
       eyebrow_l: 7600
       head_yaw: 6400
       neck_top: 5000
-      neck_bottom: 4300
+      neck_bottom: 3300
   expression_concerned:
     default_step: 18.0
     targets:
@@ -156,7 +156,7 @@ poses:
       eyebrow_l: 7700
       head_yaw: 4700
       neck_top: 5450
-      neck_bottom: 3600
+      neck_bottom: 2600
 sequences:
   happy_dance:
   - time: 0.0

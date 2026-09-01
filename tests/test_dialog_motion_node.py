@@ -89,7 +89,7 @@ class DialogMotionNodeTests(unittest.TestCase):
         self.assertEqual(listening_refresh["source"], "dialog_motion")
         self.assertEqual(speaking["source"], "dialog_motion")
         self.assertEqual(speaking["targets"]["neck_top"], 6000)
-        self.assertEqual(speaking["targets"]["neck_bottom"], 5500)
+        self.assertEqual(speaking["targets"]["neck_bottom"], 4800)
 
         for payload in (listening, speaking):
             targets = payload["targets"]
@@ -134,7 +134,7 @@ class DialogMotionNodeTests(unittest.TestCase):
         self.assertEqual(len(publisher.messages), 2)
         neutral = json.loads(publisher.messages[-1].data)["targets"]
         self.assertEqual(neutral["neck_top"], 5000)
-        self.assertEqual(neutral["neck_bottom"], 4000)
+        self.assertEqual(neutral["neck_bottom"], 3000)
 
     def test_turn_end_marker_does_not_start_a_speaking_pose(self):
         module = _load_module()
