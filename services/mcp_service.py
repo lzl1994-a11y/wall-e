@@ -40,7 +40,15 @@ _semantic_mappings = {
     "tilt_head_left": "向左歪头/左倾/左眼下右眼上",
     "tilt_head_right": "向右歪头/右倾/右眼下左眼上",
     "look_left_up": "左上张望/思考",
-    "look_center": "回正/往前看"
+    "look_center": "回正/往前看",
+    "expression_neutral": "平静待机/回到中性表情",
+    "expression_listening": "认真倾听/注意力集中",
+    "expression_thinking": "思考/回忆/斟酌",
+    "expression_happy": "开心/高兴",
+    "expression_sad": "难过/低落",
+    "expression_surprised": "惊讶/吃惊，伸出脖子",
+    "expression_confused": "疑惑/困惑",
+    "expression_concerned": "关切/担心",
 }
 
 # 动态读取动作编排文件，生成动作菜单

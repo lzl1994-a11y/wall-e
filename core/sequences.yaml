@@ -69,6 +69,94 @@ poses:
     targets:
       eyebrow_r: 1920
       eyebrow_l: 8000
+  # Conversational-expression candidates.  These are held poses, not timed
+  # performances: a future dialogue-expression controller can blend into and
+  # out of them without interrupting a named sequence.
+  #
+  # Neck coupling is mechanical: #7 (neck_bottom) rising while #6
+  # (neck_top) stays still raises the neck and looks upward.  Looking down
+  # decreases #7 while increasing #6.  The surprised pose intentionally uses
+  # the maximum of both servos, as specified for this robot.
+  expression_neutral:
+    default_step: 24.0
+    targets:
+      eye_r: 3000
+      eye_l: 6500
+      eyebrow_r: 1920
+      eyebrow_l: 8000
+      head_yaw: 5000
+      neck_top: 5000
+      neck_bottom: 4000
+  expression_listening:
+    default_step: 20.0
+    targets:
+      eye_r: 3150
+      eye_l: 6650
+      eyebrow_r: 2500
+      eyebrow_l: 7420
+      head_yaw: 5200
+      neck_top: 5000
+      neck_bottom: 4300
+  expression_thinking:
+    default_step: 18.0
+    targets:
+      eye_r: 3300
+      eye_l: 6800
+      eyebrow_r: 2800
+      eyebrow_l: 7120
+      head_yaw: 5800
+      neck_top: 5000
+      neck_bottom: 4600
+  expression_happy:
+    default_step: 24.0
+    targets:
+      eye_r: 3000
+      eye_l: 6500
+      eyebrow_r: 3400
+      eyebrow_l: 6520
+      head_yaw: 5000
+      neck_top: 5000
+      neck_bottom: 4400
+  expression_sad:
+    default_step: 18.0
+    targets:
+      eye_r: 2400
+      eye_l: 5900
+      eyebrow_r: 2050
+      eyebrow_l: 7870
+      head_yaw: 5000
+      neck_top: 5750
+      neck_bottom: 3250
+  expression_surprised:
+    default_step: 32.0
+    targets:
+      eye_r: 2900
+      eye_l: 6400
+      eyebrow_r: 4200
+      eyebrow_l: 5700
+      head_yaw: 5000
+      neck_top: 6000
+      neck_bottom: 5500
+  expression_confused:
+    default_step: 18.0
+    targets:
+      eye_r: 3250
+      eye_l: 6750
+      eyebrow_r: 3500
+      eyebrow_l: 7600
+      head_yaw: 6400
+      neck_top: 5000
+      neck_bottom: 4300
+  expression_concerned:
+    default_step: 18.0
+    targets:
+      eye_r: 2700
+      eye_l: 6200
+      eyebrow_r: 2300
+      eyebrow_l: 7700
+      head_yaw: 4700
+      neck_top: 5450
+      neck_bottom: 3600
 sequences:
   happy_dance:
   - time: 0.0
