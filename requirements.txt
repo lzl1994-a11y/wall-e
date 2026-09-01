@@ -6,6 +6,7 @@ fastmcp>=2,<3
 numpy>=1.26,<3
 openai>=1,<4
 pydub>=0.25,<1
+pillow>=10,<12
 pypinyin>=0.49,<1
 pyserial>=3.5,<4
 PyYAML>=6,<7
