@@ -33,9 +33,21 @@ class BaiduMultimodalTests(unittest.TestCase):
 
         self.assertIsInstance(adapter, BaiduMultimodal)
 
+    def test_factory_accepts_runtime_baidu_qianfan_name(self):
+        with tempfile.TemporaryDirectory(prefix="wali-baidu-") as directory:
+            config_path = Path(directory) / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump({"llm": {"provider": "baidu_qianfan"}}),
+                encoding="utf-8",
+            )
+
+            adapter = create_multimodal(str(config_path))
+
+        self.assertIsInstance(adapter, BaiduMultimodal)
+
     def test_fast_ernie_thinking_model_uses_qianfan_switch(self):
         options = reasoning_request_options({
-            "provider": "baidu",
+            "provider": "baidu_qianfan",
             "model": "ernie-5.0-thinking-preview",
             "reasoning_effort": "fast",
         })

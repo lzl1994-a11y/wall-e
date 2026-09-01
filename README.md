@@ -465,7 +465,7 @@ LLM 服务也支持百度智能云千帆的 OpenAI 兼容 V2 接口。Web 配置
 
 ```yaml
 llm:
-  provider: baidu
+  provider: baidu_qianfan
   model: ernie-5.0
   url: https://qianfan.baidubce.com/v2
   key: your-qianfan-api-key

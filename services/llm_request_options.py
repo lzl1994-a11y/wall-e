@@ -24,7 +24,7 @@ def reasoning_request_options(settings):
     if mode == "fast" and provider in {"aliyun", "qwen"}:
         return {"extra_body": {"enable_thinking": False}}
     model = str(settings.get("model", "")).strip().lower()
-    if mode == "fast" and provider in {"baidu", "qianfan"}:
+    if mode == "fast" and provider in {"baidu", "baidu_qianfan", "qianfan"}:
         # Qianfan exposes two model-family-specific thinking switches through
         # its OpenAI-compatible Chat Completions API.  Only send a switch to
         # models documented to accept it; unknown/custom endpoints keep their

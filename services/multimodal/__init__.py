@@ -8,6 +8,7 @@ from .zhipu_multimodal import ZhipuMultimodal
 PROVIDERS = {
     "aliyun": AliyunMultimodal,
     "baidu": BaiduMultimodal,
+    "baidu_qianfan": BaiduMultimodal,
     "qianfan": BaiduMultimodal,
     "doubao": DoubaoMultimodal,
     "volcengine": DoubaoMultimodal,
