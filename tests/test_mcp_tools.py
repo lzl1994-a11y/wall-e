@@ -274,9 +274,9 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         service.settings["provider"] = "baidu_qianfan"
         json_response = types.SimpleNamespace(choices=[types.SimpleNamespace(
             message=types.SimpleNamespace(content=(
-                '{"response":"好呀。","expression":"neutral","intensity":"low",'
-                '"actions":[{"name":"play_sequence","arguments":'
-                '{"sequence_name":"raise_hand"}}]}'
+                '```json\n{"response":"好呀。","expression":"happy","intensity":0.7,'
+                '"actions":[{"action":"play_sequence","parameters":'
+                '{"sequence_name":"raise_hand"}}]}\n```'
             ))
         )])
         service.client.chat.completions.create.side_effect = [PlainResponse(), json_response]
@@ -299,6 +299,8 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             },
             events,
         )
+        self.assertEqual(events[0]["expression"], "happy")
+        self.assertEqual(events[0]["intensity"], "high")
         fallback_request = service.client.chat.completions.create.call_args_list[1].kwargs
         fallback_prompt = fallback_request["messages"][0]["content"]
         self.assertIn("actions", fallback_prompt)
@@ -316,6 +318,11 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "function": {"name": "play_sequence"},
         }])
         self.assertEqual(actions, [])
+
+    def test_json_fallback_parser_rejects_non_object_content(self):
+        service = self._service()
+        with self.assertRaises((ValueError, TypeError)):
+            service._parse_json_object("动作已经完成")
 
     def test_tool_branch_discards_mixed_content_and_emits_action(self):
         service = self._service()

@@ -126,14 +126,50 @@ class LLMService:
             return []
         actions = []
         for item in raw_actions[:3]:
-            if not isinstance(item, dict) or set(item) != {"name", "arguments"}:
+            if not isinstance(item, dict):
                 continue
-            name = item.get("name")
-            arguments = item.get("arguments")
+            if set(item) == {"name", "arguments"}:
+                name = item.get("name")
+                arguments = item.get("arguments")
+            elif set(item) == {"action", "parameters"}:
+                # Baidu JSON Object mode currently prefers these aliases even
+                # when the requested schema says name/arguments.
+                name = item.get("action")
+                arguments = item.get("parameters")
+            else:
+                continue
             if name not in offered or not isinstance(arguments, dict):
                 continue
             actions.append({"name": name, "arguments": arguments})
         return actions
+
+    @staticmethod
+    def _parse_json_object(content):
+        """Parse a provider JSON response, tolerating one outer code fence."""
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("JSON dialog answer is empty")
+        candidate = content.strip()
+        if candidate.startswith("```") and candidate.endswith("```"):
+            lines = candidate.splitlines()
+            if len(lines) >= 3:
+                candidate = "\n".join(lines[1:-1]).strip()
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            start, end = candidate.find("{"), candidate.rfind("}")
+            if start < 0 or end <= start:
+                raise
+            value = json.loads(candidate[start:end + 1])
+        if not isinstance(value, dict):
+            raise ValueError("JSON dialog answer is not an object")
+        return value
+
+    @staticmethod
+    def _fallback_intensity(value):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = max(0.0, min(1.0, float(value)))
+            return "low" if value < 0.34 else "medium" if value < 0.67 else "high"
+        return value
 
     def _json_dialog_answer(self, messages, model, max_tokens, action_tools=None):
         """Provider fallback when an advertised forced tool call is ignored."""
@@ -176,14 +212,12 @@ class LLMService:
         kwargs.update(reasoning_request_options(request_settings))
         result = self.client.chat.completions.create(**kwargs)
         content = result.choices[0].message.content
-        value = json.loads(content)
-        if not isinstance(value, dict):
-            raise ValueError("JSON dialog answer is not an object")
+        value = self._parse_json_object(content)
         response = value.get("response")
         if not isinstance(response, str) or not response.strip():
             raise ValueError("JSON dialog answer has no response")
         expression, intensity = normalize_expression(
-            value.get("expression"), value.get("intensity")
+            value.get("expression"), self._fallback_intensity(value.get("intensity"))
         )
         actions = self._json_fallback_actions(value, action_tools)
         return response.strip(), expression, intensity, actions
