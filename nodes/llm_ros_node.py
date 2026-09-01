@@ -16,7 +16,7 @@ from std_msgs.msg import String, UInt8MultiArray
 from pypinyin import Style, pinyin
 
 from services.action_acknowledgement import action_acknowledgement
-from services.action_intent_guard import validate_action_call
+from services.action_intent_guard import deterministic_safety_action, validate_action_call
 from services.llm_service import LLMService
 from services.camera_frame import (
     CameraFrameProvider,
@@ -360,6 +360,15 @@ class LLMBrainNode(Node):
         busy_msg.data = "busy"
         self.busy_publisher.publish(busy_msg)
 
+        safety_action = deterministic_safety_action(user_prompt)
+        if safety_action is not None:
+            self._process_deterministic_safety_action(
+                turn_id,
+                user_prompt,
+                *safety_action,
+            )
+            return
+
         # 拍照只保存本地文件，不进入视觉模型。
         if is_camera_photo_request(user_prompt):
             self._process_camera_photo(turn_id, user_prompt)
@@ -613,6 +622,40 @@ class LLMBrainNode(Node):
         self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
 
         # TTS 和播放节点会按顺序处理该标记；真正播完后再恢复 ASR。
+        self._finish_tts_turn(turn_id)
+
+    def _process_deterministic_safety_action(
+        self,
+        turn_id,
+        user_prompt,
+        action_name,
+        action_arguments,
+    ):
+        """Dispatch an explicit stop locally without relying on model output."""
+        action_payload = {
+            'turn_id': turn_id,
+            'name': action_name,
+            'arguments': json.dumps(action_arguments, ensure_ascii=False),
+        }
+        action_msg = String()
+        action_msg.data = json.dumps(action_payload, ensure_ascii=False)
+        self.action_publisher.publish(action_msg)
+        self.get_logger().info(
+            f'[{turn_id}] Deterministic safety action: {action_name} {action_arguments}'
+        )
+
+        self.corrected_publisher.publish(String(data=user_prompt))
+        acknowledgement = action_acknowledgement([action_payload])
+        self._publish_tts(acknowledgement, turn_id)
+        self.chat_history.append({'role': 'user', 'content': user_prompt})
+        self.chat_history.append({'role': 'assistant', 'content': acknowledgement})
+        self.full_ai_publisher.publish(String(data=acknowledgement))
+        self._publish_screen_dialog(
+            turn_id,
+            user_prompt,
+            acknowledgement,
+            [action_payload],
+        )
         self._finish_tts_turn(turn_id)
 
     def _process_camera_inspection(self, turn_id, user_prompt):

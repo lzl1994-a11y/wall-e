@@ -350,6 +350,28 @@ def validate_action_call(user_text, name, arguments):
     return True, ""
 
 
+def deterministic_safety_action(user_text):
+    """Return a local fail-safe action for an explicit tracking stop command.
+
+    Stopping an active visual-follow mode must not depend on a model producing
+    a tool call.  Keep this deliberately narrow: explanations, narration, and
+    commands that negate the stop itself continue through normal conversation.
+    """
+    compact = "".join(str(user_text or "").split())
+    if not compact:
+        return None
+    if (
+        _EXPLANATION_CONTEXT_RE.search(compact)
+        or _CANCEL_STOP_RE.search(compact)
+        or _CANCEL_EXPLICIT_STOP_RE.search(compact)
+        or _obvious_non_command(compact)
+    ):
+        return None
+    if _LEADING_TRACKING_STOP_RE.search(compact) or _TRACKING_STOP_RE.search(compact):
+        return "set_tracking_mode", {"mode": "idle"}
+    return None
+
+
 def validate_action_arguments(name, arguments):
     """Validate an already-authorized structured action request.
 

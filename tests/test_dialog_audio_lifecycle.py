@@ -489,6 +489,29 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(json.loads(published["arguments"]), {"sequence_name": "turn_head_left"})
         sys.modules.pop("nodes.llm_ros_node", None)
 
+    def test_tracking_stop_bypasses_model_and_publishes_idle_action(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.chat_history = deque(maxlen=40)
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_voice_task("turn-stop", "不要看我了。")
+
+        node.llm.chat_stream.assert_not_called()
+        published = json.loads(node.action_publisher.publish.call_args.args[0].data)
+        self.assertEqual(published["name"], "set_tracking_mode")
+        self.assertEqual(json.loads(published["arguments"]), {"mode": "idle"})
+        self.assertEqual(node.tts_publisher.publish.call_args_list[0].args[0].data, "好的，已停止跟随。")
+        self.assertEqual(node.corrected_publisher.publish.call_args.args[0].data, "不要看我了。")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
     def test_capability_question_tool_proposal_is_not_published(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)

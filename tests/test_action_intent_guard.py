@@ -1,10 +1,33 @@
 import unittest
 from unittest.mock import patch
 
-from services.action_intent_guard import validate_action_call
+from services.action_intent_guard import deterministic_safety_action, validate_action_call
 
 
 class ActionIntentGuardTests(unittest.TestCase):
+
+    def test_explicit_tracking_stop_has_deterministic_safety_action(self):
+        expected = ("set_tracking_mode", {"mode": "idle"})
+        for text in (
+            "不要看我了。",
+            "别再跟着我了。",
+            "停止注视我。",
+            "退出跟踪，别看着我。",
+            "我不需要你跟随我。",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(deterministic_safety_action(text), expected)
+
+    def test_non_commands_do_not_trigger_deterministic_tracking_stop(self):
+        for text in (
+            "不要停止看着我。",
+            "不要看我了是什么意思？",
+            "昨天我让你不要看我了。",
+            "他说不要看着我。",
+            "看着我。",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(deterministic_safety_action(text))
     def assertAllowed(self, text, name, arguments):
         allowed, reason = validate_action_call(text, name, arguments)
         self.assertTrue(allowed, reason)
