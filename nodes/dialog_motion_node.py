@@ -28,7 +28,10 @@ from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     decode_dialog_expression,
 )
-from services.servo_motion_config import resolve_servo_target
+from services.servo_motion_config import (
+    neck_kinematics_from_servos,
+    resolve_servo_target,
+)
 from services.tts_protocol import decode_turn_end
 
 
@@ -41,8 +44,10 @@ MOTION_INTERVAL_SECONDS = 2.0
 class DialogPoseSampler:
     """Sample coupled face, head-yaw, and neck-pitch poses within limits."""
 
-    _STEP_SIZE = 12.0
-    _DIALOG_RANGE_FRACTION = 0.08
+    _STEP_SIZE = 24.0
+    _DIALOG_RANGE_FRACTION = 0.22
+    _NECK_PITCH_MIN = 0.15
+    _NECK_PITCH_MAX = 0.30
 
     def __init__(self, servos, rng=None):
         self._servos = servos
@@ -50,7 +55,7 @@ class DialogPoseSampler:
         self._eye_range = self._coupled_eye_range()
         self._eyebrow_open_range = self._eyebrow_open_range()
         self._head_yaw_range = self._half_offset_range("head_yaw")
-        self._neck_pitch_range = self._neck_pitch_range()
+        self._neck_kinematics = neck_kinematics_from_servos(servos)
 
     @staticmethod
     def _clamp(value, cfg):
@@ -93,22 +98,11 @@ class DialogPoseSampler:
                 * self._DIALOG_RANGE_FRACTION),
         )
 
-    def _neck_pitch_range(self):
-        """Pitch both neck servos together, preserving their safe directions."""
-        top = self._servos["neck_top"]
-        bottom = self._servos["neck_bottom"]
-        safe_pitch = min(
-            max(top["limit_1"], top["limit_2"]) - top["init"],
-            bottom["init"] - min(bottom["limit_1"], bottom["limit_2"]),
-        )
-        return (0, int(safe_pitch * self._DIALOG_RANGE_FRACTION))
-
     def _pose(self, eyebrow_range):
         eye_range = self._eye_range
         eye_offset = self._rng.randint(*eye_range)
         eyebrow_offset = self._rng.randint(*eyebrow_range)
         head_yaw_offset = self._rng.randint(*self._head_yaw_range)
-        neck_pitch = self._rng.randint(*self._neck_pitch_range)
         targets = {
             # Equal eye offsets preserve the installed eye-pair gap.
             "eye_r": self._servos["eye_r"]["init"] + eye_offset,
@@ -117,9 +111,9 @@ class DialogPoseSampler:
             "eyebrow_r": self._servos["eyebrow_r"]["init"] + eyebrow_offset,
             "eyebrow_l": self._servos["eyebrow_l"]["init"] - eyebrow_offset,
             "head_yaw": self._servos["head_yaw"]["init"] + head_yaw_offset,
-            "neck_top": self._servos["neck_top"]["init"] + neck_pitch,
-            "neck_bottom": self._servos["neck_bottom"]["init"] - neck_pitch,
         }
+        neck_pitch = self._rng.uniform(self._NECK_PITCH_MIN, self._NECK_PITCH_MAX)
+        targets.update(self._neck_kinematics.targets(neck_pitch))
         return {
             name: self._clamp(value, self._servos[name])
             for name, value in targets.items()
@@ -185,6 +179,7 @@ class DialogMotionNode(Node):
         self._listening_choices = (
             "neutral", "listening", "thinking", "confused"
         )
+        self._active_expression = "neutral"
         # No motion until the VAD reports actual human speech after wake-up.
         self._state = "idle"
         self._target_pub = self.create_publisher(
@@ -231,15 +226,20 @@ class DialogMotionNode(Node):
         # Streaming TTS may deliver several text segments.  One pose per
         # speaking transition is intentional; the trajectory node smooths it.
         if self._state != "speaking":
-            self._publish_expression_pose("neutral", "low", "speaking")
+            self._active_expression = "neutral"
+            self._publish_pose("speaking", self._sampler.speaking_pose())
 
     def _on_expression(self, message):
         value = decode_dialog_expression(message.data)
         if value is None:
             return
-        self._publish_expression_pose(
-            value["expression"], value["intensity"], "speaking"
-        )
+        self._active_expression = value["expression"]
+        if self._active_expression == "neutral":
+            self._publish_pose("speaking", self._sampler.speaking_pose())
+        else:
+            self._publish_expression_pose(
+                self._active_expression, value["intensity"], "speaking"
+            )
 
     def _publish_expression_pose(self, expression, intensity, state):
         pose = self._expression_poses.get(expression) or self._expression_poses.get("neutral", {})
@@ -275,12 +275,15 @@ class DialogMotionNode(Node):
         # physically drained. It ends body motion; it does not imply VAD is
         # currently hearing a person, so it must not enter listening mode.
         if message.data == "idle" and self._state == "speaking":
+            self._active_expression = "neutral"
             self._publish_expression_pose("neutral", "low", "idle")
 
     def _on_motion_timer(self):
         """Refresh a conversational pose every two seconds during active phases."""
         if self._state == "listening" and self._listening_mode == "micro_motion":
             self._publish_pose("listening", self._sampler.listening_pose())
+        elif self._state == "speaking" and self._active_expression == "neutral":
+            self._publish_pose("speaking", self._sampler.speaking_pose())
 
 
 def main(args=None):

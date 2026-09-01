@@ -262,6 +262,61 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         fallback_request = service.client.chat.completions.create.call_args_list[1].kwargs
         self.assertEqual(fallback_request["response_format"], {"type": "json_object"})
 
+    def test_json_fallback_preserves_explicit_robot_action(self):
+        class PlainResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content="我举起手啦。", tool_calls=None),
+                    finish_reason="stop",
+                )])
+
+        service = self._service()
+        service.settings["provider"] = "baidu_qianfan"
+        json_response = types.SimpleNamespace(choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content=(
+                '{"response":"好呀。","expression":"neutral","intensity":"low",'
+                '"actions":[{"name":"play_sequence","arguments":'
+                '{"sequence_name":"raise_hand"}}]}'
+            ))
+        )])
+        service.client.chat.completions.create.side_effect = [PlainResponse(), json_response]
+        action_schema = [{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "执行预设动作",
+                "parameters": {"type": "object"},
+            },
+        }]
+        with patch("services.llm_service.get_action_tools", return_value=action_schema):
+            events = list(service.chat_stream("举起手来。", tools_enabled=True))
+
+        self.assertIn(
+            {
+                "type": "tool_call",
+                "name": "play_sequence",
+                "arguments": '{"sequence_name": "raise_hand"}',
+            },
+            events,
+        )
+        fallback_request = service.client.chat.completions.create.call_args_list[1].kwargs
+        fallback_prompt = fallback_request["messages"][0]["content"]
+        self.assertIn("actions", fallback_prompt)
+        self.assertIn("play_sequence", fallback_prompt)
+
+    def test_json_fallback_discards_unoffered_actions(self):
+        value = {
+            "actions": [
+                {"name": "delete_everything", "arguments": {}},
+                {"name": "play_sequence", "arguments": "raise_hand"},
+            ]
+        }
+        actions = self._service()._json_fallback_actions(value, [{
+            "type": "function",
+            "function": {"name": "play_sequence"},
+        }])
+        self.assertEqual(actions, [])
+
     def test_tool_branch_discards_mixed_content_and_emits_action(self):
         service = self._service()
         service.client.chat.completions.create.return_value = _ToolCallResponse()

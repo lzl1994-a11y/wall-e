@@ -429,9 +429,13 @@ class LLMBrainNode(Node):
         def publish_spoken(value):
             nonlocal expression_published
             if not expression_published:
-                self.dialog_expression_publisher.publish(String(
-                    data=encode_dialog_expression("neutral", "low", turn_id)
-                ))
+                expression_publisher = getattr(
+                    self, "dialog_expression_publisher", None
+                )
+                if expression_publisher is not None:
+                    expression_publisher.publish(String(
+                        data=encode_dialog_expression("neutral", "low", turn_id)
+                    ))
                 expression_published = True
             spoken = self._publish_tts(value, turn_id)
             if spoken:

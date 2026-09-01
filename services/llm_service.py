@@ -111,15 +111,54 @@ class LLMService:
         # __new__; resolve lazily if __init__ did not set the cached value.
         return getattr(self, "tool_model", self._resolve_tool_model()[0])
 
-    def _json_dialog_answer(self, messages, model, max_tokens):
+    @staticmethod
+    def _json_fallback_actions(value, action_tools):
+        """Keep only well-formed calls to tools offered in this request."""
+        offered = {
+            tool["function"]["name"]
+            for tool in action_tools or []
+            if isinstance(tool, dict)
+            and isinstance(tool.get("function"), dict)
+            and isinstance(tool["function"].get("name"), str)
+        }
+        raw_actions = value.get("actions", [])
+        if not isinstance(raw_actions, list):
+            return []
+        actions = []
+        for item in raw_actions[:3]:
+            if not isinstance(item, dict) or set(item) != {"name", "arguments"}:
+                continue
+            name = item.get("name")
+            arguments = item.get("arguments")
+            if name not in offered or not isinstance(arguments, dict):
+                continue
+            actions.append({"name": name, "arguments": arguments})
+        return actions
+
+    def _json_dialog_answer(self, messages, model, max_tokens, action_tools=None):
         """Provider fallback when an advertised forced tool call is ignored."""
         fallback_messages = [dict(message) for message in messages]
+        action_tools = list(action_tools or [])
+        action_catalog = [
+            {
+                "name": tool["function"].get("name"),
+                "description": tool["function"].get("description", ""),
+                "parameters": tool["function"].get("parameters", {}),
+            }
+            for tool in action_tools
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        ]
         fallback_messages[0]["content"] = (
             str(fallback_messages[0].get("content", ""))
             + "\n\n只返回一个 JSON 对象，不要 Markdown 或其他文字。必须包含 response、"
               "expression、intensity。expression 只能是 neutral、listening、thinking、"
               "happy、sad、surprised、confused、concerned；intensity 只能是 low、"
-              "medium、high。"
+              "medium、high。还必须包含 actions 数组。只有用户明确命令瓦力现在执行现实"
+              "动作时，actions 才能填写；普通聊天、能力询问、否定、引用、故事或第三方"
+              "动作必须返回空数组。每项严格使用 {\"name\":工具名,\"arguments\":参数对象}。"
+              "这是 Function Calling 失效后的 JSON 回退，本次必须把应执行的动作写入 actions，"
+              "不能只在 response 中声称已经执行。可用动作工具如下：\n"
+            + json.dumps(action_catalog, ensure_ascii=False, separators=(",", ":"))
         )
         kwargs = {
             "model": model,
@@ -146,7 +185,8 @@ class LLMService:
         expression, intensity = normalize_expression(
             value.get("expression"), value.get("intensity")
         )
-        return response.strip(), expression, intensity
+        actions = self._json_fallback_actions(value, action_tools)
+        return response.strip(), expression, intensity, actions
 
     def chat_stream(
         self,
@@ -301,6 +341,7 @@ class LLMService:
         if tools_enabled or requires_structured_answer:
             response_text = ""
             expression, intensity = "neutral", "low"
+            fallback_actions = []
             structured_dialog_obtained = bool(direct_answers)
             if direct_answers:
                 arguments = direct_answers[-1]["arguments"]
@@ -312,10 +353,14 @@ class LLMService:
                 )
             elif self.settings.get("provider"):
                 try:
-                    response_text, expression, intensity = self._json_dialog_answer(
+                    response_text, expression, intensity, fallback_actions = self._json_dialog_answer(
                         messages,
                         request_model,
                         request_kwargs["max_tokens"],
+                        [
+                            tool for tool in tools
+                            if tool.get("function", {}).get("name") != DIRECT_ANSWER_TOOL_NAME
+                        ] if tools_enabled else [],
                     )
                     structured_dialog_obtained = True
                     LOGGER.warning(
@@ -324,6 +369,10 @@ class LLMService:
                     )
                 except Exception as exc:
                     LOGGER.warning("JSON dialog fallback failed: %s", exc)
+            if fallback_actions and not any(
+                call["name"] != DIRECT_ANSWER_TOOL_NAME for call in tool_calls
+            ):
+                tool_calls.extend(fallback_actions)
             if not response_text and tools_enabled and not tool_calls:
                 response_text = "".join(pending_tool_text).strip()
             if not response_text and requires_structured_answer:

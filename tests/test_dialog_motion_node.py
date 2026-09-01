@@ -85,7 +85,7 @@ class DialogMotionNodeTests(unittest.TestCase):
             json.loads(message.data) for message in publisher.messages
         ]
         self.assertEqual(listening["source"], "dialog_motion")
-        self.assertEqual(listening["step_size"], 12.0)
+        self.assertEqual(listening["step_size"], 24.0)
         self.assertEqual(listening_refresh["source"], "dialog_motion")
         self.assertEqual(speaking["source"], "dialog_motion")
         self.assertEqual(
@@ -133,6 +133,25 @@ class DialogMotionNodeTests(unittest.TestCase):
         neutral = json.loads(publisher.messages[-1].data)["targets"]
         self.assertEqual(neutral["neck_top"], node._servos["neck_top"]["init"])
         self.assertEqual(neutral["neck_bottom"], node._servos["neck_bottom"]["init"])
+
+    def test_neutral_model_reply_uses_visible_speaking_micro_motion(self):
+        module = _load_module()
+        node = module.DialogMotionNode()
+        publisher = node.publishers["/servo_targets/dialog_expression"]
+
+        node.subscriptions["dialog_expression"](_String(json.dumps({
+            "expression": "neutral", "intensity": "low", "turn_id": "t1"
+        })))
+        first = json.loads(publisher.messages[-1].data)
+        self.assertEqual(first["step_size"], 24.0)
+        self.assertGreater(
+            first["targets"]["neck_bottom"],
+            node._servos["neck_bottom"]["init"],
+        )
+
+        _, timer = node.timers[0]
+        timer()
+        self.assertEqual(len(publisher.messages), 2)
 
     def test_turn_end_marker_does_not_start_a_speaking_pose(self):
         module = _load_module()

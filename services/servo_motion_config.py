@@ -130,9 +130,16 @@ def load_neck_kinematics(
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
     try:
-        return NeckKinematics(
-            top=_calibration(servos.get("neck_top"), "neck_top"),
-            bottom=_calibration(servos.get("neck_bottom"), "neck_bottom"),
-        )
+        return neck_kinematics_from_servos(servos)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
+
+
+def neck_kinematics_from_servos(servos: Any) -> NeckKinematics:
+    """Build neck kinematics from an already loaded name-to-config mapping."""
+    if not isinstance(servos, dict):
+        raise ValueError("舵机配置映射无效")
+    return NeckKinematics(
+        top=_calibration(servos.get("neck_top"), "neck_top"),
+        bottom=_calibration(servos.get("neck_bottom"), "neck_bottom"),
+    )
