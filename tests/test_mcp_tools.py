@@ -96,7 +96,10 @@ class FastMcpToolTests(unittest.TestCase):
         with patch.object(tool_dispatcher.mcp, "get_chat_tools", return_value=[]):
             tools = tool_dispatcher.get_multimodal_tools()
         parameters = tools[0]["function"]["parameters"]
-        self.assertEqual(parameters["required"], ["heard_text", "response"])
+        self.assertEqual(
+            parameters["required"],
+            ["heard_text", "response", "expression", "intensity"],
+        )
 
 
 class _ToolCallResponse:
@@ -190,6 +193,41 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ToolCallingUnavailableError, "动作工具为空"):
                 list(service.chat_stream("转个头", tools_enabled=True))
         service.client.chat.completions.create.assert_not_called()
+
+    def test_structured_dialog_emits_expression_before_speech(self):
+        class DialogResponse:
+            def __iter__(self):
+                tool_call = types.SimpleNamespace(
+                    index=0,
+                    function=types.SimpleNamespace(
+                        name="direct_answer",
+                        arguments=(
+                            '{"response":"真的吗？它长什么样？",'
+                            '"expression":"surprised","intensity":"medium"}'
+                        ),
+                    ),
+                )
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=[tool_call]),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = DialogResponse()
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
+        }]):
+            events = list(service.chat_stream("我看到外星人了", tools_enabled=True))
+
+        self.assertEqual(events[0], {
+            "type": "dialog_expression",
+            "expression": "surprised",
+            "intensity": "medium",
+        })
+        self.assertEqual(events[1], {
+            "type": "text", "content": "真的吗？它长什么样？"
+        })
 
     def test_tool_branch_discards_mixed_content_and_emits_action(self):
         service = self._service()
@@ -355,7 +393,11 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         with patch("services.llm_service.get_action_tools", return_value=action_schema):
             list(service.chat_stream("转个头", tools_enabled=True))
         second_request = service.client.chat.completions.create.call_args_list[1].kwargs
-        self.assertEqual(second_request["tools"], action_schema)
+        self.assertEqual(second_request["tools"][1:], action_schema)
+        self.assertEqual(
+            second_request["tools"][0]["function"]["name"],
+            "direct_answer",
+        )
 
     def test_structured_answer_still_rejects_plain_content(self):
         from services.llm_service import StructuredAnswerUnavailableError

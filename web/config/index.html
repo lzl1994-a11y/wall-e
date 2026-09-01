@@ -100,6 +100,11 @@
             <div class="mode-guide"><div class="mode-guide-item asr"><strong>ASR + LLM</strong><span>录音 → 语音识别 → 文本模型 → TTS</span></div><div class="mode-guide-item multimodal"><strong>多模态 LLM</strong><span>音频直接交给多模态模型处理</span></div></div>
           </article>
 
+          <article class="card" data-module="dialog_motion">
+            <div class="card-heading-row"><h3>倾听时表情</h3><button class="button secondary small module-save" data-save-module="dialog_motion" type="button">保存本模块</button></div>
+            <label class="field full"><span>VAD 检测到用户说话时</span><select data-path="dialog_motion.listening_mode"><option value="micro_motion">细微自然微动</option><option value="random_expression">随机安全倾听表情</option></select><small>随机模式只使用中性、倾听、思考和疑惑，不会随机出现开心、难过或惊讶。</small></label>
+          </article>
+
           <article class="card span-two" data-module="asr">
             <div class="card-heading-row"><h3>ASR 语音识别</h3><button class="button secondary small module-save" data-save-module="asr" type="button">保存本模块</button></div>
             <label class="field provider-select"><span>识别方式</span><select id="asr-mode" data-path="asr.mode"><option value="cloud">云端服务</option><option value="local">本地离线模型</option></select></label>

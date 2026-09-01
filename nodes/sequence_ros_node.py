@@ -11,6 +11,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from services.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
 from services.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
+from services.dialog_expression_protocol import DIALOG_EXPRESSION_TARGET_TOPIC
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 
 class SequenceRosNode(Node):
@@ -57,6 +58,8 @@ class SequenceRosNode(Node):
         self._sequence_request = None
         self._auto_reset_timer = None
         self._game_active = False
+        self._explicit_motion_active = False
+        self._pending_dialog_expression = None
 
         # 3. ROS 接口
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
@@ -76,6 +79,12 @@ class SequenceRosNode(Node):
             String,
             TRACKING_SERVO_TARGET_TOPIC,
             self._on_tracking_servo_targets,
+            1,
+        )
+        self.create_subscription(
+            String,
+            DIALOG_EXPRESSION_TARGET_TOPIC,
+            self._on_dialog_expression_targets,
             1,
         )
         
@@ -157,6 +166,7 @@ class SequenceRosNode(Node):
             })
             
         elif tool == "manual_servo":
+            self._explicit_motion_active = True
             self._publish_request_status(request, "accepted")
             self._dispatch_action({
                 "type": "manual_servo",
@@ -172,6 +182,7 @@ class SequenceRosNode(Node):
             # 使用时间轴扁平化算法拆解嵌套序列
             flattened_frames = self._flatten_sequence(seq_name, offset_time=0.0)
             if flattened_frames:
+                self._explicit_motion_active = True
                 # 按照绝对时间进行排序
                 flattened_frames.sort(key=lambda x: x['time'])
                 self._current_sequence = flattened_frames
@@ -180,6 +191,7 @@ class SequenceRosNode(Node):
                 self._publish_request_status(request, "accepted")
                 self.get_logger().info(f"[Sequence] Playing sequence: {seq_name} ({len(flattened_frames)} frames)")
             else:
+                self._explicit_motion_active = False
                 self.get_logger().warn(f"[Sequence] Sequence '{seq_name}' not found or empty")
                 self._publish_request_status(request, "rejected", "unknown_or_empty_sequence")
 
@@ -201,6 +213,21 @@ class SequenceRosNode(Node):
             payload.get("targets", {}),
             payload.get("step_size", 40.0),
         )
+
+    def _on_dialog_expression_targets(self, msg):
+        """Apply low-priority dialogue targets without interrupting actions."""
+        try:
+            payload = json.loads(msg.data)
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        pending = (payload.get("targets", {}), payload.get("step_size", 12.0))
+        if self._game_active or self._explicit_motion_active or self._active_motor_cmd:
+            self._pending_dialog_expression = pending
+            return
+        self._pending_dialog_expression = None
+        self._apply_servo_targets(*pending)
 
     def _publish_request_status(self, request, status, detail=""):
         request_id = request.get("request_id") if isinstance(request, dict) else None
@@ -492,6 +519,22 @@ class SequenceRosNode(Node):
             request = self._sequence_request
             self._sequence_request = None
             self._publish_request_status(request, "completed")
+
+        if (
+            self._explicit_motion_active
+            and not self._current_sequence
+            and self._active_motor_cmd is None
+            and all(
+                self._steps.get(name, 0.0) <= 0.0
+                or self._virtual_state.get(name) == self._targets.get(name)
+                for name in self._virtual_state
+            )
+        ):
+            self._explicit_motion_active = False
+            if self._pending_dialog_expression is not None:
+                pending = self._pending_dialog_expression
+                self._pending_dialog_expression = None
+                self._apply_servo_targets(*pending)
 
     def _on_game_state(self, message):
         active = game_is_active(message.data)

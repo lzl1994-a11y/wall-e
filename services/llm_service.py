@@ -6,6 +6,7 @@ from openai import OpenAI
 from services.llm_output_filter import VisibleAnswerFilter
 from services.llm_prompt import (
     with_action_tool_policy,
+    with_dialog_expression_policy,
     with_direct_speech_policy,
     with_structured_answer_policy,
 )
@@ -16,6 +17,7 @@ from services.tool_dispatcher import (
     ToolCallAccumulator,
     get_action_tools,
 )
+from services.dialog_expression_protocol import normalize_expression
 
 
 LOGGER = logging.getLogger(__name__)
@@ -142,6 +144,7 @@ class LLMService:
         system_content = with_direct_speech_policy(selected_system_prompt)
         if tools_enabled:
             system_content = with_action_tool_policy(system_content)
+            system_content = with_dialog_expression_policy(system_content)
         if requires_structured_answer:
             system_content = with_structured_answer_policy(system_content)
         messages = [{
@@ -185,12 +188,13 @@ class LLMService:
         tools = []
         if tools_enabled:
             if getattr(self, "_tools", None) is None:
-                self._tools = get_action_tools()
+                action_tools = get_action_tools()
+                if not action_tools:
+                    raise ToolCallingUnavailableError(
+                        "动作工具为空；拒绝以无工具模式发送请求。请检查 FastMCP 2.x 工具注册。"
+                    )
+                self._tools = [DIRECT_ANSWER_TOOL, *action_tools]
             tools = self._tools
-            if not tools:
-                raise ToolCallingUnavailableError(
-                    "动作工具为空；拒绝以无工具模式发送请求。请检查 FastMCP 2.x 工具注册。"
-                )
             request_kwargs["tools"] = tools
             request_kwargs["tool_choice"] = "auto"
         elif requires_structured_answer:
@@ -254,23 +258,34 @@ class LLMService:
                     pending_tool_text.append(visible_tail)
 
         tool_calls = acc.flush()
-        if tools_enabled and not tool_calls:
-            for visible in pending_tool_text:
-                yield {"type": "text", "content": visible}
-        if requires_structured_answer:
-            direct_answers = [
-                tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
-            ]
-            response = ""
+        direct_answers = [
+            tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
+        ]
+        if tools_enabled or requires_structured_answer:
+            response_text = ""
+            expression, intensity = "neutral", "low"
             if direct_answers:
-                candidate = direct_answers[-1]["arguments"].get("response")
+                arguments = direct_answers[-1]["arguments"]
+                candidate = arguments.get("response")
                 if isinstance(candidate, str):
-                    response = candidate.strip()
-            if not response:
+                    response_text = candidate.strip()
+                expression, intensity = normalize_expression(
+                    arguments.get("expression"), arguments.get("intensity")
+                )
+            if not response_text and tools_enabled and not tool_calls:
+                response_text = "".join(pending_tool_text).strip()
+            if not response_text and requires_structured_answer:
                 raise StructuredAnswerUnavailableError(
                     "模型没有返回 direct_answer.response；请使用支持原生 Function Calling 的模型"
                 )
-            yield {"type": "text", "content": response}
+            if response_text and tools_enabled and direct_answers:
+                yield {
+                    "type": "dialog_expression",
+                    "expression": expression,
+                    "intensity": intensity,
+                }
+            if response_text:
+                yield {"type": "text", "content": response_text}
 
         offered_action_names = {
             tool["function"]["name"]

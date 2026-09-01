@@ -12,6 +12,7 @@ import json
 import logging
 import services.mcp_service as mcp
 from services.action_command import build_action_cmd, parse_action_cmd
+from services.dialog_expression_protocol import EXPRESSIONS, INTENSITIES
 
 
 DIRECT_ANSWER_TOOL_NAME = "direct_answer"
@@ -31,8 +32,18 @@ DIRECT_ANSWER_TOOL = {
                     "type": "string",
                     "description": "给用户播报的完整、自然、简短的最终台词",
                 },
+                "expression": {
+                    "type": "string",
+                    "enum": sorted(EXPRESSIONS),
+                    "description": "根据本轮语义为瓦力选择的自然反应表情；普通内容使用 neutral",
+                },
+                "intensity": {
+                    "type": "string",
+                    "enum": sorted(INTENSITIES),
+                    "description": "表情幅度；没有强烈情绪时使用 low",
+                },
             },
-            "required": ["response"],
+            "required": ["response", "expression", "intensity"],
             "additionalProperties": False,
         },
     },
@@ -59,8 +70,18 @@ MULTIMODAL_DIRECT_ANSWER_TOOL = {
                     "type": "string",
                     "description": "给用户播报的完整、自然、简短的最终台词",
                 },
+                "expression": {
+                    "type": "string",
+                    "enum": sorted(EXPRESSIONS),
+                    "description": "根据本轮语义为瓦力选择的自然反应表情",
+                },
+                "intensity": {
+                    "type": "string",
+                    "enum": sorted(INTENSITIES),
+                    "description": "表情幅度；没有强烈情绪时使用 low",
+                },
             },
-            "required": ["heard_text", "response"],
+            "required": ["heard_text", "response", "expression", "intensity"],
             "additionalProperties": False,
         },
     },

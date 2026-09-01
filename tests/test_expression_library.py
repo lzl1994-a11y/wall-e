@@ -73,3 +73,18 @@ class ExpressionLibraryTests(unittest.TestCase):
                     ),
                     (True, ""),
                 )
+
+    def test_negated_and_third_party_expression_requests_are_rejected(self):
+        cases = (
+            ("不要做疑惑表情", "expression_confused"),
+            ("不要做惊讶表情", "expression_surprised"),
+            ("他正在做思考表情", "expression_thinking"),
+        )
+        for user_text, expression in cases:
+            with self.subTest(user_text=user_text):
+                allowed, _reason = validate_action_call(
+                    user_text,
+                    "play_sequence",
+                    {"sequence_name": expression},
+                )
+                self.assertFalse(allowed)

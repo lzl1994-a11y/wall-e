@@ -41,6 +41,10 @@ from services.tft_preview_server import (
 )
 from services.tracking_tft_preview import TrackingTftPreview
 from services.tts_protocol import encode_turn_end
+from services.dialog_expression_protocol import (
+    DIALOG_EXPRESSION_TOPIC,
+    encode_dialog_expression,
+)
 from services.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
     decode_vision_pipeline_command,
@@ -104,6 +108,9 @@ class LLMBrainNode(Node):
         self.full_ai_publisher = self.create_publisher(String, 'full_ai_text', 10)
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
         self.busy_publisher = self.create_publisher(String, 'llm_busy', 10)
+        self.dialog_expression_publisher = self.create_publisher(
+            String, DIALOG_EXPRESSION_TOPIC, 10
+        )
         self.game_request_publisher = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
         self.camera_frames = CameraFrameProvider(self)
         self.tft_preview_ready_publisher = self.create_publisher(
@@ -406,6 +413,7 @@ class LLMBrainNode(Node):
         actions = []
         rejected_actions = []
         spoken_parts = []
+        expression_published = False
 
         def publish_corrected(value):
             nonlocal corrected_text, corrected_text_published
@@ -419,6 +427,12 @@ class LLMBrainNode(Node):
             )
 
         def publish_spoken(value):
+            nonlocal expression_published
+            if not expression_published:
+                self.dialog_expression_publisher.publish(String(
+                    data=encode_dialog_expression("neutral", "low", turn_id)
+                ))
+                expression_published = True
             spoken = self._publish_tts(value, turn_id)
             if spoken:
                 spoken_parts.append(spoken)
@@ -458,6 +472,16 @@ class LLMBrainNode(Node):
                                 publish_spoken(tts_safe)
 
                             sentence_buffer = ''
+
+                elif data_type == 'dialog_expression':
+                    self.dialog_expression_publisher.publish(String(
+                        data=encode_dialog_expression(
+                            data.get('expression'),
+                            data.get('intensity'),
+                            turn_id,
+                        )
+                    ))
+                    expression_published = True
 
                 elif data_type == 'tool_call':
                     action_name = data.get('name')

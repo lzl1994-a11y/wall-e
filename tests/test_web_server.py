@@ -180,6 +180,16 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn("https://api.hunyuan.cloud.tencent.com/v1", html)
         self.assertIn("不支持音频直连", html)
 
+    def test_dialog_listening_motion_selector_has_two_safe_modes(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('data-path="dialog_motion.listening_mode"', html)
+        self.assertIn('<option value="micro_motion">细微自然微动</option>', html)
+        self.assertIn(
+            '<option value="random_expression">随机安全倾听表情</option>',
+            html,
+        )
+
     def test_remote_control_settings_are_on_servo_page(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")

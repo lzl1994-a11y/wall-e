@@ -53,6 +53,10 @@ from services.dialog_motion_protocol import (
     VAD_SPEECH_ENDED,
     VAD_SPEECH_STARTED,
 )
+from services.dialog_expression_protocol import (
+    DIALOG_EXPRESSION_TOPIC,
+    encode_dialog_expression,
+)
 from services.usb_devices import resolve_audio_device
 from services.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
@@ -73,6 +77,9 @@ class VoiceChatNode(Node):
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
         self.dialog_motion_pub = self.create_publisher(
             String, DIALOG_MOTION_VAD_TOPIC, 10
+        )
+        self.dialog_expression_pub = self.create_publisher(
+            String, DIALOG_EXPRESSION_TOPIC, 10
         )
         self.game_request_pub = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
         self.create_subscription(String, "llm_busy", self._on_playback_state, 10)
@@ -126,6 +133,7 @@ class VoiceChatNode(Node):
         self.vc.on_speech_start = self._on_vad_speech_start
         self.vc.on_speech_end = self._on_vad_speech_end
         self.vc.on_llm_chunk = self._on_llm_chunk
+        self.vc.on_expression = self._on_expression
         self.vc.on_llm_reply = self._on_llm_reply
         self.vc.on_tool_call = self._on_tool_call
         self.vc.on_photo_request = self._process_camera_photo
@@ -416,6 +424,12 @@ class VoiceChatNode(Node):
         self.action_pub.publish(msg)
         self.get_logger().info(f"Tool: {name}({arguments})")
         return None
+
+    def _on_expression(self, expression, intensity):
+        turn_id = self._ensure_turn_id()
+        self.dialog_expression_pub.publish(String(data=encode_dialog_expression(
+            expression, intensity, turn_id
+        )))
 
     def _process_camera_inspection(self, arguments):
         """Voice-selected camera inspection: preview, capture, then analyze."""

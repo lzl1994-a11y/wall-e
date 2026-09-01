@@ -429,6 +429,16 @@ def validate_config(config: Any) -> list[str]:
     if pipeline.get("mode") not in {"asr_llm", "multimodal"}:
         errors.append("pipeline.mode 只能是 asr_llm 或 multimodal")
 
+    dialog_motion = config.get("dialog_motion", {})
+    if not isinstance(dialog_motion, dict):
+        errors.append("dialog_motion 必须是配置对象")
+    elif dialog_motion.get("listening_mode", "micro_motion") not in {
+        "micro_motion", "random_expression"
+    }:
+        errors.append(
+            "dialog_motion.listening_mode 只能是 micro_motion 或 random_expression"
+        )
+
     asr = _require_mapping(config, "asr", errors)
     _validate_asr(asr, errors)
 

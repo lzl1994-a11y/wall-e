@@ -17,9 +17,18 @@ ACTION_TOOL_POLICY = """
 本轮普通 content 必须留空，动作确认台词由系统另行生成。
 """.strip()
 
+DIALOG_EXPRESSION_POLICY = """
+每轮必须调用 direct_answer 一次，同时返回最终台词 response、自然反应表情 expression
+和强度 intensity。表情是瓦力对语义的自然反应，不需要用户明确命令：例如听到难以置信的
+消息可用 surprised，复杂问题可用 thinking，用户难过时可用 concerned，普通内容用
+neutral。不要为了热闹滥用强烈表情。身体动作工具仍只允许响应用户明确的现实动作命令。
+不要在普通 content 中输出台词或结构化字段。
+""".strip()
+
 
 STRUCTURED_ANSWER_POLICY = """
-本轮必须调用 direct_answer 工具一次，把唯一可播报的最终台词写入 response 参数。
+本轮必须调用 direct_answer 工具一次，把唯一可播报的最终台词写入 response 参数，并按
+工具 Schema 返回 expression 与 intensity；普通内容使用 neutral/low。
 本轮不提供也不得调用身体动作工具。不要在普通 content 中输出台词、思考或解释；
 普通 content 不会被播放。
 """.strip()
@@ -42,3 +51,8 @@ def with_action_tool_policy(system_prompt):
     """Describe the semantic boundary for real robot side-effect tools."""
     base = str(system_prompt or "").strip()
     return f"{base}\n\n{ACTION_TOOL_POLICY}" if base else ACTION_TOOL_POLICY
+
+
+def with_dialog_expression_policy(system_prompt):
+    base = str(system_prompt or "").strip()
+    return f"{base}\n\n{DIALOG_EXPRESSION_POLICY}" if base else DIALOG_EXPRESSION_POLICY

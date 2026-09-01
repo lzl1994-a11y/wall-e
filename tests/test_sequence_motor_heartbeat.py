@@ -74,6 +74,23 @@ def _load_module():
 
 
 class SequenceMotorHeartbeatTests(unittest.TestCase):
+    def test_dialog_expression_is_low_priority_to_explicit_motion(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        original = node._targets["head_yaw"]
+        payload = _String(data=json.dumps({
+            "targets": {"head_yaw": 6200}, "step_size": 12.0
+        }))
+
+        node._explicit_motion_active = True
+        node.subscriptions["/servo_targets/dialog_expression"](payload)
+        self.assertEqual(node._targets["head_yaw"], original)
+        self.assertIsNotNone(node._pending_dialog_expression)
+
+        node._explicit_motion_active = False
+        node.subscriptions["/servo_targets/dialog_expression"](payload)
+        self.assertEqual(node._targets["head_yaw"], 6200)
+
     def test_tracking_targets_do_not_interrupt_sequence_interpolation(self):
         module = _load_module()
         node = module.SequenceRosNode()

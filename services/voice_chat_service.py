@@ -22,7 +22,12 @@ from collections import deque
 from enum import Enum, auto
 
 from openai import OpenAI
-from services.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
+from services.llm_prompt import (
+    with_action_tool_policy,
+    with_dialog_expression_policy,
+    with_direct_speech_policy,
+    with_structured_answer_policy,
+)
 from services.llm_request_options import reasoning_request_options
 from services.tool_dispatcher import (
     DIRECT_ANSWER_TOOL,
@@ -32,6 +37,7 @@ from services.tool_dispatcher import (
     build_action_cmd,
     get_multimodal_tools,
 )
+from services.dialog_expression_protocol import normalize_expression
 from services.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
@@ -76,8 +82,10 @@ class VoiceChatService:
         self.model = llm_cfg["model"]
         self.max_tokens = llm_cfg.get("max_tokens", 1024)
         self.llm_settings = llm_cfg
-        self.system_prompt = with_structured_answer_policy(
-            with_direct_speech_policy(config.get("system_prompt", ""))
+        self.system_prompt = with_dialog_expression_policy(
+            with_action_tool_policy(
+                with_direct_speech_policy(config.get("system_prompt", ""))
+            )
         )
 
         # 对话历史（最近20轮）
@@ -107,6 +115,7 @@ class VoiceChatService:
         self.on_speech_end = None      # VAD 断句或取消（仅已唤醒状态）
         self.on_llm_reply = None       # LLM 文本回复（最终完整回复）
         self.on_llm_chunk = None       # LLM 流式文本块
+        self.on_expression = None      # LLM 语义表情 (expression, intensity)
         self.on_tool_call = None       # LLM 工具调用
         self.on_photo_request = None   # 多模态拍照请求（由 ROS 节点执行）
         self.on_inspection_request = None  # 多模态看图请求（由 ROS 节点执行）
@@ -315,7 +324,7 @@ class VoiceChatService:
             if streamed is None:
                 return
             tool_calls, raw_content = streamed
-            heard_text, response_text = self._direct_answer(tool_calls)
+            heard_text, response_text, expression, intensity = self._dialog_answer(tool_calls)
             structured_ok = bool(response_text)
 
             if not response_text:
@@ -337,7 +346,7 @@ class VoiceChatService:
                 if retry is None:
                     return
                 retry_calls, retry_raw_content = retry
-                heard_text, response_text = self._direct_answer(retry_calls)
+                heard_text, response_text, expression, intensity = self._dialog_answer(retry_calls)
                 structured_ok = bool(response_text)
                 if not response_text:
                     print(
@@ -399,6 +408,9 @@ class VoiceChatService:
                     if isinstance(handled_response, str) and handled_response.strip():
                         response_text = handled_response.strip()
 
+            expression_callback = getattr(self, "on_expression", None)
+            if expression_callback:
+                expression_callback(expression, intensity)
             if self.on_llm_chunk:
                 self.on_llm_chunk(response_text)
 
@@ -462,7 +474,7 @@ class VoiceChatService:
         if streamed is None:
             raise RuntimeError("视觉分析请求被中断")
         tool_calls, _raw_content = streamed
-        _heard_text, response_text = self._direct_answer(tool_calls)
+        _heard_text, response_text, _expression, _intensity = self._dialog_answer(tool_calls)
         if not response_text:
             raise RuntimeError("视觉模型没有返回 direct_answer.response")
         return response_text
@@ -506,8 +518,16 @@ class VoiceChatService:
 
     @staticmethod
     def _direct_answer(tool_calls):
+        heard_text, response_text, _expression, _intensity = (
+            VoiceChatService._dialog_answer(tool_calls)
+        )
+        return heard_text, response_text
+
+    @staticmethod
+    def _dialog_answer(tool_calls):
         heard_text = ""
         response_text = ""
+        expression, intensity = "neutral", "low"
         for call in tool_calls:
             if call["name"] != DIRECT_ANSWER_TOOL_NAME:
                 continue
@@ -518,7 +538,10 @@ class VoiceChatService:
                 heard_text = heard.strip()[:240]
             if isinstance(response, str):
                 response_text = response.strip()
-        return heard_text, response_text
+            expression, intensity = normalize_expression(
+                arguments.get("expression"), arguments.get("intensity")
+            )
+        return heard_text, response_text, expression, intensity
 
     def _validated_history(self):
         history = list(self._chat_history)

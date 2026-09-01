@@ -65,32 +65,34 @@ def _load_module():
 
 
 class DialogMotionNodeTests(unittest.TestCase):
-    def test_listening_and_speaking_refresh_coupled_manual_servo_targets(self):
+    def test_listening_and_model_expression_publish_low_priority_targets(self):
         module = _load_module()
         node = module.DialogMotionNode()
-        publisher = node.publishers["/action_cmd"]
+        publisher = node.publishers["/servo_targets/dialog_expression"]
 
         interval, timer = node.timers[0]
         self.assertEqual(interval, 2.0)
         node.subscriptions["dialog_motion_vad"](_String("speech_started"))
         timer()
+        node.subscriptions["dialog_expression"](_String(json.dumps({
+            "expression": "surprised", "intensity": "high", "turn_id": "t1"
+        })))
         node.subscriptions["tts_text"](_String("你好，我在。"))
-        node.subscriptions["tts_text"](_String("第二个流式分段。"))
         timer()
 
-        self.assertEqual(len(publisher.messages), 4)
-        listening, listening_refresh, speaking, speaking_refresh = [
+        self.assertEqual(len(publisher.messages), 3)
+        listening, listening_refresh, speaking = [
             json.loads(message.data) for message in publisher.messages
         ]
-        self.assertEqual(listening["name"], "manual_servo")
         self.assertEqual(listening["source"], "dialog_motion")
-        self.assertEqual(listening["arguments"]["step_size"], 35.0)
+        self.assertEqual(listening["step_size"], 12.0)
         self.assertEqual(listening_refresh["source"], "dialog_motion")
         self.assertEqual(speaking["source"], "dialog_motion")
-        self.assertEqual(speaking_refresh["source"], "dialog_motion")
+        self.assertEqual(speaking["targets"]["neck_top"], 6000)
+        self.assertEqual(speaking["targets"]["neck_bottom"], 5500)
 
-        for payload in (listening, speaking, speaking_refresh):
-            targets = payload["arguments"]["targets"]
+        for payload in (listening, speaking):
+            targets = payload["targets"]
             self.assertGreaterEqual(targets["eye_r"], 2000)
             self.assertLessEqual(targets["eye_r"], 4300)
             self.assertGreaterEqual(targets["eye_l"], 5000)
@@ -107,7 +109,7 @@ class DialogMotionNodeTests(unittest.TestCase):
     def test_motion_is_quiet_before_wake_vad_and_after_speech_ends(self):
         module = _load_module()
         node = module.DialogMotionNode()
-        publisher = node.publishers["/action_cmd"]
+        publisher = node.publishers["/servo_targets/dialog_expression"]
         _, timer = node.timers[0]
 
         timer()
@@ -122,19 +124,22 @@ class DialogMotionNodeTests(unittest.TestCase):
     def test_playback_completion_stops_speaking_motion_until_vad_detects_speech(self):
         module = _load_module()
         node = module.DialogMotionNode()
-        publisher = node.publishers["/action_cmd"]
+        publisher = node.publishers["/servo_targets/dialog_expression"]
         _, timer = node.timers[0]
 
         node.subscriptions["tts_text"](_String("我正在说话。"))
         node.subscriptions["llm_busy"](_String("idle"))
         timer()
 
-        self.assertEqual(len(publisher.messages), 1)
+        self.assertEqual(len(publisher.messages), 2)
+        neutral = json.loads(publisher.messages[-1].data)["targets"]
+        self.assertEqual(neutral["neck_top"], 5000)
+        self.assertEqual(neutral["neck_bottom"], 4000)
 
     def test_turn_end_marker_does_not_start_a_speaking_pose(self):
         module = _load_module()
         node = module.DialogMotionNode()
-        publisher = node.publishers["/action_cmd"]
+        publisher = node.publishers["/servo_targets/dialog_expression"]
 
         node.subscriptions["tts_text"](
             _String('{"_wali_tts_control":"turn_end","turn_id":"turn-1"}')
@@ -147,10 +152,10 @@ class DialogMotionNodeTests(unittest.TestCase):
         sampler = module.DialogPoseSampler(
             module._load_dialog_servos(), rng=random.Random(7)
         )
-        self.assertEqual(sampler._eye_range, (-500, 500))
-        self.assertEqual(sampler._eyebrow_open_range, (0, 1140))
-        self.assertEqual(sampler._head_yaw_range, (-1540, 1300))
-        self.assertEqual(sampler._neck_pitch_range, (0, 500))
+        self.assertEqual(sampler._eye_range, (-80, 80))
+        self.assertEqual(sampler._eyebrow_open_range, (0, 182))
+        self.assertEqual(sampler._head_yaw_range, (-246, 208))
+        self.assertEqual(sampler._neck_pitch_range, (0, 80))
         for _ in range(100):
             for pose in (sampler.listening_pose(), sampler.speaking_pose()):
                 self.assertEqual(pose["eye_l"] - pose["eye_r"], 3500)
