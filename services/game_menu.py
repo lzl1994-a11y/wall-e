@@ -21,39 +21,6 @@ CJK_FONT_CANDIDATES = (
 )
 
 
-# ROM filenames are deliberately left untouched: libretro must receive the exact
-# path on disk.  This table only controls the title shown in the game menu.
-# Keys are normalized ASCII names so common GoodNES-style region suffixes do not
-# affect the result (for example, ``Bomber Man (J)``).
-ROM_TITLE_ZH = {
-    "ADVENTURE ISLAND": "高桥名人冒险岛",
-    "BATTLE CITY": "坦克大战",
-    "BOMBER MAN": "炸弹人",
-    "CASTLEVANIA": "恶魔城",
-    "CHIP N DALE RESCUE RANGERS": "奇奇蒂蒂救援突击队",
-    "CIRCUS CHARLIE": "马戏团",
-    "CONTRA": "魂斗罗",
-    "DONKEY KONG": "大金刚",
-    "DOUBLE DRAGON": "双截龙",
-    "DRAGON QUEST": "勇者斗恶龙",
-    "EXCITEBIKE": "越野机车",
-    "FINAL FANTASY": "最终幻想",
-    "GRADIUS": "宇宙巡航舰",
-    "ICE CLIMBER": "冰山登山者",
-    "KIRBY": "星之卡比",
-    "MEGA MAN": "洛克人",
-    "METROID": "密特罗德",
-    "NINJA GAIDEN": "忍者龙剑传",
-    "PAC MAN": "吃豆人",
-    "ROCKMAN": "洛克人",
-    "SUPER MARIO BROS": "超级马力欧兄弟",
-    "SUPER MARIO WORLD": "超级马力欧世界",
-    "TETRIS": "俄罗斯方块",
-    "THE LEGEND OF ZELDA": "塞尔达传说",
-    "TWIN BEE": "兵蜂",
-}
-
-
 def discover_roms(directory: str | Path) -> list[Path]:
     root = Path(directory)
     if not root.is_dir():
@@ -148,30 +115,8 @@ def _ellipsize(text: str, limit: int) -> str:
 
 
 def _display_name(text: str) -> str:
-    """Return a Chinese menu title without changing the ROM's actual path."""
-    title = str(text).strip()
-    if not title:
-        return title
-    # A filename that is already Chinese is a user-provided translation.  Keep
-    # it verbatim instead of converting it to pinyin.
-    if not title.isascii():
-        return title
-
-    normalized = _normalize_rom_title(title)
-    for english, chinese in ROM_TITLE_ZH.items():
-        if normalized == english or normalized.startswith(english + " "):
-            suffix = normalized[len(english):].strip()
-            return chinese if not suffix else f"{chinese} {suffix}"
-    return title
-
-
-def _normalize_rom_title(title: str) -> str:
-    """Normalize common ROM decorations for matching display-only titles."""
-    import re
-
-    value = re.sub(r"\[[^]]*\]|\([^)]*\)", " ", title.upper())
-    value = value.replace("'", "").replace("&", " AND ")
-    return " ".join(re.sub(r"[^A-Z0-9]+", " ", value).split())
+    """Return the ROM filename's title verbatim for the game menu."""
+    return str(text).strip()
 
 
 def _put_text(

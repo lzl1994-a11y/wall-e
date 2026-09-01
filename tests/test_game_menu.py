@@ -35,9 +35,9 @@ class GameMenuTests(unittest.TestCase):
         self.assertEqual(frame.shape, (240, 256, 3))
         self.assertEqual(frame.dtype.name, "uint8")
 
-    def test_menu_title_translates_english_rom_name_without_renaming_file(self):
-        self.assertEqual(_display_name("Bomber Man (J)"), "炸弹人")
-        self.assertEqual(_display_name("Rockman 3"), "洛克人 3")
+    def test_menu_title_uses_rom_filename_verbatim(self):
+        self.assertEqual(_display_name("Bomber Man (J)"), "Bomber Man (J)")
+        self.assertEqual(_display_name("Rockman 3"), "Rockman 3")
 
     def test_menu_title_keeps_existing_chinese_rom_name(self):
         title = "[201] 角色类 - 洛克人3 dRwIlY的末日"
