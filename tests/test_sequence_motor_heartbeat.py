@@ -74,6 +74,30 @@ def _load_module():
 
 
 class SequenceMotorHeartbeatTests(unittest.TestCase):
+    def test_symbolic_neck_pose_targets_follow_runtime_calibration(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        node._servos_config["neck_top"] = {
+            "name": "neck_top", "init": 5000,
+            "limit_1": 5000, "limit_2": 6000,
+        }
+        node._servos_config["neck_bottom"] = {
+            "name": "neck_bottom", "init": 3000,
+            "limit_1": 2000, "limit_2": 4800,
+        }
+
+        node._dispatch_action({"type": "pose", "name": "look_center"})
+        self.assertEqual(node._targets["neck_top"], 5000)
+        self.assertEqual(node._targets["neck_bottom"], 3000)
+
+        node._dispatch_action({"type": "pose", "name": "look_left_up"})
+        self.assertEqual(node._targets["neck_top"], 5000)
+        self.assertEqual(node._targets["neck_bottom"], 4800)
+
+        node._dispatch_action({"type": "pose", "name": "head_down"})
+        self.assertEqual(node._targets["neck_top"], 6000)
+        self.assertEqual(node._targets["neck_bottom"], 2000)
+
     def test_dialog_expression_is_low_priority_to_explicit_motion(self):
         module = _load_module()
         node = module.SequenceRosNode()

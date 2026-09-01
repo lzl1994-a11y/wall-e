@@ -18,6 +18,7 @@ from std_msgs.msg import String, Int32
 from services.action_command import parse_action_request
 from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.motion_arbiter import MOTOR_TRACKING_TOPIC
+from services.servo_motion_config import load_neck_kinematics
 
 from services.vision_pipeline_protocol import (
     TRACKING_SERVO_TARGET_TOPIC,
@@ -117,6 +118,7 @@ class WaliTrackingNode(Node):
 
         # 内部仰俯状态 (-1.0: 最下, 1.0: 最上)
         self._current_neck_pitch = 0.0 
+        self._neck_kinematics = load_neck_kinematics()
 
         # 状态机：抬头寻找人脸的持续时间
         self._search_face_tilt_timer = 0.0
@@ -483,15 +485,8 @@ class WaliTrackingNode(Node):
         # 1. 仿生扭头 (直接映射误差，无累积)
         targets['head_yaw'] = int(5000 - x_error * 2600)
 
-        # 2. 脖子仰俯双舵机补偿
-        # neck_top: 减小为抬头 (5000 -> 4000)
-        # neck_bottom: 增大为抬头 (4000 -> 7000)，减小为低头 (4000 -> 3500)
-        targets['neck_top'] = int(5000 - pitch_val * 1000)
-        
-        if pitch_val > 0:
-            targets['neck_bottom'] = int(4000 + pitch_val * 3000)
-        else:
-            targets['neck_bottom'] = int(4000 + pitch_val * 500) # pitch_val为负，结果是减
+        # 2. 脖子仰俯双舵机补偿（标定和中心位置来自 config.yaml）
+        targets.update(self._neck_kinematics.targets(pitch_val))
 
         # Use the dedicated latest-value stream. sequence_ros_node keeps the
         # normal interpolation and collision limits without globally

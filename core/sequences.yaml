@@ -13,14 +13,14 @@ poses:
     default_step: 120.0
     targets:
       head_yaw: 7600
-      neck_top: 4000
-      neck_bottom: 7000
+      neck_top: init
+      neck_bottom: max
   look_center:
     default_step: 120.0
     targets:
       head_yaw: 5000
-      neck_top: 4000
-      neck_bottom: 4000
+      neck_top: init
+      neck_bottom: init
   tilt_right:
     default_step: 80.0
     targets:
@@ -39,8 +39,8 @@ poses:
   head_down:
     default_step: 80.0
     targets:
-      neck_top: 6000
-      neck_bottom: 3500
+      neck_top: max
+      neck_bottom: min
   turn_head_left:
     default_step: 60.0
     targets:

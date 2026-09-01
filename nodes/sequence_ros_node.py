@@ -110,6 +110,19 @@ class SequenceRosNode(Node):
         l2 = cfg['limit_2']
         min_pwm = min(l1, l2)
         max_pwm = max(l1, l2)
+        if isinstance(raw_pwm, str):
+            symbolic_targets = {
+                "init": cfg.get("init"),
+                "min": min_pwm,
+                "max": max_pwm,
+                "limit_1": l1,
+                "limit_2": l2,
+            }
+            raw_pwm = symbolic_targets.get(raw_pwm.strip().lower())
+        try:
+            raw_pwm = float(raw_pwm)
+        except (TypeError, ValueError):
+            return None
         return max(min_pwm, min(max_pwm, raw_pwm))
 
     def _servo_init(self, name, fallback):

@@ -16,6 +16,7 @@ from evdev import ecodes
 from services.motor_control import mix_differential_drive
 from services.motion_arbiter import MOTOR_JOYSTICK_TOPIC, STOP_COMMAND
 from services.remote_control_config import RemoteControlConfigWatcher
+from services.servo_motion_config import load_neck_kinematics
 from services.game_hotkey import ButtonChordHold
 from services.game_protocol import (
     GAME_MODE_REQUEST_TOPIC,
@@ -54,6 +55,7 @@ class JoyControlNode(Node):
             raise RuntimeError("首次读取手柄遥控配置失败")
         self.servo_step_size = remote_config["servo_step_size"]
         self.update_rate_hz = remote_config["update_rate_hz"]
+        self._neck_kinematics = load_neck_kinematics()
 
         self.action_pub = self.create_publisher(String, '/action_cmd', 10)
         self.motor_pub = self.create_publisher(String, MOTOR_JOYSTICK_TOPIC, 10)
@@ -270,14 +272,8 @@ class JoyControlNode(Node):
         
         targets['head_yaw'] = int(5000 - rx * 2600) # rx=1(右) -> 1920, rx=-1(左) -> 7600
         
-        # 脖子俯仰
-        # ry=1(上) -> neck_top=4000, neck_bottom=7000
-        # ry=-1(下) -> neck_top=6000, neck_bottom=3500
-        targets['neck_top'] = int(5000 - ry * 1000)
-        if ry > 0:
-            targets['neck_bottom'] = int(4000 + ry * 3000)
-        else:
-            targets['neck_bottom'] = int(4000 + ry * 500) # ry是负数
+        # 脖子俯仰：中心、上下限和双舵机联动均来自 config.yaml。
+        targets.update(self._neck_kinematics.targets(ry))
 
         # 眼睛扳机 (L2/R2: 0.0 ~ 1.0)
         l2 = self._axes[AXIS_L2]
