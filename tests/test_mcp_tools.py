@@ -229,6 +229,39 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "type": "text", "content": "真的吗？它长什么样？"
         })
 
+    def test_json_fallback_recovers_when_provider_ignores_forced_tool(self):
+        class PlainResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(
+                        content="expression: surprised", tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )])
+
+        service = self._service()
+        service.settings["provider"] = "baidu_qianfan"
+        json_response = types.SimpleNamespace(choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content=(
+                '{"response":"真的吗？","expression":"surprised",'
+                '"intensity":"high"}'
+            ))
+        )])
+        service.client.chat.completions.create.side_effect = [
+            PlainResponse(), json_response
+        ]
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
+        }]):
+            events = list(service.chat_stream("我看到外星人了", tools_enabled=True))
+
+        self.assertEqual(events[0]["expression"], "surprised")
+        self.assertEqual(events[0]["intensity"], "high")
+        self.assertEqual(events[1]["content"], "真的吗？")
+        fallback_request = service.client.chat.completions.create.call_args_list[1].kwargs
+        self.assertEqual(fallback_request["response_format"], {"type": "json_object"})
+
     def test_tool_branch_discards_mixed_content_and_emits_action(self):
         service = self._service()
         service.client.chat.completions.create.return_value = _ToolCallResponse()

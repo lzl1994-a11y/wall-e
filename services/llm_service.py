@@ -111,6 +111,43 @@ class LLMService:
         # __new__; resolve lazily if __init__ did not set the cached value.
         return getattr(self, "tool_model", self._resolve_tool_model()[0])
 
+    def _json_dialog_answer(self, messages, model, max_tokens):
+        """Provider fallback when an advertised forced tool call is ignored."""
+        fallback_messages = [dict(message) for message in messages]
+        fallback_messages[0]["content"] = (
+            str(fallback_messages[0].get("content", ""))
+            + "\n\n只返回一个 JSON 对象，不要 Markdown 或其他文字。必须包含 response、"
+              "expression、intensity。expression 只能是 neutral、listening、thinking、"
+              "happy、sad、surprised、confused、concerned；intensity 只能是 low、"
+              "medium、high。"
+        )
+        kwargs = {
+            "model": model,
+            "messages": fallback_messages,
+            "temperature": self.settings.get("temperature", 0.3),
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        request_settings = (
+            self.settings
+            if model == self.model
+            else {**self.settings, "model": model}
+        )
+        kwargs.update(reasoning_request_options(request_settings))
+        result = self.client.chat.completions.create(**kwargs)
+        content = result.choices[0].message.content
+        value = json.loads(content)
+        if not isinstance(value, dict):
+            raise ValueError("JSON dialog answer is not an object")
+        response = value.get("response")
+        if not isinstance(response, str) or not response.strip():
+            raise ValueError("JSON dialog answer has no response")
+        expression, intensity = normalize_expression(
+            value.get("expression"), value.get("intensity")
+        )
+        return response.strip(), expression, intensity
+
     def chat_stream(
         self,
         user_text,
@@ -264,6 +301,7 @@ class LLMService:
         if tools_enabled or requires_structured_answer:
             response_text = ""
             expression, intensity = "neutral", "low"
+            structured_dialog_obtained = bool(direct_answers)
             if direct_answers:
                 arguments = direct_answers[-1]["arguments"]
                 candidate = arguments.get("response")
@@ -272,13 +310,27 @@ class LLMService:
                 expression, intensity = normalize_expression(
                     arguments.get("expression"), arguments.get("intensity")
                 )
+            elif self.settings.get("provider"):
+                try:
+                    response_text, expression, intensity = self._json_dialog_answer(
+                        messages,
+                        request_model,
+                        request_kwargs["max_tokens"],
+                    )
+                    structured_dialog_obtained = True
+                    LOGGER.warning(
+                        "Model %s ignored direct_answer; accepted validated JSON fallback",
+                        request_model,
+                    )
+                except Exception as exc:
+                    LOGGER.warning("JSON dialog fallback failed: %s", exc)
             if not response_text and tools_enabled and not tool_calls:
                 response_text = "".join(pending_tool_text).strip()
             if not response_text and requires_structured_answer:
                 raise StructuredAnswerUnavailableError(
                     "模型没有返回 direct_answer.response；请使用支持原生 Function Calling 的模型"
                 )
-            if response_text and tools_enabled and direct_answers:
+            if response_text and tools_enabled and structured_dialog_obtained:
                 yield {
                     "type": "dialog_expression",
                     "expression": expression,
