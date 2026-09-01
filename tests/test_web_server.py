@@ -164,6 +164,12 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"WALI", body)
 
+    def test_llm_provider_selector_includes_baidu_qianfan(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('<option value="baidu">百度智能云 / 千帆</option>', html)
+        self.assertIn("https://qianfan.baidubce.com/v2", html)
+
     def test_remote_control_settings_are_on_servo_page(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")

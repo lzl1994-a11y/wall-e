@@ -24,6 +24,20 @@ def reasoning_request_options(settings):
     if mode == "fast" and provider in {"aliyun", "qwen"}:
         return {"extra_body": {"enable_thinking": False}}
     model = str(settings.get("model", "")).strip().lower()
+    if mode == "fast" and provider in {"baidu", "qianfan"}:
+        # Qianfan exposes two model-family-specific thinking switches through
+        # its OpenAI-compatible Chat Completions API.  Only send a switch to
+        # models documented to accept it; unknown/custom endpoints keep their
+        # provider defaults instead of receiving an unsupported parameter.
+        if model.startswith((
+            "ernie-5.0-thinking",
+            "ernie-4.5-turbo-vl",
+            "ernie-4.5-vl-",
+            "qwen3-",
+        )):
+            return {"extra_body": {"enable_thinking": False}}
+        if model.startswith(("deepseek-v3.2", "kimi-k2.5", "glm-5")):
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
     zhipu_toggle_models = (
         "glm-4.5",
         "glm-4.7",

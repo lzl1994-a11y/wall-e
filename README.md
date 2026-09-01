@@ -458,3 +458,20 @@ llm:
 `llm.key` 应填写真实方舟 API Key；示例中的环境变量仅用于说明，当前 YAML 不会自动展开环境变量。模型名、区域和是否可用以你的方舟控制台为准。豆包配置会通过标准 OpenAI `chat/completions` 调用；当 `reasoning_effort` 为 `fast` 时，程序传递火山方舟官方支持的 `thinking: {type: disabled}` 参数。
 
 豆包既可用于 `pipeline.mode: asr_llm` 的文本回复，也可用于 `pipeline.mode: multimodal` 的原始音频直聊。后者请在方舟控制台选择确认支持音频输入的模型或接入点；已用项目的 `16 kHz / Mono / WAV` 测试语音验证 `doubao-seed-2-0-lite-260428` 可用。
+
+### 百度千帆 LLM / 多模态
+
+LLM 服务也支持百度智能云千帆的 OpenAI 兼容 V2 接口。Web 配置页选择“百度智能云 / 千帆”，填写千帆 API Key、模型或接入点 ID，并使用以下接口根地址：
+
+```yaml
+llm:
+  provider: baidu
+  model: ernie-5.0
+  url: https://qianfan.baidubce.com/v2
+  key: your-qianfan-api-key
+  temperature: 0.4
+  max_tokens: 512
+  reasoning_effort: fast
+```
+
+文本对话、摄像头图片理解和动作调用复用项目现有的流式 Chat Completions / Function Calling 协议。`pipeline.mode: multimodal` 的原始音频直聊还要求所选模型或自定义接入点同时支持 OpenAI `input_audio` 内容和 Function Calling；音频格式为 `16 kHz / Mono / WAV`。普通文本或视觉模型不具备音频输入能力时，请使用 `pipeline.mode: asr_llm`，可搭配项目已有的百度实时语音识别。
