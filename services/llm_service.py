@@ -164,7 +164,13 @@ class LLMService:
 
         # [ZH] 发起长连接流式请求
         # [EN] Send long-connection streaming request
-        request_model = self._request_model(tools_enabled)
+        # Structured direct answers are implemented with a forced function
+        # call too.  Use the configured tool-capable model for those requests
+        # so a visual primary model without Function Calling can still produce
+        # the project's fail-closed direct_answer contract.
+        request_model = self._request_model(
+            tools_enabled or requires_structured_answer
+        )
         request_kwargs = {
             "model": request_model,
             "messages": messages,

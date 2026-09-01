@@ -418,6 +418,21 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "glm-4-flash-250414",
         )
 
+    def test_structured_answer_uses_explicit_tool_model(self):
+        service = self._service()
+        service.settings["tool_model"] = "ernie-5.0"
+        service.client.chat.completions.create.return_value = _DirectAnswerResponse()
+
+        events = list(service.chat_stream(
+            "看看画面",
+            tools_enabled=False,
+            structured_answer=True,
+        ))
+
+        request = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(request["model"], "ernie-5.0")
+        self.assertEqual(events[0]["content"], "看起来是一只杯子。")
+
     def test_tool_model_also_controls_reasoning_request_options(self):
         service = self._service()
         service.settings.update({"provider": "zhipu", "tool_model": "glm-4.7", "reasoning_effort": "fast"})
