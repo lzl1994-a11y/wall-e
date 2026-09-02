@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit one safe conversational pose for listening and speaking transitions.
+"""Emit safe conversational poses while the robot is speaking.
 
 This node deliberately contains only dialogue-state handling and pose sampling.
 It sends ordinary ``manual_servo`` targets to the existing action pipeline, so
@@ -18,11 +18,6 @@ import yaml
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from services.dialog_motion_protocol import (
-    DIALOG_MOTION_VAD_TOPIC,
-    VAD_SPEECH_ENDED,
-    VAD_SPEECH_STARTED,
-)
 from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TARGET_TOPIC,
     DIALOG_EXPRESSION_TOPIC,
@@ -119,11 +114,6 @@ class DialogPoseSampler:
             for name, value in targets.items()
         }
 
-    def listening_pose(self):
-        # Listening holds the brows visibly open while looking to one side.
-        lower, upper = self._eyebrow_open_range
-        return self._pose((int(upper * 0.35), upper))
-
     def speaking_pose(self):
         return self._pose(self._eyebrow_open_range)
 
@@ -162,12 +152,6 @@ class DialogMotionNode(Node):
         super().__init__("dialog_motion_node")
         self._servos = _load_dialog_servos()
         self._sampler = DialogPoseSampler(self._servos)
-        config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
-        self._listening_mode = str(
-            (config.get("dialog_motion") or {}).get("listening_mode", "micro_motion")
-        )
-        if self._listening_mode not in {"micro_motion", "random_expression"}:
-            self._listening_mode = "micro_motion"
         sequence_path = CONFIG_PATH.with_name("sequences.yaml")
         sequence_data = yaml.safe_load(sequence_path.read_text(encoding="utf-8")) or {}
         self._expression_poses = {
@@ -176,17 +160,10 @@ class DialogMotionNode(Node):
             if name.startswith("expression_") and isinstance(value, dict)
         }
         self._neutral_targets = self._resolved_expression_targets("neutral")
-        self._listening_choices = (
-            "neutral", "listening", "thinking", "confused"
-        )
         self._active_expression = "neutral"
-        # No motion until the VAD reports actual human speech after wake-up.
         self._state = "idle"
         self._target_pub = self.create_publisher(
             String, DIALOG_EXPRESSION_TARGET_TOPIC, 10
-        )
-        self.create_subscription(
-            String, DIALOG_MOTION_VAD_TOPIC, self._on_vad_state, 10
         )
         self.create_subscription(String, BUSY_TOPIC, self._on_playback_state, 10)
         self.create_subscription(String, TTS_TOPIC, self._on_tts_text, 10)
@@ -194,7 +171,7 @@ class DialogMotionNode(Node):
             String, DIALOG_EXPRESSION_TOPIC, self._on_expression, 10
         )
         self.create_timer(MOTION_INTERVAL_SECONDS, self._on_motion_timer)
-        self.get_logger().info("对话姿态节点上线：VAD 人声/说话期间每2秒更新姿态")
+        self.get_logger().info("对话姿态节点上线：仅在瓦力说话期间每2秒更新姿态")
 
     def _publish_pose(self, state, targets, step_size=None):
         payload = json.dumps({
@@ -205,19 +182,6 @@ class DialogMotionNode(Node):
         self._target_pub.publish(String(data=payload))
         self._state = state
         self.get_logger().info(f"对话姿态 -> {state}: {targets}")
-
-    def _on_vad_state(self, message):
-        if message.data == VAD_SPEECH_STARTED:
-            self._state = "listening"
-            # Short utterances may end before the next two-second timer tick;
-            # move once immediately when VAD positively identifies speech.
-            if self._listening_mode == "random_expression":
-                choice = random.choice(self._listening_choices)
-                self._publish_expression_pose(choice, "low", "listening")
-            else:
-                self._publish_pose("listening", self._sampler.listening_pose())
-        elif message.data == VAD_SPEECH_ENDED and self._state == "listening":
-            self._state = "idle"
 
     def _on_tts_text(self, message):
         text = (message.data or "").strip()
@@ -279,10 +243,8 @@ class DialogMotionNode(Node):
             self._publish_expression_pose("neutral", "low", "idle")
 
     def _on_motion_timer(self):
-        """Refresh a conversational pose every two seconds during active phases."""
-        if self._state == "listening" and self._listening_mode == "micro_motion":
-            self._publish_pose("listening", self._sampler.listening_pose())
-        elif self._state == "speaking" and self._active_expression == "neutral":
+        """Refresh a conversational pose while the robot is speaking."""
+        if self._state == "speaking" and self._active_expression == "neutral":
             self._publish_pose("speaking", self._sampler.speaking_pose())
 
 

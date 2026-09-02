@@ -65,61 +65,46 @@ def _load_module():
 
 
 class DialogMotionNodeTests(unittest.TestCase):
-    def test_listening_and_model_expression_publish_low_priority_targets(self):
+    def test_speaking_motion_publishes_low_priority_targets(self):
         module = _load_module()
         node = module.DialogMotionNode()
         publisher = node.publishers["/servo_targets/dialog_expression"]
 
         interval, timer = node.timers[0]
         self.assertEqual(interval, 2.0)
-        node.subscriptions["dialog_motion_vad"](_String("speech_started"))
-        timer()
-        node.subscriptions["dialog_expression"](_String(json.dumps({
-            "expression": "surprised", "intensity": "high", "turn_id": "t1"
-        })))
         node.subscriptions["tts_text"](_String("你好，我在。"))
         timer()
 
-        self.assertEqual(len(publisher.messages), 3)
-        listening, listening_refresh, speaking = [
+        self.assertEqual(len(publisher.messages), 2)
+        speaking, speaking_refresh = [
             json.loads(message.data) for message in publisher.messages
         ]
-        self.assertEqual(listening["source"], "dialog_motion")
-        self.assertEqual(listening["step_size"], 24.0)
-        self.assertEqual(listening_refresh["source"], "dialog_motion")
         self.assertEqual(speaking["source"], "dialog_motion")
-        self.assertEqual(
-            speaking["targets"]["neck_top"],
-            max(node._servos["neck_top"]["limit_1"], node._servos["neck_top"]["limit_2"]),
-        )
-        self.assertEqual(
-            speaking["targets"]["neck_bottom"],
-            max(node._servos["neck_bottom"]["limit_1"], node._servos["neck_bottom"]["limit_2"]),
-        )
+        self.assertEqual(speaking["step_size"], 24.0)
+        self.assertEqual(speaking_refresh["source"], "dialog_motion")
+        self.assertIn("neck_top", speaking["targets"])
+        self.assertIn("neck_bottom", speaking["targets"])
 
-        for payload in (listening, speaking):
+        for payload in (speaking, speaking_refresh):
             targets = payload["targets"]
             for name, target in targets.items():
                 servo = node._servos[name]
                 self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
                 self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
 
-    def test_motion_is_quiet_before_wake_vad_and_after_speech_ends(self):
+    def test_user_speech_has_no_motion_subscription_or_output(self):
         module = _load_module()
         node = module.DialogMotionNode()
         publisher = node.publishers["/servo_targets/dialog_expression"]
         _, timer = node.timers[0]
 
         timer()
-        node.subscriptions["dialog_motion_vad"](_String("speech_started"))
-        self.assertEqual(len(publisher.messages), 1)
-        timer()
-        node.subscriptions["dialog_motion_vad"](_String("speech_ended"))
         timer()
 
-        self.assertEqual(len(publisher.messages), 2)
+        self.assertNotIn("dialog_motion_vad", node.subscriptions)
+        self.assertEqual(publisher.messages, [])
 
-    def test_playback_completion_stops_speaking_motion_until_vad_detects_speech(self):
+    def test_playback_completion_stops_speaking_motion(self):
         module = _load_module()
         node = module.DialogMotionNode()
         publisher = node.publishers["/servo_targets/dialog_expression"]
@@ -172,12 +157,12 @@ class DialogMotionNodeTests(unittest.TestCase):
         servos = module._load_dialog_servos()
         expected_eye_gap = servos["eye_l"]["init"] - servos["eye_r"]["init"]
         for _ in range(100):
-            for pose in (sampler.listening_pose(), sampler.speaking_pose()):
-                self.assertEqual(pose["eye_l"] - pose["eye_r"], expected_eye_gap)
-                for name, target in pose.items():
-                    servo = servos[name]
-                    self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
-                    self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
+            pose = sampler.speaking_pose()
+            self.assertEqual(pose["eye_l"] - pose["eye_r"], expected_eye_gap)
+            for name, target in pose.items():
+                servo = servos[name]
+                self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
+                self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
 
 
 if __name__ == "__main__":
