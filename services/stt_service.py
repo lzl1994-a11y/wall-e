@@ -18,6 +18,7 @@ import numpy as np
 
 from .asr import create_asr
 from .audio_pipeline import AudioPipeline
+from .voice_debug import RollingVoiceDebugStore
 
 
 class STTService:
@@ -36,6 +37,7 @@ class STTService:
     def __init__(self, config_path="core/config.yaml", on_sentence_received=None):
         self.on_sentence_received = on_sentence_received
         self.asr_adapter = create_asr(config_path)
+        self._voice_debug = RollingVoiceDebugStore()
 
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -257,12 +259,11 @@ class STTService:
                 wf.setframerate(self.SAMPLE_RATE)
                 wf.writeframes(pcm_data)
 
-            # 调试副本
-            import shutil
-            debug_path = os.path.expanduser("~/.wali_debug/stt_debug_last.wav")
-            os.makedirs(os.path.dirname(debug_path), exist_ok=True)
-            shutil.copy2(wav_path, debug_path)
-            print(f"[STT] 调试音频: {debug_path} ({duration_ms}ms)")
+            debug_store = getattr(self, "_voice_debug", None)
+            if debug_store is not None:
+                debug_path = debug_store.save_file("asr_input", wav_path)
+                if debug_path is not None:
+                    print(f"[STT] 已保存 ASR 输入: {debug_path} ({duration_ms}ms)")
 
             with self._streaming_lock:
                 streaming_active = self._streaming_active

@@ -49,6 +49,7 @@ from services.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
     decode_vision_pipeline_command,
 )
+from services.voice_debug import RollingVoiceDebugStore
 
 
 class LLMBrainNode(Node):
@@ -81,6 +82,7 @@ class LLMBrainNode(Node):
         super().__init__('walle_llm_brain')
 
         self.llm = None
+        self._voice_debug = RollingVoiceDebugStore()
         self.chat_history = deque(maxlen=24)
         self.punctuations = {'。', '？', '.', '?', '！', '!'}
         self._request_queue = queue.Queue(maxsize=8)
@@ -454,10 +456,25 @@ class LLMBrainNode(Node):
         # the existing topic contract and ask the model for speech only.
         publish_corrected(user_prompt)
 
+        history = self._history_for_request()
+        debug_store = getattr(self, "_voice_debug", None)
+        if debug_store is not None:
+            debug_path = debug_store.save_json("llm_input", {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "turn_id": turn_id,
+                "raw_asr_text": user_prompt,
+                "prompt": augmented_prompt,
+                "history": history,
+                "tools_enabled": tools_enabled,
+                "max_tokens_override": max_tokens_override,
+            })
+            if debug_path is not None:
+                self.get_logger().info(f'[{turn_id}] Saved LLM input: {debug_path}')
+
         try:
             stream = self.llm.chat_stream(
                 augmented_prompt,
-                self._history_for_request(),
+                history,
                 tools_enabled=tools_enabled,
                 max_tokens_override=max_tokens_override,
             )

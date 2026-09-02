@@ -44,6 +44,7 @@ from services.camera_frame import (
 )
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
+from .voice_debug import RollingVoiceDebugStore
 
 
 class _State(Enum):
@@ -79,6 +80,7 @@ class VoiceChatService:
         llm_cfg = config["llm"]
         self.client = OpenAI(api_key=llm_cfg["key"], base_url=llm_cfg["url"])
         self.multimodal = create_multimodal(config_path)
+        self._voice_debug = RollingVoiceDebugStore()
         self.model = llm_cfg["model"]
         self.max_tokens = llm_cfg.get("max_tokens", 1024)
         self.llm_settings = llm_cfg
@@ -231,11 +233,11 @@ class VoiceChatService:
                 wf.setframerate(self.SAMPLE_RATE)
                 wf.writeframes(pcm_data)
 
-            # 调试副本
-            import shutil
-            debug_dir = os.path.expanduser("~/.wali_debug")
-            os.makedirs(debug_dir, exist_ok=True)
-            shutil.copy2(wav_path, os.path.join(debug_dir, "vc_debug_last.wav"))
+            debug_store = getattr(self, "_voice_debug", None)
+            if debug_store is not None:
+                debug_path = debug_store.save_file("llm_audio_input", wav_path)
+                if debug_path is not None:
+                    print(f"[VoiceChat] 已保存 LLM 音频输入: {debug_path}")
 
             with open(wav_path, "rb") as f:
                 audio_b64 = base64.b64encode(f.read()).decode("utf-8")

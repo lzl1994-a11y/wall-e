@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -45,6 +45,7 @@ class NodeEntry:
     max_restarts: int = DEFAULT_MAX_RESTARTS
     restart_delay: float = DEFAULT_RESTART_DELAY
     environment_setup: Path | None = None
+    environment: dict[str, str] = field(default_factory=dict)
 
 
 def build_node_list(args):
@@ -59,6 +60,11 @@ def build_node_list(args):
     hardware_backend = hardware_cfg.get("backend", "serial_mcu")
     if hardware_backend not in {"serial_mcu", "ubuntu_i2c"}:
         hardware_backend = "serial_mcu"
+    voice_debug_env = {
+        "WALI_SAVE_VOICE_DEBUG": (
+            "1" if getattr(args, "save_voice_debug", False) else "0"
+        )
+    }
 
     # pipeline mode: CLI 优先 → config → keyboard
     if args.voice_chat:
@@ -74,7 +80,11 @@ def build_node_list(args):
     if not args.no_web:
         nodes.append(NodeEntry("config_web", ROOT / "services" / "web_server.py"))
 
-    nodes.append(NodeEntry("llm", ROOT / "nodes" / "llm_ros_node.py"))
+    nodes.append(NodeEntry(
+        "llm",
+        ROOT / "nodes" / "llm_ros_node.py",
+        environment=voice_debug_env,
+    ))
 
     # 音频播放管线（始终启动）
     nodes.append(NodeEntry("tts_play", ROOT / "nodes" / "tts_play_node.py"))
@@ -105,10 +115,18 @@ def build_node_list(args):
                 nodes.append(NodeEntry("hardware_bridge", ROOT / "nodes" / "hardware_bridge_node.py"))
 
     if pipeline == "multimodal":
-        nodes.append(NodeEntry("voice_chat", ROOT / "nodes" / "voice_chat_ros_node.py"))
+        nodes.append(NodeEntry(
+            "voice_chat",
+            ROOT / "nodes" / "voice_chat_ros_node.py",
+            environment=voice_debug_env,
+        ))
         nodes = [n for n in nodes if n.name != "llm"]
     elif pipeline == "asr_llm":
-        nodes.append(NodeEntry("stt", ROOT / "nodes" / "stt_ros_node.py"))
+        nodes.append(NodeEntry(
+            "stt",
+            ROOT / "nodes" / "stt_ros_node.py",
+            environment=voice_debug_env,
+        ))
     else:
         nodes.append(NodeEntry("keyboard_stt", ROOT / "nodes" / "keyboard_stt_node.py"))
 
@@ -163,6 +181,7 @@ def start_process(entry: NodeEntry):
         if path and path != root_path
     ]
     env["PYTHONPATH"] = os.pathsep.join([root_path, *existing_paths])
+    env.update(entry.environment)
     kwargs = {
         "cwd": str(ROOT),
         "env": env,
@@ -258,6 +277,14 @@ def main():
         "--no-web",
         action="store_true",
         help="Do not start the config web service.",
+    )
+    parser.add_argument(
+        "--save-voice-debug",
+        action="store_true",
+        help=(
+            "Keep the latest 20 ASR audio inputs and latest 20 LLM voice "
+            "request artifacts under ~/.wali_debug/voice."
+        ),
     )
     mcp_group = parser.add_mutually_exclusive_group()
     mcp_group.add_argument(

@@ -21,6 +21,7 @@ def launcher_args(
     keyboard_stt=False,
     mcp=False,
     no_mcp=False,
+    save_voice_debug=False,
 ):
     return Namespace(
         voice_chat=False,
@@ -33,6 +34,7 @@ def launcher_args(
         no_web=no_web,
         mcp=mcp,
         no_mcp=no_mcp,
+        save_voice_debug=save_voice_debug,
     )
 
 
@@ -185,6 +187,39 @@ class LaunchNodesTests(unittest.TestCase):
         self.assertEqual(
             child_env["PYTHONPATH"].split(os.pathsep),
             [str(launch_nodes.ROOT), "existing-path"],
+        )
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_voice_debug_flag_is_scoped_to_voice_pipeline_nodes(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args(save_voice_debug=True))
+        by_name = {entry.name: entry for entry in entries}
+
+        self.assertEqual(by_name["stt"].environment["WALI_SAVE_VOICE_DEBUG"], "1")
+        self.assertEqual(by_name["llm"].environment["WALI_SAVE_VOICE_DEBUG"], "1")
+        self.assertEqual(by_name["camera_capture"].environment, {})
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_voice_debug_is_explicitly_disabled_without_flag(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args())
+        by_name = {entry.name: entry for entry in entries}
+
+        self.assertEqual(by_name["stt"].environment["WALI_SAVE_VOICE_DEBUG"], "0")
+        self.assertEqual(by_name["llm"].environment["WALI_SAVE_VOICE_DEBUG"], "0")
+
+    @patch("launch_nodes.subprocess.Popen")
+    def test_node_environment_overrides_inherited_debug_setting(self, popen):
+        entry = launch_nodes.NodeEntry(
+            "test",
+            launch_nodes.ROOT / "launch_nodes.py",
+            environment={"WALI_SAVE_VOICE_DEBUG": "0"},
+        )
+
+        with patch.dict(os.environ, {"WALI_SAVE_VOICE_DEBUG": "1"}):
+            launch_nodes.start_process(entry)
+
+        self.assertEqual(
+            popen.call_args.kwargs["env"]["WALI_SAVE_VOICE_DEBUG"],
+            "0",
         )
 
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
