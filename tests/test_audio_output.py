@@ -41,9 +41,12 @@ class AudioSampleRateContractTests(unittest.TestCase):
         trailing_frame = b"T" * AudioPipeline.FRAME_BYTES
         pre_roll_count = int(AudioPipeline.PRE_ROLL_SEC / (AudioPipeline.FRAME_MS / 1000.0))
         max_silence = int(AudioPipeline.SILENCE_SEC / (AudioPipeline.FRAME_MS / 1000.0))
+        speech_count = int(
+            AudioPipeline.SPEECH_START_MS / AudioPipeline.FRAME_MS
+        )
         frames = (
             [quiet_frame] * pre_roll_count
-            + [speech_frame] * 2
+            + [speech_frame] * speech_count
             + [trailing_frame] * (max_silence + 1)
         )
         pipeline.audio_queue.put(b"".join(frames))
@@ -59,7 +62,39 @@ class AudioSampleRateContractTests(unittest.TestCase):
 
         self.assertEqual(len(emitted), 1)
         self.assertTrue(emitted[0].startswith(quiet_frame * pre_roll_count))
-        self.assertIn(speech_frame * 2, emitted[0])
+        self.assertIn(speech_frame * speech_count, emitted[0])
+
+    def test_vad_requires_300ms_of_continuous_speech_before_start(self):
+        pipeline = AudioPipeline.__new__(AudioPipeline)
+        pipeline.audio_queue = queue.Queue()
+        pipeline._is_running = True
+        pipeline._paused_event = threading.Event()
+        pipeline._ww = types.SimpleNamespace(enabled=False)
+        pipeline._awake = True
+        pipeline._vad_thresh = 0.5
+
+        quiet_frame = b"Q" * AudioPipeline.FRAME_BYTES
+        speech_frame = b"S" * AudioPipeline.FRAME_BYTES
+        required = int(AudioPipeline.SPEECH_START_MS / AudioPipeline.FRAME_MS)
+        frames = [speech_frame] * (required - 1) + [quiet_frame]
+        pipeline.audio_queue.put(b"".join(frames))
+        pipeline._vad_prob = lambda frame: 1.0 if frame == speech_frame else 0.0
+        started = []
+        pipeline.on_speech_start = started.append
+        pipeline.on_speech_audio = None
+        pipeline.on_speech_cancel = None
+        pipeline.on_sentence = None
+
+        def stop_after_frames(frame):
+            probability = 1.0 if frame == speech_frame else 0.0
+            if frame == quiet_frame:
+                pipeline._is_running = False
+            return probability
+
+        pipeline._vad_prob = stop_after_frames
+        pipeline._run()
+
+        self.assertEqual(started, [])
 
     def test_vad_stream_callbacks_cover_capture_once_in_order(self):
         pipeline = AudioPipeline.__new__(AudioPipeline)
@@ -75,9 +110,12 @@ class AudioSampleRateContractTests(unittest.TestCase):
         trailing_frame = b"T" * AudioPipeline.FRAME_BYTES
         pre_roll_count = int(AudioPipeline.PRE_ROLL_SEC / (AudioPipeline.FRAME_MS / 1000.0))
         max_silence = int(AudioPipeline.SILENCE_SEC / (AudioPipeline.FRAME_MS / 1000.0))
+        speech_count = int(
+            AudioPipeline.SPEECH_START_MS / AudioPipeline.FRAME_MS
+        )
         frames = (
             [quiet_frame] * pre_roll_count
-            + [speech_frame] * 2
+            + [speech_frame] * speech_count
             + [trailing_frame] * (max_silence + 1)
         )
         pipeline.audio_queue.put(b"".join(frames))

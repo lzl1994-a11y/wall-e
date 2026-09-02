@@ -133,6 +133,7 @@ class AudioPipeline:
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
     FRAME_BYTES = FRAME_SIZE * 2
     PRE_ROLL_SEC = 0.3
+    SPEECH_START_MS = 300
     SILENCE_SEC = 0.5
     MAX_SPEECH_SEC = 15.0
 
@@ -440,9 +441,14 @@ class AudioPipeline:
         max_silence = int(silence_sec / (self.FRAME_MS / 1000.0))
         max_frames = int(self.MAX_SPEECH_SEC / (self.FRAME_MS / 1000.0))
         pre_roll_size = max(1, int(self.PRE_ROLL_SEC / (self.FRAME_MS / 1000.0)))
+        speech_start_frames = max(
+            1,
+            int((self.SPEECH_START_MS + self.FRAME_MS - 1) / self.FRAME_MS),
+        )
 
         byte_buf = bytearray()
         pre_roll_frames = deque(maxlen=pre_roll_size)
+        speech_candidate_frames = []
         speech_frames = []
         silence_count = 0
         in_speech = False
@@ -453,6 +459,7 @@ class AudioPipeline:
                 time.sleep(0.1)
                 byte_buf.clear()
                 pre_roll_frames.clear()
+                speech_candidate_frames.clear()
                 speech_frames.clear()
                 in_speech = False
                 silence_count = 0
@@ -475,6 +482,7 @@ class AudioPipeline:
                         self._awake = True
                         self._reset_vad_state()
                         pre_roll_frames.clear()
+                        speech_candidate_frames.clear()
                         speech_frames.clear()
                         in_speech = False
                         silence_count = 0
@@ -490,26 +498,34 @@ class AudioPipeline:
                 # ── 未唤醒时跳过 VAD 断句 ──
                 if not self._awake:
                     pre_roll_frames.clear()
+                    speech_candidate_frames.clear()
                     continue
 
                 # ── VAD + 静音断句 ──
                 is_speech = self._vad_prob(frame) > self._vad_thresh
 
-                if is_speech:
+                if not in_speech:
+                    if not is_speech:
+                        # A short positive burst was not sustained speech. Keep it
+                        # in the bounded pre-roll so a real utterance still retains
+                        # its leading audio, but do not start ASR or robot motion.
+                        pre_roll_frames.extend(speech_candidate_frames)
+                        speech_candidate_frames.clear()
+                        pre_roll_frames.append(frame)
+                        continue
+
+                    speech_candidate_frames.append(frame)
+                    if len(speech_candidate_frames) < speech_start_frames:
+                        continue
+
+                    in_speech = True
                     silence_count = 0
-                    speech_started = False
-                    if not in_speech:
-                        in_speech = True
-                        speech_frames = list(pre_roll_frames)
-                        speech_frame_count = len(speech_frames)
-                        pre_roll_frames.clear()
-                        speech_started = True
-                    speech_frames.append(frame)
-                    speech_frame_count += 1
-                    if speech_started:
-                        self._emit_speech_start(speech_frames)
-                    else:
-                        self._emit_speech_audio(frame)
+                    speech_frames = list(pre_roll_frames)
+                    speech_frames.extend(speech_candidate_frames)
+                    speech_frame_count = len(speech_frames)
+                    pre_roll_frames.clear()
+                    speech_candidate_frames.clear()
+                    self._emit_speech_start(speech_frames)
 
                     if speech_frame_count >= max_frames:
                         self._emit_sentence(speech_frames)
@@ -517,7 +533,19 @@ class AudioPipeline:
                         in_speech = False
                         speech_frame_count = 0
 
-                elif in_speech:
+                elif is_speech:
+                    silence_count = 0
+                    speech_frames.append(frame)
+                    speech_frame_count += 1
+                    self._emit_speech_audio(frame)
+
+                    if speech_frame_count >= max_frames:
+                        self._emit_sentence(speech_frames)
+                        speech_frames.clear()
+                        in_speech = False
+                        speech_frame_count = 0
+
+                else:
                     silence_count += 1
                     speech_frames.append(frame)
                     speech_frame_count += 1
@@ -535,8 +563,6 @@ class AudioPipeline:
                         self._emit_sentence(trimmed)
                         speech_frames.clear()
                         speech_frame_count = 0
-                else:
-                    pre_roll_frames.append(frame)
 
     def _vad_prob(self, frame: bytes) -> float:
         """
