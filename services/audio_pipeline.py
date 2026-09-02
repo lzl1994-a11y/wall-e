@@ -132,6 +132,8 @@ class AudioPipeline:
     FRAME_MS = 30  # WebRTC VAD 严格要求 10ms, 20ms, 或 30ms
     FRAME_SIZE = int(SAMPLE_RATE * FRAME_MS / 1000)
     FRAME_BYTES = FRAME_SIZE * 2
+    SILERO_CHUNK_SIZE = 512
+    SILERO_CONTEXT_SIZE = 64
     PRE_ROLL_SEC = 0.3
     SPEECH_START_MS = 300
     SILENCE_SEC = 0.5
@@ -152,10 +154,14 @@ class AudioPipeline:
         self._has_webrtc = False
         self._silero_session = None
         self._silero_state = None
+        self._silero_pending = np.empty(0, dtype=np.float32)
+        self._silero_context = np.zeros(self.SILERO_CONTEXT_SIZE, dtype=np.float32)
+        self._silero_last_prob = 0.0
         self._init_vad()
             
         self._vad_lock = threading.Lock()
         self._vad_err_count = 0
+        self._vad_exception_count = 0
         # 断句 VAD 阈值
         self._vad_thresh = float(self._vad_cfg.get("threshold", 0.5))
         try:
@@ -305,6 +311,11 @@ class AudioPipeline:
         with self._vad_lock:
             if self._vad_backend == "silero":
                 self._silero_state = np.zeros((2, 1, 128), dtype=np.float32)
+                self._silero_pending = np.empty(0, dtype=np.float32)
+                self._silero_context = np.zeros(
+                    self.SILERO_CONTEXT_SIZE, dtype=np.float32
+                )
+                self._silero_last_prob = 0.0
 
     # ── Internal ──
     def _close_audio_stream(self):
@@ -577,23 +588,43 @@ class AudioPipeline:
             else:
                 samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
                 with self._vad_lock:
-                    output, state = self._silero_session.run(
-                        None,
-                        {
-                            "input": samples.reshape(1, -1),
-                            "state": self._silero_state,
-                            "sr": np.array(self.SAMPLE_RATE, dtype=np.int64),
-                        },
+                    self._silero_pending = np.concatenate(
+                        (self._silero_pending, samples)
                     )
-                    self._silero_state = state
-                prob = float(output[0][0])
+                    while self._silero_pending.size >= self.SILERO_CHUNK_SIZE:
+                        chunk = self._silero_pending[:self.SILERO_CHUNK_SIZE]
+                        self._silero_pending = self._silero_pending[
+                            self.SILERO_CHUNK_SIZE:
+                        ]
+                        model_input = np.concatenate(
+                            (self._silero_context, chunk)
+                        ).reshape(1, -1)
+                        output, state = self._silero_session.run(
+                            None,
+                            {
+                                "input": model_input,
+                                "state": self._silero_state,
+                                "sr": np.array(self.SAMPLE_RATE, dtype=np.int64),
+                            },
+                        )
+                        self._silero_state = state
+                        self._silero_context = chunk[-self.SILERO_CONTEXT_SIZE:].copy()
+                        self._silero_last_prob = float(
+                            np.asarray(output).reshape(-1)[0]
+                        )
+                    prob = self._silero_last_prob
 
             self._vad_err_count += 1
             if self._vad_err_count % 10 == 0:
                 status = "人声" if prob > self._vad_thresh else "噪音/静音"
                 print(f"  [{self._vad_backend.upper()} VAD] 状态: {status} ({prob:.2f})")
             return prob
-        except Exception:
+        except Exception as exc:
+            self._vad_exception_count = getattr(
+                self, "_vad_exception_count", 0
+            ) + 1
+            if self._vad_exception_count == 1 or self._vad_exception_count % 100 == 0:
+                print(f"[AudioPipeline] {self._vad_backend} VAD 推理异常: {exc}")
             return 0.0
 
     def _emit_speech_start(self, frames):
