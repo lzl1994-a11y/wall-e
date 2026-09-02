@@ -39,10 +39,11 @@ class _Logger:
 
 
 class _Node:
-    def __init__(self, _name):
+    def __init__(self, _name, **kwargs):
         self.publisher = None
         self.subscriptions = {}
         self.guard = None
+        self.init_kwargs = kwargs
 
     def create_publisher(self, _message_type, _topic, _qos):
         self.publisher = _Publisher()
@@ -65,12 +66,15 @@ class _Node:
 
 def _load_module():
     fake_rclpy = types.ModuleType("rclpy")
+    fake_executors = types.ModuleType("rclpy.executors")
+    fake_executors.SingleThreadedExecutor = object
     fake_node = types.ModuleType("rclpy.node")
     fake_node.Node = _Node
     fake_std = types.ModuleType("std_msgs.msg")
     fake_std.String = _String
     modules = {
         "rclpy": fake_rclpy,
+        "rclpy.executors": fake_executors,
         "rclpy.node": fake_node,
         "std_msgs.msg": fake_std,
     }
@@ -109,6 +113,10 @@ class MotionArbiterNodeTests(unittest.TestCase):
         self.assertEqual(json.loads(self.node.publisher.messages[0].data), FORWARD)
         self.assertAlmostEqual(self.node._watchdog_deadline, 10.3)
         self.assertFalse(hasattr(self.node, "_timer"))
+        self.assertEqual(
+            self.node.init_kwargs,
+            {"enable_rosout": False, "start_parameter_services": False},
+        )
 
     def test_watchdog_publishes_one_stop_after_expiry(self):
         self.node._on_command("autonomy", _String(json.dumps(FORWARD)))

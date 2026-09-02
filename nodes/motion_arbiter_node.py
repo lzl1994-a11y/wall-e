@@ -6,6 +6,7 @@ import threading
 import time
 
 import rclpy
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -26,7 +27,14 @@ EXECUTOR_YIELD_SEC = 0.005
 
 class MotionArbiterNode(Node):
     def __init__(self, *, arbiter=None, start_watchdog=True):
-        super().__init__("motion_arbiter_node")
+        # This node has no runtime parameters, and console logging is enough.
+        # Disabling the default parameter services and /rosout publisher keeps
+        # dozens of unused DDS/QoS entities out of the executor wait set.
+        super().__init__(
+            "motion_arbiter_node",
+            enable_rosout=False,
+            start_parameter_services=False,
+        )
         self._arbiter = arbiter or MotionArbiter()
         self._publisher = self.create_publisher(String, MOTOR_OUTPUT_TOPIC, 10)
         self._last_source = None
@@ -154,14 +162,18 @@ class MotionArbiterNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = MotionArbiterNode()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
         while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.1)
+            executor.spin_once(timeout_sec=0.1)
             time.sleep(EXECUTOR_YIELD_SEC)
     except KeyboardInterrupt:
         pass
     finally:
+        executor.remove_node(node)
         node.destroy_node()
+        executor.shutdown()
         if rclpy.ok():
             rclpy.shutdown()
 
