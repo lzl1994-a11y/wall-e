@@ -113,6 +113,7 @@ class MotionArbiterNodeTests(unittest.TestCase):
         self.assertEqual(json.loads(self.node.publisher.messages[0].data), FORWARD)
         self.assertAlmostEqual(self.node._watchdog_deadline, 10.3)
         self.assertFalse(hasattr(self.node, "_timer"))
+        self.assertIsNone(self.node.guard)
         self.assertEqual(
             self.node.init_kwargs,
             {"enable_rosout": False, "start_parameter_services": False},
@@ -122,8 +123,8 @@ class MotionArbiterNodeTests(unittest.TestCase):
         self.node._on_command("autonomy", _String(json.dumps(FORWARD)))
         self.now = 10.31
 
-        self.node._on_watchdog_expired()
-        self.node._on_watchdog_expired()
+        self.node._publish_selected()
+        self.node._publish_selected()
 
         payloads = [json.loads(message.data) for message in self.node.publisher.messages]
         self.assertEqual(payloads, [FORWARD, STOP_COMMAND])
@@ -140,7 +141,7 @@ class MotionArbiterNodeTests(unittest.TestCase):
         self.assertEqual(self.node._watchdog_deadline, joystick_deadline)
 
         self.now = 10.31
-        self.node._on_watchdog_expired()
+        self.node._publish_selected()
         self.assertEqual(
             json.loads(self.node.publisher.messages[-1].data),
             REVERSE,

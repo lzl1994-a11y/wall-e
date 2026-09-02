@@ -40,10 +40,10 @@ class MotionArbiterNode(Node):
         self._last_source = None
         self._last_command = None
         self._game_active = False
+        self._operation_lock = threading.RLock()
         self._watchdog_condition = threading.Condition()
         self._watchdog_deadline = None
         self._watchdog_closed = False
-        self._watchdog_guard = self.create_guard_condition(self._on_watchdog_expired)
         self._watchdog_thread = None
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self._subscriptions = [
@@ -68,35 +68,36 @@ class MotionArbiterNode(Node):
         )
 
     def _on_command(self, source, message):
-        if self._game_active:
-            return
         try:
             payload = json.loads(message.data)
         except (TypeError, json.JSONDecodeError):
             self.get_logger().warning(f"拒绝无效 {source} 电机 JSON")
             return
-        with self._watchdog_condition:
-            if not self._arbiter.update(source, payload):
-                self.get_logger().warning(f"拒绝无效 {source} 电机指令")
+        with self._operation_lock:
+            if self._game_active:
                 return
-            selected_source, command, deadline = self._arbiter.select_with_deadline()
-            self._set_watchdog_deadline_locked(deadline)
+            with self._watchdog_condition:
+                if not self._arbiter.update(source, payload):
+                    self.get_logger().warning(f"拒绝无效 {source} 电机指令")
+                    return
+                selected_source, command, deadline = self._arbiter.select_with_deadline()
+                self._set_watchdog_deadline_locked(deadline)
 
-        # Refresh the hardware watchdog only for the source that currently owns
-        # the tracks. Lower-priority traffic must not extend a higher-priority
-        # source's lifetime.
-        if selected_source == source or selected_source != self._last_source:
-            self._publish(selected_source, command, force=True)
+            # Refresh the hardware watchdog only for the source that currently
+            # owns the tracks. Lower-priority traffic must not extend a
+            # higher-priority source's lifetime.
+            if selected_source == source or selected_source != self._last_source:
+                self._publish(selected_source, command, force=True)
 
     def _publish_selected(self, *, force=False):
-        if self._game_active:
-            source, command = "game-safety", STOP_COMMAND
-            deadline = None
-        else:
-            with self._watchdog_condition:
-                source, command, deadline = self._arbiter.select_with_deadline()
-                self._set_watchdog_deadline_locked(deadline)
-        self._publish(source, command, force=force)
+        with self._operation_lock:
+            if self._game_active:
+                source, command = "game-safety", STOP_COMMAND
+            else:
+                with self._watchdog_condition:
+                    source, command, deadline = self._arbiter.select_with_deadline()
+                    self._set_watchdog_deadline_locked(deadline)
+            self._publish(source, command, force=force)
 
     def _publish(self, source, command, *, force=False):
         if not force and source == self._last_source and command == self._last_command:
@@ -129,21 +130,22 @@ class MotionArbiterNode(Node):
                     break
                 if self._watchdog_closed:
                     return
-            self._watchdog_guard.trigger()
-
-    def _on_watchdog_expired(self):
-        self._publish_selected()
+            # rclpy Publisher.publish() is thread-safe. Publishing directly
+            # avoids a Humble/FastDDS guard-condition bug observed on the robot
+            # where one trigger leaves the executor permanently ready/spinning.
+            self._publish_selected()
 
     def _on_game_state(self, message):
         active = game_is_active(message.data)
-        was_active = self._game_active
-        if active and not was_active:
-            with self._watchdog_condition:
-                self._set_watchdog_deadline_locked(None)
-            self._publish("game-safety", STOP_COMMAND, force=True)
-        self._game_active = active
-        if was_active and not active:
-            self._publish_selected(force=True)
+        with self._operation_lock:
+            was_active = self._game_active
+            if active and not was_active:
+                with self._watchdog_condition:
+                    self._set_watchdog_deadline_locked(None)
+                self._publish("game-safety", STOP_COMMAND, force=True)
+            self._game_active = active
+            if was_active and not active:
+                self._publish_selected(force=True)
 
     def destroy_node(self):
         with self._watchdog_condition:
