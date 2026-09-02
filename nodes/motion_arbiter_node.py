@@ -26,7 +26,7 @@ EXECUTOR_YIELD_SEC = 0.005
 
 
 class MotionArbiterNode(Node):
-    def __init__(self, *, arbiter=None, start_watchdog=True):
+    def __init__(self, *, arbiter=None):
         # This node has no runtime parameters, and console logging is enough.
         # Disabling the default parameter services and /rosout publisher keeps
         # dozens of unused DDS/QoS entities out of the executor wait set.
@@ -41,10 +41,7 @@ class MotionArbiterNode(Node):
         self._last_command = None
         self._game_active = False
         self._operation_lock = threading.RLock()
-        self._watchdog_condition = threading.Condition()
         self._watchdog_deadline = None
-        self._watchdog_closed = False
-        self._watchdog_thread = None
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self._subscriptions = [
             self.create_subscription(
@@ -55,13 +52,6 @@ class MotionArbiterNode(Node):
             )
             for source, topic in SOURCE_TOPICS.items()
         ]
-        if start_watchdog:
-            self._watchdog_thread = threading.Thread(
-                target=self._watchdog_loop,
-                name="motor-arbiter-watchdog",
-                daemon=True,
-            )
-            self._watchdog_thread.start()
         self.get_logger().info(
             "运动仲裁器上线：joystick > tracking > autonomy，"
             "事件驱动，上游命令超时自动停车"
@@ -76,12 +66,11 @@ class MotionArbiterNode(Node):
         with self._operation_lock:
             if self._game_active:
                 return
-            with self._watchdog_condition:
-                if not self._arbiter.update(source, payload):
-                    self.get_logger().warning(f"拒绝无效 {source} 电机指令")
-                    return
-                selected_source, command, deadline = self._arbiter.select_with_deadline()
-                self._set_watchdog_deadline_locked(deadline)
+            if not self._arbiter.update(source, payload):
+                self.get_logger().warning(f"拒绝无效 {source} 电机指令")
+                return
+            selected_source, command, deadline = self._arbiter.select_with_deadline()
+            self._watchdog_deadline = deadline
 
             # Refresh the hardware watchdog only for the source that currently
             # owns the tracks. Lower-priority traffic must not extend a
@@ -94,9 +83,8 @@ class MotionArbiterNode(Node):
             if self._game_active:
                 source, command = "game-safety", STOP_COMMAND
             else:
-                with self._watchdog_condition:
-                    source, command, deadline = self._arbiter.select_with_deadline()
-                    self._set_watchdog_deadline_locked(deadline)
+                source, command, deadline = self._arbiter.select_with_deadline()
+                self._watchdog_deadline = deadline
             self._publish(source, command, force=force)
 
     def _publish(self, source, command, *, force=False):
@@ -110,49 +98,30 @@ class MotionArbiterNode(Node):
         self._last_source = source
         self._last_command = command
 
-    def _set_watchdog_deadline_locked(self, deadline):
-        self._watchdog_deadline = deadline
-        self._watchdog_condition.notify()
-
-    def _watchdog_loop(self):
-        while True:
-            with self._watchdog_condition:
-                while not self._watchdog_closed:
-                    deadline = self._watchdog_deadline
-                    if deadline is None:
-                        self._watchdog_condition.wait()
-                        continue
-                    remaining = deadline - time.monotonic()
-                    if remaining > 0:
-                        self._watchdog_condition.wait(timeout=remaining)
-                        continue
-                    self._watchdog_deadline = None
-                    break
-                if self._watchdog_closed:
-                    return
-            # rclpy Publisher.publish() is thread-safe. Publishing directly
-            # avoids a Humble/FastDDS guard-condition bug observed on the robot
-            # where one trigger leaves the executor permanently ready/spinning.
+    def poll_watchdog(self):
+        deadline = self._watchdog_deadline
+        if deadline is not None and time.monotonic() >= deadline:
+            self._watchdog_deadline = None
             self._publish_selected()
+
+    def next_spin_timeout(self, maximum=0.1):
+        deadline = self._watchdog_deadline
+        if deadline is None:
+            return maximum
+        return min(maximum, max(0.0, deadline - time.monotonic()))
 
     def _on_game_state(self, message):
         active = game_is_active(message.data)
         with self._operation_lock:
             was_active = self._game_active
             if active and not was_active:
-                with self._watchdog_condition:
-                    self._set_watchdog_deadline_locked(None)
+                self._watchdog_deadline = None
                 self._publish("game-safety", STOP_COMMAND, force=True)
             self._game_active = active
             if was_active and not active:
                 self._publish_selected(force=True)
 
     def destroy_node(self):
-        with self._watchdog_condition:
-            self._watchdog_closed = True
-            self._watchdog_condition.notify()
-        if self._watchdog_thread is not None:
-            self._watchdog_thread.join(timeout=1.0)
         try:
             self._publish("shutdown", STOP_COMMAND, force=True)
         except Exception:
@@ -168,7 +137,8 @@ def main(args=None):
     executor.add_node(node)
     try:
         while rclpy.ok():
-            executor.spin_once(timeout_sec=0.1)
+            node.poll_watchdog()
+            executor.spin_once(timeout_sec=node.next_spin_timeout())
             time.sleep(EXECUTOR_YIELD_SEC)
     except KeyboardInterrupt:
         pass

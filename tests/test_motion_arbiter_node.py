@@ -98,10 +98,7 @@ class MotionArbiterNodeTests(unittest.TestCase):
         self.now = 10.0
         self.module = _load_module()
         arbiter = MotionArbiter(timeout_sec=0.3, clock=lambda: self.now)
-        self.node = self.module.MotionArbiterNode(
-            arbiter=arbiter,
-            start_watchdog=False,
-        )
+        self.node = self.module.MotionArbiterNode(arbiter=arbiter)
 
     def tearDown(self):
         sys.modules.pop("nodes.motion_arbiter_node", None)
@@ -123,8 +120,9 @@ class MotionArbiterNodeTests(unittest.TestCase):
         self.node._on_command("autonomy", _String(json.dumps(FORWARD)))
         self.now = 10.31
 
-        self.node._publish_selected()
-        self.node._publish_selected()
+        with patch.object(self.module.time, "monotonic", return_value=self.now):
+            self.node.poll_watchdog()
+            self.node.poll_watchdog()
 
         payloads = [json.loads(message.data) for message in self.node.publisher.messages]
         self.assertEqual(payloads, [FORWARD, STOP_COMMAND])
@@ -141,11 +139,18 @@ class MotionArbiterNodeTests(unittest.TestCase):
         self.assertEqual(self.node._watchdog_deadline, joystick_deadline)
 
         self.now = 10.31
-        self.node._publish_selected()
+        with patch.object(self.module.time, "monotonic", return_value=self.now):
+            self.node.poll_watchdog()
         self.assertEqual(
             json.loads(self.node.publisher.messages[-1].data),
             REVERSE,
         )
+
+    def test_spin_timeout_tracks_selected_source_deadline(self):
+        self.node._on_command("autonomy", _String(json.dumps(FORWARD)))
+
+        with patch.object(self.module.time, "monotonic", return_value=10.22):
+            self.assertAlmostEqual(self.node.next_spin_timeout(), 0.08)
 
     def test_repeated_inactive_game_state_does_not_publish(self):
         self.node._on_game_state(_String("inactive"))
