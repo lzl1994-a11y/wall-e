@@ -42,6 +42,20 @@ class MotionArbiterTests(unittest.TestCase):
 
         self.assertEqual(self.arbiter.select(), ("tracking", REVERSE))
 
+    def test_selection_reports_exact_expiry_deadline(self):
+        self.arbiter.update("autonomy", FORWARD)
+
+        source, command, deadline = self.arbiter.select_with_deadline()
+
+        self.assertEqual((source, command), ("autonomy", FORWARD))
+        self.assertAlmostEqual(deadline, 10.3)
+
+        self.now += 0.31
+        self.assertEqual(
+            self.arbiter.select_with_deadline(),
+            ("failsafe", STOP_COMMAND, None),
+        )
+
     def test_invalid_commands_are_rejected(self):
         invalid = {
             "left": {"action": 1, "throttle": 101},

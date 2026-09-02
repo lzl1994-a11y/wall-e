@@ -23,7 +23,6 @@ SOURCE_TOPICS = {
 }
 
 COMMAND_TIMEOUT_SEC = 0.3
-OUTPUT_INTERVAL_SEC = 0.05
 STOP_COMMAND = {
     "left": {"action": 0, "throttle": 0},
     "right": {"action": 0, "throttle": 0},
@@ -82,9 +81,16 @@ class MotionArbiter:
         return True
 
     def select(self) -> tuple[str, dict[str, dict[str, int]]]:
+        source, command, _deadline = self.select_with_deadline()
+        return source, command
+
+    def select_with_deadline(
+        self,
+    ) -> tuple[str, dict[str, dict[str, int]], float | None]:
+        """Return the selected command and its monotonic expiry deadline."""
         now = self._clock()
         for source in SOURCE_PRIORITY:
             state = self._commands.get(source)
             if state is not None and now - state.received_at <= self.timeout_sec:
-                return source, state.command
-        return "failsafe", STOP_COMMAND
+                return source, state.command, state.received_at + self.timeout_sec
+        return "failsafe", STOP_COMMAND, None
