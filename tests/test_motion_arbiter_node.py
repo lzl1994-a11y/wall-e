@@ -44,13 +44,17 @@ class _Node:
         self.subscriptions = {}
         self.guard = None
         self.init_kwargs = kwargs
+        self.publisher_kwargs = None
+        self.subscription_kwargs = []
 
-    def create_publisher(self, _message_type, _topic, _qos):
+    def create_publisher(self, _message_type, _topic, _qos, **kwargs):
         self.publisher = _Publisher()
+        self.publisher_kwargs = kwargs
         return self.publisher
 
-    def create_subscription(self, _message_type, topic, callback, _qos):
+    def create_subscription(self, _message_type, topic, callback, _qos, **kwargs):
         self.subscriptions[topic] = callback
+        self.subscription_kwargs.append(kwargs)
         return object()
 
     def create_guard_condition(self, callback):
@@ -70,12 +74,21 @@ def _load_module():
     fake_executors.SingleThreadedExecutor = object
     fake_node = types.ModuleType("rclpy.node")
     fake_node.Node = _Node
+    fake_qos_event = types.ModuleType("rclpy.qos_event")
+
+    class _EventCallbacks:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_qos_event.PublisherEventCallbacks = _EventCallbacks
+    fake_qos_event.SubscriptionEventCallbacks = _EventCallbacks
     fake_std = types.ModuleType("std_msgs.msg")
     fake_std.String = _String
     modules = {
         "rclpy": fake_rclpy,
         "rclpy.executors": fake_executors,
         "rclpy.node": fake_node,
+        "rclpy.qos_event": fake_qos_event,
         "std_msgs.msg": fake_std,
     }
     sys.modules.pop("nodes.motion_arbiter_node", None)
@@ -115,6 +128,14 @@ class MotionArbiterNodeTests(unittest.TestCase):
             self.node.init_kwargs,
             {"enable_rosout": False, "start_parameter_services": False},
         )
+        self.assertFalse(
+            self.node.publisher_kwargs["event_callbacks"].kwargs["use_default_callbacks"]
+        )
+        self.assertTrue(self.node.subscription_kwargs)
+        self.assertTrue(all(
+            not kwargs["event_callbacks"].kwargs["use_default_callbacks"]
+            for kwargs in self.node.subscription_kwargs
+        ))
 
     def test_watchdog_publishes_one_stop_after_expiry(self):
         self.node._on_command("autonomy", _String(json.dumps(FORWARD)))

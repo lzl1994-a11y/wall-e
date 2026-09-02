@@ -8,6 +8,7 @@ import time
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos_event import PublisherEventCallbacks, SubscriptionEventCallbacks
 from std_msgs.msg import String
 
 from services.motion_arbiter import (
@@ -36,19 +37,33 @@ class MotionArbiterNode(Node):
             start_parameter_services=False,
         )
         self._arbiter = arbiter or MotionArbiter()
-        self._publisher = self.create_publisher(String, MOTOR_OUTPUT_TOPIC, 10)
+        publisher_events = PublisherEventCallbacks(use_default_callbacks=False)
+        subscription_events = SubscriptionEventCallbacks(use_default_callbacks=False)
+        self._publisher = self.create_publisher(
+            String,
+            MOTOR_OUTPUT_TOPIC,
+            10,
+            event_callbacks=publisher_events,
+        )
         self._last_source = None
         self._last_command = None
         self._game_active = False
         self._operation_lock = threading.RLock()
         self._watchdog_deadline = None
-        self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
+        self.create_subscription(
+            String,
+            GAME_MODE_STATE_TOPIC,
+            self._on_game_state,
+            10,
+            event_callbacks=subscription_events,
+        )
         self._subscriptions = [
             self.create_subscription(
                 String,
                 topic,
                 lambda message, source=source: self._on_command(source, message),
                 10,
+                event_callbacks=subscription_events,
             )
             for source, topic in SOURCE_TOPICS.items()
         ]
