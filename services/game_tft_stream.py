@@ -1,16 +1,10 @@
-"""Persistent chest-TFT stream used only by the isolated game probe."""
+"""Game-frame adaptation built on the shared persistent TFT transport."""
 
 from __future__ import annotations
 
 import time
 
-from services.tft_preview_server import (
-    JPEG_FRAME,
-    STREAM_END,
-    STREAM_START_MESSAGE,
-    TftPreviewServer,
-    encode_stream_start,
-)
+from services.tft_preview_server import PersistentTftStream, TftPreviewServer
 
 
 def prepare_game_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
@@ -63,18 +57,13 @@ def prepare_game_bgr(image, *, quality: int = 70) -> bytes | None:
 
 
 class GameTftStream:
-    PERSISTENT_DURATION = 0xFFFFFFFF
-
     def __init__(
         self,
         server: "GameTftStreamServer",
-        client,
-        sequence: int,
+        transport: PersistentTftStream,
     ) -> None:
         self._server = server
-        self._client = client
-        self._stream_sequence = sequence
-        self._frame_index = 0
+        self._transport = transport
         self._closed = False
         self.prepare_seconds = 0.0
         self.send_seconds = 0.0
@@ -89,15 +78,11 @@ class GameTftStream:
         self.prepare_attempts += 1
         if frame is None or len(frame) > self._server.settings.max_frame_bytes:
             return True
-        sequence = ((self._stream_sequence & 0xFFFF) << 16) | (self._frame_index & 0xFFFF)
-        try:
-            started = time.perf_counter()
-            self._server._send_packet(self._client, JPEG_FRAME, sequence, frame)
-            self.send_seconds += time.perf_counter() - started
-        except (ConnectionError, OSError):
+        started = time.perf_counter()
+        if not self._transport.send_encoded_jpeg(frame):
             self.close(send_end=False)
             return False
-        self._frame_index += 1
+        self.send_seconds += time.perf_counter() - started
         return True
 
     def send_bgr(self, image) -> bool:
@@ -109,57 +94,32 @@ class GameTftStream:
         self.prepare_attempts += 1
         if frame is None or len(frame) > self._server.settings.max_frame_bytes:
             return True
-        sequence = ((self._stream_sequence & 0xFFFF) << 16) | (self._frame_index & 0xFFFF)
-        try:
-            started = time.perf_counter()
-            self._server._send_packet(self._client, JPEG_FRAME, sequence, frame)
-            self.send_seconds += time.perf_counter() - started
-        except (ConnectionError, OSError):
+        started = time.perf_counter()
+        if not self._transport.send_encoded_jpeg(frame):
             self.close(send_end=False)
             return False
-        self._frame_index += 1
+        self.send_seconds += time.perf_counter() - started
         return True
 
     def close(self, *, send_end: bool = True) -> None:
         if self._closed:
             return
         self._closed = True
-        if send_end:
-            try:
-                self._server._send_packet(
-                    self._client, STREAM_END, self._stream_sequence, b""
-                )
-            except (ConnectionError, OSError):
-                pass
+        sent_frames = self._transport.sent_frames
+        self._transport.close(send_end=send_end)
         self._server._log(
-            "info", f"游戏 TFT 持续流结束: sent_frames={self._frame_index}"
+            "info", f"游戏 TFT 持续流结束: sent_frames={sent_frames}"
         )
-        self._server._stream_lock.release()
 
 
 class GameTftStreamServer(TftPreviewServer):
     """Opt-in subclass adding a persistent stream without changing legacy API."""
 
     def open_jpeg_stream(self, *, fps: int) -> GameTftStream | None:
-        if not self._stream_lock.acquire(blocking=False):
+        transport = self.open_persistent_stream(fps=fps)
+        if transport is None:
             return None
-        client = self._verified_client()
-        if client is None:
-            self._stream_lock.release()
-            return None
-        stream_sequence = self._next_stream_sequence()
-        target_fps = min(30, max(1, int(fps)))
-        try:
-            self._send_packet(
-                client,
-                STREAM_START_MESSAGE,
-                stream_sequence,
-                encode_stream_start(GameTftStream.PERSISTENT_DURATION, 0, target_fps),
-            )
-        except (ConnectionError, OSError):
-            self._stream_lock.release()
-            return None
-        return GameTftStream(self, client, stream_sequence)
+        return GameTftStream(self, transport)
 
 
 __all__ = [

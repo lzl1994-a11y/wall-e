@@ -140,6 +140,27 @@ class LaunchNodesTests(unittest.TestCase):
         )
 
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_tft_tcp_service_has_one_independent_owner(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args())
+        tft_entries = [entry for entry in entries if entry.name == "tft_tcp_service"]
+        names = [entry.name for entry in entries]
+
+        self.assertEqual(len(tft_entries), 1)
+        self.assertEqual(
+            tft_entries[0].script,
+            launch_nodes.ROOT / "nodes" / "tft_tcp_service_node.py",
+        )
+        self.assertLess(names.index("camera_capture"), names.index("tft_tcp_service"))
+        self.assertLess(names.index("tft_tcp_service"), names.index("llm"))
+
+    def test_dialogue_nodes_do_not_own_tft_tcp_server(self):
+        for filename in ("llm_ros_node.py", "voice_chat_ros_node.py"):
+            source = (launch_nodes.ROOT / "nodes" / filename).read_text(encoding="utf-8")
+            self.assertNotIn("GameTftStreamServer", source)
+            self.assertNotIn("TrackingTftPreview", source)
+            self.assertNotIn("tft_preview_ready", source)
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_config_web_can_be_disabled(self, _load_config):
         entries = launch_nodes.build_node_list(launcher_args(no_web=True))
 

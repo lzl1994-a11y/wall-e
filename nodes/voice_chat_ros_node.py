@@ -28,25 +28,22 @@ from std_msgs.msg import String, UInt8MultiArray
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
-from services.camera_frame import CameraFrameProvider, save_camera_photo
+from services.camera_frame import save_camera_photo
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
-    GAME_MODE_REQUEST_TOPIC,
     GAME_MODE_STATE_TOPIC,
-    GAME_SURFACE_READY,
     decode_game_frame,
-    encode_game_request,
     game_mode_from_message,
 )
-from services.game_tft_stream import GameTftStreamServer, prepare_game_bgr
+from services.game_tft_stream import prepare_game_bgr
 from services.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
     OUTPUT_SAMPLE_WIDTH,
 )
 from services.tool_dispatcher import build_action_cmd
+from services.tft_preview_client import TftPreviewClient
 from services.tft_preview_server import load_tft_preview_settings
-from services.tracking_tft_preview import TrackingTftPreview
 from services.tts_protocol import encode_turn_end
 from services.dialog_motion_protocol import (
     DIALOG_MOTION_VAD_TOPIC,
@@ -58,10 +55,6 @@ from services.dialog_expression_protocol import (
     encode_dialog_expression,
 )
 from services.usb_devices import resolve_audio_device
-from services.vision_pipeline_protocol import (
-    VISION_PIPELINE_COMMAND_TOPIC,
-    decode_vision_pipeline_command,
-)
 
 # 去掉 TTS 不需要的符号（保留中文标点和空格）
 TTS_CLEAN_RE = re.compile(r'[*#_~`>\[\]\(\)\{\}]')
@@ -81,47 +74,15 @@ class VoiceChatNode(Node):
         self.dialog_expression_pub = self.create_publisher(
             String, DIALOG_EXPRESSION_TOPIC, 10
         )
-        self.game_request_pub = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
         self.create_subscription(String, "llm_busy", self._on_playback_state, 10)
 
-        self.camera_frames = CameraFrameProvider(self)
-        self.tft_preview_ready_pub = self.create_publisher(
-            String, "tft_preview_ready", 10
-        )
         self.tft_preview_settings = load_tft_preview_settings()
-        self.tft_preview = GameTftStreamServer(
-            self.tft_preview_settings,
-            logger=self.get_logger(),
-        )
-        try:
-            self.tft_preview.start()
-            self._publish_tft_preview_ready()
-            self.tft_preview_ready_timer = self.create_timer(
-                1.0, self._publish_tft_preview_ready
-            )
-        except Exception as exc:
-            # Image analysis still works without a connected chest screen.
-            self.get_logger().error(f"TFT preview service failed to start: {exc}")
-        self.tracking_tft_preview = TrackingTftPreview(
-            self.tft_preview,
-            self.camera_frames,
-            fps=self.tft_preview_settings.fps,
-            logger=self.get_logger(),
-        )
-        self.create_subscription(
-            String,
-            VISION_PIPELINE_COMMAND_TOPIC,
-            self._on_vision_pipeline_command,
-            10,
-        )
+        self.tft_preview = TftPreviewClient(self, logger=self.get_logger())
         self._game_mode = "robot"
-        self._game_stream = None
-        self._game_frame_adapter = None
         self._game_frame_lock = threading.Lock()
         self._latest_game_frame = None
         self._next_game_commentary = None
         self._game_commentary_running = False
-        self._tracking_was_enabled = False
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self.create_subscription(UInt8MultiArray, GAME_FRAME_TOPIC, self._on_game_frame, 1)
         self.create_timer(1.0, self._game_commentary_tick)
@@ -160,16 +121,6 @@ class VoiceChatNode(Node):
         self.vc.start()
         self.get_logger().info("语音直聊节点已上线")
 
-    def _publish_tft_preview_ready(self):
-        ready = String()
-        ready.data = "ready"
-        self.tft_preview_ready_pub.publish(ready)
-
-    def _on_vision_pipeline_command(self, message):
-        command = decode_vision_pipeline_command(message.data)
-        if command is not None:
-            self.tracking_tft_preview.set_command(command)
-
     def _on_game_state(self, message):
         mode = game_mode_from_message(message.data)
         if mode is None:
@@ -179,43 +130,15 @@ class VoiceChatNode(Node):
         if mode != "robot":
             if previous == "robot":
                 self.vc.pause()
-                self._tracking_was_enabled = self.tracking_tft_preview.pause()
-            self._ensure_game_stream()
             if mode == "playing" and previous != "playing":
                 self._schedule_next_game_commentary()
             return
         if previous == "robot":
             return
-        self._close_game_stream()
         with self._game_frame_lock:
             self._latest_game_frame = None
         self._next_game_commentary = None
-        if self._tracking_was_enabled:
-            self.tracking_tft_preview.resume()
-        self._tracking_was_enabled = False
         self.vc.resume()
-
-    def _ensure_game_stream(self):
-        if self._game_frame_adapter is not None:
-            return
-        from services.game_frame_adapter import GameFrameAdapter
-
-        stream = self.tft_preview.open_jpeg_stream(fps=10)
-        if stream is None:
-            return
-        self._game_stream = stream
-        self._game_frame_adapter = GameFrameAdapter(stream, fps=10)
-        self.game_request_pub.publish(String(data=encode_game_request(GAME_SURFACE_READY)))
-
-    def _close_game_stream(self):
-        adapter = self._game_frame_adapter
-        self._game_frame_adapter = None
-        if adapter is not None:
-            adapter.close()
-        stream = self._game_stream
-        self._game_stream = None
-        if stream is not None:
-            stream.close()
 
     def _on_game_frame(self, message):
         if self._game_mode == "robot":
@@ -226,9 +149,6 @@ class VoiceChatNode(Node):
         raw, width, height, pitch = frame
         with self._game_frame_lock:
             self._latest_game_frame = frame
-        adapter = self._game_frame_adapter
-        if adapter is not None:
-            adapter.submit_frame(raw, width, height, pitch)
 
     def _schedule_next_game_commentary(self):
         self._next_game_commentary = time.monotonic() + random.uniform(50.0, 120.0)
@@ -283,18 +203,11 @@ class VoiceChatNode(Node):
             self._game_commentary_running = False
 
     def _run_camera_preview(self, *, duration_ms):
-        tracking_preview = getattr(self, "tracking_tft_preview", None)
-        was_tracking = tracking_preview.pause() if tracking_preview is not None else False
-        try:
-            return self.tft_preview.send_camera_preview(
-                self.camera_frames,
-                duration_ms=duration_ms,
-                hold_ms=self.tft_preview_settings.hold_ms,
-                fps=self.tft_preview_settings.fps,
-            )
-        finally:
-            if was_tracking:
-                tracking_preview.resume()
+        return self.tft_preview.send_camera_preview(
+            duration_ms=duration_ms,
+            hold_ms=self.tft_preview_settings.hold_ms,
+            fps=self.tft_preview_settings.fps,
+        )
 
     # ── 唤醒词回调 ──
     def _on_wake_word(self):
@@ -618,11 +531,8 @@ class VoiceChatNode(Node):
                 self._resume_timer = None
         if hasattr(self, "vc"):
             self.vc.stop()
-        self._close_game_stream()
-        if getattr(self, "tracking_tft_preview", None) is not None:
-            self.tracking_tft_preview.stop()
         if getattr(self, "tft_preview", None) is not None:
-            self.tft_preview.stop()
+            self.tft_preview.close()
         super().destroy_node()
 
 

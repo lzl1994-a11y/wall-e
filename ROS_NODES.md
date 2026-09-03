@@ -38,6 +38,7 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `nodes/keyboard_stt_node.py` | `keyboard_stt_test_node` | `pipeline.mode=keyboard` 或 `--keyboard-stt` | 无 | `voice_text` | 键盘输入测试节点。你在终端输入文字后，它把文字发布到 `voice_text`，模拟 STT 输出。 |
 | `nodes/stt_ros_node.py` | `walle_ear_node` | `pipeline.mode=asr_llm` 或 `--real-stt` | 无 | `voice_text` | 真实语音识别节点。调用 `services/stt_service.py`，识别到一句话后发布到 `voice_text`。 |
 | `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `action_cmd`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
+| `nodes/tft_tcp_service_node.py` | `tft_tcp_service_node` | 是 | `/tft_preview_request`, `/vision_pipeline_cmd`, `/game_mode_state`, `/game_frame` | `/tft_preview_result`, `tft_preview_ready`, `/game_mode_request` | 胸前 TFT 的唯一 TCP 服务所有者；统一仲裁拍照、跟踪和游戏画面。 |
 | `nodes/serial_ros_node.py` | `walle_serial_node` | 是，除非加 `--no-serial` | `screen_dialog` | 无 | 串口/屏幕输出节点。接收完整对话包，把用户文本、AI 回复和动作命令写给下位机或屏幕。 |
 
 ## 关键话题说明
@@ -57,12 +58,14 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 `camera_capture_node` 始终启动，是 `/dev/video*` 的唯一生命周期管理者：
 
 ```text
-LLM / Web -> /camera_capture_cmd -> camera_capture_node
-                                      └─ 唯一 hobot_usb_cam -> /image
-                                                           └-> /camera_frame
+LLM / 多模态 -> /tft_preview_request -> tft_tcp_service_node
+                                             └-> /camera_capture_cmd -> camera_capture_node
+                                                                          └-> 唯一 hobot_usb_cam
+                                                                                    └-> /camera_frame
 
-/camera_frame -> CameraFrameProvider -> 1.5 秒 TFT 预览 -> 云端视觉 LLM
-              -> CameraFrameProvider -> 3 秒 TFT 预览 -> 本地照片
+/camera_frame -> tft_tcp_service_node -> TFT TCP + /tft_preview_result
+                                      ├-> 末帧视觉 LLM
+                                      └-> 末帧本地照片
               -> Config Web preview
               -> 热备 BPU 检测进程（仅有租约时收到帧）
 ```
@@ -114,7 +117,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | --- | --- | --- | --- |
 | `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
 | `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | `camera_capture_node` | 摄像头唯一原始 JPEG 图像源，类型为 `sensor_msgs/msg/CompressedImage`。 |
-| `/camera_frame` | `camera_capture_node` | LLM、Web preview、RDK 解码器 | 从 `/image` 按租约转发的 `sensor_msgs/msg/CompressedImage`；热备检测进程空闲时不收帧。 |
+| `/camera_frame` | `camera_capture_node` | TFT、Web preview、RDK 解码器 | 从 `/image` 按租约转发的 `sensor_msgs/msg/CompressedImage`；热备检测进程空闲时不收帧。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
 | `/servo_targets/tracking` | `wali_tracking_node` | `sequence_ros_node` | 深度为 1 的最新头颈目标；只更新插值目标，不打断高层动作。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
@@ -124,7 +127,9 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/motor_cmd` | `motion_arbiter_node` | 当前硬件后端 | 仲裁后的唯一电机输出；JSON: `{"left":{"action":1,"throttle":30},"right":{...}}`。 |
 | `/doa_angle` | `doa_ros_node` | `wali_tracking_node` | `std_msgs/Int32`，声源角度（°） |
 | `/hobot_mono2d_body_detection` | RDK X3 `mono2d_body_detection` | `wali_tracking_node` | `ai_msgs/PerceptionTargets`，BPU 检测结果（body/face/head/hand 框 + track_id） |
-| `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control` | `std_msgs/String`：`start`/`stop` 标记跟踪结果使用状态；检测进程保持热备。 |
+| `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control`, `tft_tcp_service_node` | `std_msgs/String`：`start`/`stop` 标记跟踪结果使用状态，并控制 TFT 跟踪预览；检测进程保持热备。 |
+| `/tft_preview_request` | LLM 或多模态语音节点 | `tft_tcp_service_node` | 带 `request_id` 的一次性摄像头预览请求。 |
+| `/tft_preview_result` | `tft_tcp_service_node` | 请求方 | 返回预览状态及未经 TFT 旋转的末帧，供视觉模型或照片保存使用。 |
 
 ### 跟随模式切换
 
@@ -139,6 +144,10 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 
 进入跟随或注视模式时先申请摄像头；`/camera_capture_status` 确认收到有效帧后才允许使用 BPU 检测结果。物理摄像头与 BPU 检测进程均已热备，请求只打开 `/camera_frame` 帧转发。运行中连续 3 秒无有效帧时，摄像头管理节点发布错误并自动重启摄像头，检测进程保持存活并等待画面恢复。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并关闭帧转发。多张人脸同时出现时，注视模式选择面积最大的人脸。
 
+跟踪期间胸前 TFT 使用与游戏模式相同的持久流传输。整个跟踪会话只发送一次无限时长的
+`STREAM_START`；内部摄像头租约分段续期不会再产生周期性的 `STREAM_END`，只有跟踪暂停、
+退出或连接失败时才结束 TFT 流，从而防止 ESP32 在持续跟踪中误判空闲并休眠。
+
 ## 辅助服务文件
 
 这些文件不是 ROS 节点，但被节点调用：
@@ -149,6 +158,8 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | `services/camera_frame.py` | 请求摄像头租约，支持单帧或限时帧流，完成后立即释放；不会直接打开摄像头。 |
 | `services/camera_capture_protocol.py` | 定义唯一摄像头源话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 启动命令。 |
 | `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
+| `services/tft_preview_client.py` | 对话节点使用的同步 ROS 客户端；向独立 TFT 节点请求预览并按 `request_id` 等待结果。 |
+| `services/tft_preview_protocol.py` | 定义 TFT 预览请求/结果话题及与 ROS 无关的 JSON 编解码。 |
 | `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
 | `nodes/wali_mcp_server.py` | 可选的外部 Agent 网关；提供带鉴权的 Streamable HTTP MCP，将白名单工具转换为带回执的 `/action_cmd`。默认关闭。 |
 | `services/mcp_gateway.py` | 外部 MCP 的配置、安全启动检查和工具白名单；不暴露任意 ROS Topic、Service 或 Shell。 |

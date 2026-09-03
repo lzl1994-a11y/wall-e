@@ -76,7 +76,10 @@ def build_node_list(args):
     else:
         pipeline = config.get("pipeline", {}).get("mode", "keyboard")
 
-    nodes = [NodeEntry("camera_capture", ROOT / "nodes" / "camera_capture_node.py")]
+    nodes = [
+        NodeEntry("camera_capture", ROOT / "nodes" / "camera_capture_node.py"),
+        NodeEntry("tft_tcp_service", ROOT / "nodes" / "tft_tcp_service_node.py"),
+    ]
     if not args.no_web:
         nodes.append(NodeEntry("config_web", ROOT / "services" / "web_server.py"))
 

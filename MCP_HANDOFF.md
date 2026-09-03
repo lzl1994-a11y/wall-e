@@ -61,7 +61,8 @@
   - `stop_all()`
 - `move_chassis.duration` 在 MCP Schema 中限制为 1～3 秒。
 
-未暴露 `inspect_camera`。当前摄像头观察流程与内部 LLM/预览生命周期绑定，还没有适合外部 MCP 的独立执行服务，不能返回虚假的成功结果。
+未暴露 `inspect_camera`。TFT 预览生命周期现已由独立节点管理，但 MCP 网关仍没有完成
+摄像头请求、视觉模型调用和结果回传的端到端工具实现，因此不能返回虚假的成功结果。
 
 ### 3.2 MCP 到 ROS 的执行桥
 

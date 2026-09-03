@@ -374,7 +374,8 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 
 ### 胸前屏幕拍照预览
 
-`walle_llm_brain` 会自动启动 TFT TCP 服务。ESP32 连接上位机的 9000 端口并以
+独立的 `tft_tcp_service_node` 会自动启动 TFT TCP 服务；文本 LLM 与多模态语音
+节点只通过 ROS 请求预览，不再绑定 TCP 端口。ESP32 连接上位机的 9000 端口并以
 `WALL_E_TFT` 发送 HELLO 后，平时只保持连接和心跳；“看一下/识别一下”会预览
 1.5 秒并把末帧交给视觉模型，“拍照”会预览 3 秒、保存末帧到本地且不调用模型。
 摄像头图像继续复用 `/camera_frame`，不会重复打开摄像头。默认配置如下：
@@ -385,8 +386,12 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 主程序退出时才释放物理摄像头。
 
 当语义动作启动“看着我/跟着我”的地平线跟踪管线时，`camera_capture_node` 会把热备
-摄像头的 `/image` 按租约转发到 `/camera_frame`，同时供热备 BPU 检测和胸前 TFT 使用。
+摄像头的 `/image` 按租约转发到 `/camera_frame`，同时供热备 BPU 检测和独立 TFT
+节点使用。
 停止跟随即结束该流；期间发起一次性拍照或视觉问答会短暂让出胸前屏幕，完成后自动恢复。
+跟踪和游戏都复用 TFT 服务的持久流传输：进入模式时发送一次无限时长的
+`STREAM_START`，仅在暂停或退出模式时发送 `STREAM_END`，避免 ESP32 在长期跟踪中
+因周期性流结束而进入休眠。
 
 ```yaml
 tft_preview:

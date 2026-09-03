@@ -27,6 +27,7 @@ STREAM_END = 0x12
 
 EXPECTED_DEVICE_ID = "WALL_E_TFT"
 MAX_INCOMING_PAYLOAD = 64 * 1024
+PERSISTENT_STREAM_DURATION_MS = 0xFFFFFFFF
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "core" / "config.yaml"
 
 
@@ -140,6 +141,56 @@ class PreviewResult:
     def dropped_frames(self) -> int:
         """Backward-compatible aggregate for older status consumers."""
         return self.encode_drops + self.backpressure_drops
+
+
+class PersistentTftStream:
+    """A long-lived TFT stream that keeps the display awake until closed."""
+
+    def __init__(self, server: "TftPreviewServer", client, sequence: int) -> None:
+        self._server = server
+        self._client = client
+        self._stream_sequence = sequence
+        self._frame_index = 0
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def sent_frames(self) -> int:
+        return self._frame_index
+
+    def send_encoded_jpeg(self, jpeg: bytes) -> bool:
+        if self._closed:
+            return False
+        frame = bytes(jpeg or b"")
+        if not frame or len(frame) > self._server.settings.max_frame_bytes:
+            return True
+        sequence = (
+            ((self._stream_sequence & 0xFFFF) << 16)
+            | (self._frame_index & 0xFFFF)
+        )
+        try:
+            self._server._send_packet(self._client, JPEG_FRAME, sequence, frame)
+        except (ConnectionError, OSError):
+            self.close(send_end=False)
+            return False
+        self._frame_index += 1
+        return True
+
+    def close(self, *, send_end: bool = True) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if send_end:
+            try:
+                self._server._send_packet(
+                    self._client, STREAM_END, self._stream_sequence, b""
+                )
+            except (ConnectionError, OSError):
+                pass
+        self._server._stream_lock.release()
 
 
 def prepare_tft_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
@@ -266,6 +317,28 @@ class TftPreviewServer:
             if thread.is_alive() and thread is not threading.current_thread():
                 thread.join(timeout=1.0)
         self._threads = []
+
+    def open_persistent_stream(self, *, fps: int) -> PersistentTftStream | None:
+        """Start one indefinite stream; only closing it sends STREAM_END."""
+        if not self._stream_lock.acquire(blocking=False):
+            return None
+        client = self._verified_client()
+        if client is None:
+            self._stream_lock.release()
+            return None
+        stream_sequence = self._next_stream_sequence()
+        target_fps = min(30, max(1, int(fps)))
+        try:
+            self._send_packet(
+                client,
+                STREAM_START_MESSAGE,
+                stream_sequence,
+                encode_stream_start(PERSISTENT_STREAM_DURATION_MS, 0, target_fps),
+            )
+        except (ConnectionError, OSError):
+            self._stream_lock.release()
+            return None
+        return PersistentTftStream(self, client, stream_sequence)
 
     def send_camera_preview(
         self,
@@ -637,6 +710,8 @@ __all__ = [
     "MAGIC",
     "PING",
     "PONG",
+    "PERSISTENT_STREAM_DURATION_MS",
+    "PersistentTftStream",
     "PROTOCOL_VERSION",
     "PreviewResult",
     "STREAM_END",

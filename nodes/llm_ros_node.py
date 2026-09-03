@@ -19,35 +19,23 @@ from services.action_acknowledgement import action_acknowledgement
 from services.action_intent_guard import deterministic_safety_action, validate_action_call
 from services.llm_service import LLMService
 from services.camera_frame import (
-    CameraFrameProvider,
     is_camera_inspection_request,
     is_camera_photo_request,
     save_camera_photo,
 )
-from services.game_frame_adapter import GameFrameAdapter
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
-    GAME_MODE_REQUEST_TOPIC,
     GAME_MODE_STATE_TOPIC,
-    GAME_SURFACE_READY,
     decode_game_frame,
-    encode_game_request,
     game_mode_from_message,
 )
-from services.game_tft_stream import GameTftStreamServer, prepare_game_bgr
-from services.tft_preview_server import (
-    PreviewResult,
-    load_tft_preview_settings,
-)
-from services.tracking_tft_preview import TrackingTftPreview
+from services.game_tft_stream import prepare_game_bgr
+from services.tft_preview_client import TftPreviewClient
+from services.tft_preview_server import load_tft_preview_settings
 from services.tts_protocol import encode_turn_end
 from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     encode_dialog_expression,
-)
-from services.vision_pipeline_protocol import (
-    VISION_PIPELINE_COMMAND_TOPIC,
-    decode_vision_pipeline_command,
 )
 from services.voice_debug import RollingVoiceDebugStore
 
@@ -88,13 +76,10 @@ class LLMBrainNode(Node):
         self._request_queue = queue.Queue(maxsize=8)
         self._worker_running = False
         self._game_mode = "robot"
-        self._game_stream = None
-        self._game_frame_adapter = None
         self._game_frame_lock = threading.Lock()
         self._latest_game_frame = None
         self._next_game_commentary = None
         self._game_commentary_pending = False
-        self._tracking_was_enabled = False
 
         # Create ROS endpoints before the slow LLM client init. This lets DDS
         # discover `voice_text` while the model service is warming up.
@@ -113,38 +98,8 @@ class LLMBrainNode(Node):
         self.dialog_expression_publisher = self.create_publisher(
             String, DIALOG_EXPRESSION_TOPIC, 10
         )
-        self.game_request_publisher = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
-        self.camera_frames = CameraFrameProvider(self)
-        self.tft_preview_ready_publisher = self.create_publisher(
-            String, 'tft_preview_ready', 10
-        )
         self.tft_preview_settings = load_tft_preview_settings()
-        self.tft_preview = GameTftStreamServer(
-            self.tft_preview_settings,
-            logger=self.get_logger(),
-        )
-        try:
-            self.tft_preview.start()
-            self._publish_tft_preview_ready()
-            self.tft_preview_ready_timer = self.create_timer(
-                1.0, self._publish_tft_preview_ready
-            )
-        except Exception as exc:
-            # Camera/photo business remains available when port 9000 is busy or
-            # the network stack is unavailable.
-            self.get_logger().error(f'TFT preview service failed to start: {exc}')
-        self.tracking_tft_preview = TrackingTftPreview(
-            self.tft_preview,
-            self.camera_frames,
-            fps=self.tft_preview_settings.fps,
-            logger=self.get_logger(),
-        )
-        self.create_subscription(
-            String,
-            VISION_PIPELINE_COMMAND_TOPIC,
-            self._on_vision_pipeline_command,
-            10,
-        )
+        self.tft_preview = TftPreviewClient(self, logger=self.get_logger())
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self.create_subscription(UInt8MultiArray, GAME_FRAME_TOPIC, self._on_game_frame, 1)
         self.create_timer(1.0, self._game_commentary_tick)
@@ -164,16 +119,6 @@ class LLMBrainNode(Node):
         )
         self._worker_thread.start()
 
-    def _publish_tft_preview_ready(self):
-        ready = String()
-        ready.data = 'ready'
-        self.tft_preview_ready_publisher.publish(ready)
-
-    def _on_vision_pipeline_command(self, message):
-        command = decode_vision_pipeline_command(message.data)
-        if command is not None:
-            self.tracking_tft_preview.set_command(command)
-
     def _on_game_state(self, message):
         mode = game_mode_from_message(message.data)
         if mode is None:
@@ -181,44 +126,14 @@ class LLMBrainNode(Node):
         previous = self._game_mode
         self._game_mode = mode
         if mode != "robot":
-            if previous == "robot":
-                self._tracking_was_enabled = self.tracking_tft_preview.pause()
-            self._ensure_game_stream()
             if mode == "playing" and previous != "playing":
                 self._schedule_next_game_commentary()
             return
 
-        self._close_game_stream()
         with self._game_frame_lock:
             self._latest_game_frame = None
         self._next_game_commentary = None
         self._game_commentary_pending = False
-        if self._tracking_was_enabled:
-            self.tracking_tft_preview.resume()
-        self._tracking_was_enabled = False
-
-    def _ensure_game_stream(self):
-        if self._game_frame_adapter is not None:
-            return
-        stream = self.tft_preview.open_jpeg_stream(fps=10)
-        if stream is None:
-            self.get_logger().warning("游戏 TFT 流暂不可用")
-            return
-        self._game_stream = stream
-        self._game_frame_adapter = GameFrameAdapter(stream, fps=10)
-        self.game_request_publisher.publish(
-            String(data=encode_game_request(GAME_SURFACE_READY))
-        )
-
-    def _close_game_stream(self):
-        adapter = self._game_frame_adapter
-        self._game_frame_adapter = None
-        if adapter is not None:
-            adapter.close()
-        stream = self._game_stream
-        self._game_stream = None
-        if stream is not None:
-            stream.close()
 
     def _on_game_frame(self, message):
         if self._game_mode == "robot":
@@ -229,9 +144,6 @@ class LLMBrainNode(Node):
         raw, width, height, pitch = frame
         with self._game_frame_lock:
             self._latest_game_frame = (raw, width, height, pitch)
-        adapter = self._game_frame_adapter
-        if adapter is not None:
-            adapter.submit_frame(raw, width, height, pitch)
 
     def _schedule_next_game_commentary(self):
         self._next_game_commentary = time.monotonic() + random.uniform(50.0, 120.0)
@@ -781,23 +693,11 @@ class LLMBrainNode(Node):
 
     def _run_camera_preview(self, *, duration_ms):
         """Run camera capture on the LLM worker, never on the ROS callback thread."""
-        preview_service = getattr(self, 'tft_preview', None)
-        if preview_service is None:
-            return PreviewResult(
-                last_frame=self.camera_frames.capture(timeout=10.0, request_timeout=15.0)
-            )
-        tracking_preview = getattr(self, 'tracking_tft_preview', None)
-        was_tracking = tracking_preview.pause() if tracking_preview is not None else False
-        try:
-            return preview_service.send_camera_preview(
-                self.camera_frames,
-                duration_ms=duration_ms,
-                hold_ms=self.tft_preview_settings.hold_ms,
-                fps=self.tft_preview_settings.fps,
-            )
-        finally:
-            if was_tracking:
-                tracking_preview.resume()
+        return self.tft_preview.send_camera_preview(
+            duration_ms=duration_ms,
+            hold_ms=self.tft_preview_settings.hold_ms,
+            fps=self.tft_preview_settings.fps,
+        )
 
     def _visual_history(self):
         """只保留文本形式的最近上下文，避免把旧 tool 消息传给视觉模型。"""
@@ -1033,11 +933,8 @@ class LLMBrainNode(Node):
                 pass
         if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
-        self._close_game_stream()
-        if getattr(self, 'tracking_tft_preview', None) is not None:
-            self.tracking_tft_preview.stop()
         if getattr(self, 'tft_preview', None) is not None:
-            self.tft_preview.stop()
+            self.tft_preview.close()
         super().destroy_node()
 
 

@@ -6,15 +6,17 @@ import threading
 import time
 from typing import Any
 
+from services.tft_preview_server import prepare_tft_jpeg
 from services.vision_pipeline_protocol import VISION_PIPELINE_START
 
 
 class TrackingTftPreview:
-    """Run one preemptible TFT stream while the BPU tracking pipeline is active.
+    """Run one preemptible persistent TFT stream while tracking is active.
 
     The stream consumes ``/camera_frame`` through the normal frame provider.  Its
-    lease tells camera_capture_node to relay the tracking pipeline's ``/image``;
-    it never opens a second V4L2 camera.
+    lease tells camera_capture_node to relay the tracking pipeline's ``/image``.
+    The TFT stream stays open across lease-renewal chunks so the ESP32 cannot
+    interpret periodic STREAM_END messages as permission to sleep.
     """
 
     STREAM_DURATION_MS = 60_000
@@ -94,18 +96,42 @@ class TrackingTftPreview:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            result = self._server.send_camera_preview(
-                self._frame_provider,
-                duration_ms=self.STREAM_DURATION_MS,
-                hold_ms=0,
-                fps=self._fps,
-                should_stop=self._stop_event.is_set,
-            )
+            stream = self._server.open_persistent_stream(fps=self._fps)
+            if stream is None:
+                self._stop_event.wait(0.5)
+                continue
+
+            def send_source_frame(jpeg: bytes, _sequence: int | None = None) -> None:
+                frame = prepare_tft_jpeg(
+                    jpeg,
+                    quality=self._server.settings.jpeg_quality,
+                )
+                if frame is not None:
+                    stream.send_encoded_jpeg(frame)
+
+            last_frame = None
+            try:
+                while not self._stop_event.is_set() and not stream.closed:
+                    last_frame = self._frame_provider.capture_stream(
+                        duration_ms=self.STREAM_DURATION_MS,
+                        fps=self._fps,
+                        on_frame=send_source_frame,
+                        on_source_frame=send_source_frame,
+                        should_stop=lambda: self._stop_event.is_set() or stream.closed,
+                        timeout=10.0,
+                        request_timeout=15.0,
+                    )
+                    if not last_frame and not stream.closed:
+                        self._stop_event.wait(0.5)
+            except Exception as exc:
+                self._log("error", f"跟踪 TFT 预览错误: {exc}")
+            finally:
+                stream.close()
             if self._stop_event.is_set():
                 return
-            # A photo/inspection may have won the TFT stream lock just before
-            # pause() was called. Retry calmly once that short stream finishes.
-            if getattr(result, "busy", False):
-                self._stop_event.wait(0.2)
-            elif not getattr(result, "last_frame", None):
-                self._stop_event.wait(0.5)
+            self._stop_event.wait(0.5)
+
+    def _log(self, level: str, message: str) -> None:
+        callback = getattr(self._logger, level, None)
+        if callback is not None:
+            callback(message)
