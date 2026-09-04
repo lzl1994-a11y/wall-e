@@ -6,6 +6,7 @@ from std_msgs.msg import String
 # 引入底层的听觉血肉引擎
 from services.stt_service import STTService
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
+from services.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
 from services.dialog_motion_protocol import (
     DIALOG_MOTION_VAD_TOPIC,
     VAD_SPEECH_ENDED,
@@ -23,7 +24,10 @@ class STTNode(Node):
         )
         self._game_active = False
         self._llm_busy = False
+        self._music_active = False
+        self._recording_paused = False
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
+        self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, 10)
 
         # 订阅 LLM 忙闲状态，LLM 处理中暂停 ASR
         self.busy_subscription = self.create_subscription(
@@ -48,7 +52,7 @@ class STTNode(Node):
         """
         传动轴函数：底层一旦断句成功，立刻触发这里
         """
-        if self._game_active:
+        if self._game_active or self._llm_busy or self._music_active:
             return
         self.get_logger().info(f'👂 捕捉到人声: "{text}"')
         
@@ -67,28 +71,43 @@ class STTNode(Node):
         """对话开始时暂停 ASR，AI 语音播放完成后恢复。"""
         if msg.data == "busy":
             self._llm_busy = True
-            self.get_logger().info('🔇 对话处理中，暂停 ASR 和唤醒超时计时')
-            self.stt_engine.pause()
         elif msg.data == "idle":
             self._llm_busy = False
-            if self._game_active:
-                return
-            self.get_logger().info('🔊 AI 语音播放完毕，恢复 ASR 并开始唤醒超时计时')
-            self.stt_engine.resume()
+        else:
+            return
+        self._sync_recording()
 
     def _on_game_state(self, msg):
         active = game_is_active(msg.data)
         if active == self._game_active:
             return
         self._game_active = active
+        self._sync_recording()
+
+    def _on_music_state(self, msg):
+        state = decode_music_state(msg.data)
+        if state is None:
+            return
+        active = state["state"] in {"loading", "playing"}
+        if active == self._music_active:
+            return
+        self._music_active = active
+        self._sync_recording()
+
+    def _sync_recording(self):
+        """Keep the loaded wake model idle while any audio policy blocks recording."""
+        paused = self._game_active or self._llm_busy or self._music_active
+        if paused == self._recording_paused:
+            return
         engine = getattr(self, "stt_engine", None)
         if engine is None:
             return
-        if active:
-            self.get_logger().info('🎮 游戏模式：录音进入热备，不再推送 ASR')
+        self._recording_paused = paused
+        if paused:
+            self.get_logger().info('🔇 录音暂停，唤醒词模型进入热备')
             engine.pause()
-        elif not self._llm_busy:
-            self.get_logger().info('🎮 游戏结束：恢复录音与 ASR')
+        else:
+            self.get_logger().info('🔊 录音恢复，唤醒词检测重新启用')
             engine.resume()
 
     def destroy_node(self):
