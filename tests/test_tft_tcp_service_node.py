@@ -93,14 +93,19 @@ class TftTcpServiceNodeTests(unittest.TestCase):
         node = node_class.__new__(node_class)
         node._game_mode = "robot"
         node._music_state = "playing"
+        node._music_track = "Artist+-+Track"
         node._music_frame_adapter = MagicMock()
         frame = (b"raw", 1, 1, 4)
 
         globals_ = node_class._on_music_spectrum.__globals__
-        with patch.dict(globals_, {"render_spectrum_frame": MagicMock(return_value=frame)}):
+        renderer = MagicMock(return_value=frame)
+        with patch.dict(globals_, {"render_spectrum_frame": renderer}):
             node._on_music_spectrum(_Float32MultiArray(data=[0.1, 0.8]))
 
         node._music_frame_adapter.submit_frame.assert_called_once_with(*frame)
+        renderer.assert_called_once_with(
+            [0.1, 0.8], title="Artist+-+Track"
+        )
 
     def test_game_handoff_preserves_tracking_restore_for_music(self):
         node_class = self._load_node_class()

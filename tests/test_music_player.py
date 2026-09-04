@@ -71,10 +71,18 @@ class MusicPlayerTests(unittest.TestCase):
 
     def test_silence_decays_to_zero_and_renderer_matches_tft_frame_contract(self):
         levels = SpectrumAnalyzer().analyze(np.zeros(2400, dtype=np.int16))
-        raw, width, height, pitch = render_spectrum_frame(levels)
+        raw, width, height, pitch = render_spectrum_frame(
+            levels, title="音阙诗听+-+芒种"
+        )
         self.assertEqual(levels, [0.0] * 20)
         self.assertEqual((width, height, pitch), (240, 240, 960))
         self.assertEqual(len(raw), pitch * height)
+
+    def test_renderer_changes_cached_header_for_track(self):
+        levels = [0.5] * 20
+        first = render_spectrum_frame(levels, title="Artist+-+First")[0]
+        second = render_spectrum_frame(levels, title="Artist+-+Second")[0]
+        self.assertNotEqual(first, second)
 
     def test_spectrum_plan_is_reused_for_equal_pcm_chunks(self):
         analyzer = SpectrumAnalyzer()

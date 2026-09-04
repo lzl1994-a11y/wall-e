@@ -62,6 +62,7 @@ class TftTcpServiceNode(Node):
         self._game_frame_adapter = None
         self._tracking_was_enabled = False
         self._music_state = "stopped"
+        self._music_track = ""
         self._music_stream = None
         self._music_frame_adapter = None
         self._music_tracking_was_enabled = False
@@ -176,6 +177,7 @@ class TftTcpServiceNode(Node):
         if state is None:
             return
         self._music_state = state["state"]
+        self._music_track = state["track"]
         if self._music_state == "playing":
             self._ensure_music_stream()
         elif self._music_state in {"stopped", "error"}:
@@ -215,7 +217,9 @@ class TftTcpServiceNode(Node):
         adapter = self._music_frame_adapter
         if self._game_mode != "robot" or self._music_state != "playing" or adapter is None:
             return
-        adapter.submit_frame(*render_spectrum_frame(message.data))
+        adapter.submit_frame(*render_spectrum_frame(
+            message.data, title=self._music_track
+        ))
 
     def _on_preview_request(self, message) -> None:
         request = decode_preview_request(message.data)
