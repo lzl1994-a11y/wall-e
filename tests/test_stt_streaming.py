@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from services.audio_pipeline import _prefer_keyword_models
 from services.stt_service import STTService
 
 
@@ -27,6 +28,21 @@ class STTStreamingTests(unittest.TestCase):
 
     def debug_path(self):
         return str(Path(self.debug_dir.name) / "stt_debug_last.wav")
+
+    def test_keyword_models_prefer_epoch99_int8_then_fp32(self):
+        models = [
+            "/models/encoder-epoch-99-avg-1.onnx",
+            "/models/encoder-epoch-12-avg-1.int8.onnx",
+            "/models/encoder-epoch-99-avg-1.int8.onnx",
+        ]
+        self.assertEqual(
+            _prefer_keyword_models(models)[0],
+            "/models/encoder-epoch-99-avg-1.int8.onnx",
+        )
+        self.assertEqual(
+            _prefer_keyword_models([models[0]])[0],
+            "/models/encoder-epoch-99-avg-1.onnx",
+        )
 
     def test_streaming_adapter_publishes_only_final_text(self):
         adapter = MagicMock()

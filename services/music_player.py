@@ -100,7 +100,7 @@ class MusicPlayer:
         on_state: Callable[[str, str, str], None],
         sample_rate: int = OUTPUT_SAMPLE_RATE,
         chunk_ms: int = 100,
-        spectrum_hz: float = 5.0,
+        spectrum_hz: float = 10.0,
         popen_factory=subprocess.Popen,
     ) -> None:
         self.directory = Path(directory).expanduser()

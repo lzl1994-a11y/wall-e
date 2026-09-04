@@ -8,7 +8,7 @@ import json
 MUSIC_AUDIO_TOPIC = "/music_audio"
 MUSIC_SPECTRUM_TOPIC = "/music_spectrum"
 MUSIC_STATE_TOPIC = "/music_state"
-MUSIC_SPECTRUM_FPS = 5
+MUSIC_SPECTRUM_FPS = 10
 
 
 def encode_music_state(state: str, track: str = "", error: str = "") -> str:

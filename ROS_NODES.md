@@ -132,7 +132,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/tft_preview_request` | LLM 或多模态语音节点 | `tft_tcp_service_node` | 带 `request_id` 的一次性摄像头预览请求。 |
 | `/tft_preview_result` | `tft_tcp_service_node` | 请求方 | 返回预览状态及未经 TFT 旋转的末帧，供视觉模型或照片保存使用。 |
 | `/music_audio` | `music_player_node` | `audio_playback_node` | 48 kHz 单声道 int16 PCM；空消息表示音乐流结束。 |
-| `/music_spectrum` | `music_player_node` | `tft_tcp_service_node` | 20 个归一化频段值，以 5 Hz 更新；上位机据此渲染 240×240 频谱帧。 |
+| `/music_spectrum` | `music_player_node` | `tft_tcp_service_node` | 20 个归一化频段值，以 10 Hz 更新；上位机据此渲染 240×240 频谱帧。 |
 | `/music_state` | `music_player_node` | `tft_tcp_service_node` | JSON 播放状态：`loading`、`playing`、`stopped` 或 `error`。 |
 
 ### 跟随模式切换

@@ -26,8 +26,20 @@ from services.usb_devices import resolve_alsa_capture_device, resolve_audio_devi
 from services.audio_apm import WebRTCApm
 
 
+def _prefer_keyword_models(files):
+    """Prefer the newest INT8 keyword model, with FP32 as a fallback."""
+    return sorted(
+        files,
+        key=lambda path: (
+            "int8" not in os.path.basename(path),
+            "epoch-99" not in os.path.basename(path),
+            os.path.basename(path),
+        ),
+    )
+
+
 class WakeWordDetector:
-    """sherpa-onnx 唤醒词检测器。VAD 前置滤网 + 模型推理。"""
+    """sherpa-onnx 唤醒词检测器。"""
 
     def __init__(self, config: dict):
         ww = config.get("wake_word", {})
@@ -46,11 +58,7 @@ class WakeWordDetector:
         tokens = os.path.join(self._model_dir, "tokens.txt")
 
         def _pick(pattern):
-            files = _glob.glob(pattern)
-            # 过滤 int8 模型，且如果有多个模型，优先选择带有 epoch-99 的中文模型
-            fp32_files = [f for f in files if "int8" not in os.path.basename(f)]
-            epoch99 = [f for f in fp32_files if "epoch-99" in os.path.basename(f)]
-            return epoch99 if epoch99 else (fp32_files or files)
+            return _prefer_keyword_models(_glob.glob(pattern))
 
         _enc = _pick(os.path.join(self._model_dir, "encoder-*.onnx"))
         _dec = _pick(os.path.join(self._model_dir, "decoder-*.onnx"))
@@ -74,14 +82,15 @@ class WakeWordDetector:
         self._stream = self._spotter.create_stream()
         self._cooldown_until = 0.0
 
-        print(f"[AudioPipeline] 唤醒词就绪: '{self._keyword}'")
+        precision = "INT8" if "int8" in os.path.basename(_enc[0]) else "FP32"
+        print(f"[AudioPipeline] 唤醒词就绪: '{self._keyword}' ({precision})")
 
     @property
     def enabled(self) -> bool:
         return self._enabled
 
     def check(self, frame: bytes) -> bool:
-        """喂一帧 PCM，返回是否触发唤醒词。调用方负责 VAD 前置过滤。"""
+        """喂一帧 PCM，返回是否触发唤醒词。"""
         if not self._enabled:
             return False
 
