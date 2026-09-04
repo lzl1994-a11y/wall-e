@@ -404,7 +404,7 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 
 ### 本地音乐与频谱
 
-把 MP3、WAV、FLAC、AAC、M4A 或 OGG 文件放入 `~/.wali/music`（也可用
+把 MP3、WAV、FLAC、AAC、M4A 或 OGG 文件放入 `/root/wall-e/music`（也可用
 `WALI_MUSIC_DIR` 指定目录），即可通过“播放音乐”“播放歌曲名”“停止音乐”控制。
 上位机使用 FFmpeg 解码，复用 `audio_playback_node` 播放；同时计算 20 段频谱并在
 上位机渲染成 240×240 画面，再交给 `tft_tcp_service_node` 的现有 TCP 长连接发送。

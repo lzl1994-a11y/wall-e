@@ -85,6 +85,31 @@ class MusicPlayerTests(unittest.TestCase):
             analyzer.analyze(samples)
         hanning.assert_called_once_with(4800)
 
+    def test_spectrum_is_throttled_without_throttling_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "tone.wav"
+            track.touch()
+            samples = np.zeros(4800 * 3, dtype=np.int16)
+            audio, spectra = [], []
+            player = MusicPlayer(
+                directory=directory,
+                on_audio=audio.append,
+                on_audio_end=lambda: None,
+                on_spectrum=spectra.append,
+                on_state=lambda *_value: None,
+                chunk_ms=100,
+                spectrum_hz=5,
+                popen_factory=lambda *_args, **_kwargs: _Process(samples.tobytes()),
+            )
+
+            player.play("tone")
+            deadline = time.monotonic() + 1.0
+            while player._thread is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        self.assertEqual(len(audio), 3)
+        self.assertEqual(len(spectra), 3)  # Two active updates plus the final zero.
+
     def test_music_state_codec_rejects_unknown_states(self):
         self.assertEqual(
             decode_music_state(encode_music_state("playing", "tone"))["track"],

@@ -8,6 +8,7 @@ import json
 MUSIC_AUDIO_TOPIC = "/music_audio"
 MUSIC_SPECTRUM_TOPIC = "/music_spectrum"
 MUSIC_STATE_TOPIC = "/music_state"
+MUSIC_SPECTRUM_FPS = 5
 
 
 def encode_music_state(state: str, track: str = "", error: str = "") -> str:
@@ -35,5 +36,6 @@ def decode_music_state(raw: str) -> dict[str, str] | None:
 
 __all__ = [
     "MUSIC_AUDIO_TOPIC", "MUSIC_SPECTRUM_TOPIC", "MUSIC_STATE_TOPIC",
+    "MUSIC_SPECTRUM_FPS",
     "decode_music_state", "encode_music_state",
 ]

@@ -100,6 +100,7 @@ class MusicPlayer:
         on_state: Callable[[str, str, str], None],
         sample_rate: int = OUTPUT_SAMPLE_RATE,
         chunk_ms: int = 100,
+        spectrum_hz: float = 5.0,
         popen_factory=subprocess.Popen,
     ) -> None:
         self.directory = Path(directory).expanduser()
@@ -109,6 +110,10 @@ class MusicPlayer:
         self.on_state = on_state
         self.sample_rate = int(sample_rate)
         self.chunk_samples = self.sample_rate * max(20, int(chunk_ms)) // 1000
+        self._spectrum_every_chunks = max(
+            1,
+            round(self.sample_rate / self.chunk_samples / max(1.0, float(spectrum_hz))),
+        )
         self._popen = popen_factory
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -172,6 +177,7 @@ class MusicPlayer:
             self.on_state("playing", title, "")
             analyzer = SpectrumAnalyzer(self.sample_rate)
             chunk_bytes = self.chunk_samples * 2
+            spectrum_chunk = 0
             deadline = time.monotonic()
             while not stop.is_set():
                 while self._speech_busy.is_set() and not stop.wait(0.05):
@@ -186,7 +192,9 @@ class MusicPlayer:
                     continue
                 samples = np.frombuffer(data[:usable], dtype=np.int16).copy()
                 self.on_audio(samples)
-                self.on_spectrum(analyzer.analyze(samples))
+                if spectrum_chunk % self._spectrum_every_chunks == 0:
+                    self.on_spectrum(analyzer.analyze(samples))
+                spectrum_chunk += 1
                 deadline += len(samples) / self.sample_rate
                 stop.wait(max(0.0, deadline - time.monotonic()))
 

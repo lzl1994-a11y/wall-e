@@ -15,6 +15,7 @@ from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 from services.music_player import DEFAULT_MUSIC_DIRECTORY, MusicPlayer
 from services.music_protocol import (
     MUSIC_AUDIO_TOPIC,
+    MUSIC_SPECTRUM_FPS,
     MUSIC_SPECTRUM_TOPIC,
     MUSIC_STATE_TOPIC,
     encode_music_state,
@@ -44,6 +45,7 @@ class MusicPlayerNode(Node):
                 Float32MultiArray(data=levels)
             ),
             on_state=self._publish_state,
+            spectrum_hz=MUSIC_SPECTRUM_FPS,
         )
         self._publish_state("stopped", "", "")
         self.get_logger().info(f"本地音乐服务上线: {directory}")

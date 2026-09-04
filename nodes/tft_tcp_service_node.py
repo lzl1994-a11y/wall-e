@@ -23,6 +23,7 @@ from services.game_protocol import (
 from services.game_tft_stream import GameTftStreamServer
 from services.music_protocol import (
     MUSIC_SPECTRUM_TOPIC,
+    MUSIC_SPECTRUM_FPS,
     MUSIC_STATE_TOPIC,
     decode_music_state,
 )
@@ -187,7 +188,7 @@ class TftTcpServiceNode(Node):
             self.tracking_preview.pause()
             if tracking_was_enabled is None else tracking_was_enabled
         )
-        stream = self.server.open_jpeg_stream(fps=10)
+        stream = self.server.open_jpeg_stream(fps=MUSIC_SPECTRUM_FPS)
         if stream is None:
             if self._music_tracking_was_enabled:
                 self.tracking_preview.resume()
@@ -195,7 +196,9 @@ class TftTcpServiceNode(Node):
             self.get_logger().warning("音乐频谱 TFT 流暂不可用")
             return
         self._music_stream = stream
-        self._music_frame_adapter = GameFrameAdapter(stream, fps=10)
+        self._music_frame_adapter = GameFrameAdapter(
+            stream, fps=MUSIC_SPECTRUM_FPS
+        )
 
     def _close_music_stream(self, *, resume_tracking: bool = True) -> None:
         adapter, self._music_frame_adapter = self._music_frame_adapter, None
