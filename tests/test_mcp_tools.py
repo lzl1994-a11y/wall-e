@@ -28,7 +28,7 @@ class FastMcpToolTests(unittest.TestCase):
 
     def test_fastmcp_2x_enumerates_openai_tools_with_schemas(self):
         tools = mcp_service.get_chat_tools()
-        self.assertEqual(len(tools), 7)
+        self.assertEqual(len(tools), 8)
         self.assertEqual(
             {item["function"]["name"] for item in tools},
             {
@@ -39,6 +39,7 @@ class FastMcpToolTests(unittest.TestCase):
                 "set_vision_gate",
                 "inspect_camera",
                 "run_conditional_task",
+                "control_music",
             },
         )
         for item in tools:
@@ -58,6 +59,10 @@ class FastMcpToolTests(unittest.TestCase):
         self.assertEqual(
             set(by_name["set_tracking_mode"]["parameters"]["properties"]["mode"]["enum"]),
             {"follow_me", "look_at_me", "idle"},
+        )
+        self.assertEqual(
+            set(by_name["control_music"]["parameters"]["properties"]["action"]["enum"]),
+            {"play", "stop"},
         )
         conditional = by_name["run_conditional_task"]["parameters"]
         self.assertEqual(

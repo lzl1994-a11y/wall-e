@@ -92,6 +92,7 @@ def build_node_list(args):
     # 音频播放管线（始终启动）
     nodes.append(NodeEntry("tts_play", ROOT / "nodes" / "tts_play_node.py"))
     nodes.append(NodeEntry("audio_playback", ROOT / "nodes" / "audio_playback_node.py"))
+    nodes.append(NodeEntry("music_player", ROOT / "nodes" / "music_player_node.py"))
     nodes.append(NodeEntry("game_mode", ROOT / "nodes" / "game_mode_node.py"))
 
     # Screen/motion control cluster. The selected hardware backend has one owner.

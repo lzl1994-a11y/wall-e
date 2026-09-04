@@ -195,6 +195,17 @@ def inspect_camera(question: str = "") -> str:
 
 
 @mcp.tool()
+def control_music(action: str, track: str = "") -> str:
+    """播放或停止瓦力本地音乐目录中的歌曲。
+
+    用户明确要求播放音乐时使用 action="play"；track 填歌曲名或文件名，用户没有
+    指定歌曲时留空。用户明确要求停止音乐时使用 action="stop"，track 留空。
+    询问是否会播放音乐、讨论歌曲或引用他人请求时不能调用。
+    """
+    return "ok"
+
+
+@mcp.tool()
 def run_conditional_task(
     observation: str,
     condition: str,
@@ -257,6 +268,11 @@ def _tighten_tool_schema(name, parameters):
             properties['duration'].update({'minimum': 1, 'maximum': 3})
     elif name == 'set_tracking_mode' and 'mode' in properties:
         properties['mode']['enum'] = ['follow_me', 'look_at_me', 'idle']
+    elif name == 'control_music':
+        if 'action' in properties:
+            properties['action']['enum'] = ['play', 'stop']
+        if 'track' in properties:
+            properties['track']['maxLength'] = 200
     elif name == 'inspect_camera' and 'question' in properties:
         properties['question']['maxLength'] = 500
     return schema

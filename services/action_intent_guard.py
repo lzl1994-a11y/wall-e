@@ -18,6 +18,7 @@ import yaml
 _EMOTIONS = {"curious", "happy", "sad", "surprised", "disdain", "angry"}
 _DIRECTIONS = {"forward", "backward", "spin", "left", "right"}
 _TRACKING_MODES = {"follow_me", "look_at_me", "idle"}
+_MUSIC_ACTIONS = {"play", "stop"}
 
 _REQUEST_CUE_RE = re.compile(
     r"(?:请(?!问)|帮我|麻烦|给我|替我|为我|一下|好不好|好吗|[一二两三123]秒)"
@@ -54,13 +55,13 @@ _NEGATED_ACTION_RE = re.compile(
     r"观察|识别|打开|开启|关闭|关掉|走|挪|移动|前进|后退|左转|右转|转弯|"
     r"转圈|转头|歪头|低头|点头|抬手|举手|放下|挥手|招手|跳舞|表达|"
     r"做动作|做.*表情|表情|思考|倾听|困惑|疑惑|关切|担心|"
-    r"跟着|跟随|看着|盯着|注视|回正|看|动)"
+    r"跟着|跟随|看着|盯着|注视|播放音乐|放歌|放音乐|回正|看|动)"
 )
 
 _ACTION_WORDS = (
     r"拍照|拍摄|观察|识别|走|挪|移动|前进|后退|左转|右转|转弯|转圈|转头|歪头|低头|"
     r"抬手|举手|挥手|招手|跳舞|点头|跟着|跟随|陪我走|看着|盯着|盯住|注视|开心|"
-    r"难过|生气|惊讶|表情|思考|倾听|困惑|疑惑|关切|担心"
+    r"难过|生气|惊讶|表情|思考|倾听|困惑|疑惑|关切|担心|播放音乐|放歌|放音乐|停止音乐"
 )
 _THIRD_PARTY_ACTION_RE = re.compile(
     rf"^(?:他|她|它|他们|她们|它们|别人|小[\u4e00-\u9fff]{{1,3}}|那个人).*({_ACTION_WORDS})|"
@@ -235,6 +236,18 @@ def _valid_arguments(name, arguments):
             keys <= {"question"}
             and isinstance(question, str)
             and len(question) <= 500
+        )
+    elif name == "control_music":
+        action = arguments.get("action")
+        track = arguments.get("track", "")
+        valid = (
+            keys <= {"action", "track"}
+            and action in _MUSIC_ACTIONS
+            and isinstance(track, str)
+            and len(track) <= 200
+            and "/" not in track
+            and "\\" not in track
+            and (action == "play" or not track)
         )
     elif name == "stop_all":
         valid = not keys
@@ -507,6 +520,17 @@ def validate_action_call(user_text, name, arguments):
         if name == "set_vision_gate" and arguments.get("enabled") is False:
             return True, ""
         return False, "stop_command_mismatch"
+    music_stop = bool(re.search(
+        r"(?:停止|停下|关闭|关掉|别再|不要再).*(?:音乐|歌曲|歌)|"
+        r"(?:音乐|歌曲|歌).*(?:停止|停下|关闭|关掉)", compact
+    ))
+    if music_stop:
+        if name == "control_music" and arguments.get("action") == "stop":
+            return True, ""
+        return False, "stop_command_mismatch"
+    if name == "control_music" and arguments.get("action") == "stop":
+        if re.search(r"(?:播放|放).*(?:音乐|歌曲|歌)", compact):
+            return False, "argument_conflict"
     # “盯住我别乱看” negates wandering, not the requested tracking action.
     negation_text = compact.replace("别乱看", "").replace("不要乱看", "")
     if _POSTPOSED_NEGATION_RE.search(negation_text):

@@ -18,6 +18,7 @@ class PlaybackService:
     """音频播放器：后台线程顺序播放，支持 USB / 板载切换。"""
 
     _TURN_END = object()
+    _STREAM_END = object()
     TURN_END_SILENCE_SEC = 0.1
     IDLE_SILENCE_SEC = 0.02
 
@@ -91,13 +92,17 @@ class PlaybackService:
         """在此前入队的音频全部播放后触发本轮完成回调。"""
         self._queue.put(self._TURN_END)
 
+    def mark_stream_end(self):
+        """Close a non-dialogue stream without changing the dialogue state."""
+        self._queue.put(self._STREAM_END)
+
     def _play_item(self, item):
-        if item is self._TURN_END:
+        if item is self._TURN_END or item is self._STREAM_END:
             try:
                 self._write_silence(self.TURN_END_SILENCE_SEC)
                 self._close_stream(drain=True)
             finally:
-                if self.on_turn_complete:
+                if item is self._TURN_END and self.on_turn_complete:
                     self.on_turn_complete()
             return
 

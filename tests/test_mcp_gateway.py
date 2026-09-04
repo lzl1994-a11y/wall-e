@@ -91,6 +91,7 @@ class McpGatewayTests(unittest.TestCase):
                 "set_tracking_mode",
                 "set_vision_gate",
                 "stop_all",
+                "control_music",
             },
         )
         move_tool = next(tool for tool in tools if tool.name == "move_chassis")

@@ -199,6 +199,14 @@ def create_mcp_gateway(
         """Enable or disable Wali's visual tracking subsystem."""
         return invoke("set_vision_gate", {"enabled": enabled})
 
+    @server.tool(annotations=state_change)
+    def control_music(
+        action: Literal["play", "stop"],
+        track: Annotated[str, Field(max_length=200)] = "",
+    ) -> dict[str, Any]:
+        """Play or stop a track from Wali's local music directory."""
+        return invoke("control_music", {"action": action, "track": track})
+
     @server.tool(annotations={
         **state_change,
         "idempotentHint": True,

@@ -20,6 +20,10 @@ class _UInt8MultiArray(_String):
     pass
 
 
+class _Float32MultiArray(_String):
+    pass
+
+
 class TftTcpServiceNodeTests(unittest.TestCase):
     @staticmethod
     def _load_node_class():
@@ -30,6 +34,7 @@ class TftTcpServiceNodeTests(unittest.TestCase):
         fake_std_msgs_msg = types.ModuleType("std_msgs.msg")
         fake_std_msgs_msg.String = _String
         fake_std_msgs_msg.UInt8MultiArray = _UInt8MultiArray
+        fake_std_msgs_msg.Float32MultiArray = _Float32MultiArray
         sys.modules.pop("nodes.tft_tcp_service_node", None)
         with patch.dict(sys.modules, {
             "rclpy": fake_rclpy,
@@ -57,6 +62,8 @@ class TftTcpServiceNodeTests(unittest.TestCase):
         node._stop_event = threading.Event()
         node._preview_threads = set()
         node._preview_threads_lock = threading.Lock()
+        node._music_state = "stopped"
+        node._music_tracking_was_enabled = False
         node.tracking_preview = MagicMock()
         node.tracking_preview.pause.return_value = True
         node.camera_frames = object()
@@ -79,6 +86,47 @@ class TftTcpServiceNodeTests(unittest.TestCase):
         request_id, result = decode_preview_result(message.data)
         self.assertEqual(request_id, "preview-1")
         self.assertEqual(result.last_frame, b"\xff\xd8frame\xff\xd9")
+        node.tracking_preview.resume.assert_called_once_with()
+
+    def test_music_spectrum_is_rendered_by_the_tft_owner(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node._game_mode = "robot"
+        node._music_state = "playing"
+        node._music_frame_adapter = MagicMock()
+        frame = (b"raw", 1, 1, 4)
+
+        globals_ = node_class._on_music_spectrum.__globals__
+        with patch.dict(globals_, {"render_spectrum_frame": MagicMock(return_value=frame)}):
+            node._on_music_spectrum(_Float32MultiArray(data=[0.1, 0.8]))
+
+        node._music_frame_adapter.submit_frame.assert_called_once_with(*frame)
+
+    def test_game_handoff_preserves_tracking_restore_for_music(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node._game_mode = "robot"
+        node._music_state = "playing"
+        node._music_stream = MagicMock()
+        node._music_frame_adapter = MagicMock()
+        node._music_tracking_was_enabled = True
+        node._game_stream = None
+        node._game_frame_adapter = None
+        node._tracking_was_enabled = False
+        node.tracking_preview = MagicMock()
+        node.server = MagicMock()
+        node.server.open_jpeg_stream.side_effect = [MagicMock(), MagicMock()]
+        node._game_request_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        globals_ = node_class._ensure_game_stream.__globals__
+        with patch.dict(globals_, {"GameFrameAdapter": MagicMock(side_effect=lambda *_a, **_k: MagicMock())}):
+            node._on_game_state(_String(data=json.dumps({"mode": "playing"})))
+            self.assertTrue(node._tracking_was_enabled)
+            node._on_game_state(_String(data=json.dumps({"mode": "robot"})))
+
+        self.assertTrue(node._music_tracking_was_enabled)
+        node._close_music_stream()
         node.tracking_preview.resume.assert_called_once_with()
 
 

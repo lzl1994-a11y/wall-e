@@ -14,6 +14,7 @@ from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio_output import OUTPUT_SAMPLE_RATE
+from services.music_protocol import MUSIC_AUDIO_TOPIC
 from services.playback_service import PlaybackService
 
 
@@ -35,6 +36,7 @@ class AudioPlaybackNode(Node):
         )
 
         self.create_subscription(UInt8MultiArray, "audio_output", self._on_audio, 10)
+        self.create_subscription(UInt8MultiArray, MUSIC_AUDIO_TOPIC, self._on_music_audio, 10)
 
         self.get_logger().info(
             f"音频播放节点上线 (mode={mode}, sr={sample_rate})"
@@ -46,6 +48,12 @@ class AudioPlaybackNode(Node):
             return
         samples = np.frombuffer(bytes(msg.data), dtype=np.int16)
         self._player.play(samples)
+
+    def _on_music_audio(self, msg):
+        if not msg.data:
+            self._player.mark_stream_end()
+            return
+        self._player.play(np.frombuffer(bytes(msg.data), dtype=np.int16))
 
     def _on_turn_complete(self):
         self._dialog_state_pub.publish(String(data="idle"))

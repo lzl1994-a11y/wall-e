@@ -377,6 +377,36 @@ class ActionIntentGuardTests(unittest.TestCase):
                 "invalid_arguments",
             )
 
+    def test_music_commands_are_semantic_but_runtime_constrained(self):
+        self.assertAllowed(
+            "播放蓝天这首歌。",
+            "control_music",
+            {"action": "play", "track": "蓝天"},
+        )
+        self.assertAllowed(
+            "停止播放音乐。",
+            "control_music",
+            {"action": "stop"},
+        )
+        self.assertRejected(
+            "不要播放音乐。",
+            "control_music",
+            {"action": "play", "track": ""},
+            "negated_action",
+        )
+        self.assertRejected(
+            "播放音乐。",
+            "control_music",
+            {"action": "stop"},
+            "argument_conflict",
+        )
+        self.assertRejected(
+            "播放音乐。",
+            "control_music",
+            {"action": "play", "track": "../secret.mp3"},
+            "invalid_arguments",
+        )
+
     def test_conditional_task_is_atomic_and_runtime_validated(self):
         plan = {
             "observation": "看看前面有什么",

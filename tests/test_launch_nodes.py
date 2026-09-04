@@ -153,6 +153,16 @@ class LaunchNodesTests(unittest.TestCase):
         self.assertLess(names.index("camera_capture"), names.index("tft_tcp_service"))
         self.assertLess(names.index("tft_tcp_service"), names.index("llm"))
 
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_music_uses_existing_audio_and_tft_owners(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args())
+        names = [entry.name for entry in entries]
+        music = next(entry for entry in entries if entry.name == "music_player")
+
+        self.assertTrue(music.script.is_file())
+        self.assertLess(names.index("audio_playback"), names.index("music_player"))
+        self.assertEqual(names.count("tft_tcp_service"), 1)
+
     def test_dialogue_nodes_do_not_own_tft_tcp_server(self):
         for filename in ("llm_ros_node.py", "voice_chat_ros_node.py"):
             source = (launch_nodes.ROOT / "nodes" / filename).read_text(encoding="utf-8")

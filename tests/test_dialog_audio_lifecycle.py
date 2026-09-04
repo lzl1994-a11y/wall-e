@@ -70,6 +70,18 @@ class PlaybackLifecycleTests(unittest.TestCase):
         stream.start.assert_called_once_with()
         stream.close.assert_called_once_with()
 
+    def test_music_stream_end_closes_output_without_completing_dialogue(self):
+        completed = []
+        player = PlaybackService.__new__(PlaybackService)
+        player.sample_rate = 48000
+        player._stream = MagicMock()
+        player.on_turn_complete = lambda: completed.append(True)
+
+        player._play_item(PlaybackService._STREAM_END)
+
+        self.assertEqual(completed, [])
+        self.assertIsNone(player._stream)
+
     def test_multiple_segments_share_one_output_stream(self):
         player = PlaybackService.__new__(PlaybackService)
         player.sample_rate = 48000

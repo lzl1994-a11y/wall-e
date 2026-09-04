@@ -38,7 +38,8 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `nodes/keyboard_stt_node.py` | `keyboard_stt_test_node` | `pipeline.mode=keyboard` 或 `--keyboard-stt` | 无 | `voice_text` | 键盘输入测试节点。你在终端输入文字后，它把文字发布到 `voice_text`，模拟 STT 输出。 |
 | `nodes/stt_ros_node.py` | `walle_ear_node` | `pipeline.mode=asr_llm` 或 `--real-stt` | 无 | `voice_text` | 真实语音识别节点。调用 `services/stt_service.py`，识别到一句话后发布到 `voice_text`。 |
 | `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `action_cmd`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
-| `nodes/tft_tcp_service_node.py` | `tft_tcp_service_node` | 是 | `/tft_preview_request`, `/vision_pipeline_cmd`, `/game_mode_state`, `/game_frame` | `/tft_preview_result`, `tft_preview_ready`, `/game_mode_request` | 胸前 TFT 的唯一 TCP 服务所有者；统一仲裁拍照、跟踪和游戏画面。 |
+| `nodes/music_player_node.py` | `music_player_node` | 是 | `/action_cmd`, `llm_busy`, `/game_mode_state` | `/music_audio`, `/music_spectrum`, `/music_state`, `/action_status` | 用 FFmpeg 解码本地音乐并发布 PCM 与频谱数据；不直接占用声卡或 TFT。 |
+| `nodes/tft_tcp_service_node.py` | `tft_tcp_service_node` | 是 | `/tft_preview_request`, `/vision_pipeline_cmd`, `/game_mode_state`, `/game_frame`, `/music_state`, `/music_spectrum` | `/tft_preview_result`, `tft_preview_ready`, `/game_mode_request` | 胸前 TFT 的唯一 TCP 服务所有者；统一仲裁拍照、跟踪、游戏和音乐频谱画面。 |
 | `nodes/serial_ros_node.py` | `walle_serial_node` | 是，除非加 `--no-serial` | `screen_dialog` | 无 | 串口/屏幕输出节点。接收完整对话包，把用户文本、AI 回复和动作命令写给下位机或屏幕。 |
 
 ## 关键话题说明
@@ -130,6 +131,9 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/vision_pipeline_cmd` | `wali_tracking_node` | `hobot_vision_control`, `tft_tcp_service_node` | `std_msgs/String`：`start`/`stop` 标记跟踪结果使用状态，并控制 TFT 跟踪预览；检测进程保持热备。 |
 | `/tft_preview_request` | LLM 或多模态语音节点 | `tft_tcp_service_node` | 带 `request_id` 的一次性摄像头预览请求。 |
 | `/tft_preview_result` | `tft_tcp_service_node` | 请求方 | 返回预览状态及未经 TFT 旋转的末帧，供视觉模型或照片保存使用。 |
+| `/music_audio` | `music_player_node` | `audio_playback_node` | 48 kHz 单声道 int16 PCM；空消息表示音乐流结束。 |
+| `/music_spectrum` | `music_player_node` | `tft_tcp_service_node` | 20 个归一化频段值；上位机据此渲染 240×240 频谱帧。 |
+| `/music_state` | `music_player_node` | `tft_tcp_service_node` | JSON 播放状态：`loading`、`playing`、`stopped` 或 `error`。 |
 
 ### 跟随模式切换
 
@@ -160,6 +164,9 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
 | `services/tft_preview_client.py` | 对话节点使用的同步 ROS 客户端；向独立 TFT 节点请求预览并按 `request_id` 等待结果。 |
 | `services/tft_preview_protocol.py` | 定义 TFT 预览请求/结果话题及与 ROS 无关的 JSON 编解码。 |
+| `services/music_player.py` | 解析本地曲目、调用 FFmpeg 输出 PCM，并从同一音频块计算频谱。 |
+| `services/music_spectrum.py` | 把频段值渲染为 TFT 原始帧；TCP 传输仍由 TFT 节点负责。 |
+| `services/music_protocol.py` | 定义音乐 PCM、频谱和状态话题，避免播放与显示模块相互依赖。 |
 | `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
 | `nodes/wali_mcp_server.py` | 可选的外部 Agent 网关；提供带鉴权的 Streamable HTTP MCP，将白名单工具转换为带回执的 `/action_cmd`。默认关闭。 |
 | `services/mcp_gateway.py` | 外部 MCP 的配置、安全启动检查和工具白名单；不暴露任意 ROS Topic、Service 或 Shell。 |

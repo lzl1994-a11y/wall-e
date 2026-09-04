@@ -60,6 +60,8 @@ def action_acknowledgement(actions):
         return _TRACKING_ACKS.get(arguments.get("mode"), "好的。")
     if name == "inspect_camera":
         return "好的，我看一下。"
+    if name == "control_music":
+        return "好的，开始播放。" if arguments.get("action") == "play" else "好的，已停止播放。"
     if name in {"express_emotion", "set_vision_gate"}:
         return "好呀。" if name == "express_emotion" else "好的。"
     return "好的。"
