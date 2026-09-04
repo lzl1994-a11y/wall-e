@@ -448,6 +448,12 @@ class AudioPipeline:
         except queue.Full:
             pass
 
+    def _check_wake_word(self, frame: bytes) -> bool:
+        """Keep the loaded model idle whenever microphone processing is paused."""
+        if self._is_paused or self._paused_event.is_set() or not self._ww.enabled:
+            return False
+        return self._ww.check(frame)
+
     def _resample_fallback(self, samples: np.ndarray) -> np.ndarray:
         """Keep 16 kHz VAD/ASR working if the optional APM process is absent."""
         if self._device_sample_rate == self.SAMPLE_RATE: return samples
@@ -497,7 +503,7 @@ class AudioPipeline:
 
                 # ── 唤醒词检测（所有帧直送 Sherpa-ONNX，不做 VAD 前置过滤）──
                 if self._ww.enabled:
-                    if self._ww.check(frame):
+                    if self._check_wake_word(frame):
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
                         self._awake = True
                         self._reset_vad_state()

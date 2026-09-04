@@ -27,6 +27,16 @@ class AudioSampleRateContractTests(unittest.TestCase):
     def test_input_pipeline_remains_16khz(self):
         self.assertEqual(AudioPipeline.SAMPLE_RATE, 16000)
 
+    def test_paused_pipeline_keeps_wake_model_loaded_but_idle(self):
+        pipeline = AudioPipeline.__new__(AudioPipeline)
+        pipeline._ww = MagicMock(enabled=True)
+        pipeline._is_paused = True
+        pipeline._paused_event = threading.Event()
+        pipeline._paused_event.set()
+
+        self.assertFalse(pipeline._check_wake_word(b"audio"))
+        pipeline._ww.check.assert_not_called()
+
     def test_vad_preroll_keeps_audio_before_first_detected_speech_frame(self):
         pipeline = AudioPipeline.__new__(AudioPipeline)
         pipeline.audio_queue = queue.Queue()
