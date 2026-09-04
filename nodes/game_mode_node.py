@@ -115,6 +115,7 @@ class GameModeNode(Node):
             playback=self._playback,
             gain=0.4,
             on_game_started=self._on_game_started,
+            on_return_to_menu=self._on_return_to_menu,
             on_audio_end_queued=self._prepare_audio_end,
         )
         self._session_thread = threading.Thread(
@@ -137,6 +138,13 @@ class GameModeNode(Node):
                 self.get_logger().info(f"启动 FC 游戏: {rom.name}")
                 self._publish_state()
 
+    def _on_return_to_menu(self):
+        with self._state_lock:
+            if self._controller.mode.value == "playing":
+                self._controller.return_to_menu()
+                self.get_logger().info("返回 FC 游戏菜单")
+                self._publish_state()
+
     def _request_session_stop(self):
         self._session_stop.set()
 
@@ -147,7 +155,7 @@ class GameModeNode(Node):
                 self._controller.request_exit()
                 self._publish_state()
             if self._controller.mode.value == "exiting":
-                if self._audio_finished:
+                if self._audio_finished or not self._awaiting_audio_end:
                     self._complete_exit()
                 else:
                     self._start_exit_timeout()

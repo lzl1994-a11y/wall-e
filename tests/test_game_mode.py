@@ -43,6 +43,18 @@ class GameModeControllerTests(unittest.TestCase):
         self.assertTrue(self.controller.policy.game_input)
         self.assertTrue(self.controller.policy.motors_must_stop)
 
+    def test_finished_game_returns_to_menu_policy(self):
+        self.controller.request_enter()
+        self.controller.game_surface_ready()
+        self.controller.start_game()
+
+        self.controller.return_to_menu()
+
+        self.assertEqual(self.controller.mode, GameMode.MENU)
+        self.assertTrue(self.controller.policy.game_input)
+        self.assertFalse(self.controller.policy.game_audio)
+        self.assertFalse(self.controller.policy.screenshot_analysis)
+
     def test_exit_only_restores_robot_after_teardown_acknowledgement(self):
         self.controller.request_enter()
         self.controller.game_surface_ready()
@@ -61,6 +73,8 @@ class GameModeControllerTests(unittest.TestCase):
             self.controller.start_game()
         with self.assertRaises(InvalidGameTransition):
             self.controller.robot_surface_ready()
+        with self.assertRaises(InvalidGameTransition):
+            self.controller.return_to_menu()
 
     def test_controller_disconnect_can_abort_entering(self):
         self.controller.request_enter()

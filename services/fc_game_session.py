@@ -47,6 +47,7 @@ class FcGameSession:
         playback,
         gain: float = 0.4,
         on_game_started: Callable[[Path], None] | None = None,
+        on_return_to_menu: Callable[[], None] | None = None,
         on_audio_end_queued: Callable[[], None] | None = None,
     ) -> None:
         self.core_path = str(core_path)
@@ -56,6 +57,7 @@ class FcGameSession:
         self.playback = playback
         self.gain = gain
         self.on_game_started = on_game_started
+        self.on_return_to_menu = on_return_to_menu
         self.on_audio_end_queued = on_audio_end_queued
         self.selected_rom: Path | None = None
         self.disconnect_error: Exception | None = None
@@ -63,7 +65,7 @@ class FcGameSession:
     def run(self, stop: threading.Event) -> None:
         menu = GameMenu(discover_roms(self.rom_directory), on_frame=self._emit_menu_frame)
         relay = FcControllerRelay(self.controller_path, menu)
-        audio = GamePlaybackAdapter(self.playback, gain=self.gain)
+        audio: GamePlaybackAdapter | None = None
         core: LibretroFc | None = None
         try:
             relay.start()
@@ -82,6 +84,7 @@ class FcGameSession:
                 if stop.is_set() or self.selected_rom is None:
                     return
 
+                audio = GamePlaybackAdapter(self.playback, gain=self.gain)
                 core = LibretroFc(self.core_path, on_frame=self.on_frame, audio_sink=audio)
                 gameplay_sink = _ReturnToMenuSink(core.joypad)
                 relay.switch_sink(gameplay_sink)
@@ -100,6 +103,12 @@ class FcGameSession:
                     return
                 core.close()
                 core = None
+                if self.on_return_to_menu is not None:
+                    self.on_return_to_menu()
+                if self.on_audio_end_queued is not None:
+                    self.on_audio_end_queued()
+                audio.close()
+                audio = None
                 # The held A press that returned here does not select anything:
                 # GameMenu sees only its eventual release event.
                 menu = GameMenu(discover_roms(self.rom_directory), on_frame=self._emit_menu_frame)
@@ -108,9 +117,10 @@ class FcGameSession:
             relay.stop()
             if core is not None:
                 core.close()
-            if self.on_audio_end_queued is not None:
-                self.on_audio_end_queued()
-            audio.close()
+            if audio is not None:
+                if self.on_audio_end_queued is not None:
+                    self.on_audio_end_queued()
+                audio.close()
 
     def _emit_menu_frame(self, bgr: np.ndarray) -> None:
         height, width = bgr.shape[:2]

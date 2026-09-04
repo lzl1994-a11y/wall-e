@@ -91,6 +91,12 @@ class GameModeController:
         self._mode = GameMode.PLAYING
         return self._mode
 
+    def return_to_menu(self) -> GameMode:
+        """Finish the current game while keeping the controller in game mode."""
+        self._require(GameMode.PLAYING)
+        self._mode = GameMode.MENU
+        return self._mode
+
     def pause_for_fault(self) -> GameMode:
         """Pause on a disconnected hand controller, TFT, or emulator fault."""
         if self._mode not in {GameMode.MENU, GameMode.PLAYING}:
