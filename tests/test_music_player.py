@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -74,6 +75,15 @@ class MusicPlayerTests(unittest.TestCase):
         self.assertEqual(levels, [0.0] * 20)
         self.assertEqual((width, height, pitch), (240, 240, 960))
         self.assertEqual(len(raw), pitch * height)
+
+    def test_spectrum_plan_is_reused_for_equal_pcm_chunks(self):
+        analyzer = SpectrumAnalyzer()
+        samples = np.zeros(4800, dtype=np.int16)
+        original = np.hanning
+        with patch.object(np, "hanning", wraps=original) as hanning:
+            analyzer.analyze(samples)
+            analyzer.analyze(samples)
+        hanning.assert_called_once_with(4800)
 
     def test_music_state_codec_rejects_unknown_states(self):
         self.assertEqual(

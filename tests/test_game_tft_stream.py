@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -36,6 +36,12 @@ class GameTftStreamTests(unittest.TestCase):
         result = prepare_game_bgr(source, quality=100)
         image = cv2.imdecode(np.frombuffer(result, np.uint8), cv2.IMREAD_COLOR)
         self.assertEqual(image.shape[:2], (160, 240))
+
+    def test_raw_240_square_frame_skips_resize(self):
+        source = np.zeros((240, 240, 3), dtype=np.uint8)
+        with patch.object(cv2, "resize", wraps=cv2.resize) as resize:
+            self.assertIsNotNone(prepare_game_bgr(source))
+        resize.assert_not_called()
 
     def test_one_start_many_frames_one_end(self):
         server = GameTftStreamServer()

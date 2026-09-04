@@ -49,7 +49,9 @@ def prepare_game_bgr(image, *, quality: int = 70) -> bytes | None:
         min(240, max(1, int(height * scale + 0.5))),
     )
     interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    resized = cv2.resize(image, target, interpolation=interpolation)
+    resized = image if target == (width, height) else cv2.resize(
+        image, target, interpolation=interpolation
+    )
     ok, encoded = cv2.imencode(
         ".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), min(100, max(1, quality))]
     )

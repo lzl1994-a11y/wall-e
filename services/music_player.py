@@ -47,18 +47,39 @@ class SpectrumAnalyzer:
         self.sample_rate = int(sample_rate)
         self.edges = np.geomspace(60.0, min(16_000.0, self.sample_rate / 2), bands + 1)
         self._levels = np.zeros(bands, dtype=np.float32)
+        self._plan_size = 0
+        self._fft_size = 0
+        self._window = np.empty(0, dtype=np.float32)
+        self._band_slices: list[tuple[int, int]] = []
+
+    def _prepare(self, sample_count: int) -> None:
+        if sample_count == self._plan_size:
+            return
+        self._plan_size = sample_count
+        self._fft_size = 1 << max(10, (sample_count - 1).bit_length())
+        self._window = np.hanning(sample_count).astype(np.float32)
+        frequencies = np.fft.rfftfreq(self._fft_size, 1.0 / self.sample_rate)
+        self._band_slices = [
+            (
+                int(np.searchsorted(frequencies, low, side="left")),
+                int(np.searchsorted(frequencies, high, side="left")),
+            )
+            for low, high in zip(self.edges[:-1], self.edges[1:])
+        ]
 
     def analyze(self, samples: np.ndarray) -> list[float]:
         pcm = np.asarray(samples, dtype=np.float32).reshape(-1)
         if pcm.size < 2:
             return self._levels.tolist()
-        size = 1 << max(10, (pcm.size - 1).bit_length())
-        windowed = (pcm / 32768.0) * np.hanning(pcm.size)
-        magnitudes = np.abs(np.fft.rfft(windowed, n=size)) / max(1.0, pcm.size / 2)
-        frequencies = np.fft.rfftfreq(size, 1.0 / self.sample_rate)
+        self._prepare(pcm.size)
+        windowed = (pcm / 32768.0) * self._window
+        magnitudes = (
+            np.abs(np.fft.rfft(windowed, n=self._fft_size))
+            / max(1.0, pcm.size / 2)
+        )
         levels = np.zeros_like(self._levels)
-        for index, (low, high) in enumerate(zip(self.edges[:-1], self.edges[1:])):
-            selected = magnitudes[(frequencies >= low) & (frequencies < high)]
+        for index, (start, end) in enumerate(self._band_slices):
+            selected = magnitudes[start:end]
             if selected.size:
                 db = 20.0 * np.log10(float(selected.max()) + 1e-7)
                 levels[index] = np.clip((db + 60.0) / 60.0, 0.0, 1.0)
