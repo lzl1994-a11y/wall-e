@@ -1,4 +1,14 @@
 poses:
+  right_hand_up:
+    default_step: 60.0
+    targets:
+      arm_r: 4000
+      arm_l: 2000
+  left_hand_up:
+    default_step: 60.0
+    targets:
+      arm_r: 8000
+      arm_l: 6000
   arms_up:
     default_step: 60.0
     targets:
@@ -302,7 +312,7 @@ sequences:
     - type: express_emotion
       emotion: happy
     - type: pose
-      name: arms_up
+      name: right_hand_up
       step_size: 160.0
     - type: pose
       name: look_left_up

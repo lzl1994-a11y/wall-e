@@ -656,11 +656,37 @@ class ConfigStore:
             "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
         }
 
-    def _save_merged(self, current: dict[str, Any], incoming: Any) -> dict[str, Any]:
+    @staticmethod
+    def _error_belongs_to_root(error: str, roots: set[str]) -> bool:
+        return any(
+            error == root
+            or error.startswith(f"{root}.")
+            or error.startswith(f"{root} ")
+            for root in roots
+        )
+
+    def _save_merged(
+        self,
+        current: dict[str, Any],
+        incoming: Any,
+        *,
+        validate_roots: set[str] | None = None,
+    ) -> dict[str, Any]:
         merged = _merge_preserving_secrets(current, incoming)
         if isinstance(incoming, dict) and isinstance(incoming.get("usb_devices"), dict):
             merged["usb_devices"] = copy.deepcopy(incoming["usb_devices"])
         errors = validate_config(merged)
+        if errors and validate_roots is not None:
+            # A module PATCH must validate the module being changed and any new
+            # cross-module errors it introduces.  Pre-existing errors in an
+            # unrelated module must not prevent saving this module.
+            existing_errors = set(validate_config(current))
+            errors = list(dict.fromkeys(
+                error
+                for error in errors
+                if error not in existing_errors
+                or self._error_belongs_to_root(error, validate_roots)
+            ))
         if errors:
             raise ConfigError("\n".join(errors))
 
@@ -695,7 +721,11 @@ class ConfigStore:
         if not isinstance(patch, dict) or not patch:
             raise ConfigError("配置补丁必须是非空对象")
         with self._lock:
-            return self._save_merged(self.load(), patch)
+            return self._save_merged(
+                self.load(),
+                patch,
+                validate_roots=set(map(str, patch)),
+            )
 
     def save_access_token(self, access_token: str) -> dict[str, Any]:
         """Persist the web access token without exposing it in the response."""

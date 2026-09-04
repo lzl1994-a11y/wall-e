@@ -237,13 +237,10 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         logger.warning.assert_called_once()
         sys.modules.pop("nodes.llm_ros_node", None)
 
-    def test_direct_answer_uses_one_request_and_keeps_asr_topic_contract(self):
+    def test_streamed_answer_reaches_tts_before_llm_stream_finishes(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)
         node.llm = MagicMock()
-        node.llm.chat_stream.return_value = iter([
-            {"type": "text", "content": "\u4f60\u597d\uff0c\u6211\u5728\u3002"},
-        ])
         node.chat_history = deque(maxlen=40)
         node.punctuations = {'\u3002', '\uff1f', '.', '?', '\uff01', '!'}
         node.tts_publisher = MagicMock()
@@ -254,14 +251,63 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         node.busy_publisher = MagicMock()
         node.get_logger = lambda: MagicMock()
 
+        tts_was_published_before_done = []
+
+        def response_stream():
+            yield {"type": "text", "content": "\u4f60\u597d\uff0c\u6211\u5728\u3002"}
+            tts_was_published_before_done.append(
+                node.tts_publisher.publish.called
+            )
+            yield {"type": "done", "finish_reason": "stop"}
+
+        node.llm.chat_stream.return_value = response_stream()
+
         node._process_voice_task("turn-direct", "\u4f60\u597d")
 
         self.assertEqual(node.llm.chat_stream.call_count, 1)
+        self.assertEqual(tts_was_published_before_done, [True])
         self.assertTrue(node.llm.chat_stream.call_args.kwargs["tools_enabled"])
         self.assertEqual(node.corrected_publisher.publish.call_args.args[0].data, "\u4f60\u597d")
         messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
         self.assertEqual(messages[0], "\u4f60\u597d\uff0c\u6211\u5728\u3002")
         self.assertEqual(decode_turn_end(messages[1]), "turn-direct")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_conditional_intent_cannot_fall_back_to_unverified_speech(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {"type": "text", "content": "我看到了，所以没有点头。"},
+            {"type": "done", "finish_reason": "stop"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.tts_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node._process_voice_task(
+            "turn-conditional",
+            "看看前面，如果画面是空白的你就点头。",
+        )
+
+        self.assertEqual(node.llm.chat_stream.call_count, 2)
+        request = node.llm.chat_stream.call_args_list[0]
+        self.assertEqual(
+            request.kwargs["only_action_name"], "run_conditional_task"
+        )
+        messages = [
+            call.args[0].data for call in node.tts_publisher.publish.call_args_list
+        ]
+        self.assertEqual(
+            messages[0],
+            "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。",
+        )
+        self.assertNotIn("我看到了", "".join(messages))
+        self.assertEqual(decode_turn_end(messages[1]), "turn-conditional")
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_photo_preview_saves_last_frame_without_calling_llm(self):
@@ -340,8 +386,8 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(llm_call.kwargs["image_base64"], expected_image)
         self.assertFalse(llm_call.kwargs["structured_answer"])
         messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
-        self.assertEqual(messages[:2], ["好的，我看一下。", "前面是一只杯子。"])
-        self.assertEqual(decode_turn_end(messages[2]), "turn-vision")
+        self.assertEqual(messages[0], "前面是一只杯子。")
+        self.assertEqual(decode_turn_end(messages[1]), "turn-vision")
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_first_long_comma_clause_is_published_before_sentence_end(self):
@@ -402,6 +448,55 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         logger.info.assert_any_call(
             "[turn-poem] LLM stream completed: finish_reason=stop"
         )
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_stream_completion_can_change_severity_between_turns(self):
+        """Guard against rclpy's source-location based severity restriction."""
+        import inspect
+
+        class SourceAwareLogger:
+            def __init__(self):
+                self.severities = {}
+
+            def _log(self, severity, _message):
+                caller = inspect.currentframe().f_back.f_back
+                location = (caller.f_code.co_filename, caller.f_lineno)
+                previous = self.severities.setdefault(location, severity)
+                if previous != severity:
+                    raise ValueError("Logger severity cannot be changed between calls.")
+
+            def info(self, message):
+                self._log("info", message)
+
+            def warning(self, message):
+                self._log("warning", message)
+
+            def error(self, message):
+                self._log("error", message)
+
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.settings = {"max_tokens": 512}
+        node.llm.chat_stream.side_effect = [
+            iter([{"type": "text", "content": "第一轮。"}, {"type": "done", "finish_reason": "stop"}]),
+            iter([{"type": "text", "content": "第二轮。"}, {"type": "done", "finish_reason": "length"}]),
+        ]
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        logger = SourceAwareLogger()
+        node.get_logger = lambda: logger
+
+        node._process_voice_task("turn-stop", "你好")
+        node._process_voice_task("turn-length", "你好")
+
+        self.assertEqual(set(logger.severities.values()), {"info", "warning"})
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_correction_only_response_without_newline_is_not_spoken(self):

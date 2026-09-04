@@ -4,6 +4,7 @@ from .aliyun_multimodal import AliyunMultimodal
 from .baidu_multimodal import BaiduMultimodal
 from .doubao_multimodal import DoubaoMultimodal
 from .tencent_hunyuan_multimodal import TencentHunyuanMultimodal
+from .xiaomi_mimo_multimodal import XiaomiMiMoMultimodal
 from .zhipu_multimodal import ZhipuMultimodal
 
 PROVIDERS = {
@@ -17,6 +18,9 @@ PROVIDERS = {
     "tencent": TencentHunyuanMultimodal,
     "tencent_hunyuan": TencentHunyuanMultimodal,
     "hunyuan": TencentHunyuanMultimodal,
+    "mimo": XiaomiMiMoMultimodal,
+    "xiaomi": XiaomiMiMoMultimodal,
+    "xiaomi_mimo": XiaomiMiMoMultimodal,
     "zhipu": ZhipuMultimodal,
 }
 

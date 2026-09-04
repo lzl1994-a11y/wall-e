@@ -180,6 +180,40 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn("https://api.hunyuan.cloud.tencent.com/v1", html)
         self.assertIn("不支持音频直连", html)
 
+    def test_llm_provider_selector_includes_xiaomi_mimo(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn(
+            '<option value="xiaomi_mimo">小米 / MiMo</option>',
+            html,
+        )
+        self.assertIn("https://api.xiaomimimo.com/v1", html)
+        self.assertIn("thinking=disabled", html)
+
+    def test_llm_patch_accepts_xiaomi_mimo_provider(self):
+        status, result = self.request(
+            "/api/config",
+            method="POST",
+            payload={
+                "patch": {
+                    "llm": {
+                        "provider": "xiaomi_mimo",
+                        "model": "mimo-v2.5-pro",
+                        "url": "https://api.xiaomimimo.com/v1",
+                        "reasoning_effort": "fast",
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["llm"]["provider"], "xiaomi_mimo")
+        self.assertEqual(stored["llm"]["model"], "mimo-v2.5-pro")
+        self.assertEqual(stored["llm"]["url"], "https://api.xiaomimimo.com/v1")
+        self.assertEqual(stored["llm"]["reasoning_effort"], "fast")
+
     def test_dialog_listening_motion_selector_has_two_safe_modes(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")
@@ -680,6 +714,51 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(stored["llm"]["key"], before["llm"]["key"])
         self.assertEqual(stored["asr"], before["asr"])
         self.assertEqual(stored["servos"], before["servos"])
+
+    def test_llm_patch_is_not_blocked_by_preexisting_vad_error(self):
+        legacy = sample_config()
+        legacy["vad"]["aggressiveness"] = "legacy-value"
+        self.config_path.write_text(
+            yaml.safe_dump(legacy, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        status, result = self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"llm": {"temperature": 0.8}}},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["vad"]["aggressiveness"], "legacy-value")
+        self.assertEqual(stored["llm"]["temperature"], 0.8)
+
+    def test_vad_patch_still_rejects_invalid_vad_aggressiveness_text(self):
+        invalid = sample_config()
+        invalid["vad"]["aggressiveness"] = "maximum"
+        self.config_path.write_text(
+            yaml.safe_dump(invalid, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        before = self.config_path.read_text(encoding="utf-8")
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={"patch": {"vad": {"aggressiveness": "maximum"}}},
+            )
+
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
+    def test_llm_page_explains_model_capability_is_not_enforced(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn("页面不限制模型名称", html)
+        self.assertIn("不代表模型能力已验证", html)
 
     def test_invalid_patch_is_rejected_without_writing(self):
         before = self.config_path.read_text(encoding="utf-8")

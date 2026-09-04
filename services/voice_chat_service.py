@@ -28,7 +28,7 @@ from services.llm_prompt import (
     with_direct_speech_policy,
     with_structured_answer_policy,
 )
-from services.llm_request_options import reasoning_request_options
+from services.llm_request_options import normalize_tool_choice, reasoning_request_options
 from services.tool_dispatcher import (
     DIRECT_ANSWER_TOOL,
     DIRECT_ANSWER_TOOL_NAME,
@@ -42,6 +42,8 @@ from services.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
 )
+from services.conditional_task import is_conditional_task_request
+from services.action_intent_guard import canonicalize_conditional_action
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
 from .voice_debug import RollingVoiceDebugStore
@@ -361,6 +363,20 @@ class VoiceChatService:
             # deterministic matchers make photo/inspection work even when the
             # audio model only says “好的” and omits inspect_camera.
             handled_visual_tools = set()
+            conditional_intent = bool(
+                structured_ok
+                and heard_text
+                and is_conditional_task_request(heard_text)
+            )
+            conditional_tool_present = any(
+                call.get("name") == "run_conditional_task"
+                for call in tool_calls
+                if isinstance(call, dict)
+            )
+            if conditional_intent and not conditional_tool_present:
+                response_text = (
+                    "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
+                )
             photo_handler = getattr(self, "on_photo_request", None)
             inspection_handler = getattr(self, "on_inspection_request", None)
             if (
@@ -382,6 +398,7 @@ class VoiceChatService:
                 structured_ok
                 and heard_text
                 and is_camera_inspection_request(heard_text)
+                and not is_conditional_task_request(heard_text)
                 and inspection_handler
             ):
                 handled_visual_tools.add("inspect_camera")
@@ -399,8 +416,23 @@ class VoiceChatService:
                     break
                 if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
                     continue
+                if conditional_intent and tc["name"] != "run_conditional_task":
+                    print(
+                        "[VoiceChat] 忽略被拆分的复合任务工具: "
+                        f"{tc['name']}"
+                    )
+                    continue
                 if tc["name"] in handled_visual_tools:
                     continue
+                if (
+                    conditional_intent
+                    and tc["name"] == "run_conditional_task"
+                    and heard_text
+                ):
+                    tc = dict(tc)
+                    tc["arguments"] = canonicalize_conditional_action(
+                        heard_text, tc["arguments"]
+                    )
                 print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
                 if self.on_tool_call:
                     handled_response = self.on_tool_call(tc["name"], tc["arguments"])
@@ -481,6 +513,56 @@ class VoiceChatService:
             raise RuntimeError("视觉模型没有返回 direct_answer.response")
         return response_text
 
+    def evaluate_image_condition(
+        self,
+        observation: str,
+        condition: str,
+        image_base64: str,
+    ) -> str:
+        """Return a closed JSON decision for a conditional task image."""
+        prompt = (
+            "只依据附带的当前摄像头画面判断条件。返回一个 JSON 对象，且只能包含 "
+            "decision 和 evidence。decision 只能是 yes、no、uncertain；无法确认时必须"
+            "使用 uncertain。不要执行动作，不要输出 Markdown 或其他文字。\n"
+            f"观察任务：{observation}\n判断条件：{condition}"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": with_structured_answer_policy(
+                    with_direct_speech_policy(
+                        "你是机器人视觉条件判断器。只能依据当前图片输出严格 JSON；"
+                        "无法确认时必须返回 uncertain，禁止猜测。"
+                    )
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                    },
+                ],
+            },
+        ]
+        streamed = self._stream_tool_calls(
+            messages,
+            tools=[DIRECT_ANSWER_TOOL],
+            tool_choice={
+                "type": "function",
+                "function": {"name": DIRECT_ANSWER_TOOL_NAME},
+            },
+        )
+        if streamed is None:
+            raise RuntimeError("视觉条件判断请求被中断")
+        tool_calls, _raw_content = streamed
+        _heard, response, _expression, _intensity = self._dialog_answer(tool_calls)
+        if not response:
+            raise RuntimeError("视觉模型没有返回条件判断")
+        return response
+
     def _stream_tool_calls(self, messages, *, tools, tool_choice):
         """Return parsed tool calls and untrusted content for one LLM request."""
         request_kwargs = {
@@ -488,7 +570,7 @@ class VoiceChatService:
             "messages": messages,
             "modalities": ["text"],
             "tools": tools,
-            "tool_choice": tool_choice,
+            "tool_choice": normalize_tool_choice(self.llm_settings, tool_choice),
             "stream": True,
             "stream_options": {"include_usage": True},
             "timeout": self.API_TIMEOUT,

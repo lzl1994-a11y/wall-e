@@ -166,6 +166,27 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         image_url = request.args[0][1]["content"][1]["image_url"]["url"]
         self.assertEqual(image_url, "data:image/jpeg;base64,aW1hZ2U=")
 
+    def test_image_condition_forces_closed_structured_answer(self):
+        service = self._service()
+        service.system_prompt = "system"
+        service._stream_tool_calls = MagicMock(return_value=([{
+            "name": "direct_answer",
+            "arguments": {
+                "response": '{"decision":"yes","evidence":"目标可见"}'
+            },
+        }], ""))
+
+        answer = service.evaluate_image_condition(
+            "观察用户手部", "用户手中有任意物体", "aW1hZ2U="
+        )
+
+        self.assertEqual(
+            answer, '{"decision":"yes","evidence":"目标可见"}'
+        )
+        request = service._stream_tool_calls.call_args
+        self.assertEqual(len(request.kwargs["tools"]), 1)
+        self.assertIn("uncertain", request.args[0][0]["content"])
+
     def test_photo_transcript_runs_capture_callback_before_reply(self):
         service = self._service()
         service.multimodal = MagicMock()
@@ -219,6 +240,75 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
 
         service.on_inspection_request.assert_called_once_with("看一下前面有什么")
         service.on_llm_reply.assert_called_once_with("前面有一只杯子。")
+
+    def test_conditional_transcript_is_not_swallowed_by_camera_shortcut(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        plan = {
+            "observation": "观察前方",
+            "condition": "有人挥手",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "basic_nod"},
+        }
+        service.on_tool_call = MagicMock(return_value="条件满足，动作已经执行完成。")
+        service.on_photo_request = MagicMock()
+        service.on_inspection_request = MagicMock()
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(return_value=([{
+            "name": "direct_answer",
+            "arguments": {
+                "heard_text": "看看前面，如果有人挥手你就点头",
+                "response": "好的。",
+            },
+        }, {
+            "name": "run_conditional_task",
+            "arguments": plan,
+        }], ""))
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_inspection_request.assert_not_called()
+        service.on_tool_call.assert_called_once_with("run_conditional_task", plan)
+        service.on_llm_reply.assert_called_once_with(
+            "条件满足，动作已经执行完成。"
+        )
+
+    def test_conditional_audio_without_plan_fails_closed(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock()
+        service.on_photo_request = MagicMock()
+        service.on_inspection_request = MagicMock()
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(return_value=([{
+            "name": "direct_answer",
+            "arguments": {
+                "heard_text": "看看前面，如果有人挥手你就点头",
+                "response": "我看到了，所以点头了。",
+            },
+        }], ""))
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_tool_call.assert_not_called()
+        service.on_inspection_request.assert_not_called()
+        service.on_llm_reply.assert_called_once_with(
+            "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
+        )
 
     def test_malformed_structured_answer_never_starts_camera(self):
         service = self._service()

@@ -7,8 +7,14 @@ import asyncio
 import copy
 import logging
 import os
+from typing import Any
 import yaml
 from fastmcp import FastMCP
+
+from services.conditional_task import (
+    CONDITIONAL_TASK_TOOL_NAME,
+    conditional_task_tool_schema,
+)
 
 mcp = FastMCP("Wali_Action_Center")
 LOGGER = logging.getLogger(__name__)
@@ -29,10 +35,12 @@ _semantic_mappings = {
     "wave_hello": "招手/打招呼",
     "sad_react": "难过反应/低迷",
     "scared": "害怕吓一跳/防御",
-    "raise_hand": "举手/引起注意",
+    "raise_hand": "举右手示意/引起注意（组合动作）",
     "basic_nod": "点头肯定/同意",
     "basic_wave": "简单的单手挥动",
-    "arms_up": "举手/抬手/双手举高/投降",
+    "right_hand_up": "只举右手（基础动作）",
+    "left_hand_up": "只举左手（基础动作）",
+    "arms_up": "双手举高/投降（基础动作）",
     "arms_down": "放下双手",
     "head_down": "低头/沮丧",
     "turn_head_left": "向左看/左转头",
@@ -186,6 +194,27 @@ def inspect_camera(question: str = "") -> str:
     return "ok"
 
 
+@mcp.tool()
+def run_conditional_task(
+    observation: str,
+    condition: str,
+    action_name: str,
+    action_arguments: dict[str, Any],
+) -> str:
+    """执行一次“观察画面 → 判断条件 → 条件成立才动作”的复合任务。
+
+    仅当用户明确要求瓦力现在观察真实环境，并根据观察结果决定是否执行一个动作时调用。
+    不要把它拆成 inspect_camera 和独立动作工具，也不要同时调用本工具与 action_name 对应的
+    动作工具。observation 描述要观察什么；condition 是仅依据当前画面判断的完整条件，
+    可以是任意物体、人物、颜色、姿态、数量或空间关系，不要写死特定目标；action_name 和
+    action_arguments 描述条件明确成立时执行的一个动作。举手、点头、挥手、转头等预设动作
+    必须使用 action_name="play_sequence"，例如举手参数为 {"sequence_name":"raise_hand"}、
+    点头为 {"sequence_name":"basic_nod"}。条件不成立或无法确定时不会动作。
+    能力询问、举例、假设讨论、故事、引用或没有要求立即执行的句子禁止调用。
+    """
+    return "ok"
+
+
 # ==========================================
 # 桥接接口（供 llm_service.py 调用）
 # ==========================================
@@ -206,6 +235,8 @@ def _configured_sequence_names():
 
 def _tighten_tool_schema(name, parameters):
     """Add provider-visible constraints; runtime validation remains mandatory."""
+    if name == CONDITIONAL_TASK_TOOL_NAME:
+        return conditional_task_tool_schema()
     schema = copy.deepcopy(parameters)
     schema['additionalProperties'] = False
     properties = schema.setdefault('properties', {})

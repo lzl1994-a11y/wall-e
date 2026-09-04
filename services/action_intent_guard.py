@@ -101,8 +101,10 @@ _SEQUENCE_PATTERNS = {
                  r"(?:难过|伤心|悲伤|沮丧).*(?:反应|动作)",
     "scared": r"(?:做|来|表现|摆|装).*(?:害怕|吓一跳|防御)|"
                r"(?:害怕|吓一跳).*(?:表情|样子|动作)",
-    "raise_hand": r"举(?:一下)?手|把手举起来|抬手",
-    "arms_up": r"举(?:一下)?手|把(?:双)?手举起来|双手举高|抬手|投降",
+    "right_hand_up": r"(?:举|抬)(?:起|一下)?右(?:边)?(?:手|胳膊)|右(?:边)?(?:手|胳膊).*(?:举|抬)",
+    "left_hand_up": r"(?:举|抬)(?:起|一下)?左(?:边)?(?:手|胳膊)|左(?:边)?(?:手|胳膊).*(?:举|抬)",
+    "raise_hand": r"举(?:起|一下)?手|把手举起来|抬手",
+    "arms_up": r"(?:举|抬)(?:起|一下)?(?:双手|两只手)|把(?:双手|两只手)举起来|双手举高|投降",
     "arms_down": r"放下(?:双)?手|把(?:双)?手放下",
     "head_down": r"低(?:一下)?头|把头低下",
     "turn_head_left": r"(?:向|往)?左(?:边)?(?:看|转头|扭头)|看看左边",
@@ -145,6 +147,42 @@ _TRACKING_PATTERNS = {
     "follow_me": r"跟着我|跟随我|跟我走|跟我来|陪我走|追踪我",
     "look_at_me": r"看着我|看住我|盯着我|盯住我|注视我|看我",
 }
+
+# Prefer the most specific, user-facing sequence when multiple configured
+# sequences share the same phrase (for example raise_hand/arms_up).  This list
+# only translates the consequent action; the visual condition remains entirely
+# model-defined and is evaluated later by the vision step.
+_CONDITIONAL_SEQUENCE_PRIORITY = (
+    "right_hand_up",
+    "left_hand_up",
+    "basic_nod",
+    "raise_hand",
+    "arms_up",
+    "arms_down",
+    "wave_hello",
+    "happy_dance",
+    "head_down",
+    "turn_head_left",
+    "turn_head_right",
+    "tilt_head_left",
+    "tilt_head_right",
+    "look_left_up",
+    "look_center",
+    "sad_react",
+    "scared",
+    "eyebrows_open",
+    "eyebrows_close",
+    "expression_neutral",
+    "expression_listening",
+    "expression_thinking",
+    "expression_happy",
+    "expression_sad",
+    "expression_surprised",
+    "expression_confused",
+    "expression_concerned",
+)
+
+_CONDITIONAL_ACTION_SPLIT_RE = re.compile(r"(?:你?就|然后|则|便)")
 
 
 def _load_sequence_names():
@@ -200,6 +238,14 @@ def _valid_arguments(name, arguments):
         )
     elif name == "stop_all":
         valid = not keys
+    elif name == "run_conditional_task":
+        try:
+            from services.conditional_task import normalize_conditional_task_plan
+
+            normalize_conditional_task_plan(arguments)
+            valid = True
+        except (TypeError, ValueError):
+            valid = False
     else:
         return False, "unknown_tool"
     return (True, "") if valid else (False, "invalid_arguments")
@@ -252,6 +298,82 @@ def _matches_sequence_intent(compact, sequence_name):
             return left if sequence_name == "turn_head_left" else right
         return bool(re.search(r"(?:转|旋转)(?:个|一下)?头|转头", compact))
     return bool(re.search(pattern, compact))
+
+
+def _conditional_action_clause(user_text):
+    compact = "".join(str(user_text or "").split())
+    return _CONDITIONAL_ACTION_SPLIT_RE.split(compact)[-1]
+
+
+def _explicit_conditional_action(action_clause):
+    """Translate an explicit consequent into one allowlisted action.
+
+    Return ``None`` for unfamiliar wording so a valid model proposal can still
+    be used.  The rules intentionally inspect only the text after 就/然后/则/便;
+    an object or gesture mentioned in the condition can never become an action.
+    """
+    if not action_clause:
+        return None
+
+    if _TRACKING_STOP_RE.search(action_clause) or _LEADING_TRACKING_STOP_RE.search(
+        action_clause
+    ):
+        return "set_tracking_mode", {"mode": "idle"}
+    if _VISION_OFF_RE.search(action_clause) or _LEADING_VISION_OFF_RE.search(
+        action_clause
+    ):
+        return "set_vision_gate", {"enabled": False}
+    if re.search(r"(?:打开|开启|启动|启用).{0,8}(?:视觉|跟踪)", action_clause):
+        return "set_vision_gate", {"enabled": True}
+
+    tracking_modes = [
+        mode
+        for mode, pattern in _TRACKING_PATTERNS.items()
+        if re.search(pattern, action_clause)
+    ]
+    if tracking_modes:
+        return "set_tracking_mode", {"mode": tracking_modes[0]}
+
+    for sequence_name in _CONDITIONAL_SEQUENCE_PRIORITY:
+        if sequence_name in _SEQUENCE_NAMES and _matches_sequence_intent(
+            action_clause, sequence_name
+        ):
+            return "play_sequence", {"sequence_name": sequence_name}
+
+    emotions = [
+        emotion
+        for emotion, pattern in _EMOTION_PATTERNS.items()
+        if re.search(pattern, action_clause)
+    ]
+    if emotions:
+        return "express_emotion", {"emotion": emotions[0]}
+
+    if re.search(
+        r"(?:停止|停下|停住)(?:所有|全部)?(?:动作|运动)|"
+        r"(?:所有|全部)(?:动作|运动)?(?:停止|停下)|紧急停止|别动|不要动",
+        action_clause,
+    ):
+        return "stop_all", {}
+    return None
+
+
+def canonicalize_conditional_action(user_text, plan):
+    """Correct a model plan from the user's explicit consequent, if known.
+
+    This makes common robot actions portable across models without hard-coding
+    what the camera is supposed to see.  Unknown actions are left untouched and
+    must still pass the ordinary runtime allowlist.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    explicit = _explicit_conditional_action(_conditional_action_clause(user_text))
+    if explicit is None:
+        return dict(plan)
+    action_name, action_arguments = explicit
+    normalized = dict(plan)
+    normalized["action_name"] = action_name
+    normalized["action_arguments"] = action_arguments
+    return normalized
 
 
 def _has_explicit_argument_conflict(compact, name, arguments):
@@ -319,6 +441,52 @@ def validate_action_call(user_text, name, arguments):
         return False, reason
 
     compact = "".join(str(user_text or "").split())
+    if name == "run_conditional_task":
+        from services.conditional_task import (
+            is_conditional_task_request,
+            normalize_conditional_task_plan,
+        )
+
+        if not is_conditional_task_request(compact):
+            return False, "not_conditional_command"
+        plan = normalize_conditional_task_plan(arguments)
+        action_clause = _conditional_action_clause(compact)
+        stop_action = (
+            plan["action_name"] == "stop_all"
+            or (
+                plan["action_name"] == "set_tracking_mode"
+                and plan["action_arguments"].get("mode") == "idle"
+            )
+            or (
+                plan["action_name"] == "set_vision_gate"
+                and plan["action_arguments"].get("enabled") is False
+            )
+        )
+        if (
+            _EXPLANATION_CONTEXT_RE.search(compact)
+            or _QUOTED_ACTION_RE.search(compact)
+            or _CANCEL_STOP_RE.search(compact)
+            or _CANCEL_EXPLICIT_STOP_RE.search(compact)
+            or (
+                not stop_action
+                and (
+                    _NEGATED_ACTION_RE.search(action_clause)
+                    or _POSTPOSED_NEGATION_RE.search(action_clause)
+                )
+            )
+        ):
+            return False, "non_command_context"
+        explicit_action = _explicit_conditional_action(action_clause)
+        if explicit_action is not None and (
+            plan["action_name"], plan["action_arguments"]
+        ) != explicit_action:
+            return False, "argument_conflict"
+        if _has_explicit_argument_conflict(
+            action_clause, plan["action_name"], plan["action_arguments"]
+        ):
+            return False, "argument_conflict"
+        return True, ""
+
     if _CANCEL_STOP_RE.search(compact) or _CANCEL_EXPLICIT_STOP_RE.search(compact):
         return False, "negated_action"
     if _LEADING_TRACKING_STOP_RE.search(compact) and not _EXPLANATION_CONTEXT_RE.search(compact):
@@ -381,3 +549,8 @@ def validate_action_arguments(name, arguments):
     this function enforces the robot's argument allowlist and physical limits.
     """
     return _valid_arguments(name, arguments)
+
+
+def registered_sequence_names():
+    """Return the immutable configured sequence/pose allowlist."""
+    return tuple(sorted(_SEQUENCE_NAMES))

@@ -6,13 +6,15 @@ import json
 
 
 _SEQUENCE_ACKS = {
+    "right_hand_up": "好的，我举起右手。",
+    "left_hand_up": "好的，我举起左手。",
     "turn_head_left": "好的，我向左看。",
     "turn_head_right": "好的，我向右看。",
     "look_center": "好的，我看向前面。",
     "wave_hello": "好的，我向你招手。",
     "basic_wave": "好的，我向你招手。",
-    "arms_up": "好的，我把手举起来。",
-    "raise_hand": "好的，我举手。",
+    "arms_up": "好的，我举起双手。",
+    "raise_hand": "好的，我举起右手。",
     "arms_down": "好的，我把手放下。",
     "basic_nod": "好的。",
     "happy_dance": "好呀。",

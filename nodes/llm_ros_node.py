@@ -16,7 +16,14 @@ from std_msgs.msg import String, UInt8MultiArray
 from pypinyin import Style, pinyin
 
 from services.action_acknowledgement import action_acknowledgement
-from services.action_intent_guard import deterministic_safety_action, validate_action_call
+from services.action_execution import CorrelatedActionExecutor
+from services.action_intent_guard import (
+    canonicalize_conditional_action,
+    deterministic_safety_action,
+    validate_action_arguments,
+    validate_action_call,
+)
+from services.action_status import ACTION_STATUS_TOPIC
 from services.llm_service import LLMService
 from services.camera_frame import (
     is_camera_inspection_request,
@@ -37,6 +44,11 @@ from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     encode_dialog_expression,
 )
+from services.conditional_task import (
+    CONDITIONAL_TASK_TOOL_NAME,
+    is_conditional_task_request,
+)
+from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
 from services.voice_debug import RollingVoiceDebugStore
 
 
@@ -70,6 +82,9 @@ class LLMBrainNode(Node):
         super().__init__('walle_llm_brain')
 
         self.llm = None
+        self._camera_inspection_workflow = None
+        self._conditional_task_workflow = None
+        self._action_executor = CorrelatedActionExecutor()
         self._voice_debug = RollingVoiceDebugStore()
         self.chat_history = deque(maxlen=24)
         self.punctuations = {'。', '？', '.', '?', '！', '!'}
@@ -91,6 +106,12 @@ class LLMBrainNode(Node):
         )
         self.tts_publisher = self.create_publisher(String, 'tts_text', 10)
         self.action_publisher = self.create_publisher(String, 'action_cmd', 10)
+        self.create_subscription(
+            String,
+            ACTION_STATUS_TOPIC,
+            self._on_action_status,
+            10,
+        )
         self.corrected_publisher = self.create_publisher(String, 'corrected_text', 10)
         self.full_ai_publisher = self.create_publisher(String, 'full_ai_text', 10)
         self.screen_dialog_publisher = self.create_publisher(String, 'screen_dialog', 10)
@@ -283,14 +304,19 @@ class LLMBrainNode(Node):
             )
             return
 
-        # 拍照只保存本地文件，不进入视觉模型。
-        if is_camera_photo_request(user_prompt):
+        conditional_request = is_conditional_task_request(user_prompt)
+        if conditional_request:
+            self._process_conditional_task_request(turn_id, user_prompt)
+            return
+
+        # 拍照只保存本地文件，不进入视觉模型。复合条件任务必须保持原子性，
+        # 不能被单步拍照/查看的快捷路由提前截断。
+        if is_camera_photo_request(user_prompt) and not conditional_request:
             self._process_camera_photo(turn_id, user_prompt)
             return
 
-        # 视觉查看是一个两阶段技能：先立即确认，再预览并把末帧交给视觉模型。
-        # 这样用户不会等待摄像头和第二次 LLM 请求时陷入沉默。
-        if is_camera_inspection_request(user_prompt):
+        # 单步视觉查看直接进入确定性工作流；复合条件任务交给专用工具规划。
+        if is_camera_inspection_request(user_prompt) and not conditional_request:
             self._process_camera_inspection(turn_id, user_prompt)
             return
 
@@ -434,6 +460,12 @@ class LLMBrainNode(Node):
                             f'[{turn_id}] Rejected malformed tool arguments: {action_name}'
                         )
                         continue
+                    if conditional_request and action_name != CONDITIONAL_TASK_TOOL_NAME:
+                        rejected_actions.append((action_name, "compound_task_must_stay_atomic"))
+                        self.get_logger().warning(
+                            f'[{turn_id}] Rejected split compound-task tool: {action_name}'
+                        )
+                        continue
                     allowed, rejection_reason = validate_action_call(
                         user_prompt,
                         action_name,
@@ -450,6 +482,16 @@ class LLMBrainNode(Node):
                         self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
                         self._process_camera_inspection(turn_id, user_prompt)
                         return
+                    if action_name == CONDITIONAL_TASK_TOOL_NAME:
+                        self.get_logger().info(
+                            f'[{turn_id}] Conditional task workflow requested.'
+                        )
+                        self._process_conditional_task(
+                            turn_id,
+                            user_prompt,
+                            action_arguments,
+                        )
+                        return
                     action_payload = {
                         'turn_id': turn_id,
                         'name': action_name,
@@ -463,8 +505,17 @@ class LLMBrainNode(Node):
                     self.action_publisher.publish(action_msg)
                 elif data_type == 'done':
                     finish_reason = data.get('finish_reason') or 'unknown'
-                    log = self.get_logger().warning if finish_reason == 'length' else self.get_logger().info
-                    log(f'[{turn_id}] LLM stream completed: finish_reason={finish_reason}')
+                    # rclpy identifies a logging call by its source location.  Calling
+                    # different severity methods through one ``log`` variable makes a
+                    # later request fail when its finish reason changes.
+                    if finish_reason == 'length':
+                        self.get_logger().warning(
+                            f'[{turn_id}] LLM stream completed: finish_reason={finish_reason}'
+                        )
+                    else:
+                        self.get_logger().info(
+                            f'[{turn_id}] LLM stream completed: finish_reason={finish_reason}'
+                        )
 
         except Exception as e:
             self.get_logger().error(f'[{turn_id}] LLM request/stream failed: {e}\n{traceback.format_exc()}')
@@ -588,70 +639,268 @@ class LLMBrainNode(Node):
         self._finish_tts_turn(turn_id)
 
     def _process_camera_inspection(self, turn_id, user_prompt):
-        """确认 → TFT 预览 1.5 秒 → 末帧视觉 LLM → 播报结果。"""
-        confirmation = '好的，我看一下。'
-        self._publish_tts(confirmation, turn_id)
-        self._publish_screen_dialog(turn_id, user_prompt, confirmation, [])
+        """Run the camera graph and publish exactly one user-facing answer."""
+        workflow = getattr(self, '_camera_inspection_workflow', None)
+        if workflow is None:
+            workflow = CameraInspectionWorkflow(
+                capture=lambda: self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
+                ),
+                analyze=self._analyze_camera_frame,
+            )
+            self._camera_inspection_workflow = workflow
+        result = workflow.invoke(turn_id=turn_id, user_prompt=user_prompt)
+        answer = result['answer']
+        error = result.get('error')
 
-        preview = self._run_camera_preview(
-            duration_ms=self.tft_preview_settings.recognition_duration_ms,
+        if error:
+            self.get_logger().warning(
+                f'[{turn_id}] Camera inspection completed with error: {error}'
+            )
+        else:
+            self.chat_history.append({'role': 'user', 'content': user_prompt})
+            self.chat_history.append({'role': 'assistant', 'content': answer})
+            self.full_ai_publisher.publish(String(data=answer))
+
+        self._publish_tts(answer, turn_id)
+        self._publish_screen_dialog(turn_id, user_prompt, answer, [], error=error)
+        self._finish_tts_turn(turn_id)
+
+    def _on_action_status(self, message):
+        executor = getattr(self, '_action_executor', None)
+        if executor is not None:
+            executor.accept_status(message.data)
+
+    def _process_conditional_task_request(self, turn_id, user_prompt):
+        """Force a compound intent through the plan tool or fail closed."""
+        self.corrected_publisher.publish(String(data=user_prompt))
+        try:
+            for data in self.llm.chat_stream(
+                user_prompt,
+                self._history_for_request(),
+                tools_enabled=True,
+                only_action_name=CONDITIONAL_TASK_TOOL_NAME,
+                max_tokens_override=512,
+            ):
+                if data.get('type') != 'tool_call':
+                    continue
+                if data.get('name') != CONDITIONAL_TASK_TOOL_NAME:
+                    continue
+                try:
+                    plan = json.loads(data.get('arguments') or '{}')
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                plan = canonicalize_conditional_action(user_prompt, plan)
+                allowed, reason = validate_action_call(
+                    user_prompt,
+                    CONDITIONAL_TASK_TOOL_NAME,
+                    plan,
+                )
+                if not allowed:
+                    self.get_logger().warning(
+                        f'[{turn_id}] Rejected conditional plan: {reason}; '
+                        f'plan={json.dumps(plan, ensure_ascii=False)}'
+                    )
+                    continue
+                self._process_conditional_task(turn_id, user_prompt, plan)
+                return
+            plan = canonicalize_conditional_action(
+                user_prompt,
+                self._plan_conditional_task_as_json(user_prompt),
+            )
+            allowed, reason = validate_action_call(
+                user_prompt,
+                CONDITIONAL_TASK_TOOL_NAME,
+                plan,
+            )
+            if allowed:
+                self._process_conditional_task(turn_id, user_prompt, plan)
+                return
+            error = reason or 'conditional_plan_missing'
+        except Exception as exc:
+            error = str(exc)
+            self.get_logger().error(
+                f'[{turn_id}] Conditional planning failed: {exc}\n{traceback.format_exc()}'
+            )
+
+        answer = '这个条件任务没有生成可执行计划，所以我没有观察或执行动作。'
+        self.chat_history.append({'role': 'user', 'content': user_prompt})
+        self.chat_history.append({'role': 'assistant', 'content': answer})
+        self.full_ai_publisher.publish(String(data=answer))
+        self._publish_tts(answer, turn_id)
+        self._publish_screen_dialog(
+            turn_id,
+            user_prompt,
+            answer,
+            [],
+            error=error,
         )
-        if preview.busy:
-            failure = '我正在处理上一张画面，等一下再看。'
-            self._publish_tts(failure, turn_id)
-            self._publish_screen_dialog(
-                turn_id, user_prompt, failure, [], error='camera_preview_busy'
-            )
-            self._finish_tts_turn(turn_id)
-            return
-        frame = preview.last_frame
-        if not frame:
-            failure = '我现在看不到画面，检查一下摄像头连接。'
-            self._publish_tts(failure, turn_id)
-            self._publish_screen_dialog(
-                turn_id, user_prompt, failure, [], error='camera_frame_unavailable'
-            )
-            self._finish_tts_turn(turn_id)
-            return
+        self._finish_tts_turn(turn_id)
 
-        import base64
+    def _plan_conditional_task_as_json(self, user_prompt):
+        """Compatibility fallback for providers that omit function calls."""
+        prompt = (
+            '把下面的现实条件任务转换成一个 JSON 对象。只能输出 JSON，不要回答任务，'
+            '不要声称已经观察或执行。对象必须且只能包含 observation、condition、'
+            'action_name、action_arguments。condition 保留用户完整的肯定或否定条件。'
+            'action_name 只能是 play_sequence、express_emotion、set_tracking_mode、'
+            'set_vision_gate、stop_all。常用 play_sequence 参数：举手=raise_hand，'
+            '点头=basic_nod，挥手=wave_hello，双手放下=arms_down，回正=look_center；'
+            'action_arguments 必须是对应动作的参数对象。禁止使用 move_chassis。\n'
+            f'用户任务：{user_prompt}'
+        )
+        chunks = []
+        for data in self.llm.chat_stream(
+            prompt,
+            [],
+            tools_enabled=False,
+            structured_answer=False,
+            system_prompt=(
+                '你是机器人条件任务规划器，只做受限 JSON 转换，不观察环境、不执行动作。'
+            ),
+            max_tokens_override=384,
+        ):
+            if data.get('type') == 'text' and data.get('content'):
+                chunks.append(data['content'])
+        raw = ''.join(chunks).strip()
+        if raw.startswith('```') and raw.endswith('```'):
+            lines = raw.splitlines()
+            raw = '\n'.join(lines[1:-1]).strip() if len(lines) >= 3 else raw
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            start, end = raw.find('{'), raw.rfind('}')
+            if start < 0 or end <= start:
+                raise ValueError('conditional_json_plan_missing')
+            value = json.loads(raw[start:end + 1])
+        if not isinstance(value, dict):
+            raise ValueError('conditional_json_plan_not_object')
+        # Action arguments are intentionally not validated here.  The caller
+        # first translates an explicit consequent such as “点头” to the local
+        # allowlist, then runs the same strict validator as native tool calls.
+        return value
+
+    def _process_conditional_task(self, turn_id, user_prompt, plan):
+        """Run one validated observe-condition-action graph to completion."""
+        workflow = getattr(self, '_conditional_task_workflow', None)
+        if workflow is None:
+            workflow = ConditionalTaskWorkflow(
+                capture=lambda: self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
+                ),
+                evaluate=self._evaluate_camera_condition,
+                authorize=lambda _prompt, name, arguments: validate_action_arguments(
+                    name, arguments
+                ),
+                execute=self._execute_workflow_action,
+            )
+            self._conditional_task_workflow = workflow
+
+        try:
+            result = workflow.invoke(
+                turn_id=turn_id,
+                user_prompt=user_prompt,
+                plan=plan,
+            )
+            answer = result.get('answer') or '这次任务没有完成。'
+            error = result.get('error')
+        except Exception as exc:
+            self.get_logger().error(
+                f'[{turn_id}] Conditional task failed: {exc}\n{traceback.format_exc()}'
+            )
+            result = {}
+            answer = '这个任务计划没有通过检查，所以我没有执行动作。'
+            error = str(exc)
+
+        action_result = result.get('action_result')
+        actions = []
+        if isinstance(action_result, dict):
+            actions.append({
+                'name': action_result.get('action') or plan.get('action_name', ''),
+                'arguments': json.dumps(plan.get('action_arguments', {}), ensure_ascii=False),
+                'status': action_result.get('status', 'failed'),
+                'request_id': action_result.get('request_id', ''),
+            })
+        if error:
+            self.get_logger().warning(
+                f'[{turn_id}] Conditional task completed with error: {error}'
+            )
+        else:
+            self.get_logger().info(f'[{turn_id}] Conditional task completed.')
+
+        self.chat_history.append({'role': 'user', 'content': user_prompt})
+        self.chat_history.append({'role': 'assistant', 'content': answer})
+        self.full_ai_publisher.publish(String(data=answer))
+        self._publish_tts(answer, turn_id)
+        self._publish_screen_dialog(
+            turn_id,
+            user_prompt,
+            answer,
+            actions,
+            error=error,
+        )
+        self._finish_tts_turn(turn_id)
+
+    def _evaluate_camera_condition(self, frame, observation, condition):
+        """Ask the visual model for a closed yes/no/uncertain decision."""
+        image_b64 = base64.b64encode(frame).decode('ascii')
+        prompt = (
+            '请只依据附带的当前摄像头画面判断条件。返回一个 JSON 对象，且只能包含 '
+            'decision 和 evidence。decision 只能是 yes、no、uncertain；图片不足以确认时'
+            '必须使用 uncertain。不要执行动作，不要输出 Markdown 或其他文字。\n'
+            f'观察任务：{observation}\n判断条件：{condition}'
+        )
+        chunks = []
+        for data in self.llm.chat_stream(
+            prompt,
+            [],
+            image_base64=image_b64,
+            tools_enabled=False,
+            structured_answer=False,
+            system_prompt=(
+                '你是机器人视觉条件判断器。只能依据当前图片返回严格 JSON；'
+                '无法确认时必须返回 uncertain，禁止猜测。'
+            ),
+            max_tokens_override=160,
+        ):
+            if data.get('type') == 'text' and data.get('content'):
+                chunks.append(data['content'])
+        return ''.join(chunks).strip()
+
+    def _execute_workflow_action(self, name, arguments):
+        executor = self._action_executor
+        return executor.execute(
+            name,
+            arguments,
+            publish=lambda payload: self.action_publisher.publish(String(data=payload)),
+            owner_available=lambda: self.action_publisher.get_subscription_count() > 0,
+            timeout=20.0,
+            source='llm_conditional_task',
+        )
+
+    def _analyze_camera_frame(self, frame, user_prompt):
+        """Return a plain-text visual answer without requiring tool calling."""
         image_b64 = base64.b64encode(frame).decode('ascii')
         visual_prompt = (
             '请根据我附带的摄像头画面回答用户的问题。只输出简短、自然、可直接播报的中文答案，'
             '不要输出修正文本标签、分析过程、工具调用或括号说明。\n'
             f'用户问题：{user_prompt}'
         )
-        try:
-            chunks = []
-            for data in self.llm.chat_stream(
-                visual_prompt,
-                self._visual_history(),
-                image_base64=image_b64,
-                tools_enabled=False,
-                structured_answer=False,
-                system_prompt=(
-                    '你是瓦力的视觉。只依据当前摄像头图片回答问题；看不清时明确说看不清，'
-                    '不要猜测。答案使用简短自然的中文，不能输出分析过程或任何标签。'
-                ),
-            ):
-                if data.get('type') == 'text' and data.get('content'):
-                    chunks.append(data['content'])
-            answer = self._clean_visual_answer(''.join(chunks))
-            if not answer:
-                raise RuntimeError('视觉模型返回空答案')
-
-            self._publish_tts(answer, turn_id)
-            self.chat_history.append({'role': 'user', 'content': user_prompt})
-            self.chat_history.append({'role': 'assistant', 'content': answer})
-            self.full_ai_publisher.publish(String(data=answer))
-            self._publish_screen_dialog(turn_id, user_prompt, answer, [])
-        except Exception as exc:
-            self.get_logger().error(f'[{turn_id}] Vision request failed: {exc}\n{traceback.format_exc()}')
-            failure = '这张图我没分析出来，你换个角度再让我看看。'
-            self._publish_tts(failure, turn_id)
-            self._publish_screen_dialog(turn_id, user_prompt, failure, [], error=str(exc))
-        finally:
-            self._finish_tts_turn(turn_id)
+        chunks = []
+        for data in self.llm.chat_stream(
+            visual_prompt,
+            self._visual_history(),
+            image_base64=image_b64,
+            tools_enabled=False,
+            structured_answer=False,
+            system_prompt=(
+                '你是瓦力的视觉。只依据当前摄像头图片回答问题；看不清时明确说看不清，'
+                '不要猜测。答案使用简短自然的中文，不能输出分析过程或任何标签。'
+            ),
+        ):
+            if data.get('type') == 'text' and data.get('content'):
+                chunks.append(data['content'])
+        return self._clean_visual_answer(''.join(chunks))
 
     def _process_camera_photo(self, turn_id, user_prompt):
         """确认 → TFT 预览 3 秒 → 保存末帧；不调用视觉模型。"""

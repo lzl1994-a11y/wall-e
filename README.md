@@ -376,9 +376,18 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 
 独立的 `tft_tcp_service_node` 会自动启动 TFT TCP 服务；文本 LLM 与多模态语音
 节点只通过 ROS 请求预览，不再绑定 TCP 端口。ESP32 连接上位机的 9000 端口并以
-`WALL_E_TFT` 发送 HELLO 后，平时只保持连接和心跳；“看一下/识别一下”会预览
-1.5 秒并把末帧交给视觉模型，“拍照”会预览 3 秒、保存末帧到本地且不调用模型。
+`WALL_E_TFT` 发送 HELLO 后，平时只保持连接和心跳；“看一下/识别一下”会通过
+LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取得结果后只播报一次
+最终答案；“拍照”会预览 3 秒、保存末帧到本地且不调用模型。
 摄像头图像继续复用 `/camera_frame`，不会重复打开摄像头。默认配置如下：
+
+“观察环境，如果条件成立就执行动作”使用独立的 LangGraph 复合任务图：模型只生成
+`observation / condition / action_name / action_arguments` 受限计划，程序依次完成拍摄、
+`yes/no/uncertain` 条件判断、安全校验和动作执行。只有 `yes` 会下发动作，并且必须收到
+对应 `/action_status` 的 `completed` 终态才会向用户报告完成；`no`、`uncertain`、超时、
+畸形计划或动作失败都不会报告成功。条件内容不限于特定物体，可描述人物、颜色、姿态、
+数量或空间关系。当前单帧任务禁止自动移动底盘，仅开放有界预设动作、表情、跟踪开关与
+停止操作；需要移动的自主任务必须先接入连续感知和避障。
 
 主程序启动时，`camera_capture_node` 会立即拉起唯一的 `hobot_usb_cam` 并保持热备；
 平时只丢弃未被租用的帧。视觉问答、拍照或跟踪请求只开启 `/camera_frame` 转发，
@@ -463,6 +472,28 @@ llm:
 `llm.key` 应填写真实方舟 API Key；示例中的环境变量仅用于说明，当前 YAML 不会自动展开环境变量。模型名、区域和是否可用以你的方舟控制台为准。豆包配置会通过标准 OpenAI `chat/completions` 调用；当 `reasoning_effort` 为 `fast` 时，程序传递火山方舟官方支持的 `thinking: {type: disabled}` 参数。
 
 豆包既可用于 `pipeline.mode: asr_llm` 的文本回复，也可用于 `pipeline.mode: multimodal` 的原始音频直聊。后者请在方舟控制台选择确认支持音频输入的模型或接入点；已用项目的 `16 kHz / Mono / WAV` 测试语音验证 `doubao-seed-2-0-lite-260428` 可用。
+
+### 小米 MiMo LLM / 多模态
+
+Web 配置页选择“小米 / MiMo”，并填写官方 OpenAI 兼容接口。文本对话和动作工具可使用 `mimo-v2.5-pro`：
+
+```yaml
+pipeline:
+  mode: asr_llm
+llm:
+  provider: xiaomi_mimo
+  model: mimo-v2.5-pro
+  url: https://api.xiaomimimo.com/v1
+  key: your-mimo-api-key
+  temperature: 0.4
+  max_tokens: 512
+  reasoning_effort: fast
+  tool_model: ''
+```
+
+MiMo 的深度思考默认开启；项目在 `reasoning_effort: fast` 时发送 `thinking: {type: disabled}`，让语音对话更早得到可播报正文。选择 `default` 时不发送开关，保留模型默认行为。旧配置即使误写了其他服务商，只要模型名以 `mimo-` 开头或接口主机为 `xiaomimimo.com`，也会应用同一兼容逻辑。
+
+`mimo-v2.5` 支持图片和原始音频理解。使用 `pipeline.mode: multimodal` 时，项目按小米协议把 `16 kHz / Mono / WAV` 录音包装为 `data:audio/wav;base64,...`；`mimo-v2.5-pro` 不应作为音频直连模型。页面只提示这些能力差异，不限制模型名称。
 
 ### 百度千帆 LLM / 多模态
 

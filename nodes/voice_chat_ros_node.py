@@ -28,7 +28,12 @@ from std_msgs.msg import String, UInt8MultiArray
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
+from services.action_execution import CorrelatedActionExecutor
+from services.action_intent_guard import validate_action_arguments
+from services.action_status import ACTION_STATUS_TOPIC
 from services.camera_frame import save_camera_photo
+from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
+from services.dialog_workflow import ConditionalTaskWorkflow
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
     GAME_MODE_STATE_TOPIC,
@@ -67,6 +72,9 @@ class VoiceChatNode(Node):
         self.tts_pub = self.create_publisher(String, "tts_text", 10)
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, "action_cmd", 10)
+        self._action_executor = CorrelatedActionExecutor()
+        self._conditional_task_workflow = None
+        self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_action_status, 10)
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
         self.dialog_motion_pub = self.create_publisher(
             String, DIALOG_MOTION_VAD_TOPIC, 10
@@ -331,12 +339,68 @@ class VoiceChatNode(Node):
     def _on_tool_call(self, name, arguments):
         if name == "inspect_camera":
             return self._process_camera_inspection(arguments)
+        if name == CONDITIONAL_TASK_TOOL_NAME:
+            return self._process_conditional_task(arguments)
         payload = build_action_cmd(name, arguments)
         msg = String()
         msg.data = payload
         self.action_pub.publish(msg)
         self.get_logger().info(f"Tool: {name}({arguments})")
         return None
+
+    def _on_action_status(self, message):
+        executor = getattr(self, "_action_executor", None)
+        if executor is not None:
+            executor.accept_status(message.data)
+
+    def _process_conditional_task(self, plan):
+        """Run one audio-selected observe-condition-action graph."""
+        workflow = getattr(self, "_conditional_task_workflow", None)
+        if workflow is None:
+            workflow = ConditionalTaskWorkflow(
+                capture=lambda: self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
+                ),
+                evaluate=self._evaluate_camera_condition,
+                authorize=lambda _prompt, name, arguments: validate_action_arguments(
+                    name, arguments
+                ),
+                execute=self._execute_workflow_action,
+            )
+            self._conditional_task_workflow = workflow
+        try:
+            result = workflow.invoke(
+                turn_id=self._ensure_turn_id(),
+                user_prompt="audio_conditional_task",
+                plan=plan,
+            )
+            if result.get("error"):
+                self.get_logger().warning(
+                    f"Conditional task completed with error: {result['error']}"
+                )
+            return result.get("answer") or "这次任务没有完成。"
+        except Exception as exc:
+            self.get_logger().error(
+                f"Conditional task failed: {exc}\n{traceback.format_exc()}"
+            )
+            return "这个任务计划没有通过检查，所以我没有执行动作。"
+
+    def _evaluate_camera_condition(self, frame, observation, condition):
+        return self.vc.evaluate_image_condition(
+            observation,
+            condition,
+            base64.b64encode(frame).decode("ascii"),
+        )
+
+    def _execute_workflow_action(self, name, arguments):
+        return self._action_executor.execute(
+            name,
+            arguments,
+            publish=lambda payload: self.action_pub.publish(String(data=payload)),
+            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
+            timeout=20.0,
+            source="voice_conditional_task",
+        )
 
     def _on_expression(self, expression, intensity):
         turn_id = self._ensure_turn_id()

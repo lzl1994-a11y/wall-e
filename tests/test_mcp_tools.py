@@ -26,9 +26,9 @@ class FastMcpToolTests(unittest.TestCase):
             )
         self.assertEqual(parsed, ("play_sequence", {"sequence_name": "turn_head_left"}))
 
-    def test_fastmcp_2x_enumerates_six_openai_tools_with_schemas(self):
+    def test_fastmcp_2x_enumerates_openai_tools_with_schemas(self):
         tools = mcp_service.get_chat_tools()
-        self.assertEqual(len(tools), 6)
+        self.assertEqual(len(tools), 7)
         self.assertEqual(
             {item["function"]["name"] for item in tools},
             {
@@ -38,6 +38,7 @@ class FastMcpToolTests(unittest.TestCase):
                 "set_tracking_mode",
                 "set_vision_gate",
                 "inspect_camera",
+                "run_conditional_task",
             },
         )
         for item in tools:
@@ -57,6 +58,21 @@ class FastMcpToolTests(unittest.TestCase):
         self.assertEqual(
             set(by_name["set_tracking_mode"]["parameters"]["properties"]["mode"]["enum"]),
             {"follow_me", "look_at_me", "idle"},
+        )
+        conditional = by_name["run_conditional_task"]["parameters"]
+        self.assertEqual(
+            set(conditional["properties"]["action_name"]["enum"]),
+            {
+                "express_emotion",
+                "play_sequence",
+                "set_tracking_mode",
+                "set_vision_gate",
+                "stop_all",
+            },
+        )
+        self.assertEqual(
+            conditional["required"],
+            ["observation", "condition", "action_name", "action_arguments"],
         )
 
     def test_empty_fastmcp_registry_is_diagnostic_error_not_silent_empty_tools(self):
@@ -194,22 +210,14 @@ class LlmToolAvailabilityTests(unittest.TestCase):
                 list(service.chat_stream("转个头", tools_enabled=True))
         service.client.chat.completions.create.assert_not_called()
 
-    def test_structured_dialog_emits_expression_before_speech(self):
+    def test_plain_dialog_emits_default_expression_before_streamed_speech(self):
         class DialogResponse:
             def __iter__(self):
-                tool_call = types.SimpleNamespace(
-                    index=0,
-                    function=types.SimpleNamespace(
-                        name="direct_answer",
-                        arguments=(
-                            '{"response":"真的吗？它长什么样？",'
-                            '"expression":"surprised","intensity":"medium"}'
-                        ),
-                    ),
-                )
                 yield types.SimpleNamespace(choices=[types.SimpleNamespace(
-                    delta=types.SimpleNamespace(content=None, tool_calls=[tool_call]),
-                    finish_reason="tool_calls",
+                    delta=types.SimpleNamespace(
+                        content="真的吗？它长什么样？", tool_calls=None
+                    ),
+                    finish_reason="stop",
                 )])
 
         service = self._service()
@@ -222,14 +230,14 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         self.assertEqual(events[0], {
             "type": "dialog_expression",
-            "expression": "surprised",
-            "intensity": "medium",
+            "expression": "neutral",
+            "intensity": "low",
         })
         self.assertEqual(events[1], {
             "type": "text", "content": "真的吗？它长什么样？"
         })
 
-    def test_json_fallback_recovers_when_provider_ignores_forced_tool(self):
+    def test_plain_content_does_not_start_a_second_json_request(self):
         class PlainResponse:
             def __iter__(self):
                 yield types.SimpleNamespace(choices=[types.SimpleNamespace(
@@ -241,28 +249,19 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.settings["provider"] = "baidu_qianfan"
-        json_response = types.SimpleNamespace(choices=[types.SimpleNamespace(
-            message=types.SimpleNamespace(content=(
-                '{"response":"真的吗？","expression":"surprised",'
-                '"intensity":"high"}'
-            ))
-        )])
-        service.client.chat.completions.create.side_effect = [
-            PlainResponse(), json_response
-        ]
+        service.client.chat.completions.create.return_value = PlainResponse()
         with patch("services.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
             events = list(service.chat_stream("我看到外星人了", tools_enabled=True))
 
-        self.assertEqual(events[0]["expression"], "surprised")
-        self.assertEqual(events[0]["intensity"], "high")
-        self.assertEqual(events[1]["content"], "真的吗？")
-        fallback_request = service.client.chat.completions.create.call_args_list[1].kwargs
-        self.assertEqual(fallback_request["response_format"], {"type": "json_object"})
+        self.assertEqual(events[0]["expression"], "neutral")
+        self.assertEqual(events[0]["intensity"], "low")
+        self.assertEqual(events[1]["content"], "expression: surprised")
+        service.client.chat.completions.create.assert_called_once()
 
-    def test_json_fallback_preserves_explicit_robot_action(self):
+    def test_content_first_response_never_recovers_action_with_second_request(self):
         class PlainResponse:
             def __iter__(self):
                 yield types.SimpleNamespace(choices=[types.SimpleNamespace(
@@ -272,14 +271,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.settings["provider"] = "baidu_qianfan"
-        json_response = types.SimpleNamespace(choices=[types.SimpleNamespace(
-            message=types.SimpleNamespace(content=(
-                '```json\n{"response":"好呀。","expression":"happy","intensity":0.7,'
-                '"actions":[{"action":"play_sequence","parameters":'
-                '{"sequence_name":"raise_hand"}}]}\n```'
-            ))
-        )])
-        service.client.chat.completions.create.side_effect = [PlainResponse(), json_response]
+        service.client.chat.completions.create.return_value = PlainResponse()
         action_schema = [{
             "type": "function",
             "function": {
@@ -291,20 +283,9 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         with patch("services.llm_service.get_action_tools", return_value=action_schema):
             events = list(service.chat_stream("举起手来。", tools_enabled=True))
 
-        self.assertIn(
-            {
-                "type": "tool_call",
-                "name": "play_sequence",
-                "arguments": '{"sequence_name": "raise_hand"}',
-            },
-            events,
-        )
-        self.assertEqual(events[0]["expression"], "happy")
-        self.assertEqual(events[0]["intensity"], "high")
-        fallback_request = service.client.chat.completions.create.call_args_list[1].kwargs
-        fallback_prompt = fallback_request["messages"][0]["content"]
-        self.assertIn("actions", fallback_prompt)
-        self.assertIn("play_sequence", fallback_prompt)
+        self.assertFalse(any(event["type"] == "tool_call" for event in events))
+        self.assertEqual(events[1], {"type": "text", "content": "我举起手啦。"})
+        service.client.chat.completions.create.assert_called_once()
 
     def test_json_fallback_discards_unoffered_actions(self):
         value = {
@@ -341,6 +322,51 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         self.assertEqual(request["tool_choice"], "auto")
         self.assertIn("tools", request)
 
+    def test_conditional_planning_offers_only_the_atomic_task_tool(self):
+        class ConditionalResponse:
+            def __iter__(self):
+                tool_call = types.SimpleNamespace(
+                    index=0,
+                    function=types.SimpleNamespace(
+                        name="run_conditional_task",
+                        arguments=(
+                            '{"observation":"观察前方","condition":"有人挥手",'
+                            '"action_name":"play_sequence","action_arguments":'
+                            '{"sequence_name":"basic_nod"}}'
+                        ),
+                    ),
+                )
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=[tool_call]),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = ConditionalResponse()
+        schemas = [{
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        } for name in ("play_sequence", "run_conditional_task")]
+        with patch("services.llm_service.get_action_tools", return_value=schemas):
+            events = list(service.chat_stream(
+                "如果有人挥手你就点头",
+                tools_enabled=True,
+                only_action_name="run_conditional_task",
+            ))
+
+        request = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(
+            [tool["function"]["name"] for tool in request["tools"]],
+            ["run_conditional_task"],
+        )
+        self.assertEqual(request["tool_choice"], "auto")
+        self.assertEqual(events[0]["type"], "tool_call")
+        self.assertFalse(any(event["type"] == "dialog_expression" for event in events))
+
     def test_action_only_response_is_valid_without_direct_answer(self):
         class ActionOnlyResponse:
             def __iter__(self):
@@ -371,6 +397,52 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         )
         self.assertEqual(events[-1], {"type": "done", "finish_reason": "tool_calls"})
 
+    def test_tool_first_camera_discards_unoffered_direct_answer_preamble(self):
+        class CameraResponse:
+            def __iter__(self):
+                calls = [
+                    types.SimpleNamespace(
+                        index=0,
+                        function=types.SimpleNamespace(
+                            name="direct_answer",
+                            arguments=(
+                                '{"response":"好的，我看一下。",'
+                                '"expression":"neutral","intensity":"low"}'
+                            ),
+                        ),
+                    ),
+                    types.SimpleNamespace(
+                        index=1,
+                        function=types.SimpleNamespace(
+                            name="inspect_camera",
+                            arguments='{"question":"看看我手里有什么"}',
+                        ),
+                    ),
+                ]
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=calls),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = CameraResponse()
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "inspect_camera",
+                "description": "查看摄像头画面",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            events = list(service.chat_stream("看看我手里有什么", tools_enabled=True))
+
+        camera_index = next(
+            index for index, event in enumerate(events)
+            if event["type"] == "tool_call" and event["name"] == "inspect_camera"
+        )
+        self.assertEqual(camera_index, 0)
+        self.assertFalse(any(event["type"] == "text" for event in events))
+
     def test_plain_content_is_valid_with_action_tools_enabled(self):
         class PlainResponse:
             def __iter__(self):
@@ -388,10 +460,154 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
             events = list(service.chat_stream("你好", tools_enabled=True))
-        self.assertEqual(events[0], {"type": "text", "content": "你好，我在。"})
+        self.assertEqual(events[0], {
+            "type": "dialog_expression",
+            "expression": "neutral",
+            "intensity": "low",
+        })
+        self.assertEqual(events[1], {"type": "text", "content": "你好，我在。"})
         self.assertEqual(events[-1], {"type": "done", "finish_reason": "stop"})
+        request = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(
+            [tool["function"]["name"] for tool in request["tools"]],
+            ["play_sequence"],
+        )
+        self.assertNotIn("每轮必须调用 direct_answer", request["messages"][0]["content"])
+        service.client.chat.completions.create.assert_called_once()
 
-    def test_tool_call_wins_even_when_provider_streams_text_first(self):
+    def test_plain_content_is_yielded_before_the_stream_is_fully_consumed(self):
+        class DeferredResponse:
+            def __init__(self):
+                self.consumed = 0
+
+            def __iter__(self):
+                self.consumed += 1
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content="第一句。", tool_calls=None),
+                    finish_reason=None,
+                )])
+                self.consumed += 1
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content="第二句。", tool_calls=None),
+                    finish_reason="stop",
+                )])
+
+        response = DeferredResponse()
+        service = self._service()
+        service.client.chat.completions.create.return_value = response
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            stream = service.chat_stream("你好", tools_enabled=True)
+            self.assertEqual(next(stream)["type"], "dialog_expression")
+            self.assertEqual(response.consumed, 1)
+            self.assertEqual(
+                next(stream), {"type": "text", "content": "第一句。"}
+            )
+            self.assertEqual(response.consumed, 1)
+            self.assertEqual(
+                next(stream), {"type": "text", "content": "第二句。"}
+            )
+            self.assertEqual(response.consumed, 2)
+            self.assertEqual(
+                next(stream), {"type": "done", "finish_reason": "stop"}
+            )
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_tool_first_branch_discards_later_plain_content(self):
+        class ToolThenTextResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=[
+                        types.SimpleNamespace(
+                            index=0,
+                            function=types.SimpleNamespace(
+                                name="play_sequence",
+                                arguments='{"sequence_name":',
+                            ),
+                        ),
+                    ]),
+                    finish_reason=None,
+                )])
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=[
+                        types.SimpleNamespace(
+                            index=0,
+                            function=types.SimpleNamespace(
+                                name=None,
+                                arguments='"turn_head_left"}',
+                            ),
+                        ),
+                    ]),
+                    finish_reason=None,
+                )])
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(
+                        content="动作已经完成。", tool_calls=None
+                    ),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = ToolThenTextResponse()
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            events = list(service.chat_stream("向左转头", tools_enabled=True))
+        self.assertEqual(events[0], {
+            "type": "tool_call",
+            "name": "play_sequence",
+            "arguments": '{"sequence_name": "turn_head_left"}',
+        })
+        self.assertFalse(any(event["type"] == "text" for event in events))
+
+    def test_hidden_reasoning_does_not_lock_out_a_later_tool_call(self):
+        class HiddenReasoningThenToolResponse:
+            def __iter__(self):
+                for content in ("<think>内部分析", "完成</think>"):
+                    yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content=content, tool_calls=None),
+                        finish_reason=None,
+                    )])
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=[
+                        types.SimpleNamespace(
+                            index=0,
+                            function=types.SimpleNamespace(
+                                name="play_sequence",
+                                arguments='{"sequence_name":"turn_head_left"}',
+                            ),
+                        ),
+                    ]),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = HiddenReasoningThenToolResponse()
+        with patch("services.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            events = list(service.chat_stream("向左转头", tools_enabled=True))
+        self.assertTrue(any(event["type"] == "tool_call" for event in events))
+        self.assertFalse(any(event["type"] == "text" for event in events))
+
+    def test_content_first_branch_discards_late_tool_call(self):
         class TextThenToolResponse:
             def __iter__(self):
                 yield types.SimpleNamespace(
@@ -422,17 +638,10 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
             events = list(service.chat_stream("你能转头吗？", tools_enabled=True))
-        self.assertFalse(any(event["type"] == "text" for event in events))
-        self.assertEqual(
-            events[0],
-            {
-                "type": "tool_call",
-                "name": "play_sequence",
-                "arguments": '{"sequence_name": "turn_head_left"}',
-            },
-        )
+        self.assertTrue(any(event["type"] == "text" for event in events))
+        self.assertFalse(any(event["type"] == "tool_call" for event in events))
 
-    def test_tool_call_wins_after_multiple_prior_text_chunks(self):
+    def test_content_first_branch_streams_all_text_and_discards_late_tool(self):
         class MultiTextThenToolResponse:
             def __iter__(self):
                 for content in ("好的。", "我来转头。"):
@@ -464,8 +673,11 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
             events = list(service.chat_stream("向左转头", tools_enabled=True))
-        self.assertFalse(any(event["type"] == "text" for event in events))
-        self.assertTrue(any(event["type"] == "tool_call" for event in events))
+        self.assertEqual(
+            [event["content"] for event in events if event["type"] == "text"],
+            ["好的。", "我来转头。"],
+        )
+        self.assertFalse(any(event["type"] == "tool_call" for event in events))
 
     def test_structured_request_does_not_poison_action_tool_cache(self):
         service = self._service()
@@ -488,11 +700,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         with patch("services.llm_service.get_action_tools", return_value=action_schema):
             list(service.chat_stream("转个头", tools_enabled=True))
         second_request = service.client.chat.completions.create.call_args_list[1].kwargs
-        self.assertEqual(second_request["tools"][1:], action_schema)
-        self.assertEqual(
-            second_request["tools"][0]["function"]["name"],
-            "direct_answer",
-        )
+        self.assertEqual(second_request["tools"], action_schema)
 
     def test_structured_answer_still_rejects_plain_content(self):
         from services.llm_service import StructuredAnswerUnavailableError

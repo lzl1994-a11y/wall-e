@@ -377,6 +377,121 @@ class ActionIntentGuardTests(unittest.TestCase):
                 "invalid_arguments",
             )
 
+    def test_conditional_task_is_atomic_and_runtime_validated(self):
+        plan = {
+            "observation": "看看前面有什么",
+            "condition": "画面中有人正在挥手",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "basic_nod"},
+        }
+        self.assertAllowed(
+            "看看前面，如果有人挥手你就点头。",
+            "run_conditional_task",
+            plan,
+        )
+        self.assertRejected(
+            "看看前面，如果有人挥手你就点头。",
+            "run_conditional_task",
+            {**plan, "action_arguments": {"sequence_name": "wave_hello"}},
+            "argument_conflict",
+        )
+        self.assertAllowed(
+            "如果看到障碍物你就停止。",
+            "run_conditional_task",
+            {
+                "observation": "观察前方障碍物",
+                "condition": "前方存在障碍物",
+                "action_name": "stop_all",
+                "action_arguments": {},
+            },
+        )
+        self.assertRejected(
+            "假设有人挥手会怎么样？",
+            "run_conditional_task",
+            plan,
+            "not_conditional_command",
+        )
+        self.assertRejected(
+            "看看前面，如果有人挥手你就点头。",
+            "run_conditional_task",
+            {**plan, "action_name": "move_chassis", "action_arguments": {
+                "direction": "forward", "duration": 1
+            }},
+            "invalid_arguments",
+        )
+
+    def test_conditional_consequent_can_repair_model_action_mapping(self):
+        from services.action_intent_guard import canonicalize_conditional_action
+
+        wrong_plan = {
+            "observation": "观察前方画面",
+            "condition": "画面是纯白色空白图片",
+            "action_name": "express_emotion",
+            "action_arguments": {"emotion": "happy", "intensity": "medium"},
+        }
+        repaired = canonicalize_conditional_action(
+            "看看前面，如果画面是纯白色空白图片，你就点头。",
+            wrong_plan,
+        )
+        self.assertEqual(repaired["condition"], wrong_plan["condition"])
+        self.assertEqual(repaired["action_name"], "play_sequence")
+        self.assertEqual(
+            repaired["action_arguments"], {"sequence_name": "basic_nod"}
+        )
+        self.assertAllowed(
+            "看看前面，如果画面是纯白色空白图片，你就点头。",
+            "run_conditional_task",
+            repaired,
+        )
+
+    def test_conditional_action_mapping_ignores_gesture_in_condition(self):
+        from services.action_intent_guard import canonicalize_conditional_action
+
+        plan = {
+            "observation": "观察前方人物",
+            "condition": "有人挥手",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "basic_nod"},
+        }
+        self.assertEqual(
+            canonicalize_conditional_action(
+                "看看前面，如果有人挥手你就点头。", plan
+            )["action_arguments"],
+            {"sequence_name": "basic_nod"},
+        )
+
+    def test_right_left_and_double_hand_actions_are_unambiguous(self):
+        from services.action_intent_guard import canonicalize_conditional_action
+
+        self.assertAllowed(
+            "举起右手。",
+            "play_sequence",
+            {"sequence_name": "right_hand_up"},
+        )
+        self.assertRejected(
+            "举起右手。",
+            "play_sequence",
+            {"sequence_name": "arms_up"},
+            "argument_conflict",
+        )
+        self.assertAllowed(
+            "举起双手。",
+            "play_sequence",
+            {"sequence_name": "arms_up"},
+        )
+        plan = {
+            "observation": "观察前方",
+            "condition": "前方有箱子",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "arms_up"},
+        }
+        self.assertEqual(
+            canonicalize_conditional_action(
+                "看看前面，如果有箱子你就举起右手。", plan
+            )["action_arguments"],
+            {"sequence_name": "right_hand_up"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

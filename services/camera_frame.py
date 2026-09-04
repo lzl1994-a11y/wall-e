@@ -67,7 +67,17 @@ def is_camera_inspection_request(user_prompt: str) -> bool:
         "这是啥", "是啥东西", "有啥东西", "你认识吗", "你认得吗",
         "what is this", "what do you see",
     )
-    return any(marker in text for marker in markers)
+    if any(marker in text for marker in markers):
+        return True
+
+    # Explicit deictic vision questions should not depend on the configured
+    # chat model deciding to call inspect_camera. Keep the subject requirement
+    # so unrelated phrases such as “看看电影” do not open the camera.
+    return bool(re.search(
+        r"(?:看看|看一看|瞅瞅|瞧瞧).{0,12}"
+        r"(?:我?(?:手里|手上|掌心)|前面|面前|眼前|这个|这里)",
+        text,
+    ))
 
 
 class CameraFrameProvider:
