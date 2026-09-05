@@ -10,6 +10,7 @@
 import time
 import json
 import signal
+import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
@@ -47,20 +48,20 @@ class PID:
         self.out_min = out_min
         self.out_max = out_max
         self.integral = 0.0
-        self.prev_error = 0.0
+        self.prev_error = None
 
     def update(self, error, dt):
         if dt <= 0.0:
             return 0.0
         self.integral += error * dt
-        derivative = (error - self.prev_error) / dt
+        derivative = 0.0 if self.prev_error is None else (error - self.prev_error) / dt
         out = self.kp * error + self.ki * self.integral + self.kd * derivative
         self.prev_error = error
         return max(min(out, self.out_max), self.out_min)
 
     def reset(self):
         self.integral = 0.0
-        self.prev_error = 0.0
+        self.prev_error = None
 
 
 class WaliTrackingNode(Node):
@@ -88,6 +89,13 @@ class WaliTrackingNode(Node):
     CAMERA_LEASE_SEC = 30.0
     CAMERA_RENEW_SEC = 10.0
     DETECTION_WARNING_INTERVAL_SEC = 5.0
+    GAZE_START_PITCH = 0.18
+    GAZE_MIN_PITCH = -0.20
+    GAZE_MAX_PITCH = 0.65
+    PITCH_RATE = 0.35  # normalized pitch per second, independent of FPS
+    TARGET_MEMORY_SEC = 1.5
+    FILTER_TIME_SEC = 0.15
+    DETECTION_STALE_SEC = 0.5
 
     def __init__(self):
         super().__init__('wali_tracking_node')
@@ -107,6 +115,8 @@ class WaliTrackingNode(Node):
         self._last_detection_message = 0.0
         self._last_nonempty_detection = 0.0
         self._last_detection_warning = 0.0
+        self._target_tracks = {}
+        self._last_horizontal_error = 0.0
 
         # ── PID 控制器 ──
         # 底盘水平追踪 (模式1用)
@@ -119,9 +129,6 @@ class WaliTrackingNode(Node):
         # 内部仰俯状态 (-1.0: 最下, 1.0: 最上)
         self._current_neck_pitch = 0.0 
         self._neck_kinematics = load_neck_kinematics()
-
-        # 状态机：抬头寻找人脸的持续时间
-        self._search_face_tilt_timer = 0.0
 
         # ── 订阅与发布 ──
         if HAS_HOBOT_MSGS:
@@ -188,7 +195,12 @@ class WaliTrackingNode(Node):
             # Target-loss timeout starts when inference actually comes online,
             # not while its native dependencies are still starting/building.
             self._last_target_seen = now
-        dt = now - self._last_time
+        elapsed = now - self._last_time
+        if elapsed > self.DETECTION_STALE_SEC:
+            self._pid_chassis_yaw.reset()
+            self._pid_chassis_dist.reset()
+            self._pid_neck_pitch.reset()
+        dt = max(0.001, min(elapsed, 0.1))
         self._last_time = now
 
         body_boxes = []
@@ -197,6 +209,8 @@ class WaliTrackingNode(Node):
         for target in msg.targets:
             for roi in target.rois:
                 rect = roi.rect
+                if rect.width <= 0 or rect.height <= 0:
+                    continue
                 cx = rect.x_offset + rect.width / 2.0
                 cy = rect.y_offset + rect.height / 2.0
                 area_ratio = (rect.width * rect.height) / (self.IMG_WIDTH * self.IMG_HEIGHT)
@@ -229,12 +243,16 @@ class WaliTrackingNode(Node):
         if not body_boxes:
             return  # 丢失交由 _control_tick 处理原地打转
 
+        best = self._select_target(body_boxes, "body", dt)
+        if best is None:
+            return
         self._mark_target_seen()
-        best = self._largest_box(body_boxes)
         cx, cy, area_ratio = best
 
         # 因为图像被底层 flip_horizontal 翻转了，所以此处 X 误差必须取反，才能保证底盘转向正确的物理方向
         x_error = -(cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+        if abs(x_error) > 0.05:
+            self._last_horizontal_error = x_error
         dist_error = self.BODY_TARGET_RATIO - area_ratio
 
         # 2. 误差死区，防止原地震荡抖动
@@ -246,6 +264,8 @@ class WaliTrackingNode(Node):
         # 3. PID 计算底盘动力
         yaw_out = self._pid_chassis_yaw.update(x_error, dt)
         dist_out = self._pid_chassis_dist.update(dist_error, dt)
+        # Turn toward an off-centre person before advancing out of their view.
+        dist_out *= max(0.0, 1.0 - abs(x_error) / 0.6)
 
         # yaw_out > 0 表示人在右侧，需要右转
         left_throttle = dist_out + yaw_out
@@ -262,69 +282,67 @@ class WaliTrackingNode(Node):
 
     def _handle_face_follow(self, face_boxes, body_boxes, dt):
         """模式 2: 禅定注视 (底盘静止，双舵机动态俯仰)"""
-        target = None
-        now = time.monotonic()
-        
-        # 1. 寻找目标
-        if face_boxes:
-            # Multiple people may be visible. Always look at the largest face,
-            # which is normally the person closest to Wali.
-            target = self._largest_box(face_boxes)
-            self._search_face_tilt_timer = 0.0 # 清除抬头搜寻倒计时
-        elif body_boxes:
-            # 只看见身体没看见脸，尝试抬头搜寻
-            if self._search_face_tilt_timer == 0.0:
-                self._search_face_tilt_timer = now
-                
-            if now - self._search_face_tilt_timer < 2.0:
-                # 前两秒内强制让脖子上扬，试图把脸纳入画面
-                self._current_neck_pitch += 0.5 * dt
-                self._current_neck_pitch = max(min(self._current_neck_pitch, 1.0), -1.0)
-                # 因为没找到目标，所以水平偏差假定为身体的偏差来做仿生扭头
-                best_body = self._largest_box(body_boxes)
-                # 因为图像被底层 flip_horizontal 翻转了，这里取反
-                x_error = -(best_body[0] - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
-                self._publish_head_and_neck(x_error, self._current_neck_pitch)
-                self._mark_target_seen()
-                self._stop_motor() # 底盘死死刹住
-                return
-            else:
-                # 抬头找了2秒还是没脸，妥协降级，直接把这个肚子当目标
-                target = self._largest_box(body_boxes)
-
-        if not target:
-            return # 彻底丢失，交由 _control_tick 处理
-
-        # 2. 锁定目标，进行调节
-        self._mark_target_seen()
-        cx, cy, area_ratio = target
-
-        # 只要画面内有目标，底盘死死刹住
+        target = self._select_target(face_boxes, "face", dt)
         self._stop_motor()
+        if target is None:
+            # A torso centre is not a face aim point. Hold pitch through face
+            # dropouts; repeatedly raising then tracking the belly caused bows.
+            body = self._select_target(body_boxes, "gaze_body", dt)
+            self._pid_neck_pitch.reset()
+            if body is not None:
+                self._mark_target_seen()
+                x_error = -(body[0] - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
+                self._publish_head_and_neck(x_error, self._current_neck_pitch)
+            return
 
-        # 垂直误差 (负=偏上需抬头, 正=偏下需低头)
+        self._mark_target_seen()
+        cx, cy, _ = target
         y_error = (cy - self.IMG_HEIGHT / 2.0) / (self.IMG_HEIGHT / 2.0)
-        # 水平误差 (纯粹为了生动仿生头扭动) - 取反以补偿底层的左右镜像
         x_error = -(cx - self.IMG_WIDTH / 2.0) / (self.IMG_WIDTH / 2.0)
-        
-        # 死区控制：如果误差很小，当作 0 处理，防止舵机疯狂抽搐
         if abs(x_error) < 0.05:
             x_error = 0.0
-        if abs(y_error) < 0.05:
-            y_error = 0.0
-
-        # PID 计算脖子动力
-        pitch_out = self._pid_neck_pitch.update(y_error, dt)
-
-        # 累加到绝对俯仰角 (-1.0 最下 到 1.0 最上) 
-        # 注意: y_error负数代表目标在上方，我们需要仰角变大(+)。所以减去y_error。
-        self._current_neck_pitch += -pitch_out
-        self._current_neck_pitch = max(min(self._current_neck_pitch, 1.0), -1.0)
-
-
-
-        # 下发至 sequence_ros_node
+        if abs(y_error) < 0.08:
+            self._pid_neck_pitch.reset()
+            pitch_out = 0.0
+        else:
+            pitch_out = self._pid_neck_pitch.update(y_error, dt)
+        self._current_neck_pitch = max(
+            self.GAZE_MIN_PITCH,
+            min(self.GAZE_MAX_PITCH,
+                self._current_neck_pitch - pitch_out * self.PITCH_RATE * dt),
+        )
         self._publish_head_and_neck(x_error, self._current_neck_pitch)
+
+    def _select_target(self, boxes, kind, dt):
+        """Keep spatial continuity across size jitter and short occlusions.
+
+        This is geometric association, not person identification. After the
+        memory expires a new largest target may be acquired.
+        """
+        if not boxes:
+            return None
+        now = time.monotonic()
+        previous = self._target_tracks.get(kind)
+        if previous is None or now - previous[1] > self.TARGET_MEMORY_SEC:
+            best = self._largest_box(boxes)
+            self._pid_chassis_yaw.reset()
+            self._pid_chassis_dist.reset()
+            self._pid_neck_pitch.reset()
+        else:
+            old = previous[0]
+            def distance(box):
+                return math.hypot((box[0] - old[0]) / self.IMG_WIDTH,
+                                  (box[1] - old[1]) / self.IMG_HEIGHT)
+            candidates = [box for box in boxes
+                          if distance(box) <= 0.30
+                          and 0.25 <= box[2] / max(old[2], 1e-6) <= 4.0]
+            if not candidates:
+                return None
+            best = min(candidates, key=distance)
+            alpha = 1.0 - math.exp(-dt / self.FILTER_TIME_SEC)
+            best = tuple(a + alpha * (b - a) for a, b in zip(old, best))
+        self._target_tracks[kind] = (best, now)
+        return best
 
 
     def _control_tick(self):
@@ -364,9 +382,14 @@ class WaliTrackingNode(Node):
         if self.mode == self.MODE_FACE_FOLLOW:
             self._stop_motor()
             if lost_seconds >= self.SEARCH_STOP_DELAY_SEC and not self._search_halted:
-                self._current_neck_pitch = 0.0
-                self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
+                self._publish_head_and_neck(0.0, self._current_neck_pitch)
                 self._search_halted = True
+            return
+
+        # A cold/stalled detector cannot guide a search. Never rotate blindly
+        # during pipeline startup or keep the last forward command on a dropout.
+        if not detector_ready or now - self._last_detection_message > self.DETECTION_STALE_SEC:
+            self._stop_motor()
             return
 
         if lost_seconds >= self.SEARCH_STOP_DELAY_SEC:
@@ -380,12 +403,17 @@ class WaliTrackingNode(Node):
             return
 
         if lost_seconds >= self.SEARCH_START_DELAY_SEC:
-            # Heartbeat the search command throughout the 1s..5s loss window.
-            self._publish_motor(1, 2, self.SEARCH_ROTATE_SPEED)
+            # Heartbeat search in the last observed turn direction, 1s..5s.
+            if self._last_horizontal_error < 0:
+                self._publish_motor(2, 1, self.SEARCH_ROTATE_SPEED)
+            else:
+                self._publish_motor(1, 2, self.SEARCH_ROTATE_SPEED)
             if not self._search_active:
                 self._current_neck_pitch = 0.0
                 self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
                 self._search_active = True
+        elif lost_seconds >= 0.2:
+            self._stop_motor()
 
     def _warn_if_detection_is_missing(self, lost_seconds):
         if lost_seconds < self.SEARCH_STOP_DELAY_SEC:
@@ -505,7 +533,11 @@ class WaliTrackingNode(Node):
 
         if mode in (self.MODE_BODY_FOLLOW, self.MODE_FACE_FOLLOW):
             self.mode = mode
-            self._current_neck_pitch = 0.0
+            self._current_neck_pitch = self.GAZE_START_PITCH if mode == self.MODE_FACE_FOLLOW else 0.0
+            self._target_tracks.clear()
+            self._last_horizontal_error = 0.0
+            self._stop_motor()
+            self._publish_head_and_neck(0.0, self._current_neck_pitch)
             now = time.monotonic()
             self._mode_started_at = now
             self._last_detection_message = 0.0
