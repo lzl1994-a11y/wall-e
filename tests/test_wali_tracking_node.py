@@ -159,12 +159,14 @@ class WaliTrackingNodeTests(unittest.TestCase):
             node._set_tracking_mode("follow_me")
 
         with patch.object(module.time, "monotonic", return_value=101.1):
+            node._last_detection_message = 101.1
             node._control_tick()
         search_cmd = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
         self.assertEqual(search_cmd["left"]["action"], 1)
         self.assertEqual(search_cmd["right"]["action"], 2)
 
         with patch.object(module.time, "monotonic", return_value=105.1):
+            node._last_detection_message = 105.1
             node._control_tick()
         stop_cmd = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
         self.assertEqual(stop_cmd["left"]["action"], 0)
@@ -217,6 +219,73 @@ class WaliTrackingNodeTests(unittest.TestCase):
         self.assertEqual(node.mode, node.MODE_FACE_FOLLOW)
         warnings = [text for level, text in node.logger.messages if level == "warning"]
         self.assertTrue(any("视觉检测话题尚无消息" in text for text in warnings))
+
+    def test_gaze_starts_raised_and_body_dropout_does_not_bow(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        node._set_tracking_mode("look_at_me")
+        self.assertEqual(node._current_neck_pitch, node.GAZE_START_PITCH)
+        payload = json.loads(node.publishers["/servo_targets/tracking"].messages[-1].data)
+        self.assertEqual(payload["targets"]["neck_bottom"],
+                         node._neck_kinematics.targets(node.GAZE_START_PITCH)["neck_bottom"])
+        for _ in range(100):
+            node._handle_face_follow([], [(480, 480, 0.3)], 0.1)
+        self.assertEqual(node._current_neck_pitch, node.GAZE_START_PITCH)
+
+    def test_pitch_is_rate_limited_and_independent_of_frame_rate(self):
+        module = _load_tracking_module()
+        pitches = []
+        for fps in (10, 30):
+            node = module.WaliTrackingNode()
+            node._set_tracking_mode("look_at_me")
+            for _ in range(fps):
+                before = node._current_neck_pitch
+                node._handle_face_follow([(480, 400, 0.05)], [], 1 / fps)
+                self.assertLessEqual(abs(node._current_neck_pitch - before),
+                                     node.PITCH_RATE / fps + 1e-9)
+            pitches.append(node._current_neck_pitch)
+        self.assertAlmostEqual(*pitches, places=6)
+        for _ in range(300):
+            node._handle_face_follow([(480, 400, 0.05)], [], 0.1)
+        self.assertEqual(node._current_neck_pitch, node.GAZE_MIN_PITCH)
+
+    def test_target_does_not_switch_when_another_person_becomes_larger(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        with patch.object(module.time, "monotonic", return_value=100.0):
+            node._select_target([(200, 272, 0.2)], "body", 0.1)
+        with patch.object(module.time, "monotonic", return_value=100.1):
+            target = node._select_target([(205, 272, 0.18), (750, 272, 0.3)], "body", 0.1)
+            self.assertLess(target[0], 210)
+            self.assertIsNone(node._select_target([(750, 272, 0.3)], "body", 0.1))
+        with patch.object(module.time, "monotonic", return_value=102.0):
+            self.assertEqual(node._select_target([(750, 272, 0.3)], "body", 0.1)[0], 750)
+
+    def test_search_uses_last_direction_and_stops_when_detector_stalls(self):
+        module = _load_tracking_module()
+        with patch.object(module.time, "monotonic", return_value=100.0):
+            node = module.WaliTrackingNode()
+            node._set_tracking_mode("follow_me")
+            node._handle_body_follow([(800, 272, 0.2)], 0.1)
+        with patch.object(module.time, "monotonic", return_value=101.1):
+            node._last_detection_message = 101.1
+            node._control_tick()
+        motor = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
+        self.assertEqual((motor["left"]["action"], motor["right"]["action"]), (2, 1))
+        with patch.object(module.time, "monotonic", return_value=102.0):
+            node._control_tick()
+        motor = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
+        self.assertEqual((motor["left"]["action"], motor["right"]["action"]), (0, 0))
+
+    def test_follow_does_not_rotate_during_detector_startup(self):
+        module = _load_tracking_module()
+        with patch.object(module.time, "monotonic", return_value=100.0):
+            node = module.WaliTrackingNode()
+            node._set_tracking_mode("follow_me")
+        with patch.object(module.time, "monotonic", return_value=102.0):
+            node._control_tick()
+        motor = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
+        self.assertEqual((motor["left"]["action"], motor["right"]["action"]), (0, 0))
 
     def test_largest_face_box_is_selected(self):
         module = _load_tracking_module()
