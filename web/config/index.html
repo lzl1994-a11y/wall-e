@@ -96,7 +96,7 @@
         <div class="card-grid">
           <article class="card span-two mode-card" data-module="pipeline">
             <div class="card-heading-row"><h3>对话链路</h3><button class="button secondary small module-save" data-save-module="pipeline" type="button">保存本模块</button></div>
-            <label class="field full"><span>当前模式</span><select data-path="pipeline.mode"><option value="asr_llm">ASR → LLM → TTS（分段链路）</option><option value="multimodal">多模态 LLM（音频直连）</option></select></label>
+            <label class="field full"><span>当前模式</span><select id="pipeline-mode" data-path="pipeline.mode"><option value="asr_llm">ASR → LLM → TTS（分段链路）</option><option value="multimodal">多模态 LLM（音频直连）</option></select></label>
             <div class="mode-guide"><div class="mode-guide-item asr"><strong>ASR + LLM</strong><span>录音 → 语音识别 → 文本模型 → TTS</span></div><div class="mode-guide-item multimodal"><strong>多模态 LLM</strong><span>音频直接交给多模态模型处理</span></div></div>
           </article>
 
@@ -247,6 +247,7 @@
           <article class="card" data-module="llm">
             <div class="card-heading-row"><h3>LLM 服务</h3><button class="button secondary small module-save" data-save-module="llm" type="button">保存本模块</button></div>
             <div class="form-grid">
+              <p id="llm-audio-capability-notice" class="card-help warning full capability-notice" role="status" hidden>当前使用多模态 LLM（音频直连）模式。两种对话模式共用本卡片中的 LLM 配置；请确认主模型支持原始语音输入（16 kHz 单声道 WAV / input_audio）以及 Function Calling。页面只能校验配置格式，不能自动确认模型能力。</p>
               <label class="field"><span>服务商</span><select data-path="llm.provider"><option value="zhipu">智谱 AI</option><option value="aliyun">阿里云百炼 / Qwen-Omni</option><option value="doubao">火山方舟 / 豆包</option><option value="baidu_qianfan">百度智能云 / 千帆</option><option value="tencent_hunyuan">腾讯云 / 混元</option><option value="xiaomi_mimo">小米 / MiMo</option></select><small>MiMo 选择“快速优先”时会发送 thinking=disabled；mimo-v2.5-pro 适合文本与动作工具，原始音频/图片直连请选择 mimo-v2.5。腾讯混元不支持音频直连。</small></label>
               <label class="field"><span>模型</span><input data-path="llm.model" type="text" placeholder="示例：mimo-v2.5-pro、ernie-5.0 或 hunyuan-turbos-latest"></label>
               <label class="field"><span>动作工具模型（可选）</span><input data-path="llm.tool_model" type="text" placeholder="留空则复用主模型"></label>

@@ -185,6 +185,7 @@ input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacit
 .table-card { padding: 0; overflow: hidden; }
 .card-help { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .card-help.warning { color: #a85b35; }
+.capability-notice { padding: 11px 13px; border: 1px solid #efc5a9; border-radius: 9px; background: #fff7ed; }
 .mcp-token-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff8fb; }
 .mcp-token-row div { display: grid; gap: 3px; }
 .mcp-token-row small { color: var(--muted); }

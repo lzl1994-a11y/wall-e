@@ -508,6 +508,11 @@ function updateWebRtcPreGainValue() {
   if (slider && output) output.textContent = `${slider.value || 6} dB`;
 }
 
+function updateLlmAudioCapabilityNotice(mode) {
+  const notice = $("#llm-audio-capability-notice");
+  if (notice) notice.hidden = mode !== "multimodal";
+}
+
 function ensureLlmConfig() {
   if (!state.config.llm || typeof state.config.llm !== "object") {
     state.config.llm = {};
@@ -944,6 +949,7 @@ function refreshModuleFromSnapshot(module, payload) {
   }
   if (module === "vad") updateVadProviderPanels(state.config.vad.provider);
   if (module === "audio_capture") updateWebRtcPreGainValue();
+  if (module === "pipeline") updateLlmAudioCapabilityNotice(state.config.pipeline?.mode);
   if (module === "hardware") updateHardwareBackendPanels(state.config.hardware.backend);
   if (module === "servos") renderServos();
   if (module === "motors") renderMotors();
@@ -976,6 +982,7 @@ async function loadConfig() {
     updateLocalAsrEnginePanels(state.config.asr.engine);
     updateVadProviderPanels(state.config.vad.provider);
     updateWebRtcPreGainValue();
+    updateLlmAudioCapabilityNotice(state.config.pipeline?.mode);
     updateHardwareBackendPanels(state.config.hardware.backend);
     renderServos();
     renderMotors();
@@ -1189,6 +1196,9 @@ function bindEvents() {
   $$('[data-path]').forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
     markDirty(input.closest("[data-module]")?.dataset.module);
   }));
+  $("#pipeline-mode").addEventListener("change", (event) => {
+    updateLlmAudioCapabilityNotice(event.target.value);
+  });
   $("#asr-mode").addEventListener("change", (event) => {
     if (state.config) state.config.asr.mode = event.target.value;
     updateAsrModePanels(event.target.value);

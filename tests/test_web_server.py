@@ -190,6 +190,17 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn("https://api.xiaomimimo.com/v1", html)
         self.assertIn("thinking=disabled", html)
 
+    def test_multimodal_mode_shows_shared_llm_audio_capability_notice(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('id="pipeline-mode" data-path="pipeline.mode"', html)
+        self.assertIn('id="llm-audio-capability-notice"', html)
+        self.assertIn("两种对话模式共用本卡片中的 LLM 配置", html)
+        self.assertIn("请确认主模型支持原始语音输入", html)
+
+        app_js = (DEFAULT_STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn('mode !== "multimodal"', app_js)
+
     def test_llm_patch_accepts_xiaomi_mimo_provider(self):
         status, result = self.request(
             "/api/config",
