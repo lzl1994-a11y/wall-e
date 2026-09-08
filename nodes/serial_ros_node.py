@@ -14,10 +14,11 @@ hardware_bridge_node 发送；ubuntu_i2c 模式下本节点只负责屏幕通信
 import json
 import threading
 import time
+import uuid
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from services.serial_bridge import SerialBridge
@@ -25,7 +26,7 @@ from services.esp32_netcfg import (
     Esp32NetworkConfigurator,
     NetworkConfigError,
     load_saved_network_settings,
-    network_settings_match_status,
+    resolve_session_network_settings,
     validate_network_payload,
 )
 from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
@@ -60,6 +61,17 @@ class SerialNode(Node):
             QoSProfile(depth=1),
         )
         self._netcfg_response_publisher = self.create_publisher(String, RESPONSE_TOPIC, 10)
+        self._netcfg_status_publisher = self.create_publisher(
+            String,
+            "/esp32_netcfg_status",
+            QoSProfile(
+                # Retain both startup phases long enough for an audio process
+                # that initializes slightly later than this node.
+                depth=4,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE,
+            ),
+        )
         self.create_subscription(String, REQUEST_TOPIC, self.netcfg_request_callback, 10)
         self._tft_ready_subscription = self.create_subscription(
             String,
@@ -85,14 +97,25 @@ class SerialNode(Node):
             self._music_active = state["state"] in {"loading", "playing"}
 
     def _apply_saved_network_on_start(self):
-        """Synchronize the retained full Wi-Fi/TCP configuration after startup."""
+        """Push a fresh RAM-only Wi-Fi/TCP session after every process start."""
+        settings = None
+        status_request_id = uuid.uuid4().hex
         try:
-            settings = load_saved_network_settings()
+            saved = load_saved_network_settings()
         except NetworkConfigError as exc:
             self.get_logger().error(f"启动时 ESP32 网络配置无效: {exc}")
+            self._publish_netcfg_status("failed", detail=str(exc), request_id=status_request_id)
             return
-        if settings is None:
-            self.get_logger().info("未保存 ESP32 网络配置，跳过启动时 SET/APPLY")
+        if saved is None:
+            detail = "未配置 esp32_network，无法建立 ESP32 网络会话"
+            self.get_logger().info(detail)
+            self._publish_netcfg_status("failed", detail=detail, request_id=status_request_id)
+            return
+        try:
+            settings, sources = resolve_session_network_settings(saved)
+        except NetworkConfigError as exc:
+            self.get_logger().error(f"启动时解析当前网络失败: {exc}")
+            self._publish_netcfg_status("failed", detail=str(exc), request_id=status_request_id)
             return
         deadline = time.monotonic() + 30.0
         while not self._tft_preview_ready.is_set():
@@ -102,24 +125,41 @@ class SerialNode(Node):
                 self.get_logger().error(
                     "等待 TFT TCP 服务监听就绪超时，未向 ESP32 应用网络配置"
                 )
+                self._publish_netcfg_status(
+                    "failed",
+                    settings=settings,
+                    detail="等待 TFT TCP 服务监听就绪超时",
+                    request_id=status_request_id,
+                )
                 return
         if not self._netcfg_request_lock.acquire(timeout=5.0):
             self.get_logger().warning("ESP32 网络配置正忙，跳过启动时重复应用")
+            self._publish_netcfg_status(
+                "failed",
+                settings=settings,
+                detail="ESP32 网络配置正忙",
+                request_id=status_request_id,
+            )
             return
         try:
-            status = self.bridge.run_exclusive(
+            # QUERY is deliberately retained as a protocol/version health check,
+            # but v2 session data is always resent because firmware keeps it in
+            # RAM only and may have rebooted independently of the upper host.
+            self.bridge.run_exclusive(
                 lambda stream: self.netcfg.query(stream=stream)
             )
-            if network_settings_match_status(settings, status):
-                self.get_logger().info(
-                    "ESP32 网络配置已一致，跳过启动时 SET/APPLY"
-                )
-                return
             self.get_logger().info(
-                f"启动时同步 ESP32 图像服务器: {settings.host}:{settings.port}"
+                f"启动时下发 ESP32 会话网络: {settings.host}:{settings.port} "
+                f"(ssid={sources['ssid_source']}, host={sources['host_source']})"
             )
             result = self.bridge.run_exclusive(
-                lambda stream: self.netcfg.save_and_apply(settings, stream=stream)
+                lambda stream: self.netcfg.save_and_apply(
+                    settings,
+                    stream=stream,
+                    on_phase=lambda state: self._publish_netcfg_status(
+                        state, settings=settings, request_id=status_request_id
+                    ),
+                )
             )
             self.get_logger().info(
                 f"启动时 ESP32 网络配置成功: SET #{result['set_seq']}, "
@@ -127,10 +167,35 @@ class SerialNode(Node):
             )
         except (NetworkConfigError, RuntimeError) as exc:
             self.get_logger().error(f"启动时 ESP32 网络配置失败: {exc}")
+            self._publish_netcfg_status(
+                "failed", settings=settings, detail=str(exc), request_id=status_request_id
+            )
         except Exception:
             self.get_logger().error("启动时 ESP32 网络配置串口通信失败")
+            self._publish_netcfg_status(
+                "failed",
+                settings=settings,
+                detail="ESP32 网络配置串口通信失败",
+                request_id=status_request_id,
+            )
         finally:
             self._netcfg_request_lock.release()
+
+    def _publish_netcfg_status(
+        self, state, *, settings=None, detail="", request_id=""
+    ):
+        """Publish a secret-free latest status for UI and prompt-audio consumers."""
+        body = {
+            "state": state,
+            "host": settings.host if settings is not None else "",
+            "port": settings.port if settings is not None else 0,
+            "detail": detail,
+            "request_id": request_id,
+            "published_at": time.time(),
+        }
+        self._netcfg_status_publisher.publish(
+            String(data=json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+        )
 
     # ------------------------------------------------------------------
     # screen_dialog: 屏幕文字
@@ -266,17 +331,37 @@ class SerialNode(Node):
                 # browser request must not reset a healthy screen connection.
                 settings = validate_network_payload(payload)
                 data = self.bridge.run_exclusive(
-                    lambda stream: self.netcfg.save_and_apply(settings, stream=stream)
+                    lambda stream: self.netcfg.save_and_apply(
+                        settings,
+                        stream=stream,
+                        on_phase=lambda state: self._publish_netcfg_status(
+                            state, settings=settings, request_id=request_id
+                        ),
+                    )
                 )
             else:
                 data = self.bridge.run_exclusive(lambda stream: self.netcfg.query(stream=stream))
             response.update(ok=True, data=data)
         except (NetworkConfigError, RuntimeError) as exc:
             response["error"] = str(exc)
+            if operation == "save_and_apply":
+                self._publish_netcfg_status(
+                    "failed",
+                    settings=locals().get("settings"),
+                    detail=str(exc),
+                    request_id=request_id,
+                )
         except Exception:
             # Do not expose or log request contents; serial details are not useful
             # to the browser and could accidentally include sensitive input.
             response["error"] = "ESP32 网络配置串口通信失败"
+            if operation == "save_and_apply":
+                self._publish_netcfg_status(
+                    "failed",
+                    settings=locals().get("settings"),
+                    detail=response["error"],
+                    request_id=request_id,
+                )
         try:
             message = String()
             message.data = json.dumps(response, ensure_ascii=False, separators=(",", ":"))

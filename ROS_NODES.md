@@ -41,7 +41,7 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `nodes/music_player_node.py` | `music_player_node` | 是 | `/action_cmd`, `/game_mode_state` | `/music_audio`, `/music_spectrum`, `/music_state`, `/action_status` | 用 FFmpeg 连续解码本地音乐并发布 PCM 与频谱数据；语音期间不会暂停播放进度。 |
 | `nodes/audio_playback_node.py` | `audio_playback_node` | 是 | `audio_output`, `/music_audio`, `wake_audio_output` | `llm_busy`, `wake_audio_done` | 声卡唯一所有者；在一个输出流中混合 TTS、唤醒提示音与音乐，并对音乐做语音闪避。 |
 | `nodes/tft_tcp_service_node.py` | `tft_tcp_service_node` | 是 | `/tft_preview_request`, `/vision_pipeline_cmd`, `/game_mode_state`, `/game_frame`, `/music_state`, `/music_spectrum` | `/tft_preview_result`, `tft_preview_ready`, `/game_mode_request` | 胸前 TFT 的唯一 TCP 服务所有者；统一仲裁拍照、跟踪、游戏和音乐频谱画面。 |
-| `nodes/serial_ros_node.py` | `walle_serial_node` | 是，除非加 `--no-serial` | `screen_dialog` | 无 | 串口/屏幕输出节点。接收完整对话包，把用户文本、AI 回复和动作命令写给下位机或屏幕。 |
+| `nodes/serial_ros_node.py` | `walle_serial_node` | 是，除非加 `--no-serial` | `screen_dialog`, `/esp32_netcfg_request` | `/esp32_netcfg_response`, `/esp32_netcfg_status` | 串口/屏幕输出及 NETCFG v2 会话节点。唯一读线程按序号路由配网响应，联网等待不阻塞普通屏幕/运动写入。 |
 
 ## 关键话题说明
 

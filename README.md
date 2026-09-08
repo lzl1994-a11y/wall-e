@@ -416,6 +416,20 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 语音开始播放后音乐平滑降至 20% 音量，语音播完后平滑恢复，播放进度持续推进。
 音乐结束不会中断语音，语音结束也不会关闭仍在播放的音乐；进入游戏模式会停止音乐。
 
+ESP32 配网状态通过 `/esp32_netcfg_status` 发布安全的 JSON（只包含
+`state/host/port/detail/request_id`，不包含 Wi-Fi 密码）。播放节点收到新的
+`configuring` 或 `connected` 状态后，分别播放预生成的“ESP配网中”和“ESP配网成功”；
+重复状态会按 `request_id` 去重，`failed` 只留给屏幕和日志展示。提示音使用独立的
+`system_audio_output/system_audio_done` 协议，但仍进入同一个共享混音器，因此不会打开第二个
+声卡流、不会暂停音乐，播放时会沿用语音侧的音乐降音策略。提示音资产可用
+`python generate_wake_response.py esp_network_configuring.wav esp_network_connected.wav` 重新生成。
+
+NETCFG v2 是上位机管理的临时会话：启动时先用 `QUERY` 验证协议，再从当前活动
+Wi-Fi 选择 `core/config.yaml` 中对应的私密密码，自动探测实际 IPv4，并无条件执行
+`SET`/`APPLY`。ESP32 只在 RAM 中保存本次参数，不写 NVS；上位机配置仍作为检测失败时
+的明确回退。串口由一个常驻读取线程按 32 位请求序号分发响应，最长 65 秒的联网等待
+不会占用普通屏幕或运动写通道。
+
 ```yaml
 tft_preview:
   bind_address: 0.0.0.0

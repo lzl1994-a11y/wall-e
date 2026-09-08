@@ -10,13 +10,14 @@ from services.playback_service import PlaybackService
 class MixingPlaybackService(PlaybackService):
     BLOCK_SEC = 0.02
 
-    def __init__(self, *args, on_wake_complete=None, **kwargs):
+    def __init__(self, *args, on_wake_complete=None, on_system_complete=None, **kwargs):
         self._mix_lock = threading.Lock()
         self._ready = threading.Event()
         self._stopped = threading.Event()
         self._mixer = None
         self._next_device_attempt = 0.0
         self.on_wake_complete = on_wake_complete
+        self.on_system_complete = on_system_complete
         # The base constructor starts the worker; it waits until initialization.
         super().__init__(*args, **kwargs)
         self._mixer = AudioMixer(self.sample_rate)
@@ -35,11 +36,14 @@ class MixingPlaybackService(PlaybackService):
         self._submit("end_speech", "dialogue")
 
     def play_wake(self, samples, request_id):
-        # Keep the complete wake clip and its acknowledgement marker together,
+        self.play_prompt(samples, "wake", request_id)
+
+    def play_prompt(self, samples, category, request_id):
+        # Keep each complete prompt and its acknowledgement marker together,
         # even when TTS publishes concurrently on another ROS topic.
         with self._mix_lock:
             self._mixer.play(samples)
-            self._mixer.end_speech(("wake", request_id))
+            self._mixer.end_speech(("prompt", category, request_id))
         self._ready.set()
 
     def play_music(self, samples):
@@ -89,9 +93,12 @@ class MixingPlaybackService(PlaybackService):
         finally:
             # Even an unavailable speaker must release capture for this turn.
             for token in completed:
-                if isinstance(token, tuple) and token[0] == "wake":
-                    if self.on_wake_complete:
-                        self.on_wake_complete(token[1])
+                if isinstance(token, tuple) and token[0] == "prompt":
+                    category, request_id = token[1], token[2]
+                    if category == "wake" and self.on_wake_complete:
+                        self.on_wake_complete(request_id)
+                    elif category == "system" and self.on_system_complete:
+                        self.on_system_complete(request_id)
                 elif self.on_turn_complete:
                     self.on_turn_complete()
 

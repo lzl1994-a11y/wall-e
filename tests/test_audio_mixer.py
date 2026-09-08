@@ -115,6 +115,28 @@ class AudioMixerTests(unittest.TestCase):
                 player._play_mix_block()
         self.assertEqual(events, ["wake-2", "dialogue"])
 
+    def test_system_prompt_uses_speech_lane_and_has_its_own_ack(self):
+        events = []
+        with patch("services.playback_service.threading.Thread"):
+            player = MixingPlaybackService(
+                sample_rate=1000,
+                on_turn_complete=lambda: events.append("dialogue"),
+                on_wake_complete=lambda value: events.append(("wake", value)),
+                on_system_complete=lambda value: events.append(("system", value)),
+            )
+        stream = MagicMock()
+        stream.latency = 0.0
+        player._stream = stream
+        player.play_music(np.full(1000, 10000, dtype=np.int16))
+        player.play_prompt(np.full(40, 3000, dtype=np.int16), "system", "net-1")
+        for _ in range(20):
+            player._play_mix_block()
+
+        self.assertEqual(events, [("system", "net-1")])
+        self.assertTrue(player._mixer.music.active)
+        stream.stop.assert_not_called()
+        stream.close.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

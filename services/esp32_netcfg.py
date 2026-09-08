@@ -8,7 +8,10 @@ The optional direct-open path exists only for diagnostics and focused tests.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import secrets
+import socket
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -28,7 +31,7 @@ except ImportError:  # Supports: python services/esp32_netcfg.py
     from usb_devices import DEFAULT_CONFIG_PATH, serial_ports_for_role
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_COMMAND_BYTES = 512
 SET_RESPONSE_TIMEOUT_SECONDS = 8.0
 APPLY_ACCEPT_TIMEOUT_SECONDS = 8.0
@@ -68,8 +71,8 @@ class NetworkSettings:
 RESULT_MESSAGES = {
     3: "设备拒绝了命令或参数",
     4: "设备没有可应用的候选网络配置",
-    5: "设备已连通，但写入 NVS 失败",
-    6: "Wi-Fi、TCP 图像服务器或 HELLO 验证失败，设备已回退到原配置",
+    5: "设备返回协议保留结果码",
+    6: "Wi-Fi、TCP 图像服务器或 HELLO 验证失败，本次 RAM 网络会话未建立",
 }
 DETAIL_MESSAGES = {
     1: "协议版本错误",
@@ -80,6 +83,8 @@ DETAIL_MESSAGES = {
     6: "图像服务器端口错误",
     7: "命令长度错误，或设备当前状态不允许操作",
     8: "没有配置任何有效 SSID",
+    9: "Wi-Fi 连接超时",
+    10: "TCP 图像服务器或 HELLO 握手超时",
 }
 
 
@@ -191,6 +196,118 @@ def load_saved_network_settings(
     if payload is None:
         return None
     return validate_network_payload(payload)
+
+
+def detect_active_wifi_ssid(*, command_runner: Callable[..., Any] = subprocess.run) -> str | None:
+    """Return the active Linux Wi-Fi SSID without ever querying its password."""
+    commands = (
+        ["iwgetid", "--raw"],
+        ["nmcli", "-t", "-f", "IN-USE,SSID", "device", "wifi"],
+    )
+    for command in commands:
+        try:
+            completed = command_runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            continue
+        if completed.returncode != 0:
+            continue
+        output = (completed.stdout or "").strip()
+        if not output:
+            continue
+        if command[0] == "iwgetid":
+            return output.splitlines()[0].strip() or None
+        for line in output.splitlines():
+            if line.startswith("*:"):
+                # nmcli escapes ':' and '\\' with a backslash in terse mode.
+                value = line[2:].replace("\\:", ":").replace("\\\\", "\\").strip()
+                if value:
+                    return value
+    return None
+
+
+def detect_routable_ipv4(*, socket_factory: Callable[..., Any] = socket.socket) -> str | None:
+    """Resolve the IPv4 selected by the host's default route without sending data."""
+    stream = None
+    try:
+        stream = socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
+        stream.connect(("1.1.1.1", 80))
+        value = str(stream.getsockname()[0]).strip()
+        address = ipaddress.ip_address(value)
+        if address.version != 4 or address.is_unspecified or address.is_loopback:
+            return None
+        return value
+    except (OSError, ValueError):
+        return None
+    finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+def resolve_session_network_settings(
+    saved: NetworkSettings,
+    *,
+    ssid_detector: Callable[[], str | None] = detect_active_wifi_ssid,
+    host_detector: Callable[[], str | None] = detect_routable_ipv4,
+) -> tuple[NetworkSettings, dict[str, str]]:
+    """Build a RAM-only boot session from live networking and safe fallbacks.
+
+    A detected SSID must have a matching password in the private config. When
+    Linux cannot expose the active SSID/address, the explicitly saved values are
+    used as a fallback and the source is returned for clear operator logging.
+    """
+    detected_ssid = (ssid_detector() or "").strip()
+    configured = [credential for credential in saved.wifi if credential.ssid]
+    if detected_ssid:
+        matching = next(
+            (credential for credential in configured if credential.ssid == detected_ssid),
+            None,
+        )
+        if matching is None:
+            raise NetworkConfigError(
+                "当前连接的 Wi-Fi 未在 esp32_network.wifi 中配置密码"
+            )
+        ordered = [matching, *(item for item in configured if item is not matching)]
+        ssid_source = "detected"
+    else:
+        if not configured:
+            raise NetworkConfigError("无法检测当前 Wi-Fi，且没有可用的配置回退")
+        ordered = configured
+        ssid_source = "configured_fallback"
+
+    detected_host = (host_detector() or "").strip()
+    host = detected_host or saved.host.strip()
+    try:
+        parsed_host = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise NetworkConfigError(
+            "无法检测上位机 IPv4，且 esp32_network.host 不是有效 IPv4 回退地址"
+        ) from exc
+    if parsed_host.version != 4 or parsed_host.is_unspecified or parsed_host.is_loopback:
+        raise NetworkConfigError(
+            "上位机 IPv4 必须是 ESP32 可访问的非回环地址"
+        )
+    host_source = "detected" if detected_host else "configured_fallback"
+
+    padded = [*ordered[:3]]
+    while len(padded) < 3:
+        padded.append(WifiCredential(ssid="", password=""))
+    return (
+        NetworkSettings(
+            wifi=(padded[0], padded[1], padded[2]),
+            host=host,
+            port=saved.port,
+        ),
+        {"ssid_source": ssid_source, "host_source": host_source},
+    )
 
 
 class Esp32NetworkConfigurator:
@@ -319,7 +436,13 @@ class Esp32NetworkConfigurator:
         suffix = DETAIL_MESSAGES.get(detail, f"附加错误码 {detail}") if detail else ""
         return NetworkConfigError(f"{operation} 失败：{base}{('（' + suffix + '）') if suffix else ''}")
 
-    def save_and_apply(self, payload: NetworkSettings | Any, *, stream: Any | None = None) -> dict[str, Any]:
+    def save_and_apply(
+        self,
+        payload: NetworkSettings | Any,
+        *,
+        stream: Any | None = None,
+        on_phase: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         settings = payload if isinstance(payload, NetworkSettings) else validate_network_payload(payload)
         encoded = [
             encode_urlsafe_base64(value) if value else ""
@@ -334,7 +457,7 @@ class Esp32NetworkConfigurator:
             try:
                 set_seq = self._next_seq()
                 set_command = self._command(
-                    f"netcfg:set:{set_seq}|1|" + "|".join(encoded) + f"|{host_b64}|{settings.port}"
+                    f"netcfg:set:{set_seq}|{PROTOCOL_VERSION}|" + "|".join(encoded) + f"|{host_b64}|{settings.port}"
                 )
                 stream.write(set_command)
                 if hasattr(stream, "flush"):
@@ -342,9 +465,11 @@ class Esp32NetworkConfigurator:
                 result, detail = self._wait_result(stream, set_seq, "SET", SET_RESPONSE_TIMEOUT_SECONDS)
                 if (result, detail) != (0, 0):
                     raise self._result_error("SET", result, detail)
+                if on_phase is not None:
+                    on_phase("configuring")
 
                 apply_seq = self._next_distinct_seq(set_seq)
-                stream.write(self._command(f"netcfg:apply:{apply_seq}|1"))
+                stream.write(self._command(f"netcfg:apply:{apply_seq}|{PROTOCOL_VERSION}"))
                 if hasattr(stream, "flush"):
                     stream.flush()
                 result, detail = self._wait_result(stream, apply_seq, "APPLY", APPLY_ACCEPT_TIMEOUT_SECONDS, accepted=True)
@@ -353,6 +478,8 @@ class Esp32NetworkConfigurator:
                 result, detail = self._wait_result(stream, apply_seq, "APPLY", APPLY_FINAL_TIMEOUT_SECONDS)
                 if (result, detail) != (2, 0):
                     raise self._result_error("APPLY", result, detail)
+                if on_phase is not None:
+                    on_phase("connected")
                 return {"set_seq": set_seq, "apply_seq": apply_seq, "result": "applied"}
             finally:
                 if owns_stream:
@@ -367,7 +494,7 @@ class Esp32NetworkConfigurator:
             stream = stream or self._open()
             try:
                 seq = self._next_seq()
-                stream.write(self._command(f"netcfg:query:{seq}|1"))
+                stream.write(self._command(f"netcfg:query:{seq}|{PROTOCOL_VERSION}"))
                 if hasattr(stream, "flush"):
                     stream.flush()
                 deadline = self._monotonic() + QUERY_RESPONSE_TIMEOUT_SECONDS

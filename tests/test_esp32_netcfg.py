@@ -14,6 +14,7 @@ from services.esp32_netcfg import (
     encode_urlsafe_base64,
     load_saved_network_settings,
     network_settings_to_payload,
+    resolve_session_network_settings,
     validate_network_payload,
 )
 
@@ -98,51 +99,120 @@ class Esp32NetworkProtocolTests(unittest.TestCase):
             b"NETCFG:RESULT:1002|APPLY|2|0\r\n"
         )
         stream = FakeSerial(incoming)
-        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream)
+        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream, port_resolver=lambda: "test")
         client._next_seq = iter((1001, 1002)).__next__
         result = client.save_and_apply(
             {"wifi": [{"ssid": "MyWiFi", "password": "12345678"}] + [{"ssid": "", "password": ""}] * 2, "host": "192.168.1.100", "port": 9000}
         )
         self.assertEqual(result, {"set_seq": 1001, "apply_seq": 1002, "result": "applied"})
-        self.assertEqual(stream.writes[0], b"netcfg:set:1001|1|TXlXaUZp|MTIzNDU2Nzg|||||MTkyLjE2OC4xLjEwMA|9000\r\n")
-        self.assertEqual(stream.writes[1], b"netcfg:apply:1002|1\r\n")
+        self.assertEqual(stream.writes[0], b"netcfg:set:1001|2|TXlXaUZp|MTIzNDU2Nzg|||||MTkyLjE2OC4xLjEwMA|9000\r\n")
+        self.assertEqual(stream.writes[1], b"netcfg:apply:1002|2\r\n")
         self.assertTrue(stream.closed)
 
     def test_apply_acceptance_is_not_reported_as_success(self):
         stream = FakeSerial(b"NETCFG:RESULT:1|SET|0|0\nNETCFG:RESULT:2|APPLY|1|0\nNETCFG:RESULT:2|APPLY|6|0\n")
-        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream)
+        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream, port_resolver=lambda: "test")
         client._next_seq = iter((1, 2)).__next__
         with self.assertRaisesRegex(NetworkConfigError, "HELLO"):
             client.save_and_apply({"wifi": [{"ssid": "a", "password": ""}] + [{"ssid": "", "password": ""}] * 2, "host": "host", "port": 9000})
 
     def test_apply_sequence_is_distinct_when_random_source_collides(self):
         stream = FakeSerial(b"NETCFG:RESULT:9|SET|0|0\nNETCFG:RESULT:10|APPLY|1|0\nNETCFG:RESULT:10|APPLY|2|0\n")
-        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream)
+        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream, port_resolver=lambda: "test")
         client._next_seq = iter((9, 9, 10)).__next__
         client.save_and_apply({"wifi": [{"ssid": "a", "password": ""}] + [{"ssid": "", "password": ""}] * 2, "host": "host", "port": 9000})
-        self.assertEqual(stream.writes[1], b"netcfg:apply:10|1\r\n")
+        self.assertEqual(stream.writes[1], b"netcfg:apply:10|2\r\n")
 
     def test_query_decodes_response_and_never_includes_passwords(self):
-        stream = FakeSerial(b"plain log\rNETCFG:STATUS:8|1|3|1|TXlXaUZp|||MTkyLjE2OC4xLjEwMA|9000\n")
-        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream)
+        stream = FakeSerial(b"plain log\rNETCFG:STATUS:8|2|2|1|TXlXaUZp|||MTkyLjE2OC4xLjEwMA|9000\n")
+        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream, port_resolver=lambda: "test")
         client._next_seq = lambda: 8
         status = client.query()
         self.assertEqual(status["wifi"], [{"ssid": "MyWiFi"}, {"ssid": ""}, {"ssid": ""}])
         self.assertEqual(status["host"], "192.168.1.100")
-        self.assertTrue(status["active_from_nvs"])
+        self.assertFalse(status["active_from_nvs"])
         self.assertTrue(status["candidate_present"])
         self.assertNotIn("password", repr(status))
-        self.assertEqual(stream.writes, [b"netcfg:query:8|1\r\n"])
+        self.assertEqual(stream.writes, [b"netcfg:query:8|2\r\n"])
 
     def test_query_matching_result_error_is_reported_without_waiting_for_status(self):
         stream = FakeSerial(b"NETCFG:RESULT:8|QUERY|3|2\n")
-        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream)
+        client = Esp32NetworkConfigurator(serial_factory=lambda *_args, **_kwargs: stream, port_resolver=lambda: "test")
         client._next_seq = lambda: 8
         with self.assertRaisesRegex(NetworkConfigError, "QUERY.*字段"):
             client.query()
 
     def test_final_apply_timeout_is_at_least_65_seconds(self):
         self.assertGreaterEqual(APPLY_FINAL_TIMEOUT_SECONDS, 65.0)
+
+    def test_phase_callback_fires_only_after_set_ack_and_final_success(self):
+        stream = FakeSerial(
+            b"NETCFG:RESULT:1|SET|0|0\n"
+            b"NETCFG:RESULT:2|APPLY|1|0\n"
+            b"NETCFG:RESULT:2|APPLY|2|0\n"
+        )
+        client = Esp32NetworkConfigurator(
+            serial_factory=lambda *_args, **_kwargs: stream,
+            port_resolver=lambda: "test",
+        )
+        client._next_seq = iter((1, 2)).__next__
+        phases = []
+        client.save_and_apply(
+            {"wifi": [{"ssid": "a", "password": ""}] + [{"ssid": "", "password": ""}] * 2, "host": "192.168.1.2", "port": 9000},
+            on_phase=phases.append,
+        )
+        self.assertEqual(phases, ["configuring", "connected"])
+
+    def test_session_resolution_promotes_live_ssid_and_live_host(self):
+        saved = validate_network_payload(
+            {
+                "wifi": [
+                    {"ssid": "backup", "password": "backup-secret"},
+                    {"ssid": "live", "password": "live-secret"},
+                    {"ssid": "", "password": ""},
+                ],
+                "host": "192.168.1.9",
+                "port": 9000,
+            }
+        )
+        resolved, sources = resolve_session_network_settings(
+            saved,
+            ssid_detector=lambda: "live",
+            host_detector=lambda: "10.0.0.8",
+        )
+        self.assertEqual(resolved.wifi[0].ssid, "live")
+        self.assertEqual(resolved.wifi[0].password, "live-secret")
+        self.assertEqual(resolved.host, "10.0.0.8")
+        self.assertEqual(sources, {"ssid_source": "detected", "host_source": "detected"})
+
+    def test_session_resolution_uses_explicit_fallbacks_when_detection_unavailable(self):
+        saved = validate_network_payload(
+            {"wifi": [{"ssid": "fallback", "password": "secret"}] + [{"ssid": "", "password": ""}] * 2, "host": "192.168.1.9", "port": 9000}
+        )
+        resolved, sources = resolve_session_network_settings(
+            saved,
+            ssid_detector=lambda: None,
+            host_detector=lambda: None,
+        )
+        self.assertEqual(resolved.host, "192.168.1.9")
+        self.assertEqual(sources["host_source"], "configured_fallback")
+
+    def test_session_resolution_rejects_unknown_live_ssid_and_unsafe_host(self):
+        saved = validate_network_payload(
+            {"wifi": [{"ssid": "known", "password": "secret"}] + [{"ssid": "", "password": ""}] * 2, "host": "127.0.0.1", "port": 9000}
+        )
+        with self.assertRaisesRegex(NetworkConfigError, "未在"):
+            resolve_session_network_settings(
+                saved,
+                ssid_detector=lambda: "unknown",
+                host_detector=lambda: "192.168.1.2",
+            )
+        with self.assertRaisesRegex(NetworkConfigError, "非回环"):
+            resolve_session_network_settings(
+                saved,
+                ssid_detector=lambda: "known",
+                host_detector=lambda: None,
+            )
 
 
 class Esp32NetworkRpcSafetyTests(unittest.TestCase):

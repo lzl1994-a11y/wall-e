@@ -1,5 +1,6 @@
 import threading
 import unittest
+from collections import defaultdict, deque
 from unittest.mock import Mock, patch
 
 from services.serial_bridge import SerialBridge
@@ -18,6 +19,11 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         bridge._next_reconnect_at = float("inf")
         bridge._selection_config_mtime_ns = 10
         bridge._io_lock = threading.RLock()
+        bridge._connection_lock = threading.RLock()
+        bridge._response_condition = threading.Condition()
+        bridge._netcfg_responses = defaultdict(deque)
+        bridge._registered_netcfg_sequences = set()
+        bridge._reader_stop = threading.Event()
         bridge.is_screen_awake = True
         bridge.last_send_time = 1.0
         bridge.timeout_seconds = 30.0
@@ -86,6 +92,29 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         bridge.send_raw("ai:hello\n")
 
         self.assertEqual(bridge.ser.write.call_args.args[0], b"openchat:1\nai:hello\n")
+
+    def test_routed_netcfg_wait_does_not_hold_normal_write_lock(self):
+        bridge = self.make_bridge()
+        bridge._ensure_connected = Mock(return_value=True)
+        transaction_started = threading.Event()
+        release_response = threading.Event()
+
+        def operation(stream):
+            stream.write(b"netcfg:query:42|2\r\n")
+            transaction_started.set()
+            release_response.wait(1.0)
+            return stream.read(1)
+
+        worker = threading.Thread(target=lambda: bridge.run_exclusive(operation))
+        worker.start()
+        self.assertTrue(transaction_started.wait(1.0))
+        self.assertTrue(bridge.send_raw("eyeaction:talk\n", wake_screen=False))
+        with bridge._response_condition:
+            bridge._netcfg_responses[42].append("NETCFG:STATUS:42|2|0|255|||||0")
+            bridge._response_condition.notify_all()
+        release_response.set()
+        worker.join(1.0)
+        self.assertFalse(worker.is_alive())
 
 
 class StartupNetworkSyncTests(unittest.TestCase):

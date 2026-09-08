@@ -1005,9 +1005,9 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
             try:
-                # Persist only after firmware reports APPLY|2|0. Passwords are
-                # required for startup SET/APPLY but are redacted from all Web
-                # snapshots by the generic secret-field filter.
+                # Persist only after firmware reports APPLY|2|0. ESP32 v2 keeps
+                # the session in RAM; passwords remain on the upper host and are
+                # redacted from all Web snapshots by the secret-field filter.
                 self.server.store.save_patch({"esp32_network": retained_payload})
             except ConfigError as exc:
                 self._send_json(
@@ -1022,7 +1022,7 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "ok": True,
-                    "message": "网络配置已应用到 ESP32，并保留供上位机启动时同步",
+                    "message": "ESP32 RAM 网络会话已建立，并保留供上位机启动时重新下发",
                     **result,
                 },
             )

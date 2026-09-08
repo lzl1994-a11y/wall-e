@@ -1153,8 +1153,8 @@ async function saveEsp32Network() {
     });
     // Firmware never returns passwords; remove entered copies after success too.
     [1, 2, 3].forEach((index) => { $(`#esp32-wifi-password-${index}`).value = ""; });
-    setEsp32NetworkStatus(`配置成功：ESP32 已验证连接并写入 NVS（SET #${result.set_seq}，APPLY #${result.apply_seq}）；上位机已保留完整配置，今后启动会自动同步。`, "success");
-    showToast("ESP32 网络配置已成功应用并保存");
+    setEsp32NetworkStatus(`配置成功：ESP32 已建立本次 RAM 网络会话（SET #${result.set_seq}，APPLY #${result.apply_seq}）；上位机已保留私密配置，今后启动会重新下发。`, "success");
+    showToast("ESP32 网络会话已成功建立");
   } catch (error) {
     setEsp32NetworkStatus(`配置失败：${error.message}`, "error");
     showToast(error.message, "error");
@@ -1178,7 +1178,7 @@ async function queryEsp32Network() {
     // queried SSID can never accidentally be saved with a previous password.
     [1, 2, 3].forEach((index) => { $(`#esp32-wifi-password-${index}`).value = ""; });
     const selected = result.selected === 255 ? "未连接 Wi-Fi" : `Wi-Fi ${result.selected + 1}`;
-    const flags = [result.active_from_nvs ? "NVS 已保存" : "无 NVS 配置", result.candidate_present ? "有候选配置" : "无候选配置", result.apply_running ? "切换中" : "未切换"].join("；");
+    const flags = [result.active_from_nvs ? "旧版 NVS 配置" : "RAM 会话模式", result.candidate_present ? "有候选配置" : "无候选配置", result.apply_running ? "切换中" : "未切换"].join("；");
     setEsp32NetworkStatus(`已读取（${selected}，${flags}）。Wi-Fi 密码不会由设备返回，已清空，请在保存前重新输入。`, "success");
   } catch (error) {
     setEsp32NetworkStatus(`读取失败：${error.message}`, "error");

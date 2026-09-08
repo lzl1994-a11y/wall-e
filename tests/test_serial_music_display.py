@@ -19,6 +19,8 @@ class SerialMusicDisplayTests(unittest.TestCase):
         fake_node.Node = object
         fake_qos = types.ModuleType("rclpy.qos")
         fake_qos.QoSProfile = MagicMock()
+        fake_qos.DurabilityPolicy = MagicMock()
+        fake_qos.ReliabilityPolicy = MagicMock()
         fake_messages = types.ModuleType("std_msgs.msg")
         fake_messages.String = _String
         sys.modules.pop("nodes.serial_ros_node", None)
