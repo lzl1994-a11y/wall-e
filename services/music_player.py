@@ -117,7 +117,6 @@ class MusicPlayer:
         self._popen = popen_factory
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._speech_busy = threading.Event()
         self._thread: threading.Thread | None = None
         self._process = None
 
@@ -143,12 +142,6 @@ class MusicPlayer:
             thread.join(timeout=2.0)
         return active
 
-    def set_speech_busy(self, busy: bool) -> None:
-        if busy:
-            self._speech_busy.set()
-        else:
-            self._speech_busy.clear()
-
     def _run(self, track: Path, stop: threading.Event) -> None:
         title = track.stem
         process = None
@@ -170,8 +163,6 @@ class MusicPlayer:
                     self._process = process
             if process.stdout is None or process.stderr is None:
                 raise RuntimeError("ffmpeg 音频管道创建失败")
-            while self._speech_busy.is_set() and not stop.wait(0.05):
-                pass
             if stop.is_set():
                 return
             self.on_state("playing", title, "")
@@ -180,8 +171,6 @@ class MusicPlayer:
             spectrum_chunk = 0
             deadline = time.monotonic()
             while not stop.is_set():
-                while self._speech_busy.is_set() and not stop.wait(0.05):
-                    deadline = time.monotonic()
                 if stop.is_set():
                     break
                 data = process.stdout.read(chunk_bytes)

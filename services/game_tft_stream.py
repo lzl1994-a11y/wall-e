@@ -71,6 +71,10 @@ class GameTftStream:
         self.send_seconds = 0.0
         self.prepare_attempts = 0
 
+    @property
+    def closed(self) -> bool:
+        return self._closed or self._transport.closed
+
     def send_jpeg(self, jpeg: bytes) -> bool:
         if self._closed:
             return False

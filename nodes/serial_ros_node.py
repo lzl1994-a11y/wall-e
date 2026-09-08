@@ -29,6 +29,7 @@ from services.esp32_netcfg import (
     validate_network_payload,
 )
 from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
+from services.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
 
 
 class SerialNode(Node):
@@ -41,6 +42,7 @@ class SerialNode(Node):
         self._netcfg_request_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._tft_preview_ready = threading.Event()
+        self._music_active = False
 
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')
@@ -48,6 +50,7 @@ class SerialNode(Node):
         # 订阅 Topic
         self.create_subscription(String, 'screen_dialog', self.screen_dialog_callback, 10)
         self.create_subscription(String, 'tft_cmd', self.tft_cmd_callback, 10)
+        self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, 10)
         # Motion state is latest-wins. Keeping ten stale states here causes a
         # visible catch-up burst after an exclusive serial transaction.
         self.create_subscription(
@@ -75,6 +78,11 @@ class SerialNode(Node):
 
     def _on_tft_preview_ready(self, _message):
         self._tft_preview_ready.set()
+
+    def _on_music_state(self, message):
+        state = decode_music_state(message.data)
+        if state is not None:
+            self._music_active = state["state"] in {"loading", "playing"}
 
     def _apply_saved_network_on_start(self):
         """Synchronize the retained full Wi-Fi/TCP configuration after startup."""
@@ -139,6 +147,13 @@ class SerialNode(Node):
         corrected_text = (dialog.get("corrected_text") or "").strip()
         ai_text = (dialog.get("ai_text") or "").strip()
 
+        music_hint = self._music_surface_hint(dialog.get("actions"))
+        preserve_music = self._music_active if music_hint is None else music_hint
+        if preserve_music:
+            if ai_text:
+                self.bridge.send_raw("eyeaction:talk\n", wake_screen=False)
+            return
+
         if corrected_text:
             payload = f"you:{corrected_text}\n"
             if self.bridge.send_raw(payload):
@@ -151,13 +166,41 @@ class SerialNode(Node):
             if self.bridge.send_raw(payload):
                 self.get_logger().info(f'[{turn_id}] Sent AI text -> {payload.strip()}')
 
+    @staticmethod
+    def _music_surface_hint(actions):
+        """Return the last confirmed music navigation intent in a dialog."""
+        hint = None
+        for action in actions if isinstance(actions, list) else []:
+            if not isinstance(action, dict) or action.get("name") != "control_music":
+                continue
+            if action.get("status") != "completed":
+                continue
+            arguments = action.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(arguments, dict):
+                continue
+            if arguments.get("action") == "play":
+                hint = True
+            elif arguments.get("action") == "stop":
+                hint = False
+        return hint
+
     def you_callback(self, msg):
+        if self._music_active:
+            return
         payload = f"you:{msg.data}\n"
         if self.bridge.send_raw(payload):
             self.get_logger().info(f'Sent user text -> {payload.strip()}')
 
     def ai_callback(self, msg):
         """Handle a full AI response from the legacy topic."""
+        if self._music_active:
+            self.bridge.send_raw("eyeaction:talk\n", wake_screen=False)
+            return
         self.bridge.send_raw("openchat:1\n")
         self.bridge.send_raw("eyeaction:talk\n")
         payload = f"ai:{msg.data}\n"
@@ -168,7 +211,7 @@ class SerialNode(Node):
     # tft_cmd: 表情控制指令
     # ------------------------------------------------------------------
     def tft_cmd_callback(self, msg):
-        if self.bridge.send_raw(msg.data):
+        if self.bridge.send_raw(msg.data, wake_screen=not self._music_active):
             self.get_logger().debug(f'[Serial] TFT cmd forwarded: {msg.data.strip()}')
 
     # ------------------------------------------------------------------
@@ -178,7 +221,7 @@ class SerialNode(Node):
         payload = msg.data + '\n'
         # NETCFG may temporarily own the serial stream. Never block the ROS
         # executor or queue stale servo positions behind that transaction.
-        if self.bridge.send_raw(payload, block=False):
+        if self.bridge.send_raw(payload, block=False, wake_screen=not self._music_active):
             self.get_logger().debug(f'[Serial] PCA9685 forwarded ({len(msg.data)} bytes)')
 
     # ------------------------------------------------------------------

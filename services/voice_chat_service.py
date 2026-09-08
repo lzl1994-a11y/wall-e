@@ -42,8 +42,9 @@ from services.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
 )
-from services.conditional_task import is_conditional_task_request
-from services.action_intent_guard import canonicalize_conditional_action
+from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME, is_conditional_task_request
+from services.action_intent_guard import canonicalize_conditional_action, validate_action_call
+from services.dialog_workflow import ActionSequenceWorkflow
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
 from .voice_debug import RollingVoiceDebugStore
@@ -311,6 +312,7 @@ class VoiceChatService:
 
     def _send_to_llm(self, audio_b64: str):
         """后台线程：拼 messages → 调 LLM → 流式回调。"""
+        self.last_action_results = []
         audio_message = self.multimodal.build_audio_message(audio_b64)
         messages = [{"role": "system", "content": self.system_prompt}]
         messages.extend(self._validated_history())
@@ -374,15 +376,20 @@ class VoiceChatService:
                 if isinstance(call, dict)
             )
             if conditional_intent and not conditional_tool_present:
-                response_text = (
-                    "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
-                )
+                planned = self._retry_conditional_plan(heard_text)
+                if planned is not None:
+                    tool_calls = [planned]
+                else:
+                    response_text = (
+                        "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
+                    )
             photo_handler = getattr(self, "on_photo_request", None)
             inspection_handler = getattr(self, "on_inspection_request", None)
             if (
                 structured_ok
                 and heard_text
                 and is_camera_photo_request(heard_text)
+                and not conditional_intent
                 and photo_handler
             ):
                 handled_visual_tools.add("inspect_camera")
@@ -411,7 +418,10 @@ class VoiceChatService:
                     print(f"[VoiceChat] 视觉查看失败: {exc}")
                     response_text = "这次没看清，请检查摄像头后再试。"
 
+            pending_actions = []
             for tc in tool_calls:
+                if self._cancel_llm.is_set():
+                    return
                 if not structured_ok:
                     break
                 if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
@@ -433,15 +443,35 @@ class VoiceChatService:
                     tc["arguments"] = canonicalize_conditional_action(
                         heard_text, tc["arguments"]
                     )
-                print(f"[VoiceChat] 工具调用: {tc['name']}({tc['arguments']})")
-                if self.on_tool_call:
-                    handled_response = self.on_tool_call(tc["name"], tc["arguments"])
-                    # A node-side semantic skill such as inspect_camera may
-                    # perform a second model request and replace the initial
-                    # acknowledgement with the actual visual result.
-                    if isinstance(handled_response, str) and handled_response.strip():
-                        response_text = handled_response.strip()
+                pending_actions.append({
+                    "name": tc["name"],
+                    "arguments": tc["arguments"],
+                })
 
+            if pending_actions and structured_ok:
+                action_state = self._execute_action_sequence(
+                    heard_text,
+                    pending_actions,
+                )
+                self.last_action_results = action_state.get("results", [])
+                for result in self.last_action_results:
+                    print(
+                        f"[VoiceChat] 工具结果: {result.get('name')} "
+                        f"-> {result.get('status')}"
+                    )
+                    if result.get("status") == "completed":
+                        handled_response = result.get("response")
+                        # A semantic skill such as inspect_camera may perform a
+                        # second model request and replace the acknowledgement.
+                        if isinstance(handled_response, str) and handled_response.strip():
+                            response_text = handled_response.strip()
+                        continue
+                    if result.get("status") != "skipped":
+                        response_text = "这个动作没有确认完成，我已停止后续动作。"
+                        break
+
+            if self._cancel_llm.is_set():
+                return
             expression_callback = getattr(self, "on_expression", None)
             if expression_callback:
                 expression_callback(expression, intensity)
@@ -464,6 +494,70 @@ class VoiceChatService:
             print(f"[VoiceChat] LLM 调用失败: {e}")
         finally:
             self._llm_done()
+
+    def _execute_action_sequence(self, heard_text, actions):
+        """Use LangGraph as the common deterministic action orchestrator."""
+        workflow = getattr(self, "_action_sequence_workflow", None)
+        if workflow is None:
+            workflow = ActionSequenceWorkflow(
+                authorize=validate_action_call,
+                execute=self._execute_tool_call,
+                cancelled=self._cancel_llm.is_set,
+            )
+            self._action_sequence_workflow = workflow
+        return workflow.invoke(
+            turn_id="multimodal_dialog",
+            user_prompt=heard_text or "",
+            actions=actions,
+        )
+
+    def _execute_tool_call(self, name, arguments):
+        callback = getattr(self, "on_tool_call", None)
+        if callback is None:
+            return {
+                "status": "failed",
+                "action": name,
+                "reason": "action_handler_unavailable",
+            }
+        self._last_llm_activity = time.time()
+        try:
+            return callback(name, arguments)
+        finally:
+            self._last_llm_activity = time.time()
+
+    def _retry_conditional_plan(self, heard_text):
+        """Give the planner one bounded retry without exposing independent actions."""
+        plan_tools = [
+            tool for tool in get_multimodal_tools()
+            if tool.get("function", {}).get("name") == CONDITIONAL_TASK_TOOL_NAME
+        ]
+        if len(plan_tools) != 1 or self._cancel_llm.is_set():
+            return None
+        messages = [
+            {"role": "system", "content": (
+                "你是机器人条件任务规划器。根据用户已经说出的任务，调用 "
+                "run_conditional_task 生成一次观察、条件判断、一个动作的受限计划。"
+                "保留完整肯定或否定条件；不观察环境，不执行动作，也不声称已完成。"
+            )},
+            {"role": "user", "content": heard_text},
+        ]
+        try:
+            streamed = self._stream_tool_calls(messages, tools=plan_tools, tool_choice="auto")
+            if streamed is None:
+                return None
+            calls, _content = streamed
+            for call in calls:
+                if call.get("name") != CONDITIONAL_TASK_TOOL_NAME:
+                    continue
+                plan = canonicalize_conditional_action(heard_text, call.get("arguments"))
+                allowed, _reason = validate_action_call(
+                    heard_text, CONDITIONAL_TASK_TOOL_NAME, plan
+                )
+                if allowed:
+                    return {"name": CONDITIONAL_TASK_TOOL_NAME, "arguments": plan}
+        except Exception as exc:
+            print(f"[VoiceChat] 条件计划重试失败: {exc}")
+        return None
 
     def analyze_image(self, question: str, image_base64: str) -> str:
         """Analyze one camera JPEG using the configured multimodal model.

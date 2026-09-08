@@ -15,6 +15,8 @@ import numpy as np
 from services.playback_service import PlaybackService
 from services.stt_service import STTService
 from services.tts_protocol import decode_turn_end, encode_turn_end
+from services.action_execution import CorrelatedActionExecutor
+from services.action_status import build_action_status
 
 
 class TTSProtocolTests(unittest.TestCase):
@@ -162,6 +164,20 @@ class STTTimerLifecycleTests(unittest.TestCase):
 
 
 class LLMEmptyAnswerTests(unittest.TestCase):
+    @staticmethod
+    def _acknowledge_actions(node):
+        node._action_executor = CorrelatedActionExecutor()
+        node.action_publisher.get_subscription_count.return_value = 1
+
+        def complete(message):
+            request = json.loads(message.data)
+            node._action_executor.accept_status(build_action_status(
+                request['request_id'], request['name'], 'completed',
+                source='test_executor',
+            ))
+
+        node.action_publisher.publish.side_effect = complete
+
     @staticmethod
     def _load_node_class():
         fake_rclpy = types.ModuleType("rclpy")
@@ -586,14 +602,14 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         node.busy_publisher = MagicMock()
         node.get_logger = lambda: MagicMock()
 
+        self._acknowledge_actions(node)
         node._process_voice_task("turn-head", "转个头")
 
         self.assertTrue(node.llm.chat_stream.call_args.kwargs["tools_enabled"])
         published = json.loads(node.action_publisher.publish.call_args.args[0].data)
         self.assertEqual(published["turn_id"], "turn-head")
         self.assertEqual(published["name"], "play_sequence")
-        # sequence_ros_node accepts this string form and parses it to the same dict.
-        self.assertEqual(json.loads(published["arguments"]), {"sequence_name": "turn_head_left"})
+        self.assertEqual(published["arguments"], {"sequence_name": "turn_head_left"})
         sys.modules.pop("nodes.llm_ros_node", None)
 
     def test_tracking_stop_bypasses_model_and_publishes_idle_action(self):
@@ -695,6 +711,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         node.busy_publisher = MagicMock()
         node.get_logger = lambda: MagicMock()
 
+        self._acknowledge_actions(node)
         node._process_voice_task("turn-action-only", "看看右边")
 
         self.assertEqual(node.llm.chat_stream.call_count, 1)
@@ -709,7 +726,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             ["user", "assistant", "tool", "assistant"],
         )
         self.assertIsNone(history[1]["content"])
-        self.assertEqual(history[2]["content"], '{"status": "accepted"}')
+        self.assertEqual(json.loads(history[2]["content"])["status"], "completed")
         self.assertEqual(history[3]["content"], "好的，我向右看。")
         sys.modules.pop("nodes.llm_ros_node", None)
 

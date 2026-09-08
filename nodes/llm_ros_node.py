@@ -48,7 +48,11 @@ from services.conditional_task import (
     CONDITIONAL_TASK_TOOL_NAME,
     is_conditional_task_request,
 )
-from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
+from services.dialog_workflow import (
+    ActionSequenceWorkflow,
+    CameraInspectionWorkflow,
+    ConditionalTaskWorkflow,
+)
 from services.voice_debug import RollingVoiceDebugStore
 
 
@@ -360,7 +364,9 @@ class LLMBrainNode(Node):
         corrected_text = ''
         corrected_text_published = False
         actions = []
+        pending_actions = []
         rejected_actions = []
+        action_failure = None
         spoken_parts = []
         expression_published = False
 
@@ -459,7 +465,8 @@ class LLMBrainNode(Node):
                         self.get_logger().warning(
                             f'[{turn_id}] Rejected malformed tool arguments: {action_name}'
                         )
-                        continue
+                        rejected_actions.append((action_name, "invalid_arguments"))
+                        break
                     if conditional_request and action_name != CONDITIONAL_TASK_TOOL_NAME:
                         rejected_actions.append((action_name, "compound_task_must_stay_atomic"))
                         self.get_logger().warning(
@@ -477,7 +484,7 @@ class LLMBrainNode(Node):
                             f'[{turn_id}] Rejected tool proposal: '
                             f'name={action_name} reason={rejection_reason}'
                         )
-                        continue
+                        break
                     if action_name == 'inspect_camera':
                         self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
                         self._process_camera_inspection(turn_id, user_prompt)
@@ -498,11 +505,12 @@ class LLMBrainNode(Node):
                         'arguments': json.dumps(action_arguments, ensure_ascii=False),
                     }
                     actions.append(action_payload)
+                    pending_actions.append({
+                        'name': action_name,
+                        'arguments': action_arguments,
+                    })
 
                     self.get_logger().info(f'[{turn_id}] Tool call: {action_payload["name"]}')
-                    action_msg = String()
-                    action_msg.data = json.dumps(action_payload, ensure_ascii=False)
-                    self.action_publisher.publish(action_msg)
                 elif data_type == 'done':
                     finish_reason = data.get('finish_reason') or 'unknown'
                     # rclpy identifies a logging call by its source location.  Calling
@@ -527,6 +535,31 @@ class LLMBrainNode(Node):
             self._finish_tts_turn(turn_id)
             return
 
+        if pending_actions:
+            sequence = self._execute_dialog_action_sequence(
+                pending_actions,
+                user_prompt=user_prompt,
+                turn_id=turn_id,
+            )
+            sequence_results = sequence.get('results', [])
+            actions = []
+            for result in sequence_results:
+                actions.append({
+                    'turn_id': turn_id,
+                    'name': result.get('name') or result.get('action', ''),
+                    'arguments': json.dumps(result.get('arguments', {}), ensure_ascii=False),
+                    'status': result.get('status', 'failed'),
+                    'request_id': result.get('request_id', ''),
+                    'reason': result.get('reason', ''),
+                })
+            action_failure = next(
+                (
+                    result for result in sequence_results
+                    if result.get('status') not in {'completed', 'skipped'}
+                ),
+                None,
+            )
+
         clean_tail = sentence_buffer.strip()
         if clean_tail:
             tts_safe_tail = self.TTS_CLEAN_RE.sub('', clean_tail)
@@ -536,6 +569,10 @@ class LLMBrainNode(Node):
         final_user_memory = corrected_text if corrected_text else user_prompt
 
         clean_text = self._sanitize_speech_text(text_buffer)
+        if action_failure:
+            clean_text = '这个动作没有确认完成，我已停止后续动作。'
+        elif rejected_actions:
+            clean_text = self._rejected_action_reply(rejected_actions)
         if '\n' not in text_buffer and self._extract_corrected_text(text_buffer):
             clean_text = ''
 
@@ -588,14 +625,17 @@ class LLMBrainNode(Node):
             full_msg.data = clean_text
             self.full_ai_publisher.publish(full_msg)
 
-        # Append tool responses so the LLM knows the tools succeeded
+        # Preserve the actual executor result, including interrupted/failed actions.
         if actions:
             for act in actions:
                 self.chat_history.append({
                     'role': 'tool',
                     'tool_call_id': act['id'],
                     'name': act['name'],
-                    'content': '{"status": "accepted"}'
+                    'content': json.dumps({
+                        'status': act.get('status', 'accepted'),
+                        'reason': act.get('reason', ''),
+                    }, ensure_ascii=False),
                 })
             self.chat_history.append({'role': 'assistant', 'content': clean_text})
 
@@ -603,6 +643,44 @@ class LLMBrainNode(Node):
 
         # TTS 和播放节点会按顺序处理该标记；真正播完后再恢复 ASR。
         self._finish_tts_turn(turn_id)
+
+    def _execute_dialog_action(self, name, arguments, turn_id):
+        """Wait on the worker so consecutive proposals cannot interrupt each other."""
+        def publish(payload):
+            command = json.loads(payload)
+            command['turn_id'] = turn_id
+            self.action_publisher.publish(String(data=json.dumps(command, ensure_ascii=False)))
+
+        return self._action_executor.execute(
+            name,
+            arguments,
+            publish=publish,
+            owner_available=lambda: self.action_publisher.get_subscription_count() > 0,
+            timeout=20.0,
+            source='llm_dialog',
+            cancelled=lambda: (
+                not getattr(self, '_worker_running', True)
+                or getattr(self, '_game_mode', 'robot') != 'robot'
+            ),
+        )
+
+    def _execute_dialog_action_sequence(self, actions, *, user_prompt, turn_id):
+        """Run ordinary LLM actions through the shared LangGraph orchestrator."""
+        workflow = ActionSequenceWorkflow(
+            authorize=validate_action_call,
+            execute=lambda name, arguments: self._execute_dialog_action(
+                name, arguments, turn_id
+            ),
+            cancelled=lambda: (
+                not getattr(self, '_worker_running', True)
+                or getattr(self, '_game_mode', 'robot') != 'robot'
+            ),
+        )
+        return workflow.invoke(
+            turn_id=turn_id,
+            user_prompt=user_prompt,
+            actions=actions,
+        )
 
     def _process_deterministic_safety_action(
         self,

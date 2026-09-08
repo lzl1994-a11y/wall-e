@@ -62,6 +62,22 @@ class GameTftStreamTests(unittest.TestCase):
             STREAM_START.unpack(start_payload), (0xFFFFFFFF, 0, 15, 0)
         )
 
+    def test_disconnected_stream_reports_closed_and_releases_surface(self):
+        server = GameTftStreamServer()
+        server._verified_client = Mock(return_value=object())
+        server._send_packet = Mock()
+        stream = server.open_jpeg_stream(fps=10)
+        self.assertFalse(stream.closed)
+        server._send_packet.side_effect = ConnectionError("disconnected")
+
+        self.assertFalse(stream.send_jpeg(_quadrant_jpeg()))
+        self.assertTrue(stream.closed)
+
+        server._send_packet.side_effect = None
+        replacement = server.open_jpeg_stream(fps=10)
+        self.assertIsNotNone(replacement)
+        replacement.close()
+
 
 if __name__ == "__main__":
     unittest.main()

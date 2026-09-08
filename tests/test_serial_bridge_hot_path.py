@@ -67,6 +67,26 @@ class SerialBridgeHotPathTests(unittest.TestCase):
             release.set()
             thread.join(1.0)
 
+    def test_persistent_surface_motion_does_not_inject_chat_wake(self):
+        bridge = self.make_bridge()
+        bridge._ensure_connected = Mock(return_value=True)
+        bridge.is_screen_awake = False
+
+        self.assertTrue(bridge.send_raw("pca9685:1\n", wake_screen=False))
+
+        bridge.ser.write.assert_called_once_with(b"pca9685:1\n")
+        self.assertFalse(bridge.is_screen_awake)
+
+    def test_normal_dialog_can_wake_after_persistent_surface(self):
+        bridge = self.make_bridge()
+        bridge._ensure_connected = Mock(return_value=True)
+        bridge.is_screen_awake = False
+        bridge.send_raw("eyeaction:talk\n", wake_screen=False)
+
+        bridge.send_raw("ai:hello\n")
+
+        self.assertEqual(bridge.ser.write.call_args.args[0], b"openchat:1\nai:hello\n")
+
 
 class StartupNetworkSyncTests(unittest.TestCase):
     def test_matching_query_status_skips_reapply(self):

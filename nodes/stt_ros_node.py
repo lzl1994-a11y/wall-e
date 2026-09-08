@@ -6,7 +6,6 @@ from std_msgs.msg import String
 # 引入底层的听觉血肉引擎
 from services.stt_service import STTService
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
-from services.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
 from services.dialog_motion_protocol import (
     DIALOG_MOTION_VAD_TOPIC,
     VAD_SPEECH_ENDED,
@@ -24,10 +23,8 @@ class STTNode(Node):
         )
         self._game_active = False
         self._llm_busy = False
-        self._music_active = False
         self._recording_paused = False
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
-        self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, 10)
 
         # 订阅 LLM 忙闲状态，LLM 处理中暂停 ASR
         self.busy_subscription = self.create_subscription(
@@ -52,7 +49,7 @@ class STTNode(Node):
         """
         传动轴函数：底层一旦断句成功，立刻触发这里
         """
-        if self._game_active or self._llm_busy or self._music_active:
+        if self._game_active or self._llm_busy:
             return
         self.get_logger().info(f'👂 捕捉到人声: "{text}"')
         
@@ -84,19 +81,9 @@ class STTNode(Node):
         self._game_active = active
         self._sync_recording()
 
-    def _on_music_state(self, msg):
-        state = decode_music_state(msg.data)
-        if state is None:
-            return
-        active = state["state"] in {"loading", "playing"}
-        if active == self._music_active:
-            return
-        self._music_active = active
-        self._sync_recording()
-
     def _sync_recording(self):
         """Keep the loaded wake model idle while any audio policy blocks recording."""
-        paused = self._game_active or self._llm_busy or self._music_active
+        paused = self._game_active or self._llm_busy
         if paused == self._recording_paused:
             return
         engine = getattr(self, "stt_engine", None)

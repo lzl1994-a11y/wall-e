@@ -46,7 +46,6 @@ from services.audio_output import (
     OUTPUT_SAMPLE_RATE,
     OUTPUT_SAMPLE_WIDTH,
 )
-from services.tool_dispatcher import build_action_cmd
 from services.tft_preview_client import TftPreviewClient
 from services.tft_preview_server import load_tft_preview_settings
 from services.tts_protocol import encode_turn_end
@@ -59,7 +58,11 @@ from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     encode_dialog_expression,
 )
-from services.usb_devices import resolve_audio_device
+from services.wake_audio_protocol import (
+    WAKE_AUDIO_DONE_TOPIC,
+    WAKE_AUDIO_TOPIC,
+    encode_wake_audio,
+)
 
 # 去掉 TTS 不需要的符号（保留中文标点和空格）
 TTS_CLEAN_RE = re.compile(r'[*#_~`>\[\]\(\)\{\}]')
@@ -70,6 +73,10 @@ class VoiceChatNode(Node):
         super().__init__("voice_chat_node")
 
         self.tts_pub = self.create_publisher(String, "tts_text", 10)
+        self.wake_audio_pub = self.create_publisher(String, WAKE_AUDIO_TOPIC, 10)
+        self.create_subscription(
+            String, WAKE_AUDIO_DONE_TOPIC, self._on_wake_audio_done, 10
+        )
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, "action_cmd", 10)
         self._action_executor = CorrelatedActionExecutor()
@@ -118,6 +125,9 @@ class VoiceChatNode(Node):
         self._output_state_lock = threading.Lock()
         self._awaiting_tts_playback = False
         self._wake_response_active = False
+        self._wake_request_id = None
+        self._wake_watchdog = None
+        self._shutting_down = False
         self._resume_timer = None
         self.punctuations = {"。", "？", ".", "?", "！", "!"}
 
@@ -222,11 +232,16 @@ class VoiceChatNode(Node):
         """唤醒词触发：播放预合成语音 + 切 TFT 到聊天页。"""
         self.get_logger().info("唤醒词触发")
 
-        # The wake response uses the same speaker as TTS. Mute capture before
-        # starting it so the response itself cannot become the user's sentence.
+        # The shared playback node owns the speaker. Keep capture muted until
+        # its matching wake acknowledgement and any queued TTS have finished.
         with self._output_state_lock:
+            if self._shutting_down:
+                return
+            if self._wake_response_active:
+                return
             self._wake_response_active = True
-            self._awaiting_tts_playback = False
+            request_id = uuid.uuid4().hex
+            self._wake_request_id = request_id
             if self._resume_timer is not None:
                 self._resume_timer.cancel()
                 self._resume_timer = None
@@ -244,7 +259,9 @@ class VoiceChatNode(Node):
             pass
 
         # 播放预合成应答 WAV（后台线程，不阻塞主循环）
-        threading.Thread(target=self._play_wake_response, daemon=True).start()
+        threading.Thread(
+            target=self._play_wake_response, args=(request_id,), daemon=True
+        ).start()
 
     def _on_vad_speech_start(self):
         if self._game_mode == "robot":
@@ -254,17 +271,19 @@ class VoiceChatNode(Node):
         if self._game_mode == "robot":
             self.dialog_motion_pub.publish(String(data=VAD_SPEECH_ENDED))
 
-    def _play_wake_response(self):
-        """播放 assets/wake_response.wav。"""
+    def _play_wake_response(self, request_id):
+        """Send wake PCM to the shared mixer and await its actual completion."""
+        submitted = False
         with self._wake_play_lock:
             try:
+                if self.wake_audio_pub.get_subscription_count() == 0:
+                    self.get_logger().warn("音频播放节点未连接，跳过唤醒应答")
+                    return
                 if not os.path.exists(self._wake_wav):
                     self.get_logger().warn(f"唤醒应答文件不存在: {self._wake_wav}")
                     self.get_logger().warn("请先运行 generate_wake_response.py 生成语音文件")
                     return
 
-                import sounddevice as sd
-                import numpy as np
                 from pydub import AudioSegment
 
                 audio = (
@@ -275,29 +294,57 @@ class VoiceChatNode(Node):
                 )
                 if not len(audio):
                     return
-                samples = np.array(audio.get_array_of_samples(), dtype=np.int16)
-                samples = samples.astype(np.float32) / 32768.0
-                resolution = resolve_audio_device("output", sounddevice_module=sd)
-                if resolution.configured and not resolution.available:
-                    self.get_logger().warn("voice USB offline; wake response skipped")
-                    return
-                sd.play(
-                    samples,
-                    samplerate=OUTPUT_SAMPLE_RATE,
-                    device=resolution.index,
-                )
-                sd.wait()
-                self.get_logger().info(
-                    f"唤醒应答播放完毕 (sr={OUTPUT_SAMPLE_RATE})"
-                )
+                payload = encode_wake_audio(request_id, audio.raw_data)
+                self.wake_audio_pub.publish(String(data=payload))
+                submitted = True
+                self._schedule_wake_watchdog(request_id)
             except ImportError:
                 self.get_logger().error("缺少音频播放依赖，无法播放唤醒应答")
             except Exception as e:
                 self.get_logger().error(f"播放唤醒应答失败: {e}")
             finally:
-                with self._output_state_lock:
-                    self._wake_response_active = False
-                self._schedule_capture_resume()
+                if not submitted:
+                    self._finish_wake_response(request_id)
+
+    def _on_wake_audio_done(self, message):
+        """Only a matching wake completion may release the wake capture guard."""
+        self._finish_wake_response(message.data)
+
+    def _finish_wake_response(self, request_id):
+        with self._output_state_lock:
+            if request_id != self._wake_request_id or not self._wake_response_active:
+                return
+            self._wake_request_id = None
+            self._wake_response_active = False
+            if self._wake_watchdog is not None:
+                self._wake_watchdog.cancel()
+                self._wake_watchdog = None
+            resume = not self._awaiting_tts_playback and not self._shutting_down
+        if resume:
+            self._schedule_capture_resume()
+
+    def _schedule_wake_watchdog(self, request_id):
+        with self._output_state_lock:
+            if self._shutting_down or request_id != self._wake_request_id:
+                return
+            self._wake_watchdog = threading.Timer(
+                1.0, self._check_wake_playback_connection, args=(request_id,)
+            )
+            self._wake_watchdog.daemon = True
+            self._wake_watchdog.start()
+
+    def _check_wake_playback_connection(self, request_id):
+        # A duration timeout could reopen capture while earlier TTS is still
+        # playing. Recover only if the speaker owner has disappeared instead.
+        with self._output_state_lock:
+            if self._shutting_down or request_id != self._wake_request_id:
+                return
+            self._wake_watchdog = None
+        if self.wake_audio_pub.get_subscription_count() == 0:
+            self.get_logger().warn("音频播放节点已断开，结束唤醒应答等待")
+            self._finish_wake_response(request_id)
+        else:
+            self._schedule_wake_watchdog(request_id)
 
     def _on_playback_state(self, msg):
         """Resume multimodal capture only after the queued TTS turn is done."""
@@ -313,7 +360,9 @@ class VoiceChatNode(Node):
 
     def _schedule_capture_resume(self):
         """Discard the speaker's acoustic tail before reopening capture."""
-        if getattr(self, "_game_mode", "robot") != "robot":
+        if getattr(self, "_game_mode", "robot") != "robot" or getattr(
+            self, "_shutting_down", False
+        ):
             return
         with self._output_state_lock:
             if self._resume_timer is not None:
@@ -341,12 +390,20 @@ class VoiceChatNode(Node):
             return self._process_camera_inspection(arguments)
         if name == CONDITIONAL_TASK_TOOL_NAME:
             return self._process_conditional_task(arguments)
-        payload = build_action_cmd(name, arguments)
-        msg = String()
-        msg.data = payload
-        self.action_pub.publish(msg)
-        self.get_logger().info(f"Tool: {name}({arguments})")
-        return None
+        allowed, reason = validate_action_arguments(name, arguments)
+        if not allowed:
+            return {"status": "rejected", "action": name, "reason": reason}
+        result = self._action_executor.execute(
+            name,
+            arguments,
+            publish=lambda payload: self.action_pub.publish(String(data=payload)),
+            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
+            timeout=20.0,
+            source="voice_dialog",
+            cancelled=self.vc._cancel_llm.is_set,
+        )
+        self.get_logger().info(f"Tool: {name}({arguments}) -> {result['status']}")
+        return result
 
     def _on_action_status(self, message):
         executor = getattr(self, "_action_executor", None)
@@ -541,11 +598,14 @@ class VoiceChatNode(Node):
 
         # 屏幕对话框（对齐 llm_ros_node 格式）
         dialog = String()
+        action_results = getattr(self.vc, "last_action_results", [])
+        if not isinstance(action_results, list):
+            action_results = []
         dialog.data = json.dumps({
             "turn_id": turn_id,
             "corrected_text": corrected_text,
             "ai_text": ai_text,
-            "actions": [],
+            "actions": action_results,
             "source": "voice_chat",
         }, ensure_ascii=False)
         self.dialog_pub.publish(dialog)
@@ -590,6 +650,10 @@ class VoiceChatNode(Node):
     def destroy_node(self):
         self.get_logger().info("正在关闭语音直聊节点...")
         with self._output_state_lock:
+            self._shutting_down = True
+            if self._wake_watchdog is not None:
+                self._wake_watchdog.cancel()
+                self._wake_watchdog = None
             if self._resume_timer is not None:
                 self._resume_timer.cancel()
                 self._resume_timer = None

@@ -90,6 +90,161 @@ class CameraInspectionWorkflow:
             }
 
 
+class ActionSequenceState(TypedDict, total=False):
+    turn_id: str
+    user_prompt: str
+    actions: list[dict[str, Any]]
+    next_index: int
+    results: list[dict[str, Any]]
+    stopped: bool
+    error: str
+
+
+class ActionSequenceWorkflow:
+    """Authorize and execute ordinary tool calls strictly one at a time.
+
+    A terminal ``completed`` acknowledgement is required before the graph can
+    advance to the next action.  This prevents a later sequence command from
+    interrupting an earlier one at the hardware owner.
+    """
+
+    def __init__(
+        self,
+        *,
+        authorize: Callable[[str, str, dict[str, Any]], tuple[bool, str]],
+        execute: Callable[[str, dict[str, Any]], Any],
+        cancelled: Callable[[], bool] | None = None,
+    ):
+        self._authorize = authorize
+        self._execute = execute
+        self._cancelled = cancelled
+
+        builder = StateGraph(ActionSequenceState)
+        builder.add_node("execute_next", self._execute_next)
+        builder.add_edge(START, "execute_next")
+        builder.add_conditional_edges(
+            "execute_next",
+            self._route_after_action,
+            {"continue": "execute_next", "finish": END},
+        )
+        self._graph = builder.compile()
+
+    def invoke(
+        self,
+        *,
+        turn_id: str,
+        user_prompt: str,
+        actions: list[dict[str, Any]],
+    ) -> ActionSequenceState:
+        pending = [dict(action) for action in actions]
+        state = self._graph.invoke(
+            {
+                "turn_id": turn_id,
+                "user_prompt": user_prompt,
+                "actions": pending,
+                "next_index": 0,
+                "results": [],
+                "stopped": False,
+            },
+            config={"recursion_limit": max(25, len(pending) * 2 + 5)},
+        )
+        completed_count = len(state.get("results", []))
+        if completed_count < len(pending):
+            state["results"] = [
+                *state.get("results", []),
+                *(
+                    {
+                        **action,
+                        "status": "skipped",
+                        "action": action.get("name", ""),
+                        "reason": "prior_action_not_completed",
+                    }
+                    for action in pending[completed_count:]
+                ),
+            ]
+        return state
+
+    def _execute_next(self, state: ActionSequenceState) -> ActionSequenceState:
+        index = state.get("next_index", 0)
+        actions = state.get("actions", [])
+        if index >= len(actions):
+            return {"stopped": True}
+
+        action = actions[index]
+        name = action.get("name") if isinstance(action, dict) else None
+        arguments = action.get("arguments", {}) if isinstance(action, dict) else None
+        if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+            result = {
+                "status": "rejected",
+                "action": name or "",
+                "reason": "invalid_action",
+            }
+        elif self._cancelled is not None and self._cancelled():
+            result = {
+                "status": "interrupted",
+                "action": name,
+                "reason": "turn_cancelled",
+            }
+        else:
+            allowed, reason = self._authorize(state.get("user_prompt", ""), name, arguments)
+            if not allowed:
+                result = {
+                    "status": "rejected",
+                    "action": name,
+                    "reason": reason or "action_not_authorized",
+                }
+            else:
+                try:
+                    raw_result = self._execute(name, arguments)
+                    if isinstance(raw_result, dict):
+                        result = dict(raw_result)
+                    elif isinstance(raw_result, str) and raw_result.strip():
+                        result = {
+                            "status": "completed",
+                            "action": name,
+                            "response": raw_result.strip(),
+                        }
+                    else:
+                        result = {
+                            "status": "failed",
+                            "action": name,
+                            "reason": "missing_action_result",
+                        }
+                except Exception as exc:
+                    result = {
+                        "status": "failed",
+                        "action": name,
+                        "reason": str(exc),
+                    }
+
+        result.setdefault("action", name or "")
+        result.setdefault("status", "failed")
+        record = dict(action) if isinstance(action, dict) else {}
+        record.update(result)
+        results = [*state.get("results", []), record]
+        completed = result["status"] == "completed"
+        update: ActionSequenceState = {
+            "next_index": index + 1,
+            "results": results,
+            "stopped": not completed,
+        }
+        if not completed:
+            update["error"] = str(result.get("reason") or result["status"])
+        return update
+
+    @staticmethod
+    def _route_after_action(
+        state: ActionSequenceState,
+    ) -> Literal["continue", "finish"]:
+        if state.get("stopped"):
+            return "finish"
+        return (
+            "continue"
+            if state.get("next_index", 0) < len(state.get("actions", []))
+            else "finish"
+        )
+
+
 class ConditionalTaskState(TypedDict, total=False):
     turn_id: str
     user_prompt: str

@@ -36,11 +36,14 @@ class CorrelatedActionExecutor:
         owner_available: Callable[[], bool],
         timeout: float = 20.0,
         source: str = "llm_workflow",
+        cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
         deadline = started + max(0.1, float(timeout))
         owner_deadline = min(deadline, started + 2.0)
         while time.monotonic() < owner_deadline:
+            if cancelled and cancelled():
+                return {"status": "interrupted", "action": name, "reason": "turn_cancelled"}
             if owner_available():
                 break
             time.sleep(0.05)
@@ -73,6 +76,12 @@ class CorrelatedActionExecutor:
         latest = None
         with self._condition:
             while time.monotonic() < deadline:
+                if cancelled and cancelled():
+                    self._statuses.pop(request_id, None)
+                    return {
+                        "status": "interrupted", "action": name,
+                        "request_id": request_id, "reason": "turn_cancelled",
+                    }
                 latest = self._statuses.get(request_id)
                 if (
                     latest
@@ -80,7 +89,8 @@ class CorrelatedActionExecutor:
                     and latest["status"] in TERMINAL_ACTION_STATUSES
                 ):
                     break
-                self._condition.wait(timeout=max(0.01, deadline - time.monotonic()))
+                remaining = max(0.01, deadline - time.monotonic())
+                self._condition.wait(timeout=min(0.1, remaining) if cancelled else remaining)
             latest = self._statuses.pop(request_id, latest)
 
         if (

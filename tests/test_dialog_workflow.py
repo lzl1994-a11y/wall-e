@@ -2,7 +2,68 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
+from services.dialog_workflow import (
+    ActionSequenceWorkflow,
+    CameraInspectionWorkflow,
+    ConditionalTaskWorkflow,
+)
+
+
+class ActionSequenceWorkflowTests(unittest.TestCase):
+    def test_waits_for_each_completion_and_keeps_order(self):
+        calls = []
+        workflow = ActionSequenceWorkflow(
+            authorize=lambda _prompt, _name, _arguments: (True, ""),
+            execute=lambda name, arguments: (
+                calls.append((name, arguments))
+                or {"status": "completed", "request_id": f"request-{len(calls)}"}
+            ),
+        )
+
+        state = workflow.invoke(
+            turn_id="turn",
+            user_prompt="先挥手再点头",
+            actions=[
+                {"name": "play_sequence", "arguments": {"sequence_name": "wave_hello"}},
+                {"name": "play_sequence", "arguments": {"sequence_name": "basic_nod"}},
+            ],
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                ("play_sequence", {"sequence_name": "wave_hello"}),
+                ("play_sequence", {"sequence_name": "basic_nod"}),
+            ],
+        )
+        self.assertEqual([result["status"] for result in state["results"]], ["completed", "completed"])
+
+    def test_failure_or_rejection_stops_remaining_actions(self):
+        for first_result, authorized in (
+            ({"status": "failed", "reason": "motor_error"}, True),
+            ({"status": "completed"}, False),
+        ):
+            with self.subTest(first_result=first_result, authorized=authorized):
+                calls = []
+                workflow = ActionSequenceWorkflow(
+                    authorize=lambda _prompt, _name, _arguments: (authorized, "unsafe"),
+                    execute=lambda name, _arguments: calls.append(name) or first_result,
+                )
+                state = workflow.invoke(
+                    turn_id="turn",
+                    user_prompt="do it",
+                    actions=[
+                        {"name": "first", "arguments": {}},
+                        {"name": "second", "arguments": {}},
+                    ],
+                )
+
+                self.assertEqual(
+                    [result["status"] for result in state["results"]],
+                    [first_result["status"] if authorized else "rejected", "skipped"],
+                )
+                self.assertTrue(state["stopped"])
+                self.assertEqual(calls, ["first"] if authorized else [])
 
 
 class CameraInspectionWorkflowTests(unittest.TestCase):

@@ -36,9 +36,10 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | 脚本 | ROS 节点名 | 默认启动 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
 | `nodes/keyboard_stt_node.py` | `keyboard_stt_test_node` | `pipeline.mode=keyboard` 或 `--keyboard-stt` | 无 | `voice_text` | 键盘输入测试节点。你在终端输入文字后，它把文字发布到 `voice_text`，模拟 STT 输出。 |
-| `nodes/stt_ros_node.py` | `walle_ear_node` | `pipeline.mode=asr_llm` 或 `--real-stt` | 无 | `voice_text` | 真实语音识别节点。调用 `services/stt_service.py`，识别到一句话后发布到 `voice_text`。 |
+| `nodes/stt_ros_node.py` | `walle_ear_node` | `pipeline.mode=asr_llm` 或 `--real-stt` | `llm_busy`, `/game_mode_state` | `voice_text` | 真实语音识别节点。音乐播放期间仍保持采集/唤醒，只有对话输出或游戏模式会暂停。 |
 | `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `action_cmd`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
-| `nodes/music_player_node.py` | `music_player_node` | 是 | `/action_cmd`, `llm_busy`, `/game_mode_state` | `/music_audio`, `/music_spectrum`, `/music_state`, `/action_status` | 用 FFmpeg 解码本地音乐并发布 PCM 与频谱数据；不直接占用声卡或 TFT。 |
+| `nodes/music_player_node.py` | `music_player_node` | 是 | `/action_cmd`, `/game_mode_state` | `/music_audio`, `/music_spectrum`, `/music_state`, `/action_status` | 用 FFmpeg 连续解码本地音乐并发布 PCM 与频谱数据；语音期间不会暂停播放进度。 |
+| `nodes/audio_playback_node.py` | `audio_playback_node` | 是 | `audio_output`, `/music_audio`, `wake_audio_output` | `llm_busy`, `wake_audio_done` | 声卡唯一所有者；在一个输出流中混合 TTS、唤醒提示音与音乐，并对音乐做语音闪避。 |
 | `nodes/tft_tcp_service_node.py` | `tft_tcp_service_node` | 是 | `/tft_preview_request`, `/vision_pipeline_cmd`, `/game_mode_state`, `/game_frame`, `/music_state`, `/music_spectrum` | `/tft_preview_result`, `tft_preview_ready`, `/game_mode_request` | 胸前 TFT 的唯一 TCP 服务所有者；统一仲裁拍照、跟踪、游戏和音乐频谱画面。 |
 | `nodes/serial_ros_node.py` | `walle_serial_node` | 是，除非加 `--no-serial` | `screen_dialog` | 无 | 串口/屏幕输出节点。接收完整对话包，把用户文本、AI 回复和动作命令写给下位机或屏幕。 |
 
@@ -133,7 +134,9 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/tft_preview_result` | `tft_tcp_service_node` | 请求方 | 返回预览状态及未经 TFT 旋转的末帧，供视觉模型或照片保存使用。 |
 | `/music_audio` | `music_player_node` | `audio_playback_node` | 48 kHz 单声道 int16 PCM；空消息表示音乐流结束。 |
 | `/music_spectrum` | `music_player_node` | `tft_tcp_service_node` | 20 个归一化频段值，以 10 Hz 更新；上位机据此渲染 240×240 频谱帧。 |
-| `/music_state` | `music_player_node` | `tft_tcp_service_node`, `stt_ros_node` | JSON 播放状态：`loading`、`playing`、`stopped` 或 `error`；音乐活动期间暂停录音与唤醒推理。 |
+| `/music_state` | `music_player_node` | `tft_tcp_service_node`, `serial_ros_node` | JSON 播放状态：`loading`、`playing`、`stopped` 或 `error`；用于保持或恢复频谱页面。 |
+| `wake_audio_output` | `voice_chat_node` | `audio_playback_node` | 带请求 ID 的唤醒提示 PCM；复用混音输出，不再单独打开声卡。 |
+| `wake_audio_done` | `audio_playback_node` | `voice_chat_node` | 对应唤醒提示实际播放完成的请求 ID。 |
 
 ### 跟随模式切换
 
@@ -167,6 +170,8 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | `services/music_player.py` | 解析本地曲目、调用 FFmpeg 输出 PCM，并从同一音频块计算频谱。 |
 | `services/music_spectrum.py` | 把频段值渲染为 TFT 原始帧；TCP 传输仍由 TFT 节点负责。 |
 | `services/music_protocol.py` | 定义音乐 PCM、频谱和状态话题，避免播放与显示模块相互依赖。 |
+| `services/audio_mixer.py` | 在统一采样时钟上混合语音和音乐，并实现音乐 20% 闪避及平滑恢复。 |
+| `services/dialog_workflow.py` | LangGraph 确定性编排：普通动作串行、拍照识别和条件任务；动作完成前不推进下一步。 |
 | `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
 | `nodes/wali_mcp_server.py` | 可选的外部 Agent 网关；提供带鉴权的 Streamable HTTP MCP，将白名单工具转换为带回执的 `/action_cmd`。默认关闭。 |
 | `services/mcp_gateway.py` | 外部 MCP 的配置、安全启动检查和工具白名单；不暴露任意 ROS Topic、Service 或 Shell。 |

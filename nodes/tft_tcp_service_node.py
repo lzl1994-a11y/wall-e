@@ -66,6 +66,9 @@ class TftTcpServiceNode(Node):
         self._music_stream = None
         self._music_frame_adapter = None
         self._music_tracking_was_enabled = False
+        self._surface_lock = threading.RLock()
+        self._active_previews = 0
+        self._preview_tracking_was_enabled = False
         self._stop_event = threading.Event()
         self._preview_threads: set[threading.Thread] = set()
         self._preview_threads_lock = threading.Lock()
@@ -101,6 +104,7 @@ class TftTcpServiceNode(Node):
             self._listening = True
             self._publish_ready()
             self._ready_timer = self.create_timer(1.0, self._publish_ready)
+            self._music_timer = self.create_timer(1.0, self._maintain_music_stream)
         except Exception as exc:
             self.get_logger().error(f"TFT TCP service failed to start: {exc}")
 
@@ -184,34 +188,54 @@ class TftTcpServiceNode(Node):
             self._close_music_stream()
 
     def _ensure_music_stream(self, *, tracking_was_enabled: bool | None = None) -> None:
-        if self._game_mode != "robot" or self._music_frame_adapter is not None:
-            return
-        self._music_tracking_was_enabled = (
-            self.tracking_preview.pause()
-            if tracking_was_enabled is None else tracking_was_enabled
-        )
-        stream = self.server.open_jpeg_stream(fps=MUSIC_SPECTRUM_FPS)
-        if stream is None:
-            if self._music_tracking_was_enabled:
-                self.tracking_preview.resume()
-            self._music_tracking_was_enabled = False
-            self.get_logger().warning("音乐频谱 TFT 流暂不可用")
-            return
-        self._music_stream = stream
-        self._music_frame_adapter = GameFrameAdapter(
-            stream, fps=MUSIC_SPECTRUM_FPS
-        )
+        with self._surface_lock:
+            if (
+                self._game_mode != "robot"
+                or self._active_previews
+                or self._stop_event.is_set()
+            ):
+                return
+            if self._music_stream is not None and self._music_stream.closed:
+                if tracking_was_enabled is None:
+                    tracking_was_enabled = self._music_tracking_was_enabled
+                self._close_music_stream(resume_tracking=False)
+            if self._music_frame_adapter is not None:
+                return
+            self._music_tracking_was_enabled = (
+                self.tracking_preview.pause()
+                if tracking_was_enabled is None else tracking_was_enabled
+            )
+            stream = self.server.open_jpeg_stream(fps=MUSIC_SPECTRUM_FPS)
+            if stream is None:
+                if self._music_tracking_was_enabled:
+                    self.tracking_preview.resume()
+                self._music_tracking_was_enabled = False
+                self.get_logger().warning("音乐频谱 TFT 流暂不可用")
+                return
+            self._music_stream = stream
+            self._music_frame_adapter = GameFrameAdapter(
+                stream, fps=MUSIC_SPECTRUM_FPS
+            )
+            # Select the surface immediately, even before the first FFT arrives.
+            self._music_frame_adapter.submit_frame(*render_spectrum_frame(
+                [], title=self._music_track
+            ))
+
+    def _maintain_music_stream(self) -> None:
+        if self._music_state == "playing":
+            self._ensure_music_stream()
 
     def _close_music_stream(self, *, resume_tracking: bool = True) -> None:
-        adapter, self._music_frame_adapter = self._music_frame_adapter, None
-        if adapter is not None:
-            adapter.close()
-        stream, self._music_stream = self._music_stream, None
-        if stream is not None:
-            stream.close()
-        if resume_tracking and self._game_mode == "robot" and self._music_tracking_was_enabled:
-            self.tracking_preview.resume()
-        self._music_tracking_was_enabled = False
+        with self._surface_lock:
+            adapter, self._music_frame_adapter = self._music_frame_adapter, None
+            if adapter is not None:
+                adapter.close()
+            stream, self._music_stream = self._music_stream, None
+            if stream is not None:
+                stream.close()
+            if resume_tracking and self._game_mode == "robot" and self._music_tracking_was_enabled:
+                self.tracking_preview.resume()
+            self._music_tracking_was_enabled = False
 
     def _on_music_spectrum(self, message) -> None:
         adapter = self._music_frame_adapter
@@ -241,11 +265,15 @@ class TftTcpServiceNode(Node):
             if self._stop_event.is_set():
                 result = PreviewResult(error="tft_preview_shutting_down")
             else:
-                music_was_active = self._music_state == "playing"
-                music_was_tracking = self._music_tracking_was_enabled
-                if music_was_active:
-                    self._close_music_stream(resume_tracking=False)
-                was_tracking = music_was_tracking or self.tracking_preview.pause()
+                with self._surface_lock:
+                    first_preview = self._active_previews == 0
+                    self._active_previews += 1
+                    if first_preview:
+                        music_was_tracking = self._music_tracking_was_enabled
+                        self._close_music_stream(resume_tracking=False)
+                        self._preview_tracking_was_enabled = (
+                            music_was_tracking or self.tracking_preview.pause()
+                        )
                 try:
                     result = self.server.send_camera_preview(
                         self.camera_frames,
@@ -255,14 +283,15 @@ class TftTcpServiceNode(Node):
                         should_stop=self._stop_event.is_set,
                     )
                 finally:
-                    if (
-                        music_was_active
-                        and self._music_state == "playing"
-                        and not self._stop_event.is_set()
-                    ):
-                        self._ensure_music_stream(tracking_was_enabled=was_tracking)
-                    elif was_tracking and not self._stop_event.is_set():
-                        self.tracking_preview.resume()
+                    with self._surface_lock:
+                        self._active_previews -= 1
+                        if self._active_previews == 0 and not self._stop_event.is_set():
+                            was_tracking = self._preview_tracking_was_enabled
+                            self._preview_tracking_was_enabled = False
+                            if self._music_state == "playing":
+                                self._ensure_music_stream(tracking_was_enabled=was_tracking)
+                            elif was_tracking and self._game_mode == "robot":
+                                self.tracking_preview.resume()
             self._result_publisher.publish(
                 String(data=encode_preview_result(request["request_id"], result))
             )

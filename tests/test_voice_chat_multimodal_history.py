@@ -72,7 +72,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.model = "test-model"
         service.on_llm_chunk = MagicMock()
         service.on_llm_reply = MagicMock()
-        service.on_tool_call = MagicMock()
+        service.on_tool_call = MagicMock(return_value={"status": "completed"})
         service._llm_done = MagicMock()
         service._stream_tool_calls = MagicMock(side_effect=[
             ([{"name": "inspect_camera", "arguments": {"question": "前面有什么"}}], "普通文本"),

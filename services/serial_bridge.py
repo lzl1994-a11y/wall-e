@@ -100,7 +100,7 @@ class SerialBridge:
         
         return ""
 
-    def send_raw(self, payload: str, *, block=True):
+    def send_raw(self, payload: str, *, block=True, wake_screen=True):
         """Send normal screen/motion traffic while holding the shared USB lock."""
         if not self._io_lock.acquire(blocking=block):
             return False
@@ -111,7 +111,9 @@ class SerialBridge:
                 return False
             try:
                 current_time = time.time()
-                wake_cmd = self._check_and_wake_screen()
+                # A persistent TFT surface (such as music) owns navigation.
+                # Motion and eye commands must not replace it with the chat page.
+                wake_cmd = self._check_and_wake_screen() if wake_screen else ""
                 self.ser.write((wake_cmd + payload).encode("gbk"))
                 self.last_send_time = current_time
                 return True

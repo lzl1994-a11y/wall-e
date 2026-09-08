@@ -33,7 +33,6 @@ class MusicPlayerNode(Node):
         self._state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, 10)
         self._status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 10)
         self.create_subscription(String, "/action_cmd", self._on_action, 10)
-        self.create_subscription(String, "llm_busy", self._on_dialog_state, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self._player = MusicPlayer(
             directory=directory,
@@ -75,10 +74,6 @@ class MusicPlayerNode(Node):
             return
         self._publish_status(request, "accepted")
         self._publish_status(request, "completed", track.name)
-
-    def _on_dialog_state(self, message) -> None:
-        if message.data in {"busy", "idle"}:
-            self._player.set_speech_busy(message.data == "busy")
 
     def _on_game_state(self, message) -> None:
         if game_is_active(message.data):
