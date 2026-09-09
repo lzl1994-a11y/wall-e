@@ -21,7 +21,9 @@ class ActionPlanTests(unittest.TestCase):
         self.assertEqual(plan.steps[1].depends_on, ("step-01",))
         self.assertEqual(plan.steps[0].resources, ("servo_motion",))
         self.assertEqual(plan.steps[1].resources, ("audio_music", "display"))
-        self.assertEqual(plan.schema_version, 1)
+        self.assertEqual(plan.steps[0].timeout_ms, 20000)
+        self.assertEqual(plan.steps[1].max_attempts, 2)
+        self.assertEqual(plan.schema_version, 2)
         self.assertEqual(plan.root_type, "Sequence")
         self.assertEqual(plan.on_failure, "stop_remaining")
 
@@ -35,6 +37,8 @@ class ActionPlanTests(unittest.TestCase):
                 "step_id": "model-step",
                 "depends_on": ["anything"],
                 "resources": ["untrusted"],
+                "timeout_ms": 999999,
+                "max_attempts": 99,
                 "on_failure": "continue",
             }],
         )
@@ -42,6 +46,8 @@ class ActionPlanTests(unittest.TestCase):
         self.assertEqual(plan.steps[0].step_id, "step-01")
         self.assertEqual(plan.steps[0].depends_on, ())
         self.assertEqual(plan.steps[0].resources, ("servo_motion",))
+        self.assertEqual(plan.steps[0].timeout_ms, 20000)
+        self.assertEqual(plan.steps[0].max_attempts, 1)
         self.assertEqual(plan.on_failure, "stop_remaining")
 
     def test_rejects_empty_too_large_and_malformed_plans(self):
@@ -132,9 +138,32 @@ class BehaviorTreeActionWorkflowTests(unittest.TestCase):
             turn_id="turn", user_prompt="do it", actions=self.ACTIONS
         )
 
-        self.assertEqual(calls, ["play_sequence", "control_music"])
+        self.assertEqual(
+            calls, ["play_sequence", "control_music", "control_music"]
+        )
         self.assertEqual(state["status"], "failure")
         self.assertEqual(state["error"], "no_terminal_executor_status")
+
+    def test_retryable_skill_succeeds_on_second_attempt(self):
+        calls = []
+
+        def execute(name, _arguments):
+            calls.append(name)
+            if len(calls) == 1:
+                return {"status": "failed", "reason": "temporary_error"}
+            return {"status": "completed"}
+
+        state = self.workflow(execute=execute).invoke(
+            turn_id="turn",
+            user_prompt="smile",
+            actions=[{"name": "express_emotion", "arguments": {
+                "emotion": "happy"
+            }}],
+        )
+
+        self.assertEqual(calls, ["express_emotion", "express_emotion"])
+        self.assertEqual(state["status"], "success")
+        self.assertEqual(len(state["results"][0]["attempts"]), 2)
 
     def test_authorizer_exception_fails_closed(self):
         state = self.workflow(

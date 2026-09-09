@@ -396,7 +396,8 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 停止操作；需要移动的自主任务必须先接入连续感知和避障。
 
 普通对话中的动作会先编译成最多 8 步、由程序生成依赖和资源标签的受限 `ActionPlan`，
-完成参数和意图校验后优先交给原生行为树按 `Sequence -> ActionLeaf` 执行；原生节点不可用
+完成参数和意图校验后优先交给原生行为树执行。每个顺序步骤由程序构造为
+`Fallback(Retry(Timeout(ActionLeaf)), RecoveryStop)`；原生节点不可用
 时才在提交前回退到兼容行为树。下发后等待带 `request_id` 的 `/action_status=completed`，
 确认完成才进入下一个动作。
 任一动作被拒绝、失败、中断或超时，后续动作都会标记为跳过，两个语音模式使用相同规则。
@@ -408,8 +409,10 @@ BehaviorTree.CPP 的异步 `StatefulActionNode` tick 每个动作，再通过 `/
 `action_coordinator_node` 按资源所有者与来源优先级仲裁后，才向现有执行器发布
 `/action_cmd`。手柄高于 MCP、MCP 高于行为树、行为树高于对话；`stop_all`
 是全局安全操作，总是可以抢占。音乐、跟踪和动作分属独立资源，无冲突时可并行。
-动作的执行节点、计划资源、仲裁资源和可取消能力统一定义在
+动作的执行节点、计划资源、仲裁资源、超时、最大尝试次数和可取消能力统一定义在
 `core/action_skills.json`；Python 计划编译器、仲裁器与原生 C++ 行为树共用该注册表。
+只有 `failed/timeout` 可按白名单重试，`rejected/interrupted` 不会重复执行；尝试耗尽后
+`Fallback` 执行一次全局安全停止，并保留每次尝试的回执。
 高优先级请求抢占正在运行的可取消动作时，协调器会通过 `/action_cancel`
 定向停止旧请求，并立即发布关联的 `interrupted` 终态，调用方无需等待超时。
 相机检查与条件任务仍由 LangGraph 管理。

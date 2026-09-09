@@ -20,6 +20,8 @@ class ActionSkill:
     plan_resources: tuple[str, ...]
     arbitration_resources: frozenset[str]
     action_bus: bool
+    timeout_ms: int
+    max_attempts: int
     supports_cancel: bool
 
 
@@ -40,6 +42,8 @@ def load_action_skills() -> dict[str, ActionSkill]:
         plan_resources = raw.get("plan_resources")
         arbitration_resources = raw.get("arbitration_resources")
         action_bus = raw.get("action_bus")
+        timeout_ms = raw.get("timeout_ms")
+        max_attempts = raw.get("max_attempts")
         supports_cancel = raw.get("supports_cancel")
         if (
             not isinstance(owner, str)
@@ -54,6 +58,10 @@ def load_action_skills() -> dict[str, ActionSkill]:
                 for item in arbitration_resources
             )
             or not isinstance(action_bus, bool)
+            or not isinstance(timeout_ms, int)
+            or not 100 <= timeout_ms <= 60_000
+            or not isinstance(max_attempts, int)
+            or not 1 <= max_attempts <= 3
             or not isinstance(supports_cancel, bool)
         ):
             raise ValueError(f"invalid action skill definition: {name}")
@@ -63,6 +71,8 @@ def load_action_skills() -> dict[str, ActionSkill]:
             plan_resources=tuple(plan_resources),
             arbitration_resources=frozenset(arbitration_resources),
             action_bus=action_bus,
+            timeout_ms=timeout_ms,
+            max_attempts=max_attempts,
             supports_cancel=supports_cancel,
         )
     return skills

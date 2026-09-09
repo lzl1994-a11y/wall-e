@@ -193,6 +193,10 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn("load_skill_registry", source)
         self.assertIn('definition["plan_resources"]', source)
         self.assertNotIn("kActionResources", source)
+        self.assertIn("<Fallback", source)
+        self.assertIn("<RetryUntilSuccessful", source)
+        self.assertIn("<Timeout msec=", source)
+        self.assertIn("RecoveryStopNode", source)
 
     def test_cmake_handles_humble_multiarch_behavior_tree_package(self):
         from pathlib import Path

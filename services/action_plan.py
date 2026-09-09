@@ -28,6 +28,8 @@ class ActionPlanStep:
     arguments: dict[str, Any]
     depends_on: tuple[str, ...]
     resources: tuple[str, ...]
+    timeout_ms: int
+    max_attempts: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +38,8 @@ class ActionPlanStep:
             "arguments": dict(self.arguments),
             "depends_on": list(self.depends_on),
             "resources": list(self.resources),
+            "timeout_ms": self.timeout_ms,
+            "max_attempts": self.max_attempts,
         }
 
 
@@ -45,7 +49,7 @@ class ActionPlan:
     turn_id: str
     user_prompt: str
     steps: tuple[ActionPlanStep, ...]
-    schema_version: int = 1
+    schema_version: int = 2
     root_type: str = "Sequence"
     on_failure: str = "stop_remaining"
 
@@ -95,6 +99,8 @@ def compile_action_plan(
             arguments=dict(arguments),
             depends_on=(previous_step_id,) if previous_step_id else (),
             resources=skill.plan_resources,
+            timeout_ms=skill.timeout_ms,
+            max_attempts=skill.max_attempts,
         ))
         previous_step_id = step_id
 

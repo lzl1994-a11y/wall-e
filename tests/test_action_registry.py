@@ -28,6 +28,8 @@ class ActionRegistryTests(unittest.TestCase):
         self.assertTrue(get_action_skill("move_chassis").supports_cancel)
         self.assertTrue(get_action_skill("move_chassis").action_bus)
         self.assertFalse(get_action_skill("inspect_camera").action_bus)
+        self.assertEqual(plan.steps[0].timeout_ms, 5000)
+        self.assertEqual(plan.steps[0].max_attempts, 1)
 
     def test_targeted_cancel_protocol_round_trip(self):
         payload = build_action_cancel(

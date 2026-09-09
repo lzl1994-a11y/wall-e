@@ -6,6 +6,8 @@
       "plan_resources": ["display"],
       "arbitration_resources": ["motion_owner"],
       "action_bus": true,
+      "timeout_ms": 5000,
+      "max_attempts": 2,
       "supports_cancel": false
     },
     "move_chassis": {
@@ -13,6 +15,8 @@
       "plan_resources": ["chassis"],
       "arbitration_resources": ["motion_owner"],
       "action_bus": true,
+      "timeout_ms": 5000,
+      "max_attempts": 1,
       "supports_cancel": true
     },
     "manual_servo": {
@@ -20,6 +24,8 @@
       "plan_resources": ["servo_motion"],
       "arbitration_resources": ["motion_owner"],
       "action_bus": true,
+      "timeout_ms": 3000,
+      "max_attempts": 1,
       "supports_cancel": false
     },
     "play_sequence": {
@@ -27,6 +33,8 @@
       "plan_resources": ["servo_motion"],
       "arbitration_resources": ["motion_owner"],
       "action_bus": true,
+      "timeout_ms": 20000,
+      "max_attempts": 1,
       "supports_cancel": true
     },
     "control_music": {
@@ -34,6 +42,8 @@
       "plan_resources": ["audio_music", "display"],
       "arbitration_resources": ["music_owner"],
       "action_bus": true,
+      "timeout_ms": 5000,
+      "max_attempts": 2,
       "supports_cancel": false
     },
     "set_tracking_mode": {
@@ -41,6 +51,8 @@
       "plan_resources": ["camera", "chassis"],
       "arbitration_resources": ["tracking_owner"],
       "action_bus": true,
+      "timeout_ms": 8000,
+      "max_attempts": 2,
       "supports_cancel": false
     },
     "set_vision_gate": {
@@ -48,6 +60,8 @@
       "plan_resources": ["camera"],
       "arbitration_resources": ["tracking_owner"],
       "action_bus": true,
+      "timeout_ms": 8000,
+      "max_attempts": 2,
       "supports_cancel": false
     },
     "stop_all": {
@@ -55,6 +69,8 @@
       "plan_resources": ["servo_motion", "chassis", "audio_music", "camera"],
       "arbitration_resources": ["*"],
       "action_bus": true,
+      "timeout_ms": 5000,
+      "max_attempts": 2,
       "supports_cancel": false
     },
     "inspect_camera": {
@@ -62,6 +78,8 @@
       "plan_resources": ["camera", "display"],
       "arbitration_resources": ["camera_owner"],
       "action_bus": false,
+      "timeout_ms": 20000,
+      "max_attempts": 1,
       "supports_cancel": false
     },
     "run_conditional_task": {
@@ -69,6 +87,8 @@
       "plan_resources": ["camera", "action_bus"],
       "arbitration_resources": ["camera_owner", "motion_owner"],
       "action_bus": false,
+      "timeout_ms": 30000,
+      "max_attempts": 1,
       "supports_cancel": false
     }
   }

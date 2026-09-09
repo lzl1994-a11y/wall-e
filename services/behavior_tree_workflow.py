@@ -69,42 +69,59 @@ class ActionLeaf:
             return self._record("rejected", reason=reason or "action_not_authorized")
 
         self.status = NodeStatus.RUNNING
-        try:
-            raw_result = self._execute(self.step.name, dict(self.step.arguments))
-            if isinstance(raw_result, dict):
-                result = dict(raw_result)
-            elif isinstance(raw_result, str) and raw_result.strip():
-                result = {
-                    "status": "completed",
-                    "action": self.step.name,
-                    "response": raw_result.strip(),
-                }
-            else:
+        attempts: list[dict[str, Any]] = []
+        for attempt in range(1, self.step.max_attempts + 1):
+            if self._cancelled is not None and self._cancelled():
+                self.status = NodeStatus.HALTED
+                record = self._record("interrupted", reason="turn_cancelled")
+                record["attempts"] = attempts
+                return record
+            try:
+                raw_result = self._execute(self.step.name, dict(self.step.arguments))
+                if isinstance(raw_result, dict):
+                    result = dict(raw_result)
+                elif isinstance(raw_result, str) and raw_result.strip():
+                    result = {
+                        "status": "completed",
+                        "action": self.step.name,
+                        "response": raw_result.strip(),
+                    }
+                else:
+                    result = {
+                        "status": "failed",
+                        "action": self.step.name,
+                        "reason": "missing_action_result",
+                    }
+            except Exception as exc:
                 result = {
                     "status": "failed",
                     "action": self.step.name,
-                    "reason": "missing_action_result",
+                    "reason": str(exc),
                 }
-        except Exception as exc:
-            result = {
-                "status": "failed",
-                "action": self.step.name,
-                "reason": str(exc),
-            }
 
-        result.setdefault("action", self.step.name)
-        result.setdefault("status", "failed")
-        record = self.step.to_dict()
-        record.update(result)
-        self.status = (
-            NodeStatus.SUCCESS
-            if result["status"] == "completed"
-            else NodeStatus.HALTED
-            if result["status"] == "interrupted"
-            else NodeStatus.FAILURE
-        )
-        record["node_status"] = self.status.value
-        return record
+            result.setdefault("action", self.step.name)
+            result.setdefault("status", "failed")
+            attempt_record = dict(result)
+            attempt_record["attempt"] = attempt
+            attempts.append(attempt_record)
+            retryable = result["status"] in {"failed", "timeout"}
+            if retryable and attempt < self.step.max_attempts:
+                continue
+
+            record = self.step.to_dict()
+            record.update(result)
+            self.status = (
+                NodeStatus.SUCCESS
+                if result["status"] == "completed"
+                else NodeStatus.HALTED
+                if result["status"] == "interrupted"
+                else NodeStatus.FAILURE
+            )
+            record["node_status"] = self.status.value
+            record["attempts"] = attempts
+            return record
+
+        raise RuntimeError("unreachable action retry state")
 
     def _record(self, status: str, *, reason: str) -> dict[str, Any]:
         return {
