@@ -29,8 +29,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
 from services.action_execution import CorrelatedActionExecutor
-from services.action_intent_guard import validate_action_arguments
+from services.action_intent_guard import validate_action_arguments, validate_action_call
 from services.action_status import ACTION_STATUS_TOPIC
+from services.behavior_tree_execution import CorrelatedPlanExecutor
+from services.behavior_tree_protocol import (
+    BEHAVIOR_TREE_CANCEL_TOPIC,
+    BEHAVIOR_TREE_EXECUTE_TOPIC,
+    BEHAVIOR_TREE_STATUS_TOPIC,
+)
+from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.camera_frame import save_camera_photo
 from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.dialog_workflow import ConditionalTaskWorkflow
@@ -80,6 +87,19 @@ class VoiceChatNode(Node):
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, "action_cmd", 10)
         self._action_executor = CorrelatedActionExecutor()
+        self._behavior_tree_executor = CorrelatedPlanExecutor()
+        self.behavior_tree_pub = self.create_publisher(
+            String, BEHAVIOR_TREE_EXECUTE_TOPIC, 10
+        )
+        self.behavior_tree_cancel_pub = self.create_publisher(
+            String, BEHAVIOR_TREE_CANCEL_TOPIC, 10
+        )
+        self.create_subscription(
+            String,
+            BEHAVIOR_TREE_STATUS_TOPIC,
+            self._on_behavior_tree_status,
+            10,
+        )
         self._conditional_task_workflow = None
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_action_status, 10)
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
@@ -112,6 +132,7 @@ class VoiceChatNode(Node):
         self.vc.on_expression = self._on_expression
         self.vc.on_llm_reply = self._on_llm_reply
         self.vc.on_tool_call = self._on_tool_call
+        self.vc.on_action_plan = self._execute_behavior_tree_plan
         self.vc.on_photo_request = self._process_camera_photo
         self.vc.on_inspection_request = self._process_heard_camera_inspection
         self.vc.on_llm_done = self._on_llm_done
@@ -409,6 +430,42 @@ class VoiceChatNode(Node):
         executor = getattr(self, "_action_executor", None)
         if executor is not None:
             executor.accept_status(message.data)
+
+    def _on_behavior_tree_status(self, message):
+        executor = getattr(self, "_behavior_tree_executor", None)
+        if executor is not None:
+            executor.accept_status(message.data)
+
+    def _execute_behavior_tree_plan(self, heard_text, actions):
+        """Submit ordinary actions to the native tree; return None for fallback."""
+        if any(
+            action.get("name") in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}
+            for action in actions
+            if isinstance(action, dict)
+        ):
+            return None
+        publisher = getattr(self, "behavior_tree_pub", None)
+        cancel_publisher = getattr(self, "behavior_tree_cancel_pub", None)
+        executor = getattr(self, "_behavior_tree_executor", None)
+        if publisher is None or cancel_publisher is None or executor is None:
+            return None
+        workflow = NativeBehaviorTreeWorkflow(
+            authorize=validate_action_call,
+            execute_plan=lambda plan: executor.try_execute(
+                plan,
+                publish=lambda payload: publisher.publish(String(data=payload)),
+                cancel_publish=lambda payload: cancel_publisher.publish(
+                    String(data=payload)
+                ),
+                owner_available=lambda: publisher.get_subscription_count() > 0,
+                cancelled=self.vc._cancel_llm.is_set,
+            ),
+        )
+        return workflow.invoke(
+            turn_id=self._ensure_turn_id(),
+            user_prompt=heard_text,
+            actions=actions,
+        )
 
     def _process_conditional_task(self, plan):
         """Run one audio-selected observe-condition-action graph."""

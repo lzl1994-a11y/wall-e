@@ -153,6 +153,21 @@ class LaunchNodesTests(unittest.TestCase):
         self.assertLess(names.index("camera_capture"), names.index("tft_tcp_service"))
         self.assertLess(names.index("tft_tcp_service"), names.index("llm"))
 
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "asr_llm"},
+            "orchestration": {"native_behavior_tree": True},
+        },
+    )
+    def test_native_behavior_tree_starts_before_dialog_client(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args())
+        names = [entry.name for entry in entries]
+        behavior_tree = next(entry for entry in entries if entry.name == "behavior_tree")
+
+        self.assertTrue(behavior_tree.script.is_file())
+        self.assertLess(names.index("behavior_tree"), names.index("llm"))
+
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_music_uses_existing_audio_and_tft_owners(self, _load_config):
         entries = launch_nodes.build_node_list(launcher_args())

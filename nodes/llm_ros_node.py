@@ -17,6 +17,12 @@ from pypinyin import Style, pinyin
 
 from services.action_acknowledgement import action_acknowledgement
 from services.action_execution import CorrelatedActionExecutor
+from services.behavior_tree_execution import CorrelatedPlanExecutor
+from services.behavior_tree_protocol import (
+    BEHAVIOR_TREE_CANCEL_TOPIC,
+    BEHAVIOR_TREE_EXECUTE_TOPIC,
+    BEHAVIOR_TREE_STATUS_TOPIC,
+)
 from services.action_intent_guard import (
     canonicalize_conditional_action,
     deterministic_safety_action,
@@ -48,11 +54,11 @@ from services.conditional_task import (
     CONDITIONAL_TASK_TOOL_NAME,
     is_conditional_task_request,
 )
-from services.dialog_workflow import (
-    ActionSequenceWorkflow,
-    CameraInspectionWorkflow,
-    ConditionalTaskWorkflow,
+from services.behavior_tree_workflow import (
+    BehaviorTreeActionWorkflow,
+    NativeBehaviorTreeWorkflow,
 )
+from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
 from services.voice_debug import RollingVoiceDebugStore
 
 
@@ -89,6 +95,7 @@ class LLMBrainNode(Node):
         self._camera_inspection_workflow = None
         self._conditional_task_workflow = None
         self._action_executor = CorrelatedActionExecutor()
+        self._behavior_tree_executor = CorrelatedPlanExecutor()
         self._voice_debug = RollingVoiceDebugStore()
         self.chat_history = deque(maxlen=24)
         self.punctuations = {'。', '？', '.', '?', '！', '!'}
@@ -110,6 +117,18 @@ class LLMBrainNode(Node):
         )
         self.tts_publisher = self.create_publisher(String, 'tts_text', 10)
         self.action_publisher = self.create_publisher(String, 'action_cmd', 10)
+        self.behavior_tree_publisher = self.create_publisher(
+            String, BEHAVIOR_TREE_EXECUTE_TOPIC, 10
+        )
+        self.behavior_tree_cancel_publisher = self.create_publisher(
+            String, BEHAVIOR_TREE_CANCEL_TOPIC, 10
+        )
+        self.create_subscription(
+            String,
+            BEHAVIOR_TREE_STATUS_TOPIC,
+            self._on_behavior_tree_status,
+            10,
+        )
         self.create_subscription(
             String,
             ACTION_STATUS_TOPIC,
@@ -665,8 +684,38 @@ class LLMBrainNode(Node):
         )
 
     def _execute_dialog_action_sequence(self, actions, *, user_prompt, turn_id):
-        """Run ordinary LLM actions through the shared LangGraph orchestrator."""
-        workflow = ActionSequenceWorkflow(
+        """Prefer the native tree owner and safely fall back when it is absent."""
+        plan_publisher = getattr(self, 'behavior_tree_publisher', None)
+        cancel_publisher = getattr(self, 'behavior_tree_cancel_publisher', None)
+        plan_executor = getattr(self, '_behavior_tree_executor', None)
+        if plan_publisher is not None and cancel_publisher is not None:
+            if plan_executor is None:
+                plan_executor = CorrelatedPlanExecutor()
+                self._behavior_tree_executor = plan_executor
+            native = NativeBehaviorTreeWorkflow(
+                authorize=validate_action_call,
+                execute_plan=lambda plan: plan_executor.try_execute(
+                    plan,
+                    publish=lambda payload: plan_publisher.publish(String(data=payload)),
+                    cancel_publish=lambda payload: cancel_publisher.publish(
+                        String(data=payload)
+                    ),
+                    owner_available=lambda: plan_publisher.get_subscription_count() > 0,
+                    cancelled=lambda: (
+                        not getattr(self, '_worker_running', True)
+                        or getattr(self, '_game_mode', 'robot') != 'robot'
+                    ),
+                ),
+            )
+            native_state = native.invoke(
+                turn_id=turn_id,
+                user_prompt=user_prompt,
+                actions=actions,
+            )
+            if native_state is not None:
+                return native_state
+
+        workflow = BehaviorTreeActionWorkflow(
             authorize=validate_action_call,
             execute=lambda name, arguments: self._execute_dialog_action(
                 name, arguments, turn_id
@@ -681,6 +730,11 @@ class LLMBrainNode(Node):
             user_prompt=user_prompt,
             actions=actions,
         )
+
+    def _on_behavior_tree_status(self, message):
+        executor = getattr(self, '_behavior_tree_executor', None)
+        if executor is not None:
+            executor.accept_status(message.data)
 
     def _process_deterministic_safety_action(
         self,

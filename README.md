@@ -83,9 +83,15 @@ sudo apt install tros-dnn-node-example
 将代码克隆到你的 ROS2 工作空间（如 `~/your_workspace/src/`）下：
 ```bash
 cd ~/your_workspace
-colcon build --packages-select wali_x3_brain
+rosdep install --from-paths src/wall-e/cpp_nodes --ignore-src -r -y
+colcon build --base-paths src/wall-e/cpp_nodes \
+  --packages-select wali_behavior_tree wali_nv12_padder
 source install/setup.bash
 ```
+
+`wali_behavior_tree` 使用 BehaviorTree.CPP 4 和 C++17。只有编译并 `source` 工作空间后，
+`orchestration.native_behavior_tree: true` 才会启动原生编排节点；节点不可用时，对话端会在
+提交计划前自动回退到 Python 兼容行为树，不会影响其他功能。
 
 ### 3. ASR 运行依赖
 
@@ -389,9 +395,16 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 数量或空间关系。当前单帧任务禁止自动移动底盘，仅开放有界预设动作、表情、跟踪开关与
 停止操作；需要移动的自主任务必须先接入连续感知和避障。
 
-普通对话中的多个动作同样交给 LangGraph 的顺序动作图：每个动作先做参数和意图校验，
-下发后等待带 `request_id` 的 `/action_status=completed`，确认完成才进入下一个动作。
+普通对话中的动作会先编译成最多 8 步、由程序生成依赖和资源标签的受限 `ActionPlan`，
+完成参数和意图校验后优先交给原生行为树按 `Sequence -> ActionLeaf` 执行；原生节点不可用
+时才在提交前回退到兼容行为树。下发后等待带 `request_id` 的 `/action_status=completed`，
+确认完成才进入下一个动作。
 任一动作被拒绝、失败、中断或超时，后续动作都会标记为跳过，两个语音模式使用相同规则。
+原生 `wali_behavior_tree_node` 通过 `/behavior_tree/execute` 接收同一 `ActionPlan`，使用
+BehaviorTree.CPP 的异步 `StatefulActionNode` tick 每个动作，再通过现有 `/action_cmd`、
+`/action_status` 等待执行终态。原生节点未启动时会在提交前回退到兼容执行器，不会在动作
+已经下发后重复执行。取消计划会停止后续节点并下发一次 `stop_all`。
+相机检查与条件任务仍由 LangGraph 管理；MCP 和手柄入口暂未并入该行为树。
 
 主程序启动时，`camera_capture_node` 会立即拉起唯一的 `hobot_usb_cam` 并保持热备；
 平时只丢弃未被租用的帧。视觉问答、拍照或跟踪请求只开启 `/camera_frame` 转发，

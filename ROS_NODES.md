@@ -38,6 +38,7 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `nodes/keyboard_stt_node.py` | `keyboard_stt_test_node` | `pipeline.mode=keyboard` 或 `--keyboard-stt` | 无 | `voice_text` | 键盘输入测试节点。你在终端输入文字后，它把文字发布到 `voice_text`，模拟 STT 输出。 |
 | `nodes/stt_ros_node.py` | `walle_ear_node` | `pipeline.mode=asr_llm` 或 `--real-stt` | `llm_busy`, `/game_mode_state` | `voice_text` | 真实语音识别节点。音乐播放期间仍保持采集/唤醒，只有对话输出或游戏模式会暂停。 |
 | `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `action_cmd`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
+| `cpp_nodes/wali_behavior_tree/src/behavior_tree_node.cpp` | `wali_behavior_tree_node` | `orchestration.native_behavior_tree=true` | `/behavior_tree/execute`, `/behavior_tree/cancel`, `/action_status` | `/behavior_tree/status`, `/action_cmd` | BehaviorTree.CPP 原生计划所有者；顺序 tick 动作叶节点、等待关联终态并处理取消。 |
 | `nodes/music_player_node.py` | `music_player_node` | 是 | `/action_cmd`, `/game_mode_state` | `/music_audio`, `/music_spectrum`, `/music_state`, `/action_status` | 用 FFmpeg 连续解码本地音乐并发布 PCM 与频谱数据；语音期间不会暂停播放进度。 |
 | `nodes/audio_playback_node.py` | `audio_playback_node` | 是 | `audio_output`, `/music_audio`, `wake_audio_output` | `llm_busy`, `wake_audio_done` | 声卡唯一所有者；在一个输出流中混合 TTS、唤醒提示音与音乐，并对音乐做语音闪避。 |
 | `nodes/tft_tcp_service_node.py` | `tft_tcp_service_node` | 是 | `/tft_preview_request`, `/vision_pipeline_cmd`, `/game_mode_state`, `/game_frame`, `/music_state`, `/music_spectrum` | `/tft_preview_result`, `tft_preview_ready`, `/game_mode_request` | 胸前 TFT 的唯一 TCP 服务所有者；统一仲裁拍照、跟踪、游戏和音乐频谱画面。 |
@@ -52,6 +53,9 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `tts_text` | `walle_llm_brain` | 当前默认无人订阅 | 给 TTS 用的流式分句文本。适合边生成边播报，但不一定是完整回复。 |
 | `full_ai_text` | `walle_llm_brain` | 当前默认无人订阅 | LLM 完整回复文本，等整轮生成结束后发布。 |
 | `action_cmd` | `walle_llm_brain` | 当前默认无人订阅 | 单独的工具/动作命令通道，保留给动作执行节点使用。 |
+| `/behavior_tree/execute` | 文本或多模态对话节点 | `wali_behavior_tree_node` | 提交由程序生成、已完成安全校验的受限 `ActionPlan`。 |
+| `/behavior_tree/status` | `wali_behavior_tree_node` | 文本或多模态对话节点 | 返回计划接收、运行及最终成功/失败/中断状态。 |
+| `/behavior_tree/cancel` | 文本或多模态对话节点 | `wali_behavior_tree_node` | 取消指定 `plan_id`；原生节点中止后续步骤并发布一次停止动作。 |
 | `screen_dialog` | `walle_llm_brain` | `walle_serial_node` | 一整轮完整对话包，包含 `turn_id`、`corrected_text`、`ai_text`、`actions`。目前屏幕串口节点主要看这个。 |
 | `/wall_e/vision` | `yolo_brain_node` | 当前默认无人订阅 | 视觉识别结果演示话题。 |
 

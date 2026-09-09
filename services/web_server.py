@@ -459,6 +459,18 @@ def validate_config(config: Any) -> list[str]:
     for key in ("serial", "tracking"):
         _check_bool(launch, key, f"launch.{key}", errors)
 
+    orchestration = config.get("orchestration")
+    if orchestration is not None:
+        if not isinstance(orchestration, dict):
+            errors.append("orchestration 必须是配置对象")
+        elif "native_behavior_tree" in orchestration:
+            _check_bool(
+                orchestration,
+                "native_behavior_tree",
+                "orchestration.native_behavior_tree",
+                errors,
+            )
+
     mcp = config.get("mcp")
     if mcp is not None:
         if not isinstance(mcp, dict):

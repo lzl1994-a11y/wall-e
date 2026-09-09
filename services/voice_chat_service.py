@@ -44,7 +44,7 @@ from services.camera_frame import (
 )
 from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME, is_conditional_task_request
 from services.action_intent_guard import canonicalize_conditional_action, validate_action_call
-from services.dialog_workflow import ActionSequenceWorkflow
+from services.behavior_tree_workflow import BehaviorTreeActionWorkflow
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
 from .voice_debug import RollingVoiceDebugStore
@@ -122,6 +122,7 @@ class VoiceChatService:
         self.on_llm_chunk = None       # LLM 流式文本块
         self.on_expression = None      # LLM 语义表情 (expression, intensity)
         self.on_tool_call = None       # LLM 工具调用
+        self.on_action_plan = None     # 原生行为树计划提交（不可用时返回 None）
         self.on_photo_request = None   # 多模态拍照请求（由 ROS 节点执行）
         self.on_inspection_request = None  # 多模态看图请求（由 ROS 节点执行）
         self.on_llm_done = None        # LLM 本轮结束（成功、失败或取消）
@@ -496,15 +497,21 @@ class VoiceChatService:
             self._llm_done()
 
     def _execute_action_sequence(self, heard_text, actions):
-        """Use LangGraph as the common deterministic action orchestrator."""
-        workflow = getattr(self, "_action_sequence_workflow", None)
+        """Prefer the native tree callback, then use the compatibility tree."""
+        native_handler = getattr(self, "on_action_plan", None)
+        if native_handler is not None:
+            native_state = native_handler(heard_text or "", actions)
+            if native_state is not None:
+                return native_state
+
+        workflow = getattr(self, "_behavior_tree_workflow", None)
         if workflow is None:
-            workflow = ActionSequenceWorkflow(
+            workflow = BehaviorTreeActionWorkflow(
                 authorize=validate_action_call,
                 execute=self._execute_tool_call,
                 cancelled=self._cancel_llm.is_set,
             )
-            self._action_sequence_workflow = workflow
+            self._behavior_tree_workflow = workflow
         return workflow.invoke(
             turn_id="multimodal_dialog",
             user_prompt=heard_text or "",

@@ -53,10 +53,13 @@ def build_node_list(args):
     launch_cfg = config.get("launch", {})
     hardware_cfg = config.get("hardware", {})
     mcp_cfg = config.get("mcp", {})
+    orchestration_cfg = config.get("orchestration", {})
     if not isinstance(mcp_cfg, dict):
         mcp_cfg = {}
     if not isinstance(hardware_cfg, dict):
         hardware_cfg = {}
+    if not isinstance(orchestration_cfg, dict):
+        orchestration_cfg = {}
     hardware_backend = hardware_cfg.get("backend", "serial_mcu")
     if hardware_backend not in {"serial_mcu", "ubuntu_i2c"}:
         hardware_backend = "serial_mcu"
@@ -80,6 +83,11 @@ def build_node_list(args):
         NodeEntry("camera_capture", ROOT / "nodes" / "camera_capture_node.py"),
         NodeEntry("tft_tcp_service", ROOT / "nodes" / "tft_tcp_service_node.py"),
     ]
+    if orchestration_cfg.get("native_behavior_tree", False):
+        nodes.append(NodeEntry(
+            "behavior_tree",
+            ROOT / "nodes" / "native_behavior_tree_launcher.py",
+        ))
     if not args.no_web:
         nodes.append(NodeEntry("config_web", ROOT / "services" / "web_server.py"))
 

@@ -66,6 +66,13 @@
               <label class="switch-row"><span><strong>允许语音视觉跟踪</strong><small>只加载待命节点；摄像头与检测模型仅在 AI 识别到“看着我、跟着我”等指令后启动</small></span><input data-path="launch.tracking" type="checkbox"><i></i></label>
             </div>
           </article>
+          <article class="card span-two" data-module="orchestration">
+            <div class="card-heading-row"><h3>动作编排</h3><button class="button secondary small module-save" data-save-module="orchestration" type="button">保存本模块</button></div>
+            <p class="card-help">启用后优先使用独立的 BehaviorTree.CPP 节点；原生节点未安装或未启动时会在动作提交前自动回退。</p>
+            <div class="switch-grid">
+              <label class="switch-row"><span><strong>原生行为树</strong><small>使用受限 ActionPlan、顺序叶节点和关联动作终态</small></span><input data-path="orchestration.native_behavior_tree" type="checkbox"><i></i></label>
+            </div>
+          </article>
           <article class="card span-two" data-module="mcp">
             <div class="card-heading-row"><h3>MCP 外部 Agent 网关</h3><button class="button secondary small module-save" data-save-module="mcp" type="button">保存本模块</button></div>
             <p class="card-help">供 Codex 等外部 Agent 通过 Streamable HTTP 控制机器人。监听局域网地址时必须配置令牌；保存配置或更换令牌后，重启主脑生效。</p>

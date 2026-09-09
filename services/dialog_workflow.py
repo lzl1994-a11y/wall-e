@@ -101,11 +101,10 @@ class ActionSequenceState(TypedDict, total=False):
 
 
 class ActionSequenceWorkflow:
-    """Authorize and execute ordinary tool calls strictly one at a time.
+    """Legacy LangGraph action sequencer retained for rollback compatibility.
 
-    A terminal ``completed`` acknowledgement is required before the graph can
-    advance to the next action.  This prevents a later sequence command from
-    interrupting an earlier one at the hardware owner.
+    Active text and multimodal dialog paths use ``BehaviorTreeActionWorkflow``.
+    Camera inspection and conditional workflows below remain on LangGraph.
     """
 
     def __init__(

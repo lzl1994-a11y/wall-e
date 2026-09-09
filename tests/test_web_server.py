@@ -260,6 +260,16 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertNotIn('data-path="vision.enabled_on_start"', html)
         self.assertIn("不会直接启动摄像头或检测模型", html)
 
+    def test_runtime_page_exposes_native_behavior_tree_toggle(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+
+        self.assertIn("原生行为树", html)
+        self.assertIn(
+            'data-path="orchestration.native_behavior_tree"',
+            html,
+        )
+
     def test_esp32_network_ui_has_fixed_three_wifi_groups_and_safe_actions(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")

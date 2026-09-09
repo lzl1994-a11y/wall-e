@@ -36,6 +36,7 @@ const CAMERA_PREVIEW_PHASES = Object.freeze({
 
 const MODULE_ROOTS = Object.freeze({
   runtime: "launch",
+  orchestration: "orchestration",
   mcp: "mcp",
   pipeline: "pipeline",
   dialog_motion: "dialog_motion",
