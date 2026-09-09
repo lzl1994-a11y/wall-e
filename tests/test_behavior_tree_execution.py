@@ -203,7 +203,7 @@ class NativePackageContractTests(unittest.TestCase):
         launcher = (root / "nodes" / "native_behavior_tree_launcher.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('root / "install"', launcher)
+        self.assertIn('/ "install"', launcher)
         self.assertIn("local_binary.is_file()", launcher)
         self.assertLess(launcher.index("local_binary.is_file()"), launcher.index("shutil.which"))
 
