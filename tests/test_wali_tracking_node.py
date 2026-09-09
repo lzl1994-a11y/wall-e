@@ -99,6 +99,23 @@ def _load_tracking_module():
 
 
 class WaliTrackingNodeTests(unittest.TestCase):
+    def test_stop_all_returns_tracking_to_idle(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        node._set_tracking_mode("follow_me")
+
+        node._on_action_cmd(_FakeString(json.dumps({
+            "request_id": "stop",
+            "name": "stop_all",
+            "arguments": {},
+            "source": "safety",
+        })))
+
+        self.assertEqual(node.mode, node.MODE_IDLE)
+        status = json.loads(node.publishers["/action_status"].messages[-1].data)
+        self.assertEqual(status["request_id"], "stop")
+        self.assertEqual(status["status"], "completed")
+
     def test_detection_input_uses_sensor_qos_and_drives_head_target(self):
         module = _load_tracking_module()
         node = module.WaliTrackingNode()

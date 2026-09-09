@@ -597,7 +597,10 @@ class WaliTrackingNode(Node):
 
         self.get_logger().info(f"[TrackingNode] Action name: '{name}', args: {args}")
 
-        if name == "set_tracking_mode":
+        if name == "stop_all":
+            self._set_tracking_mode(self.MODE_IDLE)
+            self._publish_action_status(request, "completed")
+        elif name == "set_tracking_mode":
             self._publish_action_status(request, "accepted")
             ok = self._set_tracking_mode(args.get("mode", ""))
             self._publish_action_status(

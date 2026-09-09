@@ -65,6 +65,7 @@ class ActionCoordinatorNodeTests(unittest.TestCase):
         self.node = self.node_class.__new__(self.node_class)
         self.node._arbiter = ActionArbiter()
         self.node._command_pub = _Publisher()
+        self.node._cancel_pub = _Publisher()
         self.node._status_pub = _Publisher()
         self.node.get_logger = lambda: _Logger()
 
@@ -105,6 +106,37 @@ class ActionCoordinatorNodeTests(unittest.TestCase):
             [message["request_id"] for message in self.node._command_pub.messages],
             ["first", "second"],
         )
+
+    def test_preemption_emits_targeted_cancel_and_interrupted_status(self):
+        self.request("old", "play_sequence", "llm_dialog")
+        self.request("new", "move_chassis", "joystick")
+
+        self.assertEqual(self.node._cancel_pub.messages[0]["request_id"], "old")
+        self.assertEqual(
+            self.node._cancel_pub.messages[0]["replacement_request_id"], "new"
+        )
+        interrupted = next(
+            message for message in self.node._status_pub.messages
+            if message["request_id"] == "old"
+        )
+        self.assertEqual(interrupted["status"], "interrupted")
+        self.assertEqual(
+            interrupted["detail"], "preempted_by:joystick:move_chassis"
+        )
+
+    def test_expired_cancellable_lease_is_cancelled_and_reported(self):
+        self.node._arbiter.submit(
+            "stale", "move_chassis", "llm_dialog", now=0
+        )
+        self.node._expire_leases()
+
+        self.assertEqual(self.node._cancel_pub.messages[0]["request_id"], "stale")
+        self.assertTrue(any(
+            message["request_id"] == "stale"
+            and message["status"] == "interrupted"
+            and message["detail"] == "action_lease_expired"
+            for message in self.node._status_pub.messages
+        ))
 
 
 if __name__ == "__main__":

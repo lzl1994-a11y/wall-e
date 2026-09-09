@@ -4,6 +4,7 @@
 import time
 import json
 import yaml
+from services.action_cancel import ACTION_CANCEL_TOPIC, parse_action_cancel
 from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
 from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 import rclpy
@@ -73,6 +74,7 @@ class SequenceRosNode(Node):
 
         # 统一订阅 /action_cmd，负责动作编排和运动指令分发
         self.create_subscription(String, ACTION_COMMAND_TOPIC, self._on_action_cmd, 10)
+        self.create_subscription(String, ACTION_CANCEL_TOPIC, self._on_action_cancel, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         # Tracking produces targets at detector frame rate. Depth 1 makes this
         # a latest-value stream and avoids replaying stale head positions.
@@ -245,6 +247,27 @@ class SequenceRosNode(Node):
         self._sequence_request = None
         if request is not None:
             self._publish_request_status(request, "interrupted", detail)
+
+    def _on_action_cancel(self, message):
+        cancellation = parse_action_cancel(message.data)
+        if cancellation is None:
+            return
+        request_id = cancellation["request_id"]
+        reason = cancellation["reason"]
+        if (
+            self._sequence_request is not None
+            and self._sequence_request.get("request_id") == request_id
+        ):
+            self._interrupt_sequence(reason)
+            self._current_sequence = []
+            self._explicit_motion_active = False
+            for name in self._steps:
+                self._steps[name] = 0.0
+        if (
+            self._motor_request is not None
+            and self._motor_request.get("request_id") == request_id
+        ):
+            self._stop_motors(status="interrupted", detail=reason)
 
     def _flatten_sequence(self, seq_name, offset_time=0.0, depth=0):
         """递归解析序列，将其扁平化为一维时间轴"""

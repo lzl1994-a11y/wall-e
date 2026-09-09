@@ -59,8 +59,8 @@ class ActionPlanTests(unittest.TestCase):
 
 class BehaviorTreeActionWorkflowTests(unittest.TestCase):
     ACTIONS = [
-        {"name": "first", "arguments": {"value": 1}},
-        {"name": "second", "arguments": {"value": 2}},
+        {"name": "play_sequence", "arguments": {"sequence_name": "wave_hello"}},
+        {"name": "control_music", "arguments": {"action": "play"}},
     ]
 
     def workflow(self, *, authorize=None, execute=None, cancelled=None):
@@ -81,7 +81,10 @@ class BehaviorTreeActionWorkflowTests(unittest.TestCase):
             turn_id="turn", user_prompt="first then second", actions=self.ACTIONS
         )
 
-        self.assertEqual(calls, [("first", {"value": 1}), ("second", {"value": 2})])
+        self.assertEqual(calls, [
+            ("play_sequence", {"sequence_name": "wave_hello"}),
+            ("control_music", {"action": "play"}),
+        ])
         self.assertEqual(state["status"], "success")
         self.assertFalse(state["stopped"])
         self.assertEqual(state["plan_id"], state["plan"]["plan_id"])
@@ -121,7 +124,7 @@ class BehaviorTreeActionWorkflowTests(unittest.TestCase):
 
         def execute(name, _arguments):
             calls.append(name)
-            if name == "first":
+            if name == "play_sequence":
                 return {"status": "completed"}
             return {"status": "timeout", "reason": "no_terminal_executor_status"}
 
@@ -129,7 +132,7 @@ class BehaviorTreeActionWorkflowTests(unittest.TestCase):
             turn_id="turn", user_prompt="do it", actions=self.ACTIONS
         )
 
-        self.assertEqual(calls, ["first", "second"])
+        self.assertEqual(calls, ["play_sequence", "control_music"])
         self.assertEqual(state["status"], "failure")
         self.assertEqual(state["error"], "no_terminal_executor_status")
 

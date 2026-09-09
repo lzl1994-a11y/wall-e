@@ -136,15 +136,19 @@ class NativeBehaviorTreeWorkflowTests(unittest.TestCase):
     def test_rejection_never_submits_any_part_of_the_plan(self):
         submitted = []
         workflow = NativeBehaviorTreeWorkflow(
-            authorize=lambda _prompt, name, _arguments: (name != "second", "unsafe"),
+            authorize=lambda _prompt, name, _arguments: (
+                name != "control_music", "unsafe"
+            ),
             execute_plan=lambda plan: submitted.append(plan),
         )
         result = workflow.invoke(
             turn_id="turn",
             user_prompt="do it",
             actions=[
-                {"name": "first", "arguments": {}},
-                {"name": "second", "arguments": {}},
+                {"name": "play_sequence", "arguments": {
+                    "sequence_name": "wave_hello"
+                }},
+                {"name": "control_music", "arguments": {"action": "play"}},
             ],
         )
         self.assertEqual(submitted, [])
@@ -186,6 +190,9 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn('constexpr char kActionStatusTopic[] = "/action_status"', source)
         self.assertIn("kMaxPlanSteps = 8", source)
         self.assertIn("publish_emergency_stop_once", source)
+        self.assertIn("load_skill_registry", source)
+        self.assertIn('definition["plan_resources"]', source)
+        self.assertNotIn("kActionResources", source)
 
     def test_cmake_handles_humble_multiarch_behavior_tree_package(self):
         from pathlib import Path
@@ -208,6 +215,7 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn("local_binary.is_file()", launcher)
         self.assertIn('Path("/opt/ros") / ros_distro / "setup.bash"', launcher)
         self.assertIn('source "$1" && exec "$2"', launcher)
+        self.assertIn("skill_registry_path:=", launcher)
         self.assertLess(launcher.index("local_binary.is_file()"), launcher.index("shutil.which"))
 
 

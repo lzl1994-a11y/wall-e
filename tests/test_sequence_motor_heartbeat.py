@@ -74,6 +74,33 @@ def _load_module():
 
 
 class SequenceMotorHeartbeatTests(unittest.TestCase):
+    def test_targeted_cancel_halts_only_matching_sequence(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        node._sequence_request = {
+            "request_id": "old", "name": "play_sequence", "arguments": {}
+        }
+        node._current_sequence = [{"time": 9.0, "actions": []}]
+        node._steps["head_yaw"] = 20.0
+
+        node.subscriptions["/action_cancel"](_String(data=json.dumps({
+            "request_id": "other",
+            "name": "play_sequence",
+            "reason": "preempted",
+        })))
+        self.assertTrue(node._current_sequence)
+
+        node.subscriptions["/action_cancel"](_String(data=json.dumps({
+            "request_id": "old",
+            "name": "play_sequence",
+            "reason": "preempted_by:joystick:manual_servo",
+        })))
+        self.assertEqual(node._current_sequence, [])
+        self.assertEqual(node._steps["head_yaw"], 0.0)
+        status = json.loads(node.publishers["/action_status"].messages[-1].data)
+        self.assertEqual(status["request_id"], "old")
+        self.assertEqual(status["status"], "interrupted")
+
     def test_symbolic_neck_pose_targets_follow_runtime_calibration(self):
         module = _load_module()
         node = module.SequenceRosNode()

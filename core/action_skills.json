@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "skills": {
+    "express_emotion": {
+      "owner": "sequence_ros_node",
+      "plan_resources": ["display"],
+      "arbitration_resources": ["motion_owner"],
+      "action_bus": true,
+      "supports_cancel": false
+    },
+    "move_chassis": {
+      "owner": "sequence_ros_node",
+      "plan_resources": ["chassis"],
+      "arbitration_resources": ["motion_owner"],
+      "action_bus": true,
+      "supports_cancel": true
+    },
+    "manual_servo": {
+      "owner": "sequence_ros_node",
+      "plan_resources": ["servo_motion"],
+      "arbitration_resources": ["motion_owner"],
+      "action_bus": true,
+      "supports_cancel": false
+    },
+    "play_sequence": {
+      "owner": "sequence_ros_node",
+      "plan_resources": ["servo_motion"],
+      "arbitration_resources": ["motion_owner"],
+      "action_bus": true,
+      "supports_cancel": true
+    },
+    "control_music": {
+      "owner": "music_player_node",
+      "plan_resources": ["audio_music", "display"],
+      "arbitration_resources": ["music_owner"],
+      "action_bus": true,
+      "supports_cancel": false
+    },
+    "set_tracking_mode": {
+      "owner": "wali_tracking_node",
+      "plan_resources": ["camera", "chassis"],
+      "arbitration_resources": ["tracking_owner"],
+      "action_bus": true,
+      "supports_cancel": false
+    },
+    "set_vision_gate": {
+      "owner": "wali_tracking_node",
+      "plan_resources": ["camera"],
+      "arbitration_resources": ["tracking_owner"],
+      "action_bus": true,
+      "supports_cancel": false
+    },
+    "stop_all": {
+      "owner": "broadcast",
+      "plan_resources": ["servo_motion", "chassis", "audio_music", "camera"],
+      "arbitration_resources": ["*"],
+      "action_bus": true,
+      "supports_cancel": false
+    },
+    "inspect_camera": {
+      "owner": "dialog_workflow",
+      "plan_resources": ["camera", "display"],
+      "arbitration_resources": ["camera_owner"],
+      "action_bus": false,
+      "supports_cancel": false
+    },
+    "run_conditional_task": {
+      "owner": "dialog_workflow",
+      "plan_resources": ["camera", "action_bus"],
+      "arbitration_resources": ["camera_owner", "motion_owner"],
+      "action_bus": false,
+      "supports_cancel": false
+    }
+  }
+}

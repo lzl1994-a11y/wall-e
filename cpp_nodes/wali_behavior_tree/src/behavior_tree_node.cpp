@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <memory>
@@ -8,6 +9,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,21 +31,6 @@ constexpr char kTreeStatusTopic[] = "/behavior_tree/status";
 constexpr char kActionRequestTopic[] = "/action_request";
 constexpr char kActionStatusTopic[] = "/action_status";
 constexpr std::size_t kMaxPlanSteps = 8;
-
-const std::set<std::string> kAllowedActions = {
-    "control_music", "express_emotion", "manual_servo", "move_chassis",
-    "play_sequence", "set_tracking_mode", "set_vision_gate", "stop_all"};
-
-const std::map<std::string, Json> kActionResources = {
-    {"express_emotion", Json::array({"display"})},
-    {"move_chassis", Json::array({"chassis"})},
-    {"manual_servo", Json::array({"servo_motion"})},
-    {"play_sequence", Json::array({"servo_motion"})},
-    {"control_music", Json::array({"audio_music", "display"})},
-    {"set_tracking_mode", Json::array({"camera", "chassis"})},
-    {"set_vision_gate", Json::array({"camera"})},
-    {"stop_all", Json::array({"servo_motion", "chassis", "audio_music", "camera"})},
-};
 
 const std::set<std::string> kTerminalActionStatuses = {
     "completed", "failed", "interrupted", "rejected"};
@@ -90,6 +77,8 @@ class RosActionNode : public BT::StatefulActionNode {
 class BehaviorTreeNode : public rclcpp::Node {
  public:
   BehaviorTreeNode() : Node("wali_behavior_tree_node") {
+    load_skill_registry(declare_parameter<std::string>(
+        "skill_registry_path", "core/action_skills.json"));
     action_timeout_ = std::chrono::duration<double>(
         declare_parameter<double>("action_timeout_sec", 20.0));
 
@@ -174,6 +163,37 @@ class BehaviorTreeNode : public rclcpp::Node {
  private:
   friend class RosActionNode;
 
+  void load_skill_registry(const std::string& path) {
+    std::ifstream input(path);
+    if (!input) {
+      throw std::runtime_error("cannot open action skill registry: " + path);
+    }
+    Json registry;
+    input >> registry;
+    if (!registry.is_object() || registry.value("schema_version", 0) != 1 ||
+        !registry.contains("skills") || !registry["skills"].is_object()) {
+      throw std::runtime_error("invalid action skill registry schema");
+    }
+    for (auto item = registry["skills"].begin();
+         item != registry["skills"].end(); ++item) {
+      const auto& definition = item.value();
+      if (!definition.is_object() || !definition.contains("plan_resources") ||
+          !definition["plan_resources"].is_array() ||
+          definition["plan_resources"].empty() ||
+          !definition.contains("action_bus") ||
+          !definition["action_bus"].is_boolean()) {
+        throw std::runtime_error("invalid action skill definition: " + item.key());
+      }
+      if (!definition["action_bus"].get<bool>()) {
+        continue;
+      }
+      action_resources_[item.key()] = definition["plan_resources"];
+    }
+    if (action_resources_.empty()) {
+      throw std::runtime_error("action skill registry is empty");
+    }
+  }
+
   bool validate_plan(const Json& plan, std::string& error) {
     if (!plan.is_object() || plan.value("schema_version", 0) != 1 ||
         plan.value("root_type", "") != "Sequence") {
@@ -197,7 +217,6 @@ class BehaviorTreeNode : public rclcpp::Node {
           std::to_string(index + 1);
       if (!step.is_object() || step.value("step_id", "") != expected_id ||
           !step.contains("name") || !step["name"].is_string() ||
-          kAllowedActions.count(step["name"].get<std::string>()) == 0 ||
           !step.contains("arguments") || !step["arguments"].is_object() ||
           !step.contains("depends_on") || !step["depends_on"].is_array() ||
           !step.contains("resources") || !step["resources"].is_array()) {
@@ -205,7 +224,12 @@ class BehaviorTreeNode : public rclcpp::Node {
         return false;
       }
       const auto action_name = step["name"].get<std::string>();
-      if (step["resources"] != kActionResources.at(action_name)) {
+      const auto skill = action_resources_.find(action_name);
+      if (skill == action_resources_.end()) {
+        error = "unknown_action_" + std::to_string(index + 1);
+        return false;
+      }
+      if (step["resources"] != skill->second) {
         error = "invalid_resources_" + std::to_string(index + 1);
         return false;
       }
@@ -401,6 +425,7 @@ class BehaviorTreeNode : public rclcpp::Node {
   }
 
   BT::BehaviorTreeFactory factory_;
+  std::map<std::string, Json> action_resources_;
   std::optional<BT::Tree> tree_;
   std::vector<PlanStep> steps_;
   Json results_ = Json::array();

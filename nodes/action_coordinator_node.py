@@ -14,6 +14,7 @@ from std_msgs.msg import String
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.action_arbitration import ActionArbiter
+from services.action_cancel import ACTION_CANCEL_TOPIC, build_action_cancel
 from services.action_command import (
     ACTION_COMMAND_TOPIC,
     ACTION_REQUEST_TOPIC,
@@ -35,6 +36,7 @@ class ActionCoordinatorNode(Node):
             lease_timeout=self.declare_parameter("lease_timeout_sec", 30.0).value
         )
         self._command_pub = self.create_publisher(String, ACTION_COMMAND_TOPIC, 20)
+        self._cancel_pub = self.create_publisher(String, ACTION_CANCEL_TOPIC, 20)
         self._status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 20)
         self.create_subscription(String, ACTION_REQUEST_TOPIC, self._on_request, 20)
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_status, 50)
@@ -50,6 +52,10 @@ class ActionCoordinatorNode(Node):
             return
         request_id = request.get("request_id") or new_action_request_id()
         source = request.get("source") or "legacy"
+        self._interrupt_leases(
+            self._arbiter.expire(),
+            reason="action_lease_expired",
+        )
         decision = self._arbiter.submit(
             request_id,
             request["name"],
@@ -76,6 +82,11 @@ class ActionCoordinatorNode(Node):
             "source": source,
         })
         if decision.preempted:
+            self._interrupt_leases(
+                decision.preempted,
+                reason=f"preempted_by:{source}:{request['name']}",
+                replacement_request_id=request_id,
+            )
             self.get_logger().info(
                 f"{source}:{request['name']} preempted {len(decision.preempted)} request(s)"
             )
@@ -91,7 +102,31 @@ class ActionCoordinatorNode(Node):
     def _expire_leases(self):
         expired = self._arbiter.expire()
         if expired:
+            self._interrupt_leases(expired, reason="action_lease_expired")
             self.get_logger().warning(f"Expired {len(expired)} stale action lease(s)")
+
+    def _interrupt_leases(
+        self,
+        leases,
+        *,
+        reason: str,
+        replacement_request_id: str = "",
+    ):
+        for lease in leases:
+            if lease.supports_cancel:
+                self._cancel_pub.publish(String(data=build_action_cancel(
+                    lease.request_id,
+                    lease.name,
+                    reason=reason,
+                    replacement_request_id=replacement_request_id,
+                )))
+            self._status_pub.publish(String(data=build_action_status(
+                lease.request_id,
+                lease.name,
+                "interrupted",
+                source="action_coordinator",
+                detail=reason,
+            )))
 
 
 def main(args=None):

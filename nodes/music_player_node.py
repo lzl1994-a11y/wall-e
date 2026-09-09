@@ -56,6 +56,7 @@ class MusicPlayerNode(Node):
         name = request["name"]
         if name == "stop_all":
             self._player.stop()
+            self._publish_status(request, "completed")
             return
         if name != "control_music":
             return

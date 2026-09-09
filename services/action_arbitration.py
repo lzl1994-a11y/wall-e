@@ -5,19 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-
-_ACTION_RESOURCES: dict[str, frozenset[str]] = {
-    # These actions share sequence_ros_node, whose current contract is one
-    # active motion at a time even when chassis and servo hardware differ.
-    "express_emotion": frozenset({"motion_owner"}),
-    "move_chassis": frozenset({"motion_owner"}),
-    "manual_servo": frozenset({"motion_owner"}),
-    "play_sequence": frozenset({"motion_owner"}),
-    "control_music": frozenset({"music_owner"}),
-    "set_tracking_mode": frozenset({"tracking_owner"}),
-    "set_vision_gate": frozenset({"tracking_owner"}),
-    "stop_all": frozenset({"*"}),
-}
+from services.action_registry import get_action_skill
 
 
 def source_priority(source: str, action_name: str) -> int:
@@ -42,6 +30,8 @@ class ActionLease:
     source: str
     priority: int
     resources: frozenset[str]
+    owner: str
+    supports_cancel: bool
     expires_at: float
 
 
@@ -49,7 +39,7 @@ class ActionLease:
 class ArbitrationDecision:
     accepted: bool
     reason: str = ""
-    preempted: tuple[str, ...] = ()
+    preempted: tuple[ActionLease, ...] = ()
 
 
 class ActionArbiter:
@@ -73,9 +63,10 @@ class ActionArbiter:
     ) -> ArbitrationDecision:
         timestamp = time.monotonic() if now is None else float(now)
         self.expire(now=timestamp)
-        resources = _ACTION_RESOURCES.get(name)
-        if resources is None:
+        skill = get_action_skill(name)
+        if skill is None or not skill.action_bus:
             return ArbitrationDecision(False, "unknown_action")
+        resources = skill.arbitration_resources
         if request_id in self._leases:
             return ArbitrationDecision(False, "duplicate_request_id")
 
@@ -95,15 +86,17 @@ class ActionArbiter:
                 f"resource_busy:{owner.source}:{owner.name}",
             )
 
-        preempted = tuple(lease.request_id for lease in conflicts)
-        for old_request_id in preempted:
-            self._leases.pop(old_request_id, None)
+        preempted = tuple(conflicts)
+        for lease in preempted:
+            self._leases.pop(lease.request_id, None)
         self._leases[request_id] = ActionLease(
             request_id=request_id,
             name=name,
             source=source,
             priority=priority,
             resources=resources,
+            owner=skill.owner,
+            supports_cancel=skill.supports_cancel,
             expires_at=timestamp + self._lease_timeout,
         )
         return ArbitrationDecision(True, preempted=preempted)
@@ -111,15 +104,13 @@ class ActionArbiter:
     def release(self, request_id: str) -> bool:
         return self._leases.pop(request_id, None) is not None
 
-    def expire(self, *, now: float | None = None) -> tuple[str, ...]:
+    def expire(self, *, now: float | None = None) -> tuple[ActionLease, ...]:
         timestamp = time.monotonic() if now is None else float(now)
         expired = tuple(
-            request_id
-            for request_id, lease in self._leases.items()
-            if lease.expires_at <= timestamp
+            lease for lease in self._leases.values() if lease.expires_at <= timestamp
         )
-        for request_id in expired:
-            self._leases.pop(request_id, None)
+        for lease in expired:
+            self._leases.pop(lease.request_id, None)
         return expired
 
 

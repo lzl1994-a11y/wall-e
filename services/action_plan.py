@@ -11,25 +11,14 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from services.action_registry import get_action_skill
+
 
 MAX_ACTION_PLAN_STEPS = 8
 
 
 class PlanValidationError(ValueError):
     """Raised when model-proposed actions cannot form a safe action plan."""
-
-
-_ACTION_RESOURCES: dict[str, tuple[str, ...]] = {
-    "express_emotion": ("display",),
-    "move_chassis": ("chassis",),
-    "manual_servo": ("servo_motion",),
-    "play_sequence": ("servo_motion",),
-    "control_music": ("audio_music", "display"),
-    "set_tracking_mode": ("camera", "chassis"),
-    "set_vision_gate": ("camera",),
-    "inspect_camera": ("camera", "display"),
-    "stop_all": ("servo_motion", "chassis", "audio_music", "camera"),
-}
 
 
 @dataclass(frozen=True)
@@ -96,13 +85,16 @@ def compile_action_plan(
             raise PlanValidationError(f"invalid_action_at_step_{index}")
 
         name = name.strip()
+        skill = get_action_skill(name)
+        if skill is None:
+            raise PlanValidationError(f"unknown_action_at_step_{index}")
         step_id = f"step-{index:02d}"
         steps.append(ActionPlanStep(
             step_id=step_id,
             name=name,
             arguments=dict(arguments),
             depends_on=(previous_step_id,) if previous_step_id else (),
-            resources=_ACTION_RESOURCES.get(name, ("action_bus",)),
+            resources=skill.plan_resources,
         ))
         previous_step_id = step_id
 

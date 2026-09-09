@@ -22,7 +22,11 @@ class ActionArbiterTests(unittest.TestCase):
         arbiter.submit("old", "play_sequence", "llm_dialog")
         decision = arbiter.submit("new", "move_chassis", "native_behavior_tree")
         self.assertTrue(decision.accepted)
-        self.assertEqual(decision.preempted, ("old",))
+        self.assertEqual(
+            tuple(lease.request_id for lease in decision.preempted),
+            ("old",),
+        )
+        self.assertTrue(decision.preempted[0].supports_cancel)
         self.assertEqual([lease.request_id for lease in arbiter.active_leases], ["new"])
 
     def test_stop_all_preempts_every_owner(self):
@@ -31,7 +35,10 @@ class ActionArbiterTests(unittest.TestCase):
         arbiter.submit("music", "control_music", "mcp")
         decision = arbiter.submit("stop", "stop_all", "legacy")
         self.assertTrue(decision.accepted)
-        self.assertEqual(set(decision.preempted), {"motion", "music"})
+        self.assertEqual(
+            {lease.request_id for lease in decision.preempted},
+            {"motion", "music"},
+        )
         self.assertEqual(source_priority("legacy", "stop_all"), 1000)
 
     def test_terminal_release_and_timeout_remove_leases(self):
@@ -39,7 +46,10 @@ class ActionArbiterTests(unittest.TestCase):
         arbiter.submit("one", "play_sequence", "llm_dialog", now=10)
         self.assertTrue(arbiter.release("one"))
         arbiter.submit("two", "play_sequence", "llm_dialog", now=20)
-        self.assertEqual(arbiter.expire(now=22), ("two",))
+        self.assertEqual(
+            tuple(lease.request_id for lease in arbiter.expire(now=22)),
+            ("two",),
+        )
 
     def test_unknown_and_duplicate_requests_fail_closed(self):
         arbiter = ActionArbiter()

@@ -8,10 +8,13 @@ from pathlib import Path
 
 
 def main():
+    root = Path(__file__).resolve().parent.parent
+    registry = str(root / "core" / "action_skills.json")
     explicit = os.environ.get("WALI_BEHAVIOR_TREE_EXECUTABLE", "").strip()
     if explicit:
-        os.execv(explicit, [explicit])
-    root = Path(__file__).resolve().parent.parent
+        os.execv(explicit, [
+            explicit, "--ros-args", "-p", f"skill_registry_path:={registry}"
+        ])
     local_binary = (
         root
         / "install"
@@ -30,17 +33,23 @@ def main():
                 [
                     "bash",
                     "-c",
-                    'source "$1" && exec "$2"',
+                    'source "$1" && exec "$2" --ros-args -p "skill_registry_path:=$3"',
                     "wali-behavior-tree",
                     str(ros_setup),
                     executable,
+                    registry,
                 ],
             )
-        os.execv(executable, [executable])
+        os.execv(executable, [
+            executable, "--ros-args", "-p", f"skill_registry_path:={registry}"
+        ])
     ros2 = shutil.which("ros2")
     if not ros2:
         raise RuntimeError("ros2 executable not found")
-    os.execv(ros2, [ros2, "run", "wali_behavior_tree", "behavior_tree_node"])
+    os.execv(ros2, [
+        ros2, "run", "wali_behavior_tree", "behavior_tree_node",
+        "--ros-args", "-p", f"skill_registry_path:={registry}",
+    ])
 
 
 if __name__ == "__main__":
