@@ -196,6 +196,17 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn("find_library(BTCPP_LIBRARY behaviortree_cpp", cmake)
         self.assertNotIn("find_package(behaviortree_cpp REQUIRED)", cmake)
 
+    def test_launcher_prefers_the_repository_local_binary(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        launcher = (root / "nodes" / "native_behavior_tree_launcher.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('root / "install"', launcher)
+        self.assertIn("local_binary.is_file()", launcher)
+        self.assertLess(launcher.index("local_binary.is_file()"), launcher.index("shutil.which"))
+
 
 if __name__ == "__main__":
     unittest.main()
