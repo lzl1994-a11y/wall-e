@@ -11,6 +11,11 @@ env/
 .vscode/
 .idea/
 
+# ROS 2 / colcon 本地构建输出
+/build/
+/install/
+/log/
+
 # ⚠️ 极其重要：忽略你的私密配置文件
 core/config.yaml
 core/config_old_backup.yaml
