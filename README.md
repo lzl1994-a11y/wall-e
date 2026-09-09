@@ -401,10 +401,14 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 确认完成才进入下一个动作。
 任一动作被拒绝、失败、中断或超时，后续动作都会标记为跳过，两个语音模式使用相同规则。
 原生 `wali_behavior_tree_node` 通过 `/behavior_tree/execute` 接收同一 `ActionPlan`，使用
-BehaviorTree.CPP 的异步 `StatefulActionNode` tick 每个动作，再通过现有 `/action_cmd`、
-`/action_status` 等待执行终态。原生节点未启动时会在提交前回退到兼容执行器，不会在动作
+BehaviorTree.CPP 的异步 `StatefulActionNode` tick 每个动作，再通过 `/action_request`
+提交统一仲裁，并根据 `/action_status` 等待执行终态。原生节点未启动时会在提交前回退到兼容执行器，不会在动作
 已经下发后重复执行。取消计划会停止后续节点并下发一次 `stop_all`。
-相机检查与条件任务仍由 LangGraph 管理；MCP 和手柄入口暂未并入该行为树。
+文本/多模态对话、原生行为树、MCP 和手柄全部发往 `/action_request`；
+`action_coordinator_node` 按资源所有者与来源优先级仲裁后，才向现有执行器发布
+`/action_cmd`。手柄高于 MCP、MCP 高于行为树、行为树高于对话；`stop_all`
+是全局安全操作，总是可以抢占。音乐、跟踪和动作分属独立资源，无冲突时可并行。
+相机检查与条件任务仍由 LangGraph 管理。
 
 主程序启动时，`camera_capture_node` 会立即拉起唯一的 `hobot_usb_cam` 并保持热备；
 平时只丢弃未被租用的帧。视觉问答、拍照或跟踪请求只开启 `/camera_frame` 转发，
@@ -487,7 +491,8 @@ Web 配置中的 `launch.tracking` 决定是否加载视觉跟踪能力。物理
 - `/servo_cmd`：底层的舵机驱动指令 (JSON)。
 - `/motor_cmd/joystick`、`/motor_cmd/tracking`、`/motor_cmd/autonomy`：手柄、视觉跟踪和自主动作的分源电机指令。
 - `/motor_cmd`：`motion_arbiter_node` 按“手柄 > 跟踪 > 自主动作”选出的唯一硬件电机指令；上游心跳超过 300ms 未刷新时自动停车。串口与 I²C 硬件后端还各有独立的 300ms watchdog，仲裁器失联时同样会强制停车。
-- `/action_cmd`：小脑 API，接收大模型和手柄下发的组合动作、模式切换和 `manual_servo` 直驱指令。普通对话始终向模型提供已注册的动作工具，由模型做语义意图判断。模型选择 `inspect_camera` 后，文本与多模态语音链路都会按需启动摄像头、获取画面并发起不含动作工具的视觉回答请求。
+- `/action_request`：高层动作的唯一入口，接收对话、行为树、MCP 和手柄请求。
+- `/action_cmd`：仲裁后的内部执行通道，只由 `action_coordinator_node` 发布，现有动作、音乐和跟踪节点订阅。普通对话始终向模型提供已注册的动作工具，由模型做语义意图判断。模型选择 `inspect_camera` 后，文本与多模态语音链路都会按需启动摄像头、获取画面并发起不含动作工具的视觉回答请求。
 
 `asr_llm` 文本对话遵循原生 Function Calling 分支：请求只向模型提供真实动作工具，`tool_choice=auto`；完整响应没有 `tool_calls` 时，经关闭思考模式和可见答案过滤后的 `content` 就是普通回复；有 `tool_calls` 时才把它们当作动作提案，模型在工具调用前混出的文本不会抢先播报。模型负责正向语义选择，本地守卫不再用关键词表重复识别命令；提案在发往 ROS 前仍会检查工具白名单、参数范围、明确的方向/时长/模式冲突，以及能力询问、否定、假设、故事和第三方行为等高置信危险语境。畸形 JSON、越界或冲突提案均 fail closed，不会下发硬件。
 

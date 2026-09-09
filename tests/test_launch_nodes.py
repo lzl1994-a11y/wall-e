@@ -166,7 +166,20 @@ class LaunchNodesTests(unittest.TestCase):
         behavior_tree = next(entry for entry in entries if entry.name == "behavior_tree")
 
         self.assertTrue(behavior_tree.script.is_file())
+        self.assertLess(names.index("action_coordinator"), names.index("behavior_tree"))
         self.assertLess(names.index("behavior_tree"), names.index("llm"))
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_action_coordinator_is_single_ingress_before_clients(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args())
+        names = [entry.name for entry in entries]
+        coordinator = next(
+            entry for entry in entries if entry.name == "action_coordinator"
+        )
+
+        self.assertEqual(names.count("action_coordinator"), 1)
+        self.assertTrue(coordinator.script.is_file())
+        self.assertLess(names.index("action_coordinator"), names.index("llm"))
 
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_music_uses_existing_audio_and_tft_owners(self, _load_config):

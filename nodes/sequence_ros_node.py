@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # nodes/sequence_ros_node.py
-# 统一轨迹控制器：接管所有 /action_cmd，支持单一动作与成组动作 (Timeline)，并利用步长进行平滑插值
+# 统一轨迹控制器：接收仲裁后的 /action_cmd，支持单一动作与成组动作 (Timeline)
 import time
 import json
 import yaml
-from services.action_command import parse_action_request
+from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
 from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 import rclpy
 from rclpy.node import Node
@@ -72,7 +72,7 @@ class SequenceRosNode(Node):
         self.create_timer(0.02, self._tick)
 
         # 统一订阅 /action_cmd，负责动作编排和运动指令分发
-        self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
+        self.create_subscription(String, ACTION_COMMAND_TOPIC, self._on_action_cmd, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         # Tracking produces targets at detector frame rate. Depth 1 makes this
         # a latest-value stream and avoids replaying stale head positions.
@@ -90,7 +90,10 @@ class SequenceRosNode(Node):
         )
         
         self._first_tick = True
-        self.get_logger().info('Sequence ROS Node online, taking over /action_cmd. 50Hz interpolation running.')
+        self.get_logger().info(
+            f'Sequence ROS Node online, consuming {ACTION_COMMAND_TOPIC}. '
+            '50Hz interpolation running.'
+        )
         
     def _load_yaml(self, path):
         import os

@@ -10,6 +10,7 @@ import threading
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+from services.action_command import ACTION_REQUEST_TOPIC
 import evdev
 from evdev import ecodes
 
@@ -57,7 +58,7 @@ class JoyControlNode(Node):
         self.update_rate_hz = remote_config["update_rate_hz"]
         self._neck_kinematics = load_neck_kinematics()
 
-        self.action_pub = self.create_publisher(String, '/action_cmd', 10)
+        self.action_pub = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self.motor_pub = self.create_publisher(String, MOTOR_JOYSTICK_TOPIC, 10)
         self.game_request_pub = self.create_publisher(String, GAME_MODE_REQUEST_TOPIC, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
@@ -291,13 +292,15 @@ class JoyControlNode(Node):
         msg_s = String()
         msg_s.data = json.dumps({
             "name": "manual_servo", 
-            "arguments": {"targets": targets, "step_size": self.servo_step_size}
+            "arguments": {"targets": targets, "step_size": self.servo_step_size},
+            "source": "joystick",
         }, ensure_ascii=False)
         self.action_pub.publish(msg_s)
 
     def _send_action_cmd(self, name, args=None):
         payload = {"name": name}
         if args: payload["arguments"] = args
+        payload["source"] = "joystick"
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.action_pub.publish(msg)

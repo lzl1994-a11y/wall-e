@@ -9,7 +9,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String, UInt8MultiArray
 
-from services.action_command import parse_action_request
+from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
 from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 from services.music_player import DEFAULT_MUSIC_DIRECTORY, MusicPlayer
@@ -32,7 +32,7 @@ class MusicPlayerNode(Node):
         )
         self._state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, 10)
         self._status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 10)
-        self.create_subscription(String, "/action_cmd", self._on_action, 10)
+        self.create_subscription(String, ACTION_COMMAND_TOPIC, self._on_action, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self._player = MusicPlayer(
             directory=directory,

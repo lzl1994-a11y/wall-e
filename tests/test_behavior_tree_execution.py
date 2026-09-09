@@ -182,6 +182,7 @@ class NativePackageContractTests(unittest.TestCase):
                   "behavior_tree_node.cpp").read_text(encoding="utf-8")
         self.assertIn("public BT::StatefulActionNode", source)
         self.assertIn('constexpr char kExecuteTopic[] = "/behavior_tree/execute"', source)
+        self.assertIn('constexpr char kActionRequestTopic[] = "/action_request"', source)
         self.assertIn('constexpr char kActionStatusTopic[] = "/action_status"', source)
         self.assertIn("kMaxPlanSteps = 8", source)
         self.assertIn("publish_emergency_stop_once", source)

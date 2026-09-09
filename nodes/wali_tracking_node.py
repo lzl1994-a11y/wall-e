@@ -16,7 +16,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String, Int32
-from services.action_command import parse_action_request
+from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
 from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.motion_arbiter import MOTOR_TRACKING_TOPIC
 from services.servo_motion_config import load_neck_kinematics
@@ -144,7 +144,7 @@ class WaliTrackingNode(Node):
         else:
             self.create_subscription(String, '/hobot_mono2d_body_detection', lambda x: None, 10)
 
-        self.create_subscription(String, '/action_cmd', self._on_action_cmd, 10)
+        self.create_subscription(String, ACTION_COMMAND_TOPIC, self._on_action_cmd, 10)
 
         # Detection updates are a high-rate latest-value control stream, not
         # high-level actions. Sending them through /action_cmd repeatedly

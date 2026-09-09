@@ -26,7 +26,7 @@ namespace {
 constexpr char kExecuteTopic[] = "/behavior_tree/execute";
 constexpr char kCancelTopic[] = "/behavior_tree/cancel";
 constexpr char kTreeStatusTopic[] = "/behavior_tree/status";
-constexpr char kActionCommandTopic[] = "/action_cmd";
+constexpr char kActionRequestTopic[] = "/action_request";
 constexpr char kActionStatusTopic[] = "/action_status";
 constexpr std::size_t kMaxPlanSteps = 8;
 
@@ -93,7 +93,7 @@ class BehaviorTreeNode : public rclcpp::Node {
     action_timeout_ = std::chrono::duration<double>(
         declare_parameter<double>("action_timeout_sec", 20.0));
 
-    action_command_pub_ = create_publisher<std_msgs::msg::String>(kActionCommandTopic, 10);
+    action_command_pub_ = create_publisher<std_msgs::msg::String>(kActionRequestTopic, 10);
     tree_status_pub_ = create_publisher<std_msgs::msg::String>(kTreeStatusTopic, 10);
     execute_sub_ = create_subscription<std_msgs::msg::String>(
         kExecuteTopic, 10,

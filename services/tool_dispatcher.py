@@ -3,7 +3,7 @@
 给 llm_service / voice_chat_service 提供：
   1. get_tools()              → OpenAI function calling 格式的工具列表
   2. ToolCallAccumulator      → 流式 tool_calls 碎片收集器
-  3. build_action_cmd()       → 构造 /action_cmd 的 JSON 消息
+  3. build_action_cmd()       → 构造可发往 /action_request 的 JSON 动作信封
 
 来源统一为 mcp_service，不再各处重复定义。
 """

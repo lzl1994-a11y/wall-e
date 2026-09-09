@@ -1,7 +1,7 @@
 # services/mcp_service.py
 # 瓦力工具注册中心 — 纯签名声明
 # ROS 模式下仅负责告诉 LLM "有哪些工具可用"，具体执行由各 ROS 节点完成
-# LLM 返回 tool_call → llm_ros_node 发到 /action_cmd → 对应节点执行
+# LLM 返回 tool_call → /action_request 仲裁 → /action_cmd 执行
 
 import asyncio
 import copy
@@ -112,7 +112,7 @@ def express_emotion(emotion: str) -> str:
       - "disdain"  : 鄙视/翻白眼
       - "angry"    : 生气
     
-    通过 ROS /action_cmd 下发，由 sequence_ros_node 执行。
+    通过 ROS /action_request 提交，仲裁后由 sequence_ros_node 执行。
     """
     return "ok"
 
@@ -143,7 +143,7 @@ def move_chassis(direction: str, duration: int = 1) -> str:
     
     duration: 持续秒数，只允许 1~3 秒，默认 1 秒。
     
-    通过 ROS /action_cmd 下发，由 sequence_ros_node 执行。
+    通过 ROS /action_request 提交，仲裁后由 sequence_ros_node 执行。
     """
     return "ok"
 
@@ -177,7 +177,7 @@ def set_vision_gate(enabled: bool) -> str:
     """
     仅当用户明确命令瓦力现在打开或关闭视觉跟踪总开关时调用。
     enabled=True 默认进入 body_follow，False 退出所有跟踪。
-    通过 ROS /action_cmd 下发，由 wali_tracking_node 执行。
+    通过 ROS /action_request 提交，仲裁后由 wali_tracking_node 执行。
     """
     return "ok"
 

@@ -5,7 +5,7 @@
   on_wake_word   → 播放预合成 WAV + TFT 切聊天页
   on_llm_chunk   → 流式文本块，2 标点攒一句 → tts_text
   on_llm_reply   → 最终完整回复 → screen_dialog
-  on_tool_call   → /action_cmd
+  on_tool_call   → /action_request → action coordinator
   on_llm_timeout → TFT 切待机页 + 日志
 """
 
@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
 from services.action_execution import CorrelatedActionExecutor
+from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_intent_guard import validate_action_arguments, validate_action_call
 from services.action_status import ACTION_STATUS_TOPIC
 from services.behavior_tree_execution import CorrelatedPlanExecutor
@@ -85,7 +86,7 @@ class VoiceChatNode(Node):
             String, WAKE_AUDIO_DONE_TOPIC, self._on_wake_audio_done, 10
         )
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
-        self.action_pub = self.create_publisher(String, "action_cmd", 10)
+        self.action_pub = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self._action_executor = CorrelatedActionExecutor()
         self._behavior_tree_executor = CorrelatedPlanExecutor()
         self.behavior_tree_pub = self.create_publisher(

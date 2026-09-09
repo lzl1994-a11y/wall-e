@@ -16,6 +16,7 @@ from std_msgs.msg import String, UInt8MultiArray
 from pypinyin import Style, pinyin
 
 from services.action_acknowledgement import action_acknowledgement
+from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_execution import CorrelatedActionExecutor
 from services.behavior_tree_execution import CorrelatedPlanExecutor
 from services.behavior_tree_protocol import (
@@ -116,7 +117,7 @@ class LLMBrainNode(Node):
             10,
         )
         self.tts_publisher = self.create_publisher(String, 'tts_text', 10)
-        self.action_publisher = self.create_publisher(String, 'action_cmd', 10)
+        self.action_publisher = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self.behavior_tree_publisher = self.create_publisher(
             String, BEHAVIOR_TREE_EXECUTE_TOPIC, 10
         )

@@ -82,6 +82,7 @@ def build_node_list(args):
     nodes = [
         NodeEntry("camera_capture", ROOT / "nodes" / "camera_capture_node.py"),
         NodeEntry("tft_tcp_service", ROOT / "nodes" / "tft_tcp_service_node.py"),
+        NodeEntry("action_coordinator", ROOT / "nodes" / "action_coordinator_node.py"),
     ]
     if orchestration_cfg.get("native_behavior_tree", False):
         nodes.append(NodeEntry(

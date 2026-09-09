@@ -11,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from services.action_command import build_action_cmd, new_action_request_id
+from services.action_command import ACTION_REQUEST_TOPIC, build_action_cmd, new_action_request_id
 from services.action_status import (
     ACTION_STATUS_TOPIC,
     TERMINAL_ACTION_STATUSES,
@@ -30,7 +30,7 @@ class RosActionExecutor(Node):
 
     def __init__(self):
         super().__init__("wali_mcp_gateway")
-        self._publisher = self.create_publisher(String, "/action_cmd", 10)
+        self._publisher = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_status, 10)
         self._condition = threading.Condition()
         self._statuses: dict[str, dict[str, str]] = {}

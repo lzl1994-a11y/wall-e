@@ -1,4 +1,4 @@
-"""Small, dependency-free `/action_cmd` payload codec.
+"""Small, dependency-free robot action envelope codec.
 
 This module intentionally uses only the standard library so the motion/handheld
 control path can start even when optional LLM, FastMCP, or cloud dependencies
@@ -10,6 +10,10 @@ from __future__ import annotations
 import json
 import uuid
 from typing import Any
+
+
+ACTION_REQUEST_TOPIC = "/action_request"
+ACTION_COMMAND_TOPIC = "/action_cmd"
 
 
 def build_action_cmd(
@@ -82,3 +86,13 @@ def parse_action_cmd(payload: Any) -> tuple[str, dict[str, Any]] | None:
     if command is None:
         return None
     return command["name"], command["arguments"]
+
+
+__all__ = [
+    "ACTION_COMMAND_TOPIC",
+    "ACTION_REQUEST_TOPIC",
+    "build_action_cmd",
+    "new_action_request_id",
+    "parse_action_cmd",
+    "parse_action_request",
+]

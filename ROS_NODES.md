@@ -37,8 +37,9 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | --- | --- | --- | --- | --- | --- |
 | `nodes/keyboard_stt_node.py` | `keyboard_stt_test_node` | `pipeline.mode=keyboard` 或 `--keyboard-stt` | 无 | `voice_text` | 键盘输入测试节点。你在终端输入文字后，它把文字发布到 `voice_text`，模拟 STT 输出。 |
 | `nodes/stt_ros_node.py` | `walle_ear_node` | `pipeline.mode=asr_llm` 或 `--real-stt` | `llm_busy`, `/game_mode_state` | `voice_text` | 真实语音识别节点。音乐播放期间仍保持采集/唤醒，只有对话输出或游戏模式会暂停。 |
-| `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `action_cmd`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
-| `cpp_nodes/wali_behavior_tree/src/behavior_tree_node.cpp` | `wali_behavior_tree_node` | `orchestration.native_behavior_tree=true` | `/behavior_tree/execute`, `/behavior_tree/cancel`, `/action_status` | `/behavior_tree/status`, `/action_cmd` | BehaviorTree.CPP 原生计划所有者；顺序 tick 动作叶节点、等待关联终态并处理取消。 |
+| `nodes/llm_ros_node.py` | `walle_llm_brain` | 是 | `voice_text` | `corrected_text`, `tts_text`, `full_ai_text`, `/action_request`, `screen_dialog` | 大模型大脑节点。接收用户文本，调用 LLM 做纠错、回复、工具调用，并把结果分发给 TTS、屏幕和动作系统。 |
+| `nodes/action_coordinator_node.py` | `action_coordinator_node` | 是 | `/action_request`, `/action_status` | `/action_cmd`, `/action_status` | 高层动作唯一入口；按来源优先级和资源冲突放行、拒绝或抢占，拒绝会返回带 `request_id` 的终态。 |
+| `cpp_nodes/wali_behavior_tree/src/behavior_tree_node.cpp` | `wali_behavior_tree_node` | `orchestration.native_behavior_tree=true` | `/behavior_tree/execute`, `/behavior_tree/cancel`, `/action_status` | `/behavior_tree/status`, `/action_request` | BehaviorTree.CPP 原生计划所有者；顺序 tick 动作叶节点、等待关联终态并处理取消。 |
 | `nodes/music_player_node.py` | `music_player_node` | 是 | `/action_cmd`, `/game_mode_state` | `/music_audio`, `/music_spectrum`, `/music_state`, `/action_status` | 用 FFmpeg 连续解码本地音乐并发布 PCM 与频谱数据；语音期间不会暂停播放进度。 |
 | `nodes/audio_playback_node.py` | `audio_playback_node` | 是 | `audio_output`, `/music_audio`, `wake_audio_output` | `llm_busy`, `wake_audio_done` | 声卡唯一所有者；在一个输出流中混合 TTS、唤醒提示音与音乐，并对音乐做语音闪避。 |
 | `nodes/tft_tcp_service_node.py` | `tft_tcp_service_node` | 是 | `/tft_preview_request`, `/vision_pipeline_cmd`, `/game_mode_state`, `/game_frame`, `/music_state`, `/music_spectrum` | `/tft_preview_result`, `tft_preview_ready`, `/game_mode_request` | 胸前 TFT 的唯一 TCP 服务所有者；统一仲裁拍照、跟踪、游戏和音乐频谱画面。 |
@@ -52,7 +53,8 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `corrected_text` | `walle_llm_brain` | 当前默认无人订阅 | LLM 纠正后的用户文本，比如把 `nihao` 纠正成 `你好`。 |
 | `tts_text` | `walle_llm_brain` | 当前默认无人订阅 | 给 TTS 用的流式分句文本。适合边生成边播报，但不一定是完整回复。 |
 | `full_ai_text` | `walle_llm_brain` | 当前默认无人订阅 | LLM 完整回复文本，等整轮生成结束后发布。 |
-| `action_cmd` | `walle_llm_brain` | 当前默认无人订阅 | 单独的工具/动作命令通道，保留给动作执行节点使用。 |
+| `/action_request` | 对话、行为树、MCP、手柄 | `action_coordinator_node` | 所有高层动作的唯一提交入口。 |
+| `/action_cmd` | `action_coordinator_node` | 动作、音乐、跟踪执行节点 | 经优先级和资源仲裁后的内部执行通道。 |
 | `/behavior_tree/execute` | 文本或多模态对话节点 | `wali_behavior_tree_node` | 提交由程序生成、已完成安全校验的受限 `ActionPlan`。 |
 | `/behavior_tree/status` | `wali_behavior_tree_node` | 文本或多模态对话节点 | 返回计划接收、运行及最终成功/失败/中断状态。 |
 | `/behavior_tree/cancel` | 文本或多模态对话节点 | `wali_behavior_tree_node` | 取消指定 `plan_id`；原生节点中止后续步骤并发布一次停止动作。 |
@@ -101,7 +103,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
                     -> /vision_pipeline_cmd -> hobot_vision_node -> 热备 RDK BPU 检测（订阅 `/camera_frame`）
         ^
         ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
-        ├─ /action_cmd                    (LLM 模式切换)
+        ├─ /action_cmd                    (仲裁后的模式切换)
         └─ /doa_angle  <- doa_ros_node <-> DOA串口
 ```
 
@@ -144,7 +146,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 
 ### 跟随模式切换
 
-LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
+LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以 `/action_cmd` 下发:
 
 ```json
 {"turn_id":"...","name":"set_tracking_mode","arguments":{"mode":"body_follow"}}
@@ -177,7 +179,7 @@ LLM 解析用户语音指令后，通过 `/action_cmd` 下发:
 | `services/audio_mixer.py` | 在统一采样时钟上混合语音和音乐，并实现音乐 20% 闪避及平滑恢复。 |
 | `services/dialog_workflow.py` | LangGraph 确定性编排：普通动作串行、拍照识别和条件任务；动作完成前不推进下一步。 |
 | `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
-| `nodes/wali_mcp_server.py` | 可选的外部 Agent 网关；提供带鉴权的 Streamable HTTP MCP，将白名单工具转换为带回执的 `/action_cmd`。默认关闭。 |
+| `nodes/wali_mcp_server.py` | 可选的外部 Agent 网关；提供带鉴权的 Streamable HTTP MCP，将白名单工具转换为带回执的 `/action_request`。默认关闭。 |
 | `services/mcp_gateway.py` | 外部 MCP 的配置、安全启动检查和工具白名单；不暴露任意 ROS Topic、Service 或 Shell。 |
 | `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
 | `services/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |
