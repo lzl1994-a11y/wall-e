@@ -37,12 +37,15 @@ def _load_node_class():
     fake_rclpy = types.ModuleType("rclpy")
     fake_node_module = types.ModuleType("rclpy.node")
     fake_node_module.Node = object
+    fake_executors_module = types.ModuleType("rclpy.executors")
+    fake_executors_module.ExternalShutdownException = RuntimeError
     fake_std_msgs = types.ModuleType("std_msgs")
     fake_std_msgs_msg = types.ModuleType("std_msgs.msg")
     fake_std_msgs_msg.String = _String
     modules = {
         "rclpy": fake_rclpy,
         "rclpy.node": fake_node_module,
+        "rclpy.executors": fake_executors_module,
         "std_msgs": fake_std_msgs,
         "std_msgs.msg": fake_std_msgs_msg,
     }
