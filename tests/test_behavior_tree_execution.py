@@ -205,6 +205,8 @@ class NativePackageContractTests(unittest.TestCase):
         )
         self.assertIn('/ "install"', launcher)
         self.assertIn("local_binary.is_file()", launcher)
+        self.assertIn('Path("/opt/ros") / ros_distro / "setup.bash"', launcher)
+        self.assertIn('source "$1" && exec "$2"', launcher)
         self.assertLess(launcher.index("local_binary.is_file()"), launcher.index("shutil.which"))
 
 

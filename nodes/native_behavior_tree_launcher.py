@@ -22,6 +22,20 @@ def main():
     )
     if local_binary.is_file() and os.access(local_binary, os.X_OK):
         executable = str(local_binary)
+        ros_distro = os.environ.get("ROS_DISTRO", "humble").strip() or "humble"
+        ros_setup = Path("/opt/ros") / ros_distro / "setup.bash"
+        if ros_setup.is_file():
+            os.execv(
+                "/bin/bash",
+                [
+                    "bash",
+                    "-c",
+                    'source "$1" && exec "$2"',
+                    "wali-behavior-tree",
+                    str(ros_setup),
+                    executable,
+                ],
+            )
         os.execv(executable, [executable])
     ros2 = shutil.which("ros2")
     if not ros2:
