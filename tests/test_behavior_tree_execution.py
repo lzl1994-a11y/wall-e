@@ -186,6 +186,16 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn("kMaxPlanSteps = 8", source)
         self.assertIn("publish_emergency_stop_once", source)
 
+    def test_cmake_handles_humble_multiarch_behavior_tree_package(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        cmake = (root / "cpp_nodes" / "wali_behavior_tree" /
+                 "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("${prefix}/lib/${CMAKE_LIBRARY_ARCHITECTURE}", cmake)
+        self.assertIn("find_library(BTCPP_LIBRARY behaviortree_cpp", cmake)
+        self.assertNotIn("find_package(behaviortree_cpp REQUIRED)", cmake)
+
 
 if __name__ == "__main__":
     unittest.main()
