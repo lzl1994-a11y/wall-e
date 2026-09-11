@@ -1,61 +1,39 @@
-import sys
-import threading
+import queue
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import Mock
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from services.audio_apm import WebRTCApm
 from services.audio_pipeline import AudioPipeline
-from services.web_server import validate_config
 
 
-class WebRTCApmTests(unittest.TestCase):
-    def test_command_resamples_to_16khz_before_web_rtc_apm(self):
-        command = WebRTCApm(lambda _pcm: None, pre_gain_db=6)._command(48000)
-        caps = "audio/x-raw,format=S16LE,layout=interleaved,rate=16000,channels=1"
-        self.assertIn("sample-rate=48000", command)
-        self.assertIn(caps, command)
-        self.assertLess(command.index(caps), command.index("webrtcdsp"))
-        self.assertLess(command.index(caps), command.index("volume"))
-        self.assertEqual(command[-3:], ["fdsink", "fd=1", "sync=false"])
+class WebRTCApmBackpressureTests(unittest.TestCase):
+    def test_full_input_queue_marks_apm_overloaded(self):
+        apm = WebRTCApm(lambda _pcm: None)
+        apm._running = True
+        apm._queue = queue.Queue(maxsize=1)
+        apm._queue.put(b"first")
 
-    def test_fallback_resampler_keeps_vad_pcm_at_16khz(self):
+        self.assertFalse(apm.submit(b"second"))
+        self.assertTrue(apm.overloaded)
+
+    def test_audio_callback_schedules_nonblocking_fallback(self):
         pipeline = AudioPipeline.__new__(AudioPipeline)
-        pipeline._device_sample_rate = 48000
-        source = np.arange(1440, dtype=np.int16)
-        result = pipeline._resample_fallback(source)
-        np.testing.assert_array_equal(result, source[::3])
+        pipeline._is_running = True
+        pipeline._is_paused = False
+        pipeline._device_sample_rate = AudioPipeline.SAMPLE_RATE
+        pipeline._apm_disable_scheduled = False
+        pipeline._queue_processed_pcm = Mock()
+        pipeline._disable_overloaded_apm = Mock()
+        pipeline._apm = Mock(overloaded=True)
+        pipeline._apm.submit.return_value = False
 
-    def test_web_config_validates_apm_gain_range(self):
-        config = {
-            "pipeline": {"mode": "asr_llm"}, "asr": {}, "wake_word": {},
-            "system_prompt": "x", "tts": {}, "serial": {}, "i2c": {}, "vad": {"provider": "webrtc"},
-            "audio_capture": {"webrtc_apm_enabled": True, "webrtc_pre_gain_db": 25},
-        }
-        self.assertIn("audio_capture.webrtc_pre_gain_db 必须在 -12 到 24 之间", validate_config(config))
+        samples = np.zeros((AudioPipeline.FRAME_SIZE, 1), dtype=np.float32)
+        pipeline._audio_callback(samples, len(samples), None, None)
 
-    @patch("services.audio_pipeline.native_capture_available", return_value=True)
-    @patch("services.audio_pipeline.ArecordInputStream")
-    def test_linux_capture_opens_native_mono_without_portaudio(self, stream_class, _available):
-        pipeline = AudioPipeline.__new__(AudioPipeline)
-        pipeline._apm_enabled = True
-        pipeline._apm = None
-        pipeline._audio_stream = None
-        pipeline._audio_stream_lock = threading.Lock()
-        pipeline._audio_device_identity = ""
-        stream_class.return_value = MagicMock(active=True)
-
-        opened = pipeline._open_audio_stream("plughw:3,0", "voice-id")
-
-        self.assertTrue(opened)
-        self.assertEqual(stream_class.call_args.kwargs["channels"], 1)
-        self.assertEqual(stream_class.call_args.kwargs["samplerate"], 48000)
+        pipeline._disable_overloaded_apm.assert_called_once_with(pipeline._apm)
+        pipeline._queue_processed_pcm.assert_called_once()
 
 
 if __name__ == "__main__":

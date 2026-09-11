@@ -186,6 +186,7 @@ class AudioPipeline:
         except (TypeError, ValueError): self._apm_pre_gain_db = 6.0
         self._apm_pre_gain_db = min(24.0, max(-12.0, self._apm_pre_gain_db))
         self._apm: WebRTCApm | None = None
+        self._apm_disable_scheduled = False
         self._device_sample_rate = self.SAMPLE_RATE
 
         self.audio_queue = queue.Queue(maxsize=300)
@@ -212,6 +213,7 @@ class AudioPipeline:
         if self._apm_enabled:
             self._apm = WebRTCApm(self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db)
             self._apm.start(self.DEVICE_SAMPLE_RATE)
+        self._apm_disable_scheduled = False
         self._listen_thread = threading.Thread(target=self._run, daemon=True)
         self._listen_thread.start()
         self._device_thread = threading.Thread(target=self._device_monitor, daemon=True)
@@ -443,10 +445,30 @@ class AudioPipeline:
                 
             int16 = np.clip(mono_audio * 32767, -32768, 32767).astype(np.int16)
             pcm = int16.tobytes()
-            if self._apm and self._apm.submit(pcm): return
+            apm = self._apm
+            if apm and apm.submit(pcm):
+                return
+            if apm and apm.overloaded:
+                self._disable_overloaded_apm(apm)
             self._queue_processed_pcm(self._resample_fallback(int16).tobytes())
         except queue.Full:
             pass
+
+    def _disable_overloaded_apm(self, apm: WebRTCApm) -> None:
+        """Stop a wedged APM off the real-time capture callback thread."""
+        if self._apm_disable_scheduled:
+            return
+        self._apm_disable_scheduled = True
+
+        def stop_apm():
+            print("[AudioPipeline] WebRTC APM 处理跟不上采集，已自动回退直采样")
+            apm.stop()
+            if self._apm is apm:
+                self._apm = None
+
+        threading.Thread(
+            target=stop_apm, name="wali-apm-fallback", daemon=True
+        ).start()
 
     def _check_wake_word(self, frame: bytes) -> bool:
         """Keep the loaded model idle whenever microphone processing is paused."""

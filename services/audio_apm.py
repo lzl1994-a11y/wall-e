@@ -24,6 +24,7 @@ class WebRTCApm:
         self._writer: threading.Thread | None = None
         self._reader: threading.Thread | None = None
         self._lock = threading.RLock()
+        self._overloaded = threading.Event()
 
     @staticmethod
     def available() -> bool:
@@ -47,6 +48,7 @@ class WebRTCApm:
                 return False
             self._running, self._input_rate = True, input_rate
             self._queue = queue.Queue(maxsize=100)
+            self._overloaded.clear()
             self._writer = threading.Thread(target=self._write, name="wali-apm-input", daemon=True)
             self._reader = threading.Thread(target=self._read, name="wali-apm-output", daemon=True)
             self._writer.start(); self._reader.start()
@@ -73,13 +75,23 @@ class WebRTCApm:
         self._writer = self._reader = None
         self._input_rate = 0
 
+    @property
+    def overloaded(self) -> bool:
+        """Whether the native processor stopped consuming live audio."""
+        return self._overloaded.is_set()
+
     def submit(self, pcm: bytes) -> bool:
         if not self._running: return False
         try:
             self._queue.put_nowait(pcm)
             return True
         except queue.Full:
-            print("[AudioPipeline] APM 输入积压，丢弃一帧音频")
+            # Printing once matters here: this method is called by the audio
+            # callback and a log line per 30 ms frame can itself keep the
+            # callback behind indefinitely.
+            if not self._overloaded.is_set():
+                self._overloaded.set()
+                print("[AudioPipeline] APM 输入积压，切换到直采样回退")
             return False
 
     def _command(self, input_rate: int) -> list[str]:
