@@ -157,6 +157,12 @@ class OrderedTTSPipeline:
 
         if stream_error is None:
             return
+        # A timeout means the upstream network path is unhealthy. Repeating
+        # the same request through full synthesis would block the turn again.
+        if isinstance(stream_error, TimeoutError):
+            if self._on_error:
+                self._on_error(text, stream_error, time.monotonic() - started)
+            return
         if emitted:
             if self._on_error:
                 self._on_error(text, stream_error, time.monotonic() - started)

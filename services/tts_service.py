@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, TimeoutError as FutureTimeoutError
 import io
 import queue
 import subprocess
@@ -31,11 +31,13 @@ class TTSService:
         rate="+20%",
         pitch="+5Hz",
         sample_rate=OUTPUT_SAMPLE_RATE,
+        request_timeout_sec=15.0,
     ):
         self.voice = voice
         self.rate = rate
         self.pitch = pitch
         self.sample_rate = sample_rate
+        self.request_timeout_sec = max(1.0, float(request_timeout_sec))
 
         # 后台 event loop（edge-tts 需要异步调用）
         self._loop = asyncio.new_event_loop()
@@ -55,13 +57,21 @@ class TTSService:
         future = asyncio.run_coroutine_threadsafe(
             self._download(text), self._loop
         )
-        return future.result()
+        try:
+            return future.result(timeout=self.request_timeout_sec)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(
+                f"TTS full synthesis exceeded {self.request_timeout_sec:g}s"
+            ) from exc
 
     def synthesize_stream(
         self,
         text: str,
         chunk_ms: int = 100,
         idle_timeout_sec: float = 2.0,
+        first_audio_timeout_sec: float = 8.0,
+        total_timeout_sec: float = 20.0,
     ):
         """Yield 48 kHz PCM while Edge TTS is still producing MP3 data."""
         if not text or not text.strip():
@@ -69,6 +79,8 @@ class TTSService:
 
         chunk_ms = max(20, int(chunk_ms))
         idle_timeout_sec = max(0.1, float(idle_timeout_sec))
+        first_audio_timeout_sec = max(0.5, float(first_audio_timeout_sec))
+        total_timeout_sec = max(first_audio_timeout_sec, float(total_timeout_sec))
         chunk_bytes = max(2, self.sample_rate * OUTPUT_SAMPLE_WIDTH * chunk_ms // 1000)
         mp3_queue = queue.Queue()
         mp3_sentinel = object()
@@ -111,6 +123,7 @@ class TTSService:
         writer_errors = []
         reader_errors = []
         last_activity = [time.monotonic()]
+        stream_started = last_activity[0]
 
         def feed_decoder():
             try:
@@ -162,6 +175,12 @@ class TTSService:
         flush_deadline = None
         try:
             while True:
+                now = time.monotonic()
+                total_remaining = total_timeout_sec - (now - stream_started)
+                if total_remaining <= 0:
+                    raise TimeoutError(
+                        f"TTS stream exceeded {total_timeout_sec:g}s"
+                    )
                 if flush_deadline is not None:
                     wait_timeout = max(0.0, flush_deadline - time.monotonic())
                     if wait_timeout == 0.0:
@@ -170,15 +189,31 @@ class TTSService:
                     idle_remaining = idle_timeout_sec - (
                         time.monotonic() - last_activity[0]
                     )
-                    wait_timeout = max(0.01, idle_remaining)
+                    wait_timeout = max(0.01, min(idle_remaining, total_remaining))
                 else:
-                    wait_timeout = None
+                    first_remaining = first_audio_timeout_sec - (
+                        time.monotonic() - stream_started
+                    )
+                    if first_remaining <= 0:
+                        raise TimeoutError(
+                            f"TTS first audio exceeded {first_audio_timeout_sec:g}s"
+                        )
+                    wait_timeout = max(0.01, min(first_remaining, total_remaining))
 
                 try:
                     data = pcm_queue.get(timeout=wait_timeout)
                 except queue.Empty:
                     if flush_deadline is not None:
                         raise RuntimeError("ffmpeg did not flush after TTS idle timeout")
+                    elapsed = time.monotonic() - stream_started
+                    if elapsed >= total_timeout_sec:
+                        raise TimeoutError(
+                            f"TTS stream exceeded {total_timeout_sec:g}s"
+                        )
+                    if not received_pcm and elapsed >= first_audio_timeout_sec:
+                        raise TimeoutError(
+                            f"TTS first audio exceeded {first_audio_timeout_sec:g}s"
+                        )
                     idle_for = time.monotonic() - last_activity[0]
                     if idle_for < idle_timeout_sec:
                         continue

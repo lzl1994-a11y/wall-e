@@ -139,6 +139,32 @@ class OrderedTTSPipelineTests(unittest.TestCase):
             [("hello", "fallback:hello"), ("end", "turn-4")],
         )
 
+    def test_stream_timeout_does_not_repeat_request_and_turn_still_ends(self):
+        emitted = []
+        fallback = []
+
+        def timed_out_stream(_text):
+            raise TimeoutError("first audio exceeded 8s")
+            yield
+
+        pipeline = OrderedTTSPipeline(
+            synthesize=lambda text: fallback.append(text),
+            synthesize_stream=timed_out_stream,
+            on_audio=lambda *_args: None,
+            on_audio_chunk=lambda *_args: None,
+            on_turn_end=lambda turn_id: emitted.append(("end", turn_id)),
+            on_error=lambda text, error, _elapsed: emitted.append(
+                ("error", text, str(error))
+            ),
+        )
+        pipeline.submit_speech("hello")
+        pipeline.submit_turn_end("turn-timeout")
+        pipeline.shutdown()
+
+        self.assertEqual(fallback, [])
+        self.assertEqual(emitted[0][:2], ("error", "hello"))
+        self.assertEqual(emitted[-1], ("end", "turn-timeout"))
+
 
 if __name__ == "__main__":
     unittest.main()

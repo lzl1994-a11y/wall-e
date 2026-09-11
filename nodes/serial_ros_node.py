@@ -44,6 +44,7 @@ class SerialNode(Node):
         self._shutdown_event = threading.Event()
         self._tft_preview_ready = threading.Event()
         self._music_active = False
+        self._last_user_turn_id = ""
 
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')
@@ -219,9 +220,14 @@ class SerialNode(Node):
                 self.bridge.send_raw("eyeaction:talk\n", wake_screen=False)
             return
 
-        if corrected_text:
+        user_already_sent = bool(turn_id) and turn_id == getattr(
+            self, "_last_user_turn_id", ""
+        )
+        if corrected_text and not user_already_sent:
             payload = f"you:{corrected_text}\n"
             if self.bridge.send_raw(payload):
+                if turn_id:
+                    self._last_user_turn_id = turn_id
                 self.get_logger().info(f'[{turn_id}] Sent user text -> {payload.strip()}')
 
         if ai_text:

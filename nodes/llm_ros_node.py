@@ -237,6 +237,10 @@ class LLMBrainNode(Node):
         turn_id = uuid.uuid4().hex[:12]
         self.get_logger().info(f'[{turn_id}] Voice text received: {user_prompt}')
 
+        # Show what was heard immediately. Waiting for LLM/tool completion made
+        # the user's text appear frozen during a slow model response.
+        self._publish_screen_dialog(turn_id, user_prompt, '', [])
+
         try:
             self._request_queue.put_nowait({
                 'turn_id': turn_id,

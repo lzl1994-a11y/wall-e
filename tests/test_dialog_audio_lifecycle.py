@@ -800,6 +800,22 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         node._finish_tts_turn.assert_called_once_with("game-1")
         sys.modules.pop("nodes.llm_ros_node", None)
 
+    def test_voice_text_is_sent_to_screen_before_worker_processing(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node._game_mode = "robot"
+        node._request_queue = queue.Queue()
+        node._publish_screen_dialog = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        node.voice_callback(types.SimpleNamespace(data="你今天开心吗？"))
+
+        task = node._request_queue.get_nowait()
+        node._publish_screen_dialog.assert_called_once_with(
+            task["turn_id"], "你今天开心吗？", "", []
+        )
+        sys.modules.pop("nodes.llm_ros_node", None)
+
 
 if __name__ == "__main__":
     unittest.main()

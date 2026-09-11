@@ -331,6 +331,65 @@ class AudioSampleRateContractTests(unittest.TestCase):
         self.assertTrue(input_closed.is_set())
         np.testing.assert_array_equal(np.concatenate(chunks), pcm)
 
+    def test_tts_streaming_times_out_before_first_audio(self):
+        service = TTSService(voice="test", rate="+0%", pitch="+0Hz")
+        process_closed = threading.Event()
+
+        class HangingCommunicate:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def stream(self):
+                await asyncio.Event().wait()
+                yield  # pragma: no cover
+
+        class FakeInput:
+            def write(self, _data):
+                pass
+
+            def close(self):
+                process_closed.set()
+
+        class FakeOutput:
+            def read(self, _size=-1):
+                process_closed.wait(timeout=1.0)
+                return b""
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = FakeInput()
+                self.stdout = FakeOutput()
+                self.stderr = io.BytesIO()
+
+            def poll(self):
+                return None if not process_closed.is_set() else 0
+
+            def wait(self, timeout=None):
+                process_closed.set()
+                return 0
+
+            def terminate(self):
+                process_closed.set()
+
+            def kill(self):
+                process_closed.set()
+
+        started = time.monotonic()
+        try:
+            with (
+                patch("services.tts_service.edge_tts.Communicate", HangingCommunicate),
+                patch("services.tts_service.subprocess.Popen", return_value=FakeProcess()),
+            ):
+                with self.assertRaisesRegex(TimeoutError, "first audio exceeded"):
+                    list(service.synthesize_stream(
+                        "你好", first_audio_timeout_sec=0.05, total_timeout_sec=1.0
+                    ))
+        finally:
+            service.shutdown()
+
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(process_closed.is_set())
+
     def test_wake_response_asset_is_48khz_pcm_mono(self):
         with wave.open(str(ROOT / "assets" / "wake_response.wav"), "rb") as wav_file:
             self.assertEqual(wav_file.getframerate(), 48000)

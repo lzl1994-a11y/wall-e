@@ -37,6 +37,27 @@ class SerialMusicDisplayTests(unittest.TestCase):
         self.node.bridge = MagicMock()
         self.node.get_logger = lambda: MagicMock()
 
+    def test_user_text_is_not_resent_when_final_reply_has_same_turn(self):
+        initial = {
+            "turn_id": "turn-1", "corrected_text": "你今天开心吗？", "ai_text": "",
+        }
+        final = {
+            "turn_id": "turn-1", "corrected_text": "你今天开心吗？", "ai_text": "开心。",
+        }
+
+        self.node.screen_dialog_callback(_String(json.dumps(initial)))
+        self.node.screen_dialog_callback(_String(json.dumps(final)))
+
+        user_calls = [
+            call for call in self.node.bridge.send_raw.call_args_list
+            if call.args and call.args[0].startswith("you:")
+        ]
+        self.assertEqual(len(user_calls), 1)
+        self.assertIn(
+            ("ai:开心。\n",),
+            [call.args for call in self.node.bridge.send_raw.call_args_list],
+        )
+
     def test_music_keeps_spectrum_during_voice_reply(self):
         for state in ("loading", "playing"):
             with self.subTest(state=state):
