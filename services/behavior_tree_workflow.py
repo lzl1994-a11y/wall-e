@@ -336,7 +336,7 @@ class NativeBehaviorTreeWorkflow:
                 for item, step in zip(results, plan.steps)
             )
         )
-        if result.get("plan_id") == plan.plan_id and valid_results:
+        if isinstance(result, dict) and result.get("plan_id") == plan.plan_id and valid_results:
             return result
 
         status = result.get("status", "failure") if isinstance(result, dict) else "failure"

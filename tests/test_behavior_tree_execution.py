@@ -42,6 +42,37 @@ class BehaviorTreeProtocolTests(unittest.TestCase):
 
 
 class CorrelatedPlanExecutorTests(unittest.TestCase):
+    def test_deadline_requests_correlated_cancel_without_claiming_halt(self):
+        plan = make_plan()
+        cancellations = []
+        result = CorrelatedPlanExecutor().try_execute(
+            plan, publish=lambda _: None, cancel_publish=cancellations.append,
+            owner_available=lambda: True, timeout=0.01,
+        )
+        self.assertEqual(cancellations, [encode_plan_cancel(plan.plan_id)])
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["error"], "native_plan_timeout")
+
+    def test_cancel_publish_failure_is_visible(self):
+        def fail(_payload):
+            raise RuntimeError("transport unavailable")
+
+        result = CorrelatedPlanExecutor().try_execute(
+            make_plan(), publish=lambda _: None, cancel_publish=fail,
+            owner_available=lambda: True, timeout=0.01,
+        )
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["error"], "native_plan_timeout:cancel_publish_failed")
+
+    def test_user_cancel_is_not_resent_at_deadline(self):
+        cancellations = []
+        result = CorrelatedPlanExecutor().try_execute(
+            make_plan(), publish=lambda _: None, cancel_publish=cancellations.append,
+            owner_available=lambda: True, timeout=0.01, cancelled=lambda: True,
+        )
+        self.assertEqual(len(cancellations), 1)
+        self.assertEqual(result["error"], "native_cancel_timeout")
+
     def test_absent_native_owner_returns_none_before_publishing(self):
         published = []
         result = CorrelatedPlanExecutor().try_execute(
@@ -110,6 +141,20 @@ class CorrelatedPlanExecutorTests(unittest.TestCase):
 
 
 class NativeBehaviorTreeWorkflowTests(unittest.TestCase):
+    def test_non_dictionary_native_result_is_normalized(self):
+        for malformed in ([], "invalid", 42):
+            with self.subTest(result=malformed):
+                workflow = NativeBehaviorTreeWorkflow(
+                    authorize=lambda *_: (True, ""),
+                    execute_plan=lambda _: malformed,
+                )
+                result = workflow.invoke(
+                    turn_id="turn", user_prompt="挥手",
+                    actions=[{"name": "play_sequence", "arguments": {}}],
+                )
+                self.assertEqual(result["status"], "failure")
+                self.assertEqual(result["error"], "invalid_native_plan_result")
+
     def test_authorizes_before_submitting_to_native_owner(self):
         submitted = []
         workflow = NativeBehaviorTreeWorkflow(

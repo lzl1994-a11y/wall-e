@@ -263,6 +263,13 @@ class SequenceRosNode(Node):
             self._explicit_motion_active = False
             for name in self._steps:
                 self._steps[name] = 0.0
+            if self._auto_reset_timer is not None:
+                self.destroy_timer(self._auto_reset_timer)
+                self._auto_reset_timer = None
+            # Timeline motor frames have no separate motor request. They are
+            # owned by this sequence and must stop along with its servo frames.
+            if self._active_motor_cmd is not None and self._motor_request is None:
+                self._stop_motors(status="interrupted", detail=reason)
         if (
             self._motor_request is not None
             and self._motor_request.get("request_id") == request_id

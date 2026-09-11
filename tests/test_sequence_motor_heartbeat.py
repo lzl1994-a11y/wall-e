@@ -74,6 +74,37 @@ def _load_module():
 
 
 class SequenceMotorHeartbeatTests(unittest.TestCase):
+    def test_sequence_cancel_stops_embedded_motor_and_reset_timer(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        node._sequence_request = {"request_id": "old", "name": "play_sequence"}
+        node._active_motor_cmd = {"left": 50, "right": 50}
+        node._motor_stop_at = 999999.0
+        node._auto_reset_timer = object()
+        timer = node._auto_reset_timer
+        with patch.object(node, "destroy_timer") as destroy:
+            node._on_action_cancel(_String(data=json.dumps({
+                "request_id": "old", "name": "play_sequence", "reason": "preempted",
+            })))
+        destroy.assert_called_once_with(timer)
+        self.assertIsNone(node._auto_reset_timer)
+        self.assertIsNone(node._active_motor_cmd)
+        self.assertEqual(node._motor_stop_at, 0.0)
+        self.assertEqual(json.loads(node.motor_pub.messages[-1].data), module.STOP_COMMAND)
+
+    def test_late_cancel_does_not_stop_replacement_sequence(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        node._sequence_request = {"request_id": "new", "name": "play_sequence"}
+        node._active_motor_cmd = {"left": 50, "right": 50}
+        node._current_sequence = [{"time": 9.0, "actions": []}]
+        node._on_action_cancel(_String(data=json.dumps({
+            "request_id": "old", "name": "play_sequence", "reason": "preempted",
+        })))
+        self.assertTrue(node._current_sequence)
+        self.assertIsNotNone(node._active_motor_cmd)
+        self.assertEqual(node.motor_pub.messages, [])
+
     def test_targeted_cancel_halts_only_matching_sequence(self):
         module = _load_module()
         node = module.SequenceRosNode()

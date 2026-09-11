@@ -53,8 +53,13 @@ class CorrelatedPlanExecutor:
         else:
             return None
 
+        # Include every permitted attempt; a fixed per-step budget can expire
+        # while the native owner is still legitimately retrying a skill.
+        policy_budget = sum(
+            step.timeout_ms * step.max_attempts / 1000.0 for step in plan.steps
+        )
         deadline = time.monotonic() + (
-            float(timeout) if timeout is not None else max(22.0, len(plan.steps) * 22.0)
+            float(timeout) if timeout is not None else max(22.0, policy_budget + 2.0)
         )
         with self._condition:
             self._statuses.pop(plan.plan_id, None)
@@ -88,6 +93,12 @@ class CorrelatedPlanExecutor:
             }
         if cancel_sent:
             return self._interrupted(plan, "native_cancel_timeout")
+        # A client timeout is not proof that the robot stopped. Request a
+        # correlated halt and retain the timeout failure (not a confirmed halt).
+        try:
+            cancel_publish(encode_plan_cancel(plan.plan_id))
+        except Exception:
+            return self._failure(plan, "native_plan_timeout:cancel_publish_failed")
         return self._failure(plan, "native_plan_timeout")
 
     @staticmethod
