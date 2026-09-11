@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from services.vision_runtime import VisionArtifactError, require_nv12_padder
+
 try:
     import yaml
 except ImportError:
@@ -158,6 +160,15 @@ def build_node_list(args):
             nodes.append(NodeEntry("doa_ros", ROOT / "nodes" / "doa_ros_node.py"))
 
     return nodes
+
+
+def validate_runtime_artifacts(entries):
+    """Fail before spawning nodes when an enabled native artifact is absent."""
+    if any(entry.name == "hobot_vision" for entry in entries):
+        try:
+            require_nv12_padder(ROOT, os.environ)
+        except VisionArtifactError as exc:
+            raise RuntimeError(str(exc)) from exc
 
 
 @dataclass
@@ -331,6 +342,7 @@ def main():
     args = parser.parse_args()
 
     entries = build_node_list(args)
+    validate_runtime_artifacts(entries)
     managed = []
     stopped = False
 

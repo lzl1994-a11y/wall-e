@@ -51,6 +51,18 @@ def _load_module():
 
 
 class HotStandbyVisionTests(unittest.TestCase):
+    def test_runtime_never_invokes_the_build_script(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "nodes" / "hobot_vision_node.py").read_text(encoding="utf-8")
+        self.assertNotIn("build_nv12_padder.sh", source)
+        self.assertNotIn("subprocess.run([\"bash\"", source)
+
+        build_script = (root / "tools" / "build_nv12_padder.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('WALI_BUILD_JOBS:-1', build_script)
+        self.assertNotIn('parallel "$(nproc)"', build_script)
+
     def test_detector_subscribes_to_leased_camera_frame_topic(self):
         module = _load_module()
         process = object()

@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import launch_nodes
+from services.vision_runtime import VisionArtifactError
 
 
 def launcher_args(
@@ -39,6 +40,29 @@ def launcher_args(
 
 
 class LaunchNodesTests(unittest.TestCase):
+    def test_tracking_artifact_is_checked_before_any_process_starts(self):
+        entries = [
+            launch_nodes.NodeEntry(
+                "hobot_vision", launch_nodes.ROOT / "nodes" / "hobot_vision_node.py"
+            )
+        ]
+        with patch(
+            "launch_nodes.require_nv12_padder",
+            side_effect=VisionArtifactError("not built"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not built"):
+                launch_nodes.validate_runtime_artifacts(entries)
+
+    def test_non_tracking_launch_does_not_require_vision_artifact(self):
+        entries = [
+            launch_nodes.NodeEntry(
+                "llm", launch_nodes.ROOT / "nodes" / "llm_ros_node.py"
+            )
+        ]
+        with patch("launch_nodes.require_nv12_padder") as require:
+            launch_nodes.validate_runtime_artifacts(entries)
+        require.assert_not_called()
+
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_keyboard_flag_selects_existing_keyboard_node(self, _load_config):
         entries = launch_nodes.build_node_list(launcher_args(keyboard_stt=True))

@@ -26,6 +26,7 @@ from services.vision_pipeline_protocol import (
     VISION_PIPELINE_START,
     decode_vision_pipeline_command,
 )
+from services.vision_runtime import VisionArtifactError, require_nv12_padder
 from services.camera_capture_protocol import CAMERA_FRAME_TOPIC
 
 
@@ -105,40 +106,11 @@ def cleanup_old_processes():
 
 
 def _ensure_padder_binary(root_dir: Path, env: dict[str, str]) -> Path:
-    """Build the local padder when its C++ source is newer than the binary."""
-    configured = str(env.get("WALI_NV12_PADDER", "")).strip()
-    if configured:
-        binary = Path(configured)
-        if not binary.exists():
-            raise RuntimeError(f"configured NV12 padder not found: {binary}")
-        return binary
-
-    binary = root_dir / "build" / "wali_nv12_padder" / "nv12_padder_node"
-    source_dir = root_dir / "cpp_nodes" / "wali_nv12_padder"
-    source_files = [
-        source_dir / "CMakeLists.txt",
-        source_dir / "src" / "nv12_padder_node.cpp",
-    ]
-    needs_build = not binary.exists()
-    if not needs_build:
-        try:
-            binary_time = binary.stat().st_mtime_ns
-            needs_build = any(
-                source.exists() and source.stat().st_mtime_ns > binary_time
-                for source in source_files
-            )
-        except OSError:
-            needs_build = True
-
-    if needs_build:
-        build_script = root_dir / "tools" / "build_nv12_padder.sh"
-        print("[hobot_vision_node] NV12 padder is missing or stale; rebuilding...")
-        result = subprocess.run(["bash", str(build_script)], env=env)
-        if result.returncode != 0 or not binary.exists():
-            raise RuntimeError(
-                f"failed to build NV12 padder (exit={result.returncode})"
-            )
-    return binary
+    """Require a prebuilt padder; never compile inside the running stack."""
+    try:
+        return require_nv12_padder(root_dir, env)
+    except VisionArtifactError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _start_pipeline(padder_bin: Path | None = None):
