@@ -6,6 +6,7 @@ and can be overridden by CLI flags: --voice-chat / --real-stt / --keyboard-stt.
 """
 
 import argparse
+import ctypes
 import os
 import signal
 import subprocess
@@ -167,6 +168,21 @@ class ManagedProcess:
     restarts: int = 0
 
 
+def _set_linux_parent_death_signal():
+    """Terminate a managed node if the launcher dies without cleanup.
+
+    Nodes live in separate process groups so the launcher can restart and stop
+    them independently.  Linux otherwise reparents those groups to PID 1 when
+    the launcher is killed, allowing a later launch to duplicate every owner.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+        os._exit(127)
+    # Close the fork/prctl race: the parent may have exited just before prctl.
+    if os.getppid() == 1:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+
 def start_process(entry: NodeEntry):
     """启动一个节点子进程，返回 ManagedProcess"""
     script = entry.script
@@ -206,6 +222,8 @@ def start_process(entry: NodeEntry):
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
+        if sys.platform.startswith("linux"):
+            kwargs["preexec_fn"] = _set_linux_parent_death_signal
 
     print(f"[launcher] starting {entry.name}: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd, **kwargs)

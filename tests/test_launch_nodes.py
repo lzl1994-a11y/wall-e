@@ -248,6 +248,21 @@ class LaunchNodesTests(unittest.TestCase):
             [str(launch_nodes.ROOT), "existing-path"],
         )
 
+    @patch("launch_nodes.subprocess.Popen")
+    def test_linux_child_exits_if_launcher_dies(self, popen):
+        entry = launch_nodes.NodeEntry("test", launch_nodes.ROOT / "launch_nodes.py")
+
+        with patch.object(launch_nodes.os, "name", "posix"), patch.object(
+            launch_nodes.sys, "platform", "linux"
+        ):
+            launch_nodes.start_process(entry)
+
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertIs(
+            popen.call_args.kwargs["preexec_fn"],
+            launch_nodes._set_linux_parent_death_signal,
+        )
+
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_voice_debug_flag_is_scoped_to_voice_pipeline_nodes(self, _load_config):
         entries = launch_nodes.build_node_list(launcher_args(save_voice_debug=True))
