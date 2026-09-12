@@ -160,8 +160,10 @@ class CameraCaptureNodeTests(unittest.TestCase):
 
     def test_source_image_is_relayed_without_starting_second_camera(self):
         module = _load_camera_capture_module()
+        process = _FakeProcess()
         with (
-            patch.object(module.subprocess, "Popen") as popen,
+            patch.object(module, "resolve_camera_device", return_value="/dev/video8"),
+            patch.object(module.subprocess, "Popen", return_value=process) as popen,
             patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
         ):
             node = module.CameraCaptureNode()
@@ -173,7 +175,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
                 _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
             )
 
-        popen.assert_not_called()
+        popen.assert_called_once()
         frames = node.publishers["/camera_frame"].messages
         self.assertEqual(len(frames), 1)
         self.assertIsInstance(frames[0], _FakeCompressedImage)

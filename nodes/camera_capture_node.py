@@ -237,7 +237,6 @@ class CameraCaptureNode(Node):
         try:
             self._camera_process = subprocess.Popen(
                 command,
-                env=os.environ.copy(),
                 start_new_session=(os.name != "nt"),
             )
         except Exception as exc:
