@@ -792,15 +792,20 @@ class ConfigWebServer(ThreadingHTTPServer):
         token: str | None,
         network_configurator: Any | None = None,
     ):
-        super().__init__(server_address, handler_class)
         self.store = store
         self.static_dir = static_dir.resolve()
         self.access_token = token or ""
-        self.camera_preview = CameraPreview(self.store.path)
+        self.camera_preview = None
         # Created on first NETCFG call so the ordinary config page can still run
         # in a non-ROS test or standalone maintenance environment.
         self.network_configurator = network_configurator
         self._network_configurator_lock = threading.Lock()
+        super().__init__(server_address, handler_class)
+        try:
+            self.camera_preview = CameraPreview(self.store.path)
+        except Exception:
+            super().server_close()
+            raise
 
     def get_network_configurator(self) -> Any:
         with self._network_configurator_lock:
@@ -809,8 +814,10 @@ class ConfigWebServer(ThreadingHTTPServer):
             return self.network_configurator
 
     def server_close(self) -> None:
-        self.camera_preview.close()
-        configurator = self.network_configurator
+        preview = getattr(self, "camera_preview", None)
+        if preview is not None:
+            preview.close()
+        configurator = getattr(self, "network_configurator", None)
         if configurator is not None and hasattr(configurator, "close"):
             configurator.close()
         super().server_close()

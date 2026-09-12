@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -40,6 +41,22 @@ def launcher_args(
 
 
 class LaunchNodesTests(unittest.TestCase):
+    def test_launcher_lock_rejects_a_second_instance_for_same_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="wali-launch-lock-") as temp_dir:
+            lock_dir = Path(temp_dir)
+            first = launch_nodes.LauncherInstanceLock(ROOT, lock_dir)
+            second = launch_nodes.LauncherInstanceLock(ROOT, lock_dir)
+
+            first.acquire()
+            try:
+                with self.assertRaises(launch_nodes.LauncherAlreadyRunningError):
+                    second.acquire()
+            finally:
+                first.release()
+
+            second.acquire()
+            second.release()
+
     def test_tracking_artifact_is_checked_before_any_process_starts(self):
         entries = [
             launch_nodes.NodeEntry(

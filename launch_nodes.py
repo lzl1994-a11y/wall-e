@@ -7,10 +7,12 @@ and can be overridden by CLI flags: --voice-chat / --real-stt / --keyboard-stt.
 
 import argparse
 import ctypes
+import hashlib
 import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +30,82 @@ CONFIG_PATH = ROOT / "core" / "config.yaml"
 # 默认自动重连：最多 5 次，每次间隔 3 秒
 DEFAULT_MAX_RESTARTS = 5
 DEFAULT_RESTART_DELAY = 3.0
+
+
+class LauncherAlreadyRunningError(RuntimeError):
+    """Raised when another launcher owns this checkout's instance lock."""
+
+
+class LauncherInstanceLock:
+    """Cross-platform, process-scoped lock for one launcher per checkout."""
+
+    def __init__(self, root: Path = ROOT, lock_dir: Path | None = None):
+        self.root = root.resolve()
+        root_id = hashlib.sha256(str(self.root).encode("utf-8")).hexdigest()[:16]
+        directory = lock_dir or Path(tempfile.gettempdir())
+        self.path = directory / f"wali-launcher-{root_id}.lock"
+        self._handle = None
+
+    def acquire(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        handle = os.fdopen(fd, "r+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            try:
+                handle.seek(0)
+                owner = (
+                    handle.read(64)
+                    .decode("ascii", errors="ignore")
+                    .strip("\0\r\n ")
+                )
+            except OSError:
+                # Windows denies reads from a byte range locked by another
+                # process. The PID is diagnostic only, so omit it there.
+                owner = ""
+            handle.close()
+            detail = f" (PID {owner})" if owner.isdigit() else ""
+            raise LauncherAlreadyRunningError(
+                f"another launcher is already running for {self.root}{detail}"
+            ) from exc
+
+        handle.seek(0)
+        handle.write(f"{os.getpid()}\n".encode("ascii").ljust(64, b" "))
+        handle.truncate(64)
+        handle.flush()
+        self._handle = handle
+        return self
+
+    def release(self):
+        handle = self._handle
+        if handle is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+            self._handle = None
 
 
 def load_config():
@@ -278,6 +356,61 @@ def restart_managed(mp: ManagedProcess):
     return new_mp
 
 
+def run_launcher(args):
+    entries = build_node_list(args)
+    validate_runtime_artifacts(entries)
+    managed = []
+    stopped = False
+
+    def _sigint_handler(sig, frame):
+        nonlocal stopped
+        if stopped:
+            return
+        stopped = True
+        print("\n[launcher] Ctrl+C received, shutting down...")
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    names = [e.name for e in entries]
+    print(f"[launcher] nodes: {', '.join(names)}")
+
+    try:
+        for entry in entries:
+            managed.append(start_process(entry))
+            time.sleep(0.5)
+
+        print("[launcher] all nodes started. press Ctrl+C to stop.")
+
+        while not stopped:
+            for i, mp in enumerate(managed):
+                code = mp.proc.poll()
+                if code is not None:
+                    name = mp.entry.name
+                    max_r = mp.entry.max_restarts
+
+                    if mp.restarts >= max_r:
+                        print(f"[launcher] Node {name} exited with code {code} "
+                              f"(restarts={mp.restarts}/{max_r}), stopping permanently.")
+                    else:
+                        print(f"[launcher] Node {name} exited with code {code}, "
+                              f"restarting in {mp.entry.restart_delay:.0f}s "
+                              f"(attempt {mp.restarts + 1}/{max_r})...")
+                        time.sleep(mp.entry.restart_delay)
+                        if stopped:
+                            break
+                        managed[i] = restart_managed(mp)
+
+            time.sleep(1.0)
+
+    except Exception as exc:
+        if not stopped:
+            print(f"[launcher] error: {exc}")
+    finally:
+        for mp in reversed(managed):
+            stop_managed(mp)
+        print("[launcher] shutdown complete.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Start Wali ROS2 Python nodes.")
     parser.add_argument(
@@ -341,60 +474,17 @@ def main():
     )
     args = parser.parse_args()
 
-    entries = build_node_list(args)
-    validate_runtime_artifacts(entries)
-    managed = []
-    stopped = False
-
-    def _sigint_handler(sig, frame):
-        nonlocal stopped
-        if stopped:
-            return
-        stopped = True
-        print("\n[launcher] Ctrl+C received, shutting down...")
-
-    signal.signal(signal.SIGINT, _sigint_handler)
-
-    # print which pipeline is active
-    names = [e.name for e in entries]
-    print(f"[launcher] nodes: {', '.join(names)}")
+    try:
+        instance_lock = LauncherInstanceLock().acquire()
+    except LauncherAlreadyRunningError as exc:
+        print(f"[launcher] refused to start: {exc}", file=sys.stderr)
+        return 2
 
     try:
-        for entry in entries:
-            managed.append(start_process(entry))
-            time.sleep(0.5)
-
-        print("[launcher] all nodes started. press Ctrl+C to stop.")
-
-        while not stopped:
-            for i, mp in enumerate(managed):
-                code = mp.proc.poll()
-                if code is not None:
-                    name = mp.entry.name
-                    max_r = mp.entry.max_restarts
-
-                    if mp.restarts >= max_r:
-                        print(f"[launcher] Node {name} exited with code {code} "
-                              f"(restarts={mp.restarts}/{max_r}), stopping permanently.")
-                    else:
-                        print(f"[launcher] Node {name} exited with code {code}, "
-                              f"restarting in {mp.entry.restart_delay:.0f}s "
-                              f"(attempt {mp.restarts + 1}/{max_r})...")
-                        time.sleep(mp.entry.restart_delay)
-                        if stopped:
-                            break
-                        managed[i] = restart_managed(mp)
-
-            time.sleep(1.0)
-
-    except Exception as exc:
-        if not stopped:
-            print(f"[launcher] error: {exc}")
+        return run_launcher(args)
     finally:
-        for mp in reversed(managed):
-            stop_managed(mp)
-        print("[launcher] shutdown complete.")
+        instance_lock.release()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

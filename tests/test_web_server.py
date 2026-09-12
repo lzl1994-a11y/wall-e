@@ -141,6 +141,23 @@ class ConfigWebServerTests(unittest.TestCase):
         self.thread.join(timeout=2)
         self.temp_dir.cleanup()
 
+    def test_port_collision_preserves_original_bind_error(self):
+        bind_error = OSError(98, "Address already in use")
+        with patch(
+            "services.web_server.ConfigWebServer.server_bind",
+            side_effect=bind_error,
+        ):
+            with self.assertRaises(OSError) as raised:
+                create_server(
+                    host="127.0.0.1",
+                    port=8080,
+                    config_path=self.config_path,
+                    static_dir=DEFAULT_STATIC_DIR,
+                    token="test-token",
+                )
+
+        self.assertIs(raised.exception, bind_error)
+
     def request(self, path, *, method="GET", payload=None, token="test-token"):
         data = None
         headers = {}
