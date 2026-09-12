@@ -99,6 +99,10 @@ def build_hobot_camera_command(
         "image_width:=640",
         "-p",
         "image_height:=480",
+        "-p",
+        # The ESP UVC camera exposes 640x480 MJPEG at 15 fps.  The driver's
+        # 30 fps default is not a supported mode and never produces /image.
+        "framerate:=15",
     ]
     setup_path = str(ros_setup or "").strip()
     if os.name != "nt" and setup_path and Path(setup_path).is_file():

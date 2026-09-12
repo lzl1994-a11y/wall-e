@@ -50,6 +50,7 @@ class CameraCaptureProtocolTests(unittest.TestCase):
     def test_hobot_camera_keeps_the_canonical_image_topic(self):
         command = build_hobot_camera_command("/dev/video2", ros_setup=None)
         self.assertIn("video_device:=/dev/video2", command)
+        self.assertIn("framerate:=15", command)
         self.assertEqual(CAMERA_SOURCE_TOPIC, "/image")
         self.assertNotIn("/image:=/camera_frame", command)
 

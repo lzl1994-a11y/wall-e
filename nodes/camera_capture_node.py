@@ -40,7 +40,10 @@ class CameraCaptureNode(Node):
     # nodes before it publishes the first ROS image. Keep this watchdog longer
     # than device initialization so a slow first open is not mistaken for a
     # dead camera.
-    FIRST_FRAME_TIMEOUT_SEC = 15.0
+    # On the X3 board the ROS wrapper and UVC control probing can take more
+    # than 15 seconds while the rest of the robot starts.  Keep the timeout
+    # bounded, but allow the supported camera mode to finish initialization.
+    FIRST_FRAME_TIMEOUT_SEC = 45.0
 
     def __init__(self) -> None:
         super().__init__("camera_capture_node")
