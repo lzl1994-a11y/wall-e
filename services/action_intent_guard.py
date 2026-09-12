@@ -309,7 +309,10 @@ def _matches_sequence_intent(compact, sequence_name):
         right = bool(re.search(r"右(?:边)?(?:看|转头|扭头)|看看右边", compact))
         if left or right:
             return left if sequence_name == "turn_head_left" else right
-        return bool(re.search(r"(?:转|旋转)(?:个|一下)?头|转头", compact))
+        # An undirected “转一下头” does not explicitly contradict either
+        # direction.  The model remains the positive semantic router; this
+        # guard must not invent both left and right mentions locally.
+        return False
     return bool(re.search(pattern, compact))
 
 

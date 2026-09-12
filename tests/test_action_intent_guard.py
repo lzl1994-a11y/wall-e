@@ -522,6 +522,19 @@ class ActionIntentGuardTests(unittest.TestCase):
             {"sequence_name": "right_hand_up"},
         )
 
+    def test_undirected_head_wording_does_not_invent_a_direction_conflict(self):
+        self.assertAllowed(
+            "转一下头",
+            "play_sequence",
+            {"sequence_name": "basic_nod"},
+        )
+        self.assertRejected(
+            "向左转头",
+            "play_sequence",
+            {"sequence_name": "turn_head_right"},
+            "argument_conflict",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
