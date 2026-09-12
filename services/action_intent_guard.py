@@ -352,6 +352,18 @@ def _explicit_conditional_action(action_clause):
     if tracking_modes:
         return "set_tracking_mode", {"mode": tracking_modes[0]}
 
+    move_directions = [
+        direction
+        for direction, pattern in _MOVE_PATTERNS.items()
+        if re.search(pattern, action_clause)
+    ]
+    if move_directions:
+        duration = _requested_duration(action_clause) or 1
+        return "move_chassis", {
+            "direction": move_directions[0],
+            "duration": duration,
+        }
+
     for sequence_name in _CONDITIONAL_SEQUENCE_PRIORITY:
         if sequence_name in _SEQUENCE_NAMES and _matches_sequence_intent(
             action_clause, sequence_name

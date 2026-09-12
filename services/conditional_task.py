@@ -21,11 +21,12 @@ from services.action_intent_guard import (
 CONDITIONAL_TASK_TOOL_NAME = "run_conditional_task"
 CONDITIONAL_DECISION_TOOL_NAME = "conditional_decision"
 
-# A single still image is not a safe basis for autonomous chassis motion.
-# Locomotion can be added later behind continuous perception and obstacle
-# avoidance.  The remaining tools are bounded or stop/safety operations.
+# Conditional tasks may select any bounded high-level motion exposed here.
+# Runtime argument validation, arbitration, timeouts and cancellation still
+# apply before the selected action reaches the hardware owner.
 CONDITIONAL_ACTION_TOOLS = frozenset({
     "express_emotion",
+    "move_chassis",
     "play_sequence",
     "set_tracking_mode",
     "set_vision_gate",
@@ -33,8 +34,11 @@ CONDITIONAL_ACTION_TOOLS = frozenset({
 })
 
 _CONDITIONAL_MARKER_RE = re.compile(
+    r"(?:"
     r"(?:如果|假如|要是|一旦|只要|当.+?时|看到|看见|发现|检测到|识别到).{0,80}"
     r"(?:就|便|则|然后|请你|你就|帮我|让你)"
+    r"|.{1,60}的话.{0,20}(?:就|便|则|然后|请你|你就|帮我|让你)"
+    r")"
 )
 
 
@@ -136,7 +140,8 @@ def conditional_task_tool_schema() -> dict[str, Any]:
                 "description": (
                     "条件明确成立时执行的一个动作工具。举手、点头、挥手、转头等预设"
                     "身体动作必须使用 play_sequence；情绪身体表达使用 express_emotion；"
-                    "持续注视或跟随使用 set_tracking_mode；停止全部动作使用 stop_all"
+                    "底盘移动使用 move_chassis；持续注视或跟随使用 set_tracking_mode；"
+                    "停止全部动作使用 stop_all"
                 ),
             },
             "action_arguments": {
@@ -167,6 +172,17 @@ def conditional_task_tool_schema() -> dict[str, Any]:
                     "enabled": {
                         "type": "boolean",
                         "description": "set_vision_gate 专用",
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["forward", "backward", "spin", "left", "right"],
+                        "description": "move_chassis 专用：底盘移动方向",
+                    },
+                    "duration": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3,
+                        "description": "move_chassis 专用：移动秒数，默认 1 秒",
                     },
                 },
                 "additionalProperties": False,

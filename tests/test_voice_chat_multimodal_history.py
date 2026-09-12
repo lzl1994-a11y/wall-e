@@ -413,7 +413,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_tool_call.assert_called_once_with("run_conditional_task", valid_plan)
         service.on_llm_reply.assert_called_once_with("条件不满足，我没有执行动作。")
 
-    def test_conditional_chassis_motion_fails_before_camera_or_replan(self):
+    def test_conditional_chassis_motion_runs_as_compound_task(self):
         service = self._service()
         service.multimodal = MagicMock()
         service.multimodal.build_audio_message.return_value = {
@@ -423,7 +423,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.model = "test-model"
         service.on_llm_chunk = MagicMock()
         service.on_llm_reply = MagicMock()
-        service.on_tool_call = MagicMock()
+        service.on_tool_call = MagicMock(return_value="条件满足，动作已经执行完成。")
         service.on_inspection_request = MagicMock()
         service._llm_done = MagicMock()
         service._stream_tool_calls = MagicMock(return_value=([{
@@ -447,10 +447,17 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
 
         self.assertEqual(service._stream_tool_calls.call_count, 1)
         service.on_inspection_request.assert_not_called()
-        service.on_tool_call.assert_not_called()
+        service.on_tool_call.assert_called_once_with(
+            "run_conditional_task",
+            {
+                "observation": "观察前方是否有人",
+                "condition": "前方没有人",
+                "action_name": "move_chassis",
+                "action_arguments": {"direction": "backward", "duration": 1},
+            },
+        )
         service.on_llm_reply.assert_called_once_with(
-            "为了安全，我不能只根据一张画面自动移动底盘，"
-            "所以这次没有执行移动。"
+            "条件满足，动作已经执行完成。"
         )
 
     def test_conditional_transcript_is_not_swallowed_by_camera_shortcut(self):
@@ -464,10 +471,10 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_llm_chunk = MagicMock()
         service.on_llm_reply = MagicMock()
         plan = {
-            "observation": "观察前方",
-            "condition": "有人挥手",
+            "observation": "观察前方是否有人",
+            "condition": "前方没有人",
             "action_name": "play_sequence",
-            "action_arguments": {"sequence_name": "basic_nod"},
+            "action_arguments": {"sequence_name": "raise_hand"},
         }
         service.on_tool_call = MagicMock(return_value="条件满足，动作已经执行完成。")
         service.on_photo_request = MagicMock()
@@ -476,7 +483,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service._stream_tool_calls = MagicMock(return_value=([{
             "name": "direct_answer",
             "arguments": {
-                "heard_text": "看看前面，如果有人挥手你就点头",
+                "heard_text": "你看一下前面有没有人，没人的话你就举手",
                 "response": "好的。",
             },
         }, {

@@ -428,12 +428,6 @@ class VoiceChatService:
                     planned = self._retry_conditional_plan(heard_text)
                 if planned is not None:
                     tool_calls = [planned]
-                elif unsupported_action == "move_chassis":
-                    tool_calls = []
-                    response_text = (
-                        "为了安全，我不能只根据一张画面自动移动底盘，"
-                        "所以这次没有执行移动。"
-                    )
                 else:
                     tool_calls = []
                     response_text = (

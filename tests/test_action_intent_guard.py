@@ -451,7 +451,7 @@ class ActionIntentGuardTests(unittest.TestCase):
             {**plan, "action_name": "move_chassis", "action_arguments": {
                 "direction": "forward", "duration": 1
             }},
-            "invalid_arguments",
+            "argument_conflict",
         )
 
     def test_conditional_consequent_can_repair_model_action_mapping(self):
@@ -553,6 +553,24 @@ class ActionIntentGuardTests(unittest.TestCase):
         self.assertEqual(
             repaired["action_arguments"],
             {"sequence_name": "basic_shake_head"},
+        )
+        self.assertAllowed(prompt, "run_conditional_task", repaired)
+
+    def test_conditional_backward_is_canonicalized(self):
+        prompt = "你看一下前面有没有人，没人的话你就后退"
+        plan = {
+            "observation": "观察前方是否有人",
+            "condition": "前方没有人",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "wave_hello"},
+        }
+
+        repaired = canonicalize_conditional_action(prompt, plan)
+
+        self.assertEqual(repaired["action_name"], "move_chassis")
+        self.assertEqual(
+            repaired["action_arguments"],
+            {"direction": "backward", "duration": 1},
         )
         self.assertAllowed(prompt, "run_conditional_task", repaired)
 

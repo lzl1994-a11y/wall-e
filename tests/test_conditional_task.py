@@ -13,6 +13,7 @@ class ConditionalTaskTests(unittest.TestCase):
         self.assertTrue(is_conditional_task_request("看看前面，如果有人挥手你就点头"))
         self.assertTrue(is_conditional_task_request("发现红色物体就举手"))
         self.assertTrue(is_conditional_task_request("如果桌上没有杯子，就做个开心表情"))
+        self.assertTrue(is_conditional_task_request("前面没人的话你就举手"))
         self.assertFalse(is_conditional_task_request("看看我手里有什么"))
         self.assertFalse(is_conditional_task_request("如果下雨会怎么样"))
 
@@ -25,17 +26,27 @@ class ConditionalTaskTests(unittest.TestCase):
         })
         self.assertEqual(plan["condition"], "桌面上至少有两个红色圆形物体")
 
-    def test_plan_rejects_unknown_or_locomotion_action(self):
+    def test_plan_rejects_unknown_action(self):
         base = {
             "observation": "观察前方",
             "condition": "前方没有障碍物",
             "action_arguments": {},
         }
-        for action in ("run_shell", "move_chassis"):
+        for action in ("run_shell",):
             with self.subTest(action=action), self.assertRaisesRegex(
                 ValueError, "conditional_action_not_allowed"
             ):
                 normalize_conditional_task_plan({**base, "action_name": action})
+
+    def test_plan_accepts_bounded_conditional_chassis_motion(self):
+        plan = normalize_conditional_task_plan({
+            "observation": "观察前方",
+            "condition": "前方没有人",
+            "action_name": "move_chassis",
+            "action_arguments": {"direction": "backward", "duration": 1},
+        })
+
+        self.assertEqual(plan["action_arguments"]["direction"], "backward")
 
     def test_decision_parser_has_closed_vocabulary_and_fails_closed(self):
         self.assertEqual(
@@ -62,6 +73,10 @@ class ConditionalTaskTests(unittest.TestCase):
         self.assertIn("raise_hand", sequence_names)
         self.assertIn("right_hand_up", sequence_names)
         self.assertIn("left_hand_up", sequence_names)
+        self.assertEqual(
+            action_arguments["properties"]["direction"]["enum"],
+            ["forward", "backward", "spin", "left", "right"],
+        )
 
 
 if __name__ == "__main__":

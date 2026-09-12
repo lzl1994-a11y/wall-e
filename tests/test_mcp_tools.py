@@ -33,8 +33,8 @@ class FastMcpToolTests(unittest.TestCase):
             {item["function"]["name"] for item in tools},
             {
                 "express_emotion",
-                "play_sequence",
                 "move_chassis",
+                "play_sequence",
                 "set_tracking_mode",
                 "set_vision_gate",
                 "inspect_camera",
@@ -69,6 +69,7 @@ class FastMcpToolTests(unittest.TestCase):
             set(conditional["properties"]["action_name"]["enum"]),
             {
                 "express_emotion",
+                "move_chassis",
                 "play_sequence",
                 "set_tracking_mode",
                 "set_vision_gate",
