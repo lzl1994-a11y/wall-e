@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import patch
 
-from services.action_intent_guard import deterministic_safety_action, validate_action_call
+from services.action_intent_guard import (
+    canonicalize_conditional_action,
+    deterministic_safety_action,
+    validate_action_call,
+)
 
 
 class ActionIntentGuardTests(unittest.TestCase):
@@ -534,6 +538,23 @@ class ActionIntentGuardTests(unittest.TestCase):
             {"sequence_name": "turn_head_right"},
             "argument_conflict",
         )
+
+    def test_conditional_shake_head_is_canonicalized(self):
+        prompt = "你看一下前面有人吗，如果没有的话就摇一下头"
+        plan = {
+            "observation": "观察前方是否有人",
+            "condition": "前方没有人",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "wave_hello"},
+        }
+
+        repaired = canonicalize_conditional_action(prompt, plan)
+
+        self.assertEqual(
+            repaired["action_arguments"],
+            {"sequence_name": "basic_shake_head"},
+        )
+        self.assertAllowed(prompt, "run_conditional_task", repaired)
 
 
 if __name__ == "__main__":

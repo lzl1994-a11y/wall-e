@@ -147,6 +147,7 @@ def conditional_task_tool_schema() -> dict[str, Any]:
                         "description": (
                             "play_sequence 专用：举右手=right_hand_up，举左手=left_hand_up，"
                             "举双手=arms_up，举手示意=raise_hand，点头=basic_nod，"
+                            "摇头=basic_shake_head，"
                             "挥手=wave_hello，放下双手=arms_down，回正=look_center"
                         ),
                     },

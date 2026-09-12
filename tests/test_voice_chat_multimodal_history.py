@@ -328,6 +328,85 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_inspection_request.assert_called_once_with("看一下前面有什么")
         service.on_llm_reply.assert_called_once_with("前面有一只杯子。")
 
+    def test_plain_inspection_ignores_spurious_conditional_tool(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock()
+        service.on_inspection_request = MagicMock(return_value="前面没有人。")
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(return_value=([{
+            "name": "direct_answer",
+            "arguments": {
+                "heard_text": "你看一下前面有人吗",
+                "response": "好的，我看一下。",
+                "intent_type": "execute_task",
+            },
+        }, {
+            "name": "run_conditional_task",
+            "arguments": {
+                "observation": "观察前方",
+                "condition": "前方有人",
+                "action_name": "play_sequence",
+                "action_arguments": {"sequence_name": "basic_nod"},
+            },
+        }], ""))
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_inspection_request.assert_called_once_with("你看一下前面有人吗")
+        service.on_tool_call.assert_not_called()
+        service.on_llm_reply.assert_called_once_with("前面没有人。")
+
+    def test_missing_direct_answer_replans_invalid_conditional_call(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock(return_value="条件不满足，我没有执行动作。")
+        service.on_inspection_request = MagicMock()
+        service._llm_done = MagicMock()
+        valid_plan = {
+            "observation": "观察前方是否有人",
+            "condition": "前方没有人",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "basic_shake_head"},
+        }
+        service._stream_tool_calls = MagicMock(side_effect=[
+            ([{
+                "name": "run_conditional_task",
+                "arguments": {"observation": "观察前方"},
+            }], ""),
+            ([{
+                "name": "direct_answer",
+                "arguments": {
+                    "heard_text": "你看一下前面有人吗，如果没有的话就摇一下头",
+                    "response": "好的，我看一下。",
+                    "intent_type": "execute_task",
+                },
+            }], ""),
+            ([{
+                "name": "run_conditional_task",
+                "arguments": valid_plan,
+            }], ""),
+        ])
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_tool_call.assert_called_once_with("run_conditional_task", valid_plan)
+        service.on_llm_reply.assert_called_once_with("条件不满足，我没有执行动作。")
+
     def test_conditional_transcript_is_not_swallowed_by_camera_shortcut(self):
         service = self._service()
         service.multimodal = MagicMock()

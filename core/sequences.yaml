@@ -247,6 +247,30 @@ sequences:
       name: neck_top
       pwm: 4000
       step_size: 200.0
+  basic_shake_head:
+  - time: 0.0
+    actions:
+    - type: servo
+      name: head_yaw
+      pwm: 6500
+      step_size: 180.0
+  - time: 0.35
+    actions:
+    - type: servo
+      name: head_yaw
+      pwm: 3500
+      step_size: 180.0
+  - time: 0.7
+    actions:
+    - type: servo
+      name: head_yaw
+      pwm: 6500
+      step_size: 180.0
+  - time: 1.05
+    actions:
+    - type: pose
+      name: look_center
+      step_size: 180.0
   basic_wave:
   - time: 0.0
     actions:

@@ -373,16 +373,42 @@ class VoiceChatService:
                 and heard_text
                 and is_conditional_task_request(heard_text)
             )
-            conditional_tool_present = any(
-                call.get("name") == "run_conditional_task"
-                for call in tool_calls
-                if isinstance(call, dict)
-            )
-            if conditional_intent and not conditional_tool_present:
-                planned = self._retry_conditional_plan(heard_text)
+            if conditional_intent:
+                # Do not trust mere tool presence.  Providers occasionally emit
+                # a partial conditional call before omitting direct_answer, or
+                # attach transport-only grounding that cannot compile as an
+                # exact quote.  Normalize and authorize the candidate now; if it
+                # is unusable, perform the one bounded planner retry.
+                planned = None
+                for call in tool_calls:
+                    if (
+                        not isinstance(call, dict)
+                        or call.get("name") != CONDITIONAL_TASK_TOOL_NAME
+                    ):
+                        continue
+                    raw_arguments = call.get("arguments")
+                    if not isinstance(raw_arguments, dict):
+                        print("[VoiceChat] 丢弃无效条件计划: invalid_arguments")
+                        continue
+                    arguments = dict(raw_arguments)
+                    arguments.pop("grounding", None)
+                    arguments = canonicalize_conditional_action(heard_text, arguments)
+                    allowed, reason = validate_action_call(
+                        heard_text, CONDITIONAL_TASK_TOOL_NAME, arguments
+                    )
+                    if allowed:
+                        planned = {
+                            "name": CONDITIONAL_TASK_TOOL_NAME,
+                            "arguments": arguments,
+                        }
+                        break
+                    print(f"[VoiceChat] 丢弃无效条件计划: {reason}")
+                if planned is None:
+                    planned = self._retry_conditional_plan(heard_text)
                 if planned is not None:
                     tool_calls = [planned]
                 else:
+                    tool_calls = []
                     response_text = (
                         "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
                     )
@@ -441,6 +467,9 @@ class VoiceChatService:
                         f"{tc['name']}"
                     )
                     continue
+                if not conditional_intent and tc["name"] == CONDITIONAL_TASK_TOOL_NAME:
+                    print("[VoiceChat] 非条件请求忽略条件任务工具")
+                    continue
                 if tc["name"] in handled_visual_tools:
                     continue
                 if (
@@ -475,8 +504,13 @@ class VoiceChatService:
                 self.last_action_results = action_state.get("results", [])
                 for result in self.last_action_results:
                     print(
-                        f"[VoiceChat] 工具结果: {result.get('name')} "
+                        "[VoiceChat] 工具结果: "
+                        f"{result.get('name') or result.get('action') or '<plan>'} "
                         f"-> {result.get('status')}"
+                        + (
+                            f" ({result.get('reason')})"
+                            if result.get("reason") else ""
+                        )
                     )
                     if result.get("status") == "completed":
                         handled_response = result.get("response")

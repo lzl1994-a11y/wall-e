@@ -98,6 +98,7 @@ _SEQUENCE_PATTERNS = {
     "basic_wave": r"招手|挥手|挥挥手",
     "complex_greet": r"打(?:个)?招呼|问好|问候",
     "basic_nod": r"点(?:一下)?头|点头",
+    "basic_shake_head": r"摇(?:一下)?头|摇摇头",
     "sad_react": r"(?:做|来|表现|摆|装).*(?:难过|伤心|悲伤|沮丧).*(?:反应|动作)|"
                  r"(?:难过|伤心|悲伤|沮丧).*(?:反应|动作)",
     "scared": r"(?:做|来|表现|摆|装).*(?:害怕|吓一跳|防御)|"
@@ -157,6 +158,7 @@ _CONDITIONAL_SEQUENCE_PRIORITY = (
     "right_hand_up",
     "left_hand_up",
     "basic_nod",
+    "basic_shake_head",
     "raise_hand",
     "arms_up",
     "arms_down",
