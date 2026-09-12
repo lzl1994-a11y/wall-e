@@ -12,6 +12,21 @@ class SerialBroker:
     def __init__(self, config_path=DEFAULT_CONFIG_PATH):
         self.config_path = config_path
         self.device_map = {}
+        self._rejected_fallback_ports = {}
+
+    @staticmethod
+    def _port_fingerprint(port):
+        return tuple(
+            str(getattr(port, field, "") or "")
+            for field in (
+                "device",
+                "vid",
+                "pid",
+                "serial_number",
+                "location",
+                "hwid",
+            )
+        )
 
     def scan_and_identify(self, usb_role=None, fallback_device_name=None):
         """Probe serial ports and identify devices by their application handshake.
@@ -24,6 +39,12 @@ class SerialBroker:
         """
         print("🔍 开始硬件全盘扫描...")
         all_ports = list(serial.tools.list_ports.comports())
+        online_paths = {port.device for port in all_ports}
+        self._rejected_fallback_ports = {
+            path: rejection
+            for path, rejection in self._rejected_fallback_ports.items()
+            if path in online_paths
+        }
         ports = all_ports
         fallback_ports = []
         configured = False
@@ -34,6 +55,12 @@ class SerialBroker:
                 ports = [port for port in all_ports if port.device in selected_paths]
                 fallback_ports = [
                     port for port in all_ports if port.device not in selected_paths
+                ]
+                fallback_ports = [
+                    port
+                    for port in fallback_ports
+                    if self._rejected_fallback_ports.get(port.device, (None,))[0]
+                    != self._port_fingerprint(port)
                 ]
                 if not ports:
                     print(
@@ -52,12 +79,20 @@ class SerialBroker:
                 f"  -> USB 选择器未找到 '{fallback_device_name}'，"
                 "回退到串口握手发现"
             )
-            self._probe_ports(fallback_ports)
+            fallback_identities = self._probe_ports(fallback_ports)
+            by_path = {port.device: port for port in fallback_ports}
+            for identity, port_path in fallback_identities.items():
+                if identity != fallback_device_name:
+                    self._rejected_fallback_ports[port_path] = (
+                        self._port_fingerprint(by_path[port_path]),
+                        identity,
+                    )
 
         print("📊 硬件扫描完毕。当前挂载地图:", self.device_map)
         return self.device_map
 
     def _probe_ports(self, ports):
+        identified = {}
         for port in ports:
             port_path = port.device
             print(f"  -> 探测物理接口: {port_path}")
@@ -80,6 +115,7 @@ class SerialBroker:
                     if response.startswith("IAM:"):
                         device_name = response.split(":")[1]
                         self.device_map[device_name] = port_path
+                        identified[device_name] = port_path
                         print(f"     ✅ 认证成功: 发现 '{device_name}' 挂载于 {port_path}")
                     else:
                         print(f"     ❓ 收到未知回复或无回复: {response}")
@@ -88,6 +124,7 @@ class SerialBroker:
                 print(f"     ❌ 接口被占用或无权限")
             except Exception as e:
                 print(f"     ⚠️ 探测异常: {e}")
+        return identified
 
     def get_port_for(self, device_name):
         """让具体的服务来取自己的串口路径"""
