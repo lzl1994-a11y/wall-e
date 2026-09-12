@@ -17,6 +17,7 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         bridge.broker = Mock(config_path="/tmp/wali-config.yaml")
         bridge._next_selection_check_at = 0.0
         bridge._next_reconnect_at = float("inf")
+        bridge._reconnect_delay_sec = 1.0
         bridge._selection_config_mtime_ns = 10
         bridge._io_lock = threading.RLock()
         bridge._connection_lock = threading.RLock()
@@ -28,6 +29,25 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         bridge.last_send_time = 1.0
         bridge.timeout_seconds = 30.0
         return bridge
+
+    @patch("services.serial_bridge.time.monotonic", side_effect=[100.0, 100.5, 101.0])
+    def test_failed_reconnect_uses_exponential_backoff(self, _monotonic):
+        bridge = self.make_bridge()
+        bridge.ser = None
+        bridge._next_reconnect_at = 0.0
+        bridge._connect = Mock(return_value=False)
+
+        self.assertFalse(bridge._ensure_connected())
+        self.assertEqual(bridge._next_reconnect_at, 101.0)
+        self.assertEqual(bridge._reconnect_delay_sec, 2.0)
+
+        self.assertFalse(bridge._ensure_connected())
+        bridge._connect.assert_called_once()
+
+        self.assertFalse(bridge._ensure_connected())
+        self.assertEqual(bridge._next_reconnect_at, 103.0)
+        self.assertEqual(bridge._reconnect_delay_sec, 4.0)
+        self.assertEqual(bridge._connect.call_count, 2)
 
     @patch("services.serial_bridge.serial_ports_for_role")
     def test_unchanged_config_does_not_scan_usb_devices(self, resolve_ports):

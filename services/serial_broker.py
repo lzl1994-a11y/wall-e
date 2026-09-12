@@ -13,23 +13,55 @@ class SerialBroker:
         self.config_path = config_path
         self.device_map = {}
 
-    def scan_and_identify(self, usb_role=None):
-        """开机点名：遍历所有串口，发送握手暗号"""
+    def scan_and_identify(self, usb_role=None, fallback_device_name=None):
+        """Probe serial ports and identify devices by their application handshake.
+
+        A configured USB selector is a preferred route.  For callers that pass
+        ``fallback_device_name``, a stale selector may fall back to the other
+        serial ports, but only the requested handshake identity is accepted.
+        Other roles retain strict selector behavior so, for example, DOA
+        discovery cannot reset the screen controller.
+        """
         print("🔍 开始硬件全盘扫描...")
-        ports = serial.tools.list_ports.comports()
+        all_ports = list(serial.tools.list_ports.comports())
+        ports = all_ports
+        fallback_ports = []
+        configured = False
         if usb_role:
             selected_ports, configured = serial_ports_for_role(usb_role, self.config_path)
             if configured:
                 selected_paths = set(selected_ports)
-                ports = [port for port in ports if port.device in selected_paths]
+                ports = [port for port in all_ports if port.device in selected_paths]
+                fallback_ports = [
+                    port for port in all_ports if port.device not in selected_paths
+                ]
                 if not ports:
-                    print(f"  -> 已配置的 {usb_role} USB 当前离线或没有串口接口")
+                    print(
+                        f"  -> 已配置的 {usb_role} USB 当前离线或没有串口接口"
+                    )
         self.device_map = {}
-        
+
+        self._probe_ports(ports)
+        if (
+            configured
+            and fallback_device_name
+            and fallback_device_name not in self.device_map
+            and fallback_ports
+        ):
+            print(
+                f"  -> USB 选择器未找到 '{fallback_device_name}'，"
+                "回退到串口握手发现"
+            )
+            self._probe_ports(fallback_ports)
+
+        print("📊 硬件扫描完毕。当前挂载地图:", self.device_map)
+        return self.device_map
+
+    def _probe_ports(self, ports):
         for port in ports:
             port_path = port.device
             print(f"  -> 探测物理接口: {port_path}")
-            
+
             try:
                 # 用一个比较通用的配置，极短的 timeout 快速试探
                 with serial.Serial(port_path, 115200, timeout=1.0) as temp_ser:
@@ -56,9 +88,6 @@ class SerialBroker:
                 print(f"     ❌ 接口被占用或无权限")
             except Exception as e:
                 print(f"     ⚠️ 探测异常: {e}")
-
-        print("📊 硬件扫描完毕。当前挂载地图:", self.device_map)
-        return self.device_map
 
     def get_port_for(self, device_name):
         """让具体的服务来取自己的串口路径"""

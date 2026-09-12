@@ -7,6 +7,11 @@ from pathlib import Path
 from services.serial_broker import SerialBroker
 from services.usb_devices import DEFAULT_CONFIG_PATH, serial_ports_for_role
 
+
+RECONNECT_INITIAL_DELAY_SEC = 1.0
+RECONNECT_MAX_DELAY_SEC = 30.0
+
+
 class SerialBridge:
     """
     瓦力纯净硬件网桥服务 (完全解耦 ROS)
@@ -19,6 +24,7 @@ class SerialBridge:
         self.ser = None
         self.broker = SerialBroker(config_path=config_path)
         self._next_reconnect_at = 0.0
+        self._reconnect_delay_sec = RECONNECT_INITIAL_DELAY_SEC
         self._next_selection_check_at = 0.0
         self._selection_config_mtime_ns = self._config_mtime_ns()
         # Only physical writes are serialized. A permanent reader dispatches
@@ -36,7 +42,7 @@ class SerialBridge:
         self.last_send_time = 0.0      # 上次成功发送数据的时间戳
         self.is_screen_awake = False   # 屏幕是否处于聊天页面状态
         
-        self._connect()
+        self._ensure_connected()
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
             name="esp32-serial-reader",
@@ -50,7 +56,10 @@ class SerialBridge:
             if self.ser and self.ser.is_open:
                 return
             print(f"🔌 [Serial Bridge] 正在请求挂载设备: {self.device_name}...")
-            self.broker.scan_and_identify(usb_role="screen_motion")
+            self.broker.scan_and_identify(
+                usb_role="screen_motion",
+                fallback_device_name=self.device_name,
+            )
             port_path = self.broker.get_port_for(self.device_name)
 
             if port_path:
@@ -65,12 +74,14 @@ class SerialBridge:
                         write_timeout=2,
                     )
                     print(f"✅ [Serial Bridge] 成功连接下位机: {port_path}")
+                    return True
                 except Exception as e:
                     print(f"🔴 [Serial Bridge] 串口被占用或无权限: {e}")
                     self.ser = None
             else:
                 print(f"🔴 [Serial Bridge] 未能在物理总线上找到设备 '{self.device_name}'")
                 self.ser = None
+            return False
 
     def _config_mtime_ns(self):
         try:
@@ -99,9 +110,16 @@ class SerialBridge:
                 return True
             if now < self._next_reconnect_at:
                 return False
-            self._next_reconnect_at = now + 1.0
-            self._connect()
-            return bool(self.ser and self.ser.is_open)
+            if self._connect():
+                self._next_reconnect_at = 0.0
+                self._reconnect_delay_sec = RECONNECT_INITIAL_DELAY_SEC
+                return True
+            self._next_reconnect_at = now + self._reconnect_delay_sec
+            self._reconnect_delay_sec = min(
+                RECONNECT_MAX_DELAY_SEC,
+                self._reconnect_delay_sec * 2.0,
+            )
+            return False
 
     @staticmethod
     def _netcfg_sequence(line):
