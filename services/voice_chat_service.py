@@ -332,6 +332,7 @@ class VoiceChatService:
                 return
             tool_calls, raw_content = streamed
             heard_text, response_text, expression, intensity = self._dialog_answer(tool_calls)
+            intent_type = self._dialog_intent_type(tool_calls)
             structured_ok = bool(response_text)
 
             if not response_text:
@@ -354,6 +355,7 @@ class VoiceChatService:
                     return
                 retry_calls, retry_raw_content = retry
                 heard_text, response_text, expression, intensity = self._dialog_answer(retry_calls)
+                intent_type = self._dialog_intent_type(retry_calls)
                 structured_ok = bool(response_text)
                 if not response_text:
                     print(
@@ -427,6 +429,12 @@ class VoiceChatService:
                     break
                 if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
                     continue
+                if intent_type in {"conversation", "capability_query"}:
+                    print(
+                        "[VoiceChat] 非执行意图忽略动作工具: "
+                        f"intent={intent_type}, tool={tc['name']}"
+                    )
+                    continue
                 if conditional_intent and tc["name"] != "run_conditional_task":
                     print(
                         "[VoiceChat] 忽略被拆分的复合任务工具: "
@@ -444,10 +452,20 @@ class VoiceChatService:
                     tc["arguments"] = canonicalize_conditional_action(
                         heard_text, tc["arguments"]
                     )
+                arguments = dict(tc["arguments"])
+                grounding = arguments.pop("grounding", "")
                 pending_actions.append({
                     "name": tc["name"],
-                    "arguments": tc["arguments"],
+                    "arguments": arguments,
+                    "grounding": grounding,
                 })
+
+            if len(pending_actions) > 1 and any(
+                not action.get("grounding") for action in pending_actions
+            ):
+                print("[VoiceChat] 多步计划缺少步骤级原文依据，拒绝提交")
+                pending_actions = []
+                response_text = "这个多步任务没有形成可靠的逐步计划，所以我没有执行。"
 
             if pending_actions and structured_ok:
                 action_state = self._execute_action_sequence(
@@ -466,6 +484,14 @@ class VoiceChatService:
                         # second model request and replace the acknowledgement.
                         if isinstance(handled_response, str) and handled_response.strip():
                             response_text = handled_response.strip()
+                        continue
+                    if (
+                        result.get("status") == "rejected"
+                        and result.get("reason") == "non_command_context"
+                    ):
+                        # The guard correctly blocked a capability question or
+                        # other non-command. Keep the model's conversational
+                        # answer; no robot action was attempted.
                         continue
                     if result.get("status") != "skipped":
                         response_text = "这个动作没有确认完成，我已停止后续动作。"
@@ -556,7 +582,9 @@ class VoiceChatService:
             for call in calls:
                 if call.get("name") != CONDITIONAL_TASK_TOOL_NAME:
                     continue
-                plan = canonicalize_conditional_action(heard_text, call.get("arguments"))
+                arguments = dict(call.get("arguments") or {})
+                arguments.pop("grounding", None)
+                plan = canonicalize_conditional_action(heard_text, arguments)
                 allowed, _reason = validate_action_call(
                     heard_text, CONDITIONAL_TASK_TOOL_NAME, plan
                 )
@@ -707,6 +735,16 @@ class VoiceChatService:
             VoiceChatService._dialog_answer(tool_calls)
         )
         return heard_text, response_text
+
+    @staticmethod
+    def _dialog_intent_type(tool_calls):
+        for call in reversed(tool_calls):
+            if call.get("name") != DIRECT_ANSWER_TOOL_NAME:
+                continue
+            value = call.get("arguments", {}).get("intent_type")
+            if value in {"conversation", "capability_query", "execute_task"}:
+                return value
+        return ""
 
     @staticmethod
     def _dialog_answer(tool_calls):

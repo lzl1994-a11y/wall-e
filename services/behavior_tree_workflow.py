@@ -54,7 +54,7 @@ class ActionLeaf:
 
         try:
             allowed, reason = self._authorize(
-                self._user_prompt,
+                self.step.grounding or self._user_prompt,
                 self.step.name,
                 self.step.arguments,
             )
@@ -287,7 +287,7 @@ class NativeBehaviorTreeWorkflow:
         for index, step in enumerate(plan.steps):
             try:
                 allowed, reason = self._authorize(
-                    plan.user_prompt,
+                    step.grounding or plan.user_prompt,
                     step.name,
                     step.arguments,
                 )

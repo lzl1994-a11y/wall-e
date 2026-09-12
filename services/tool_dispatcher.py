@@ -8,6 +8,7 @@
 来源统一为 mcp_service，不再各处重复定义。
 """
 
+import copy
 import json
 import logging
 import services.mcp_service as mcp
@@ -16,6 +17,7 @@ from services.dialog_expression_protocol import EXPRESSIONS, INTENSITIES
 
 
 DIRECT_ANSWER_TOOL_NAME = "direct_answer"
+INTENT_TYPES = ("conversation", "capability_query", "execute_task")
 LOGGER = logging.getLogger(__name__)
 DIRECT_ANSWER_TOOL = {
     "type": "function",
@@ -31,6 +33,14 @@ DIRECT_ANSWER_TOOL = {
                 "response": {
                     "type": "string",
                     "description": "给用户播报的完整、自然、简短的最终台词",
+                },
+                "intent_type": {
+                    "type": "string",
+                    "enum": list(INTENT_TYPES),
+                    "description": (
+                        "本轮意图类型：普通对话 conversation、能力询问 capability_query、"
+                        "明确要求现在执行动作 execute_task"
+                    ),
                 },
                 "expression": {
                     "type": "string",
@@ -70,6 +80,14 @@ MULTIMODAL_DIRECT_ANSWER_TOOL = {
                     "type": "string",
                     "description": "给用户播报的完整、自然、简短的最终台词",
                 },
+                "intent_type": {
+                    "type": "string",
+                    "enum": list(INTENT_TYPES),
+                    "description": (
+                        "本轮意图类型：普通对话 conversation、能力询问 capability_query、"
+                        "明确要求现在执行动作 execute_task"
+                    ),
+                },
                 "expression": {
                     "type": "string",
                     "enum": sorted(EXPRESSIONS),
@@ -81,7 +99,9 @@ MULTIMODAL_DIRECT_ANSWER_TOOL = {
                     "description": "表情幅度；没有强烈情绪时使用 low",
                 },
             },
-            "required": ["heard_text", "response", "expression", "intensity"],
+            "required": [
+                "heard_text", "response", "intent_type", "expression", "intensity"
+            ],
             "additionalProperties": False,
         },
     },
@@ -99,7 +119,24 @@ def get_action_tools():
 
 def get_multimodal_tools():
     """Tools for audio turns, including a transcript for paired history."""
-    return [MULTIMODAL_DIRECT_ANSWER_TOOL, *mcp.get_chat_tools()]
+    tools = [MULTIMODAL_DIRECT_ANSWER_TOOL]
+    for source in mcp.get_chat_tools():
+        tool = copy.deepcopy(source)
+        function = tool.get("function", {})
+        parameters = function.get("parameters", {})
+        properties = parameters.setdefault("properties", {})
+        properties["grounding"] = {
+            "type": "string",
+            "maxLength": 240,
+            "description": (
+                "仅复制用户原话中直接要求本动作的最短连续片段；不得改写、解释或补充"
+            ),
+        }
+        required = parameters.setdefault("required", [])
+        if "grounding" not in required:
+            required.append("grounding")
+        tools.append(tool)
+    return tools
 
 
 class ToolCallAccumulator:

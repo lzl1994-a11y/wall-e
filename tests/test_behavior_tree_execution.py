@@ -141,6 +141,40 @@ class CorrelatedPlanExecutorTests(unittest.TestCase):
 
 
 class NativeBehaviorTreeWorkflowTests(unittest.TestCase):
+    def test_each_step_is_authorized_against_its_grounding(self):
+        authorized = []
+        submitted = []
+        workflow = NativeBehaviorTreeWorkflow(
+            authorize=lambda prompt, name, arguments: (
+                authorized.append((prompt, name, arguments)) or (True, "")
+            ),
+            execute_plan=lambda plan: submitted.append(plan) or None,
+        )
+
+        result = workflow.invoke(
+            turn_id="turn-grounded",
+            user_prompt="把手举起来，然后抬一下头",
+            actions=[
+                {
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "raise_hand"},
+                    "grounding": "把手举起来",
+                },
+                {
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "basic_nod"},
+                    "grounding": "抬一下头",
+                },
+            ],
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            [item[0] for item in authorized],
+            ["把手举起来", "抬一下头"],
+        )
+        self.assertEqual(len(submitted), 1)
+
     def test_non_dictionary_native_result_is_normalized(self):
         for malformed in ([], "invalid", 42):
             with self.subTest(result=malformed):

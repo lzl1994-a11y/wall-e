@@ -5,6 +5,39 @@ from services.behavior_tree_workflow import BehaviorTreeActionWorkflow
 
 
 class ActionPlanTests(unittest.TestCase):
+    def test_grounding_must_be_verbatim_user_text(self):
+        plan = compile_action_plan(
+            turn_id="turn-grounded",
+            user_prompt="把手举起来，然后抬一下头",
+            actions=[
+                {
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "raise_hand"},
+                    "grounding": "把手举起来",
+                },
+                {
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "basic_nod"},
+                    "grounding": "抬一下头",
+                },
+            ],
+        )
+
+        self.assertEqual(
+            [step.grounding for step in plan.steps],
+            ["把手举起来", "抬一下头"],
+        )
+        with self.assertRaisesRegex(PlanValidationError, "ungrounded_action_at_step_1"):
+            compile_action_plan(
+                turn_id="turn-bad-grounding",
+                user_prompt="举手",
+                actions=[{
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "raise_hand"},
+                    "grounding": "请向前走",
+                }],
+            )
+
     def test_compiler_owns_ids_dependencies_and_resources(self):
         plan = compile_action_plan(
             turn_id="turn-1",

@@ -98,6 +98,93 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         )
         service._llm_done.assert_called_once_with()
 
+    def test_capability_question_keeps_answer_and_never_executes_action(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock()
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(return_value=([
+            {
+                "name": "direct_answer",
+                "arguments": {
+                    "heard_text": "你能播放音乐吗",
+                    "response": "可以，你可以说播放音乐。",
+                    "intent_type": "capability_query",
+                },
+            },
+            {
+                "name": "control_music",
+                "arguments": {
+                    "action": "play",
+                    "track": "",
+                    "grounding": "播放音乐",
+                },
+            },
+        ], ""))
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_tool_call.assert_not_called()
+        service.on_llm_chunk.assert_called_once_with("可以，你可以说播放音乐。")
+        service.on_llm_reply.assert_called_once_with("可以，你可以说播放音乐。")
+
+    def test_multistep_actions_use_independent_model_grounding(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock(return_value={"status": "completed"})
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(return_value=([
+            {
+                "name": "direct_answer",
+                "arguments": {
+                    "heard_text": "把手举起来，然后抬一下头",
+                    "response": "好的。",
+                    "intent_type": "execute_task",
+                },
+            },
+            {
+                "name": "play_sequence",
+                "arguments": {
+                    "sequence_name": "raise_hand",
+                    "grounding": "把手举起来",
+                },
+            },
+            {
+                "name": "play_sequence",
+                "arguments": {
+                    "sequence_name": "basic_nod",
+                    "grounding": "抬一下头",
+                },
+            },
+        ], ""))
+
+        service._send_to_llm("encoded-audio")
+
+        self.assertEqual(
+            service.on_tool_call.call_args_list,
+            [
+                unittest.mock.call("play_sequence", {"sequence_name": "raise_hand"}),
+                unittest.mock.call("play_sequence", {"sequence_name": "basic_nod"}),
+            ],
+        )
+        self.assertTrue(all(
+            result["status"] == "completed" for result in service.last_action_results
+        ))
+
     def test_second_missing_direct_answer_uses_audible_fallback(self):
         service = self._service()
         service.multimodal = MagicMock()
@@ -308,6 +395,32 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_inspection_request.assert_not_called()
         service.on_llm_reply.assert_called_once_with(
             "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
+        )
+
+    def test_conditional_plan_retry_strips_transport_grounding(self):
+        service = self._service()
+        service.system_prompt = "system"
+        plan = {
+            "observation": "观察前方",
+            "condition": "有人挥手",
+            "action_name": "play_sequence",
+            "action_arguments": {"sequence_name": "basic_nod"},
+        }
+        service._stream_tool_calls = MagicMock(return_value=([{
+            "name": "run_conditional_task",
+            "arguments": {
+                **plan,
+                "grounding": "如果有人挥手你就点头",
+            },
+        }], ""))
+
+        result = service._retry_conditional_plan(
+            "看看前面，如果有人挥手你就点头"
+        )
+
+        self.assertEqual(
+            result,
+            {"name": "run_conditional_task", "arguments": plan},
         )
 
     def test_malformed_structured_answer_never_starts_camera(self):

@@ -26,6 +26,7 @@ class ActionPlanStep:
     step_id: str
     name: str
     arguments: dict[str, Any]
+    grounding: str
     depends_on: tuple[str, ...]
     resources: tuple[str, ...]
     timeout_ms: int
@@ -36,6 +37,7 @@ class ActionPlanStep:
             "step_id": self.step_id,
             "name": self.name,
             "arguments": dict(self.arguments),
+            "grounding": self.grounding,
             "depends_on": list(self.depends_on),
             "resources": list(self.resources),
             "timeout_ms": self.timeout_ms,
@@ -85,8 +87,17 @@ def compile_action_plan(
             raise PlanValidationError(f"invalid_action_at_step_{index}")
         name = action.get("name")
         arguments = action.get("arguments", {})
+        grounding = action.get("grounding", "")
         if not isinstance(name, str) or not name.strip() or not isinstance(arguments, dict):
             raise PlanValidationError(f"invalid_action_at_step_{index}")
+        if not isinstance(grounding, str):
+            raise PlanValidationError(f"invalid_grounding_at_step_{index}")
+        grounding = grounding.strip()
+        if grounding:
+            compact_prompt = "".join(str(user_prompt or "").split())
+            compact_grounding = "".join(grounding.split())
+            if not compact_grounding or compact_grounding not in compact_prompt:
+                raise PlanValidationError(f"ungrounded_action_at_step_{index}")
 
         name = name.strip()
         skill = get_action_skill(name)
@@ -97,6 +108,7 @@ def compile_action_plan(
             step_id=step_id,
             name=name,
             arguments=dict(arguments),
+            grounding=grounding,
             depends_on=(previous_step_id,) if previous_step_id else (),
             resources=skill.plan_resources,
             timeout_ms=skill.timeout_ms,

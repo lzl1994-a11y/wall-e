@@ -119,8 +119,36 @@ class FastMcpToolTests(unittest.TestCase):
         parameters = tools[0]["function"]["parameters"]
         self.assertEqual(
             parameters["required"],
-            ["heard_text", "response", "expression", "intensity"],
+            ["heard_text", "response", "intent_type", "expression", "intensity"],
         )
+        self.assertEqual(
+            parameters["properties"]["intent_type"]["enum"],
+            ["conversation", "capability_query", "execute_task"],
+        )
+
+    def test_multimodal_actions_require_verbatim_grounding(self):
+        from services import tool_dispatcher
+
+        action = {
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"sequence_name": {"type": "string"}},
+                    "required": ["sequence_name"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+        with patch.object(tool_dispatcher.mcp, "get_chat_tools", return_value=[action]):
+            tools = tool_dispatcher.get_multimodal_tools()
+
+        parameters = tools[1]["function"]["parameters"]
+        self.assertIn("grounding", parameters["required"])
+        self.assertEqual(parameters["properties"]["grounding"]["maxLength"], 240)
+        self.assertNotIn("grounding", action["function"]["parameters"]["properties"])
 
 
 class _ToolCallResponse:

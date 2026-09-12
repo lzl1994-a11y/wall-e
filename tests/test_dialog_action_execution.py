@@ -47,6 +47,16 @@ class DialogActionExecutionTests(unittest.TestCase):
             {"name": "play_sequence", "arguments": {"sequence_name": "basic_nod"}},
         ]
         if mode == "voice":
+            grounded_calls = [
+                {
+                    **call,
+                    "arguments": {
+                        **call["arguments"],
+                        "grounding": "挥手" if index == 0 else "点头",
+                    },
+                }
+                for index, call in enumerate(calls)
+            ]
             service = VoiceChatService.__new__(VoiceChatService)
             service._chat_history = deque(maxlen=40)
             service._cancel_llm = threading.Event()
@@ -57,7 +67,8 @@ class DialogActionExecutionTests(unittest.TestCase):
             service._stream_tool_calls = MagicMock(return_value=([
                 {"name": "direct_answer", "arguments": {
                     "heard_text": "先挥手再点头", "response": "好的。",
-                }}, *calls,
+                    "intent_type": "execute_task",
+                }}, *grounded_calls,
             ], ""))
             service.on_tool_call = node._on_tool_call
             service.on_llm_chunk = MagicMock()
