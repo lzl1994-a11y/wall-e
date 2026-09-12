@@ -257,9 +257,10 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service = self._service()
         service.system_prompt = "system"
         service._stream_tool_calls = MagicMock(return_value=([{
-            "name": "direct_answer",
+            "name": "conditional_decision",
             "arguments": {
-                "response": '{"decision":"yes","evidence":"目标可见"}'
+                "decision": "yes",
+                "evidence": "目标可见",
             },
         }], ""))
 
@@ -268,11 +269,16 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            answer, '{"decision":"yes","evidence":"目标可见"}'
+            answer, {"decision": "yes", "evidence": "目标可见"}
         )
         request = service._stream_tool_calls.call_args
         self.assertEqual(len(request.kwargs["tools"]), 1)
         self.assertIn("uncertain", request.args[0][0]["content"])
+        self.assertNotIn("direct_answer", request.args[0][0]["content"])
+        self.assertEqual(
+            request.kwargs["tool_choice"]["function"]["name"],
+            "conditional_decision",
+        )
 
     def test_photo_transcript_runs_capture_callback_before_reply(self):
         service = self._service()
@@ -406,6 +412,46 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
 
         service.on_tool_call.assert_called_once_with("run_conditional_task", valid_plan)
         service.on_llm_reply.assert_called_once_with("条件不满足，我没有执行动作。")
+
+    def test_conditional_chassis_motion_fails_before_camera_or_replan(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock()
+        service.on_inspection_request = MagicMock()
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(return_value=([{
+            "name": "direct_answer",
+            "arguments": {
+                "heard_text": "你看一下前面有没有人，如果没人你就后退",
+                "response": "好的。",
+                "intent_type": "execute_task",
+            },
+        }, {
+            "name": "run_conditional_task",
+            "arguments": {
+                "observation": "观察前方是否有人",
+                "condition": "前方没有人",
+                "action_name": "move_chassis",
+                "action_arguments": {"direction": "backward", "duration": 1},
+            },
+        }], ""))
+
+        service._send_to_llm("encoded-audio")
+
+        self.assertEqual(service._stream_tool_calls.call_count, 1)
+        service.on_inspection_request.assert_not_called()
+        service.on_tool_call.assert_not_called()
+        service.on_llm_reply.assert_called_once_with(
+            "为了安全，我不能只根据一张画面自动移动底盘，"
+            "所以这次没有执行移动。"
+        )
 
     def test_conditional_transcript_is_not_swallowed_by_camera_shortcut(self):
         service = self._service()

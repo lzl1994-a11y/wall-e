@@ -42,8 +42,16 @@ from services.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
 )
-from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME, is_conditional_task_request
+from services.conditional_task import (
+    CONDITIONAL_ACTION_TOOLS,
+    CONDITIONAL_DECISION_TOOL_NAME,
+    CONDITIONAL_TASK_TOOL_NAME,
+    conditional_decision_tool,
+    is_conditional_task_request,
+    parse_conditional_decision,
+)
 from services.action_intent_guard import canonicalize_conditional_action, validate_action_call
+from services.action_registry import get_action_skill
 from services.behavior_tree_workflow import BehaviorTreeActionWorkflow
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
@@ -380,6 +388,7 @@ class VoiceChatService:
                 # exact quote.  Normalize and authorize the candidate now; if it
                 # is unusable, perform the one bounded planner retry.
                 planned = None
+                unsupported_action = ""
                 for call in tool_calls:
                     if (
                         not isinstance(call, dict)
@@ -393,6 +402,18 @@ class VoiceChatService:
                     arguments = dict(raw_arguments)
                     arguments.pop("grounding", None)
                     arguments = canonicalize_conditional_action(heard_text, arguments)
+                    action_name = arguments.get("action_name")
+                    if (
+                        isinstance(action_name, str)
+                        and get_action_skill(action_name) is not None
+                        and action_name not in CONDITIONAL_ACTION_TOOLS
+                    ):
+                        unsupported_action = action_name
+                        print(
+                            "[VoiceChat] 条件任务拒绝不安全动作: "
+                            f"{unsupported_action}"
+                        )
+                        break
                     allowed, reason = validate_action_call(
                         heard_text, CONDITIONAL_TASK_TOOL_NAME, arguments
                     )
@@ -403,10 +424,16 @@ class VoiceChatService:
                         }
                         break
                     print(f"[VoiceChat] 丢弃无效条件计划: {reason}")
-                if planned is None:
+                if planned is None and not unsupported_action:
                     planned = self._retry_conditional_plan(heard_text)
                 if planned is not None:
                     tool_calls = [planned]
+                elif unsupported_action == "move_chassis":
+                    tool_calls = []
+                    response_text = (
+                        "为了安全，我不能只根据一张画面自动移动底盘，"
+                        "所以这次没有执行移动。"
+                    )
                 else:
                     tool_calls = []
                     response_text = (
@@ -681,22 +708,21 @@ class VoiceChatService:
         observation: str,
         condition: str,
         image_base64: str,
-    ) -> str:
-        """Return a closed JSON decision for a conditional task image."""
+    ) -> dict[str, str]:
+        """Return a closed structured decision for a conditional task image."""
         prompt = (
-            "只依据附带的当前摄像头画面判断条件。返回一个 JSON 对象，且只能包含 "
-            "decision 和 evidence。decision 只能是 yes、no、uncertain；无法确认时必须"
-            "使用 uncertain。不要执行动作，不要输出 Markdown 或其他文字。\n"
+            "只依据附带的当前摄像头画面判断条件。必须调用 conditional_decision；"
+            "decision 只能是 yes、no、uncertain，无法确认时必须使用 uncertain。"
+            "不要执行动作。\n"
             f"观察任务：{observation}\n判断条件：{condition}"
         )
         messages = [
             {
                 "role": "system",
-                "content": with_structured_answer_policy(
-                    with_direct_speech_policy(
-                        "你是机器人视觉条件判断器。只能依据当前图片输出严格 JSON；"
-                        "无法确认时必须返回 uncertain，禁止猜测。"
-                    )
+                "content": (
+                    "你是机器人视觉条件判断器。只能依据当前图片调用 "
+                    "conditional_decision；无法确认时必须返回 uncertain，禁止猜测。"
+                    "不得输出台词、JSON 文本、思考过程或执行任何动作。"
                 ),
             },
             {
@@ -710,21 +736,28 @@ class VoiceChatService:
                 ],
             },
         ]
+        decision_tool = conditional_decision_tool()
         streamed = self._stream_tool_calls(
             messages,
-            tools=[DIRECT_ANSWER_TOOL],
+            tools=[decision_tool],
             tool_choice={
                 "type": "function",
-                "function": {"name": DIRECT_ANSWER_TOOL_NAME},
+                "function": {"name": CONDITIONAL_DECISION_TOOL_NAME},
             },
         )
         if streamed is None:
             raise RuntimeError("视觉条件判断请求被中断")
         tool_calls, _raw_content = streamed
-        _heard, response, _expression, _intensity = self._dialog_answer(tool_calls)
-        if not response:
-            raise RuntimeError("视觉模型没有返回条件判断")
-        return response
+        for call in tool_calls:
+            if call.get("name") != CONDITIONAL_DECISION_TOOL_NAME:
+                continue
+            decision = parse_conditional_decision(call.get("arguments"))
+            if decision.get("evidence") in {
+                "invalid_model_output", "invalid_model_decision"
+            }:
+                break
+            return decision
+        raise RuntimeError("视觉模型没有返回有效的 conditional_decision")
 
     def _stream_tool_calls(self, messages, *, tools, tool_choice):
         """Return parsed tool calls and untrusted content for one LLM request."""

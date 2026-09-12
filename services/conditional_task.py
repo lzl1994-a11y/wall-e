@@ -19,6 +19,7 @@ from services.action_intent_guard import (
 
 
 CONDITIONAL_TASK_TOOL_NAME = "run_conditional_task"
+CONDITIONAL_DECISION_TOOL_NAME = "conditional_decision"
 
 # A single still image is not a safe basis for autonomous chassis motion.
 # Locomotion can be added later behind continuous perception and obstacle
@@ -179,11 +180,39 @@ def conditional_task_tool_schema() -> dict[str, Any]:
     }
 
 
+def conditional_decision_tool() -> dict[str, Any]:
+    """Return the internal, closed-schema vision decision tool."""
+    return {
+        "type": "function",
+        "function": {
+            "name": CONDITIONAL_DECISION_TOOL_NAME,
+            "description": "仅依据当前摄像头图片返回一次条件判断，不执行任何动作。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "decision": {
+                        "type": "string",
+                        "enum": ["yes", "no", "uncertain"],
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "maxLength": 500,
+                    },
+                },
+                "required": ["decision", "evidence"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 __all__ = [
     "CONDITIONAL_ACTION_TOOLS",
+    "CONDITIONAL_DECISION_TOOL_NAME",
     "CONDITIONAL_TASK_TOOL_NAME",
     "ConditionalDecision",
     "ConditionalTaskPlan",
+    "conditional_decision_tool",
     "conditional_task_tool_schema",
     "is_conditional_task_request",
     "normalize_conditional_task_plan",

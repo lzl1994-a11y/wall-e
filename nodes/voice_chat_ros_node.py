@@ -493,6 +493,18 @@ class VoiceChatNode(Node):
                 self.get_logger().warning(
                     f"Conditional task completed with error: {result['error']}"
                 )
+            action_result = result.get("action_result")
+            action_status = (
+                action_result.get("status")
+                if isinstance(action_result, dict)
+                else "not_run"
+            )
+            self.get_logger().info(
+                "Conditional task outcome: "
+                f"decision={result.get('decision') or 'unavailable'}, "
+                f"evidence={result.get('evidence') or '-'}, "
+                f"action_status={action_status}"
+            )
             return result.get("answer") or "这次任务没有完成。"
         except Exception as exc:
             self.get_logger().error(
