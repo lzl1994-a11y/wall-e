@@ -25,6 +25,7 @@ class SerialBridge:
         self.broker = SerialBroker(config_path=config_path)
         self._next_reconnect_at = 0.0
         self._reconnect_delay_sec = RECONNECT_INITIAL_DELAY_SEC
+        self._connection_failure_logged = False
         self._next_selection_check_at = 0.0
         self._selection_config_mtime_ns = self._config_mtime_ns()
         # Only physical writes are serialized. A permanent reader dispatches
@@ -54,11 +55,14 @@ class SerialBridge:
         """内部方法：通过 Broker 获取端口并连接"""
         with self._connection_lock:
             if self.ser and self.ser.is_open:
-                return
-            print(f"🔌 [Serial Bridge] 正在请求挂载设备: {self.device_name}...")
+                return True
+            verbose = not self._connection_failure_logged
+            if verbose:
+                print(f"🔌 [Serial Bridge] 正在请求挂载设备: {self.device_name}...")
             self.broker.scan_and_identify(
                 usb_role="screen_motion",
                 fallback_device_name=self.device_name,
+                verbose=verbose,
             )
             port_path = self.broker.get_port_for(self.device_name)
 
@@ -74,13 +78,16 @@ class SerialBridge:
                         write_timeout=2,
                     )
                     print(f"✅ [Serial Bridge] 成功连接下位机: {port_path}")
+                    self._connection_failure_logged = False
                     return True
                 except Exception as e:
-                    print(f"🔴 [Serial Bridge] 串口被占用或无权限: {e}")
+                    if verbose:
+                        print(f"🔴 [Serial Bridge] 串口被占用或无权限: {e}")
                     self.ser = None
-            else:
+            elif verbose:
                 print(f"🔴 [Serial Bridge] 未能在物理总线上找到设备 '{self.device_name}'")
-                self.ser = None
+            self.ser = None
+            self._connection_failure_logged = True
             return False
 
     def _config_mtime_ns(self):
@@ -106,6 +113,7 @@ class SerialBridge:
                         except Exception:
                             pass
                         self.ser = None
+                        self._connection_failure_logged = False
             if self.ser and self.ser.is_open:
                 return True
             if now < self._next_reconnect_at:

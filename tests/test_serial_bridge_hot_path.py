@@ -18,6 +18,7 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         bridge._next_selection_check_at = 0.0
         bridge._next_reconnect_at = float("inf")
         bridge._reconnect_delay_sec = 1.0
+        bridge._connection_failure_logged = False
         bridge._selection_config_mtime_ns = 10
         bridge._io_lock = threading.RLock()
         bridge._connection_lock = threading.RLock()
@@ -29,6 +30,33 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         bridge.last_send_time = 1.0
         bridge.timeout_seconds = 30.0
         return bridge
+
+    @patch("builtins.print")
+    def test_repeated_connection_failure_is_logged_only_once(self, output):
+        bridge = self.make_bridge()
+        bridge.ser = None
+        bridge.device_name = "WALL_E_TFT"
+        bridge.broker.get_port_for.return_value = None
+
+        self.assertFalse(bridge._connect())
+        self.assertFalse(bridge._connect())
+
+        attempts = [
+            call
+            for call in output.call_args_list
+            if "正在请求挂载设备" in str(call)
+        ]
+        failures = [
+            call
+            for call in output.call_args_list
+            if "未能在物理总线上找到设备" in str(call)
+        ]
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(
+            [call.kwargs["verbose"] for call in bridge.broker.scan_and_identify.call_args_list],
+            [True, False],
+        )
 
     @patch("services.serial_bridge.time.monotonic", side_effect=[100.0, 100.5, 101.0])
     def test_failed_reconnect_uses_exponential_backoff(self, _monotonic):
