@@ -10,6 +10,7 @@ import os
 from typing import Any
 import yaml
 from fastmcp import FastMCP
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.conditional_task import (
     CONDITIONAL_TASK_TOOL_NAME,
@@ -19,6 +20,14 @@ from services.visual_search import VISUAL_SEARCH_TOOL_NAME
 
 mcp = FastMCP("Wali_Action_Center")
 LOGGER = logging.getLogger(__name__)
+
+
+class SearchCompletionAction(BaseModel):
+    """One server-validated action to run only after a visual search succeeds."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=100)
+    arguments: dict[str, Any]
 
 
 class MCPToolDiscoveryError(RuntimeError):
@@ -203,7 +212,7 @@ def search_environment(
     search_direction: str = "spin",
     motion_duration: int = 1,
     max_views: int = 3,
-    on_found_actions: list[dict[str, Any]] | None = None,
+    on_found_actions: list[SearchCompletionAction] = [],
 ) -> str:
     """在大于单个摄像头视野的环境中主动寻找并定位目标。
 

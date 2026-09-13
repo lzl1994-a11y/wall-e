@@ -89,6 +89,9 @@ class FastMcpToolTests(unittest.TestCase):
         search = by_name["search_environment"]["parameters"]["properties"]
         self.assertEqual(search["search_direction"]["enum"], ["spin", "left", "right"])
         self.assertEqual(search["max_views"]["maximum"], 4)
+        completion = search["on_found_actions"]
+        self.assertEqual(completion["type"], "array")
+        self.assertEqual(completion["items"]["required"], ["name", "arguments"])
 
     def test_empty_fastmcp_registry_is_diagnostic_error_not_silent_empty_tools(self):
         async def no_tools():

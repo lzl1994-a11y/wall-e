@@ -627,11 +627,8 @@ class VoiceChatService:
             )},
             {"role": "user", "content": heard_text},
         ]
-        try:
-            streamed = self._stream_tool_calls(messages, tools=plan_tools, tool_choice="auto")
-            if streamed is None:
-                return None
-            calls, _content = streamed
+        def select_valid_plan(calls):
+            invalid_search = False
             for call in calls:
                 name = call.get("name")
                 if name not in {
@@ -645,8 +642,45 @@ class VoiceChatService:
                 arguments.pop("grounding", None)
                 allowed, reason = validate_action_arguments(name, arguments)
                 if allowed:
-                    return {"name": name, "arguments": arguments}
+                    return {"name": name, "arguments": arguments}, False
+                if name == VISUAL_SEARCH_TOOL_NAME:
+                    invalid_search = True
                 print(f"[VoiceChat] 视觉计划无效: {name} ({reason})")
+            return None, invalid_search
+
+        try:
+            streamed = self._stream_tool_calls(messages, tools=plan_tools, tool_choice="auto")
+            if streamed is None:
+                return None
+            calls, _content = streamed
+            plan, invalid_search = select_valid_plan(calls)
+            if plan is not None:
+                return plan
+            if invalid_search and not self._cancel_llm.is_set():
+                search_tool = next(
+                    tool for tool in plan_tools
+                    if tool.get("function", {}).get("name") == VISUAL_SEARCH_TOOL_NAME
+                )
+                repair_messages = [
+                    {"role": "system", "content": (
+                        "修复上一轮视觉搜索工具参数。只能调用 search_environment。"
+                        "on_found_actions 必须是数组；每个元素只能包含 name 和 arguments，"
+                        "并且只有在找到目标后才执行。不得输出普通文本或额外字段。"
+                    )},
+                    {"role": "user", "content": heard_text},
+                ]
+                repaired = self._stream_tool_calls(
+                    repair_messages,
+                    tools=[search_tool],
+                    tool_choice={
+                        "type": "function",
+                        "function": {"name": VISUAL_SEARCH_TOOL_NAME},
+                    },
+                )
+                if repaired is not None:
+                    repaired_plan, _invalid = select_valid_plan(repaired[0])
+                    if repaired_plan is not None:
+                        return repaired_plan
         except Exception as exc:
             print(f"[VoiceChat] 视觉任务规划失败: {exc}")
         return None

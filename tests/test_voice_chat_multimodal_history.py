@@ -635,6 +635,34 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         planner_prompt = service._stream_tool_calls.call_args.args[0][0]["content"]
         self.assertIn("主动视觉搜索", planner_prompt)
 
+    def test_visual_planner_repairs_invalid_nested_search_actions_once(self):
+        service = self._service()
+        invalid = {
+            "target": "椅子",
+            "on_found_actions": [{
+                "action_name": "play_sequence",
+                "arguments": {"sequence_name": "raise_hand"},
+            }],
+        }
+        repaired = {
+            "target": "椅子",
+            "on_found_actions": [{
+                "name": "play_sequence",
+                "arguments": {"sequence_name": "raise_hand"},
+            }],
+        }
+        service._stream_tool_calls = MagicMock(side_effect=[
+            ([{"name": "search_environment", "arguments": invalid}], ""),
+            ([{"name": "search_environment", "arguments": repaired}], ""),
+        ])
+
+        result = service._plan_visual_task("找到椅子后举手")
+
+        self.assertEqual(result, {"name": "search_environment", "arguments": repaired})
+        self.assertEqual(service._stream_tool_calls.call_count, 2)
+        repair = service._stream_tool_calls.call_args_list[1]
+        self.assertEqual(repair.kwargs["tool_choice"]["function"]["name"], "search_environment")
+
     def test_malformed_structured_answer_never_starts_camera(self):
         service = self._service()
         service.multimodal = MagicMock()
