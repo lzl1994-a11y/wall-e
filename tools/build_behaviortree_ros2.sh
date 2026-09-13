@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
@@ -15,6 +15,7 @@ if [[ ! -d "${ROOT_DIR}/cpp_nodes/BehaviorTree.ROS2/behaviortree_ros2" ]]; then
 fi
 
 source "${ROS_SETUP}"
+set -u
 cd "${ROOT_DIR}"
 colcon build \
   --base-paths "${ROOT_DIR}/cpp_nodes/BehaviorTree.ROS2" \
