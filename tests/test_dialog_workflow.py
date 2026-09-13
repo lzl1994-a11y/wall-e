@@ -185,6 +185,7 @@ class ConditionalTaskWorkflowTests(unittest.TestCase):
             turn_id="turn-denied", user_prompt="复合任务", plan=self.PLAN
         )
         self.assertEqual(denied["error"], "blocked")
+        self.assertEqual(denied["answer"], "条件满足，但动作参数无效，所以没有执行。")
         execute.assert_not_called()
 
         failed_execute = MagicMock(return_value={

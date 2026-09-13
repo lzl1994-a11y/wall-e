@@ -354,7 +354,7 @@ class ConditionalTaskWorkflow:
         if allowed:
             return {}
         return {
-            "answer": "条件满足，但这个动作没有通过安全检查。",
+            "answer": "条件满足，但动作参数无效，所以没有执行。",
             "error": reason or "action_not_authorized",
         }
 
