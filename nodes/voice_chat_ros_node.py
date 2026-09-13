@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.voice_chat_service import VoiceChatService
 from services.action_execution import CorrelatedActionExecutor
 from services.action_command import ACTION_REQUEST_TOPIC
-from services.action_intent_guard import validate_action_arguments, validate_action_call
+from services.action_intent_guard import validate_action_arguments
 from services.action_status import ACTION_STATUS_TOPIC
 from services.behavior_tree_execution import CorrelatedPlanExecutor
 from services.behavior_tree_protocol import (
@@ -451,7 +451,9 @@ class VoiceChatNode(Node):
         if publisher is None or cancel_publisher is None or executor is None:
             return None
         workflow = NativeBehaviorTreeWorkflow(
-            authorize=validate_action_call,
+            authorize=lambda _prompt, name, arguments: validate_action_arguments(
+                name, arguments
+            ),
             execute_plan=lambda plan: executor.try_execute(
                 plan,
                 publish=lambda payload: publisher.publish(String(data=payload)),

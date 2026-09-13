@@ -119,24 +119,7 @@ def get_action_tools():
 
 def get_multimodal_tools():
     """Tools for audio turns, including a transcript for paired history."""
-    tools = [MULTIMODAL_DIRECT_ANSWER_TOOL]
-    for source in mcp.get_chat_tools():
-        tool = copy.deepcopy(source)
-        function = tool.get("function", {})
-        parameters = function.get("parameters", {})
-        properties = parameters.setdefault("properties", {})
-        properties["grounding"] = {
-            "type": "string",
-            "maxLength": 240,
-            "description": (
-                "仅复制用户原话中直接要求本动作的最短连续片段；不得改写、解释或补充"
-            ),
-        }
-        required = parameters.setdefault("required", [])
-        if "grounding" not in required:
-            required.append("grounding")
-        tools.append(tool)
-    return tools
+    return [MULTIMODAL_DIRECT_ANSWER_TOOL, *copy.deepcopy(mcp.get_chat_tools())]
 
 
 class ToolCallAccumulator:

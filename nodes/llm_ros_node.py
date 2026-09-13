@@ -511,7 +511,10 @@ class LLMBrainNode(Node):
                         break
                     if action_name == 'inspect_camera':
                         self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
-                        self._process_camera_inspection(turn_id, user_prompt)
+                        if action_arguments.get('save_photo') is True:
+                            self._process_camera_photo(turn_id, user_prompt)
+                        else:
+                            self._process_camera_inspection(turn_id, user_prompt)
                         return
                     if action_name == CONDITIONAL_TASK_TOOL_NAME:
                         self.get_logger().info(

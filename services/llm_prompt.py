@@ -23,8 +23,8 @@ DIALOG_EXPRESSION_POLICY = """
 每轮必须调用 direct_answer 一次，同时返回最终台词 response、自然反应表情 expression
 和强度 intensity，并用 intent_type 区分普通对话、能力询问和立即执行任务。能力询问必须
 使用 capability_query 且不能调用动作工具；只有用户明确要求现在执行时才使用 execute_task。
-调用动作工具时，每个 grounding 必须逐字复制用户原话中只支持该动作的最短连续片段，
-多步任务为每一步分别提供 grounding。表情是瓦力对语义的自然反应，不需要用户明确命令：例如听到难以置信的
+多步任务按用户表达的先后顺序调用多个动作工具，由行为树顺序执行。表情是瓦力对语义的
+自然反应，不需要用户明确命令：例如听到难以置信的
 消息可用 surprised，复杂问题可用 thinking，用户难过时可用 concerned，普通内容用
 neutral。不要为了热闹滥用强烈表情。身体动作工具仍只允许响应用户明确的现实动作命令。
 不要在普通 content 中输出台词或结构化字段。

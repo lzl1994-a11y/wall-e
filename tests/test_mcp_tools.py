@@ -32,6 +32,7 @@ class FastMcpToolTests(unittest.TestCase):
         self.assertEqual(
             {item["function"]["name"] for item in tools},
             {
+                "control_music",
                 "express_emotion",
                 "move_chassis",
                 "play_sequence",
@@ -39,7 +40,6 @@ class FastMcpToolTests(unittest.TestCase):
                 "set_vision_gate",
                 "inspect_camera",
                 "run_conditional_task",
-                "control_music",
             },
         )
         for item in tools:
@@ -65,9 +65,14 @@ class FastMcpToolTests(unittest.TestCase):
             {"play", "stop"},
         )
         conditional = by_name["run_conditional_task"]["parameters"]
+        self.assertIn(
+            "save_photo",
+            by_name["inspect_camera"]["parameters"]["properties"],
+        )
         self.assertEqual(
             set(conditional["properties"]["action_name"]["enum"]),
             {
+                "control_music",
                 "express_emotion",
                 "move_chassis",
                 "play_sequence",
@@ -127,7 +132,7 @@ class FastMcpToolTests(unittest.TestCase):
             ["conversation", "capability_query", "execute_task"],
         )
 
-    def test_multimodal_actions_require_verbatim_grounding(self):
+    def test_multimodal_actions_keep_native_schema_without_text_grounding(self):
         from services import tool_dispatcher
 
         action = {
@@ -147,8 +152,8 @@ class FastMcpToolTests(unittest.TestCase):
             tools = tool_dispatcher.get_multimodal_tools()
 
         parameters = tools[1]["function"]["parameters"]
-        self.assertIn("grounding", parameters["required"])
-        self.assertEqual(parameters["properties"]["grounding"]["maxLength"], 240)
+        self.assertNotIn("grounding", parameters["required"])
+        self.assertNotIn("grounding", parameters["properties"])
         self.assertNotIn("grounding", action["function"]["parameters"]["properties"])
 
 

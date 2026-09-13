@@ -234,10 +234,12 @@ def _valid_arguments(name, arguments):
         valid = keys == {"enabled"} and isinstance(arguments.get("enabled"), bool)
     elif name == "inspect_camera":
         question = arguments.get("question", "")
+        save_photo = arguments.get("save_photo", False)
         valid = (
-            keys <= {"question"}
+            keys <= {"question", "save_photo"}
             and isinstance(question, str)
             and len(question) <= 500
+            and isinstance(save_photo, bool)
         )
     elif name == "control_music":
         action = arguments.get("action")

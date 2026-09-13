@@ -78,13 +78,18 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
             ([{"name": "inspect_camera", "arguments": {"question": "前面有什么"}}], "普通文本"),
             ([{
                 "name": "direct_answer",
-                "arguments": {"heard_text": "看看前面", "response": "好的，我看看。"},
+                "arguments": {
+                    "heard_text": "看看前面",
+                    "response": "好的，我看看。",
+                    "intent_type": "execute_task",
+                },
             }], ""),
+            ([{"name": "inspect_camera", "arguments": {"question": "前面有什么"}}], ""),
         ])
 
         service._send_to_llm("encoded-audio")
 
-        self.assertEqual(service._stream_tool_calls.call_count, 2)
+        self.assertEqual(service._stream_tool_calls.call_count, 3)
         retry = service._stream_tool_calls.call_args_list[1].kwargs
         self.assertEqual(len(retry["tools"]), 1)
         service.on_llm_chunk.assert_called_once_with("好的，我看看。")
@@ -135,7 +140,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_llm_chunk.assert_called_once_with("可以，你可以说播放音乐。")
         service.on_llm_reply.assert_called_once_with("可以，你可以说播放音乐。")
 
-    def test_multistep_actions_use_independent_model_grounding(self):
+    def test_multistep_actions_execute_without_text_grounding(self):
         service = self._service()
         service.multimodal = MagicMock()
         service.multimodal.build_audio_message.return_value = {
@@ -160,14 +165,12 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
                 "name": "play_sequence",
                 "arguments": {
                     "sequence_name": "raise_hand",
-                    "grounding": "把手举起来",
                 },
             },
             {
                 "name": "play_sequence",
                 "arguments": {
                     "sequence_name": "basic_nod",
-                    "grounding": "抬一下头",
                 },
             },
         ], ""))
@@ -299,7 +302,9 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
                 "name": "direct_answer",
                 "arguments": {"heard_text": "给我拍个照", "response": "好的。"},
             },
-            {"name": "inspect_camera", "arguments": {"question": "拍一张"}},
+            {"name": "inspect_camera", "arguments": {
+                "question": "拍一张", "save_photo": True,
+            }},
         ], ""))
 
         service._send_to_llm("encoded-audio")
@@ -322,12 +327,17 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_photo_request = MagicMock()
         service.on_inspection_request = MagicMock(return_value="前面有一只杯子。")
         service._llm_done = MagicMock()
-        service._stream_tool_calls = MagicMock(return_value=([
-            {
+        service._stream_tool_calls = MagicMock(side_effect=[([{
                 "name": "direct_answer",
-                "arguments": {"heard_text": "看一下前面有什么", "response": "好的。"},
-            }
-        ], ""))
+                "arguments": {
+                    "heard_text": "看一下前面有什么",
+                    "response": "好的。",
+                    "intent_type": "execute_task",
+                },
+            }], ""), ([{
+                "name": "inspect_camera",
+                "arguments": {"question": "看一下前面有什么"},
+            }], "")])
 
         service._send_to_llm("encoded-audio")
 
@@ -347,7 +357,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_tool_call = MagicMock()
         service.on_inspection_request = MagicMock(return_value="前面没有人。")
         service._llm_done = MagicMock()
-        service._stream_tool_calls = MagicMock(return_value=([{
+        service._stream_tool_calls = MagicMock(side_effect=[([{
             "name": "direct_answer",
             "arguments": {
                 "heard_text": "你看一下前面有人吗",
@@ -362,7 +372,10 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
                 "action_name": "play_sequence",
                 "action_arguments": {"sequence_name": "basic_nod"},
             },
-        }], ""))
+        }], ""), ([{
+            "name": "inspect_camera",
+            "arguments": {"question": "你看一下前面有人吗"},
+        }], "")])
 
         service._send_to_llm("encoded-audio")
 
@@ -445,7 +458,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
 
         service._send_to_llm("encoded-audio")
 
-        self.assertEqual(service._stream_tool_calls.call_count, 1)
+        self.assertEqual(service._stream_tool_calls.call_count, 2)
         service.on_inspection_request.assert_not_called()
         service.on_tool_call.assert_called_once_with(
             "run_conditional_task",
@@ -513,42 +526,41 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_photo_request = MagicMock()
         service.on_inspection_request = MagicMock()
         service._llm_done = MagicMock()
-        service._stream_tool_calls = MagicMock(return_value=([{
+        service._stream_tool_calls = MagicMock(side_effect=[([{
             "name": "direct_answer",
             "arguments": {
                 "heard_text": "看看前面，如果有人挥手你就点头",
                 "response": "我看到了，所以点头了。",
+                "intent_type": "execute_task",
             },
-        }], ""))
+        }], ""), ([], "")])
 
         service._send_to_llm("encoded-audio")
 
         service.on_tool_call.assert_not_called()
         service.on_inspection_request.assert_not_called()
         service.on_llm_reply.assert_called_once_with(
-            "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
+            "这个任务没有形成可执行计划，所以我没有执行。"
         )
 
-    def test_conditional_plan_retry_strips_transport_grounding(self):
+    def test_visual_planner_accepts_conditional_meaning_without_fixed_connectors(self):
         service = self._service()
         service.system_prompt = "system"
         plan = {
             "observation": "观察前方",
-            "condition": "有人挥手",
+            "condition": "前方没有人",
             "action_name": "play_sequence",
-            "action_arguments": {"sequence_name": "basic_nod"},
+            "action_arguments": {"sequence_name": "raise_hand"},
         }
         service._stream_tool_calls = MagicMock(return_value=([{
             "name": "run_conditional_task",
             "arguments": {
                 **plan,
-                "grounding": "如果有人挥手你就点头",
+                "grounding": "前方无人后举手",
             },
         }], ""))
 
-        result = service._retry_conditional_plan(
-            "看看前面，如果有人挥手你就点头"
-        )
+        result = service._plan_visual_task("确认前方无人后举手")
 
         self.assertEqual(
             result,
@@ -602,7 +614,9 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
                 "name": "direct_answer",
                 "arguments": {"heard_text": "拍张照再挥手", "response": "好的。"},
             },
-            {"name": "inspect_camera", "arguments": {"question": "拍照"}},
+            {"name": "inspect_camera", "arguments": {
+                "question": "拍照", "save_photo": True,
+            }},
             {"name": "play_sequence", "arguments": {"sequence_name": "wave_hello"}},
         ], ""))
 
@@ -626,12 +640,17 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_photo_request = MagicMock(side_effect=RuntimeError("camera error"))
         service.on_inspection_request = MagicMock()
         service._llm_done = MagicMock()
-        service._stream_tool_calls = MagicMock(return_value=([
-            {
+        service._stream_tool_calls = MagicMock(side_effect=[([{
                 "name": "direct_answer",
-                "arguments": {"heard_text": "给我拍个照", "response": "好的。"},
-            }
-        ], ""))
+                "arguments": {
+                    "heard_text": "给我拍个照",
+                    "response": "好的。",
+                    "intent_type": "execute_task",
+                },
+            }], ""), ([{
+                "name": "inspect_camera",
+                "arguments": {"question": "拍照", "save_photo": True},
+            }], "")])
 
         service._send_to_llm("encoded-audio")
 

@@ -48,6 +48,16 @@ class ConditionalTaskTests(unittest.TestCase):
 
         self.assertEqual(plan["action_arguments"]["direction"], "backward")
 
+    def test_plan_accepts_conditional_music_control(self):
+        plan = normalize_conditional_task_plan({
+            "observation": "观察前方",
+            "condition": "前方没有人",
+            "action_name": "control_music",
+            "action_arguments": {"action": "play", "track": ""},
+        })
+
+        self.assertEqual(plan["action_arguments"]["action"], "play")
+
     def test_decision_parser_has_closed_vocabulary_and_fails_closed(self):
         self.assertEqual(
             parse_conditional_decision(

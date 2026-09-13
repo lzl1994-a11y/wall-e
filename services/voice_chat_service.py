@@ -35,23 +35,17 @@ from services.tool_dispatcher import (
     MULTIMODAL_DIRECT_ANSWER_TOOL,
     ToolCallAccumulator,
     build_action_cmd,
+    get_action_tools,
     get_multimodal_tools,
 )
 from services.dialog_expression_protocol import normalize_expression
-from services.camera_frame import (
-    is_camera_inspection_request,
-    is_camera_photo_request,
-)
 from services.conditional_task import (
-    CONDITIONAL_ACTION_TOOLS,
     CONDITIONAL_DECISION_TOOL_NAME,
     CONDITIONAL_TASK_TOOL_NAME,
     conditional_decision_tool,
-    is_conditional_task_request,
     parse_conditional_decision,
 )
-from services.action_intent_guard import canonicalize_conditional_action, validate_action_call
-from services.action_registry import get_action_skill
+from services.action_intent_guard import validate_action_arguments
 from services.behavior_tree_workflow import BehaviorTreeActionWorkflow
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
@@ -372,73 +366,66 @@ class VoiceChatService:
                     )
                     response_text = self.FALLBACK_REPLY
 
-            # Camera side effects require a complete structured response.  The
-            # deterministic matchers make photo/inspection work even when the
-            # audio model only says “好的” and omits inspect_camera.
+            # Visual task type is a semantic model decision.  A second bounded
+            # text-only planning pass disambiguates plain inspection from a
+            # compound observe-condition-action request without parsing Chinese
+            # connectors in application code.
             handled_visual_tools = set()
-            conditional_intent = bool(
+            proposed_actions = [
+                call for call in tool_calls
+                if isinstance(call, dict)
+                and call.get("name") != DIRECT_ANSWER_TOOL_NAME
+            ]
+            has_visual_proposal = any(
+                call.get("name") in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}
+                for call in proposed_actions
+            )
+            needs_visual_replan = bool(
                 structured_ok
                 and heard_text
-                and is_conditional_task_request(heard_text)
+                and (
+                    has_visual_proposal
+                    or (intent_type == "execute_task" and not proposed_actions)
+                )
             )
-            if conditional_intent:
-                # Do not trust mere tool presence.  Providers occasionally emit
-                # a partial conditional call before omitting direct_answer, or
-                # attach transport-only grounding that cannot compile as an
-                # exact quote.  Normalize and authorize the candidate now; if it
-                # is unusable, perform the one bounded planner retry.
-                planned = None
-                unsupported_action = ""
-                for call in tool_calls:
-                    if (
-                        not isinstance(call, dict)
-                        or call.get("name") != CONDITIONAL_TASK_TOOL_NAME
-                    ):
-                        continue
-                    raw_arguments = call.get("arguments")
-                    if not isinstance(raw_arguments, dict):
-                        print("[VoiceChat] 丢弃无效条件计划: invalid_arguments")
-                        continue
-                    arguments = dict(raw_arguments)
-                    arguments.pop("grounding", None)
-                    arguments = canonicalize_conditional_action(heard_text, arguments)
-                    action_name = arguments.get("action_name")
-                    if (
-                        isinstance(action_name, str)
-                        and get_action_skill(action_name) is not None
-                        and action_name not in CONDITIONAL_ACTION_TOOLS
-                    ):
-                        unsupported_action = action_name
-                        print(
-                            "[VoiceChat] 条件任务拒绝不安全动作: "
-                            f"{unsupported_action}"
-                        )
-                        break
-                    allowed, reason = validate_action_call(
-                        heard_text, CONDITIONAL_TASK_TOOL_NAME, arguments
+            visual_plan = (
+                self._plan_visual_task(heard_text)
+                if needs_visual_replan else None
+            )
+            conditional_intent = bool(
+                visual_plan
+                and visual_plan.get("name") == CONDITIONAL_TASK_TOOL_NAME
+            )
+            if needs_visual_replan:
+                non_visual_calls = [
+                    call for call in tool_calls
+                    if isinstance(call, dict)
+                    and call.get("name") not in {
+                        "inspect_camera", CONDITIONAL_TASK_TOOL_NAME
+                    }
+                ]
+                if visual_plan is not None:
+                    tool_calls = (
+                        [visual_plan]
+                        if conditional_intent
+                        else [*non_visual_calls, visual_plan]
                     )
-                    if allowed:
-                        planned = {
-                            "name": CONDITIONAL_TASK_TOOL_NAME,
-                            "arguments": arguments,
-                        }
-                        break
-                    print(f"[VoiceChat] 丢弃无效条件计划: {reason}")
-                if planned is None and not unsupported_action:
-                    planned = self._retry_conditional_plan(heard_text)
-                if planned is not None:
-                    tool_calls = [planned]
                 else:
-                    tool_calls = []
+                    tool_calls = [
+                        call for call in non_visual_calls
+                        if call.get("name") == DIRECT_ANSWER_TOOL_NAME
+                    ]
                     response_text = (
-                        "这个条件任务没有生成可执行计划，所以我没有观察或执行动作。"
+                        "这个任务没有形成可执行计划，所以我没有执行。"
                     )
             photo_handler = getattr(self, "on_photo_request", None)
             inspection_handler = getattr(self, "on_inspection_request", None)
             if (
                 structured_ok
                 and heard_text
-                and is_camera_photo_request(heard_text)
+                and visual_plan is not None
+                and visual_plan.get("name") == "inspect_camera"
+                and visual_plan.get("arguments", {}).get("save_photo") is True
                 and not conditional_intent
                 and photo_handler
             ):
@@ -454,8 +441,9 @@ class VoiceChatService:
             elif (
                 structured_ok
                 and heard_text
-                and is_camera_inspection_request(heard_text)
-                and not is_conditional_task_request(heard_text)
+                and visual_plan is not None
+                and visual_plan.get("name") == "inspect_camera"
+                and visual_plan.get("arguments", {}).get("save_photo") is not True
                 and inspection_handler
             ):
                 handled_visual_tools.add("inspect_camera")
@@ -488,34 +476,16 @@ class VoiceChatService:
                         f"{tc['name']}"
                     )
                     continue
-                if not conditional_intent and tc["name"] == CONDITIONAL_TASK_TOOL_NAME:
-                    print("[VoiceChat] 非条件请求忽略条件任务工具")
-                    continue
                 if tc["name"] in handled_visual_tools:
                     continue
-                if (
-                    conditional_intent
-                    and tc["name"] == "run_conditional_task"
-                    and heard_text
-                ):
-                    tc = dict(tc)
-                    tc["arguments"] = canonicalize_conditional_action(
-                        heard_text, tc["arguments"]
-                    )
                 arguments = dict(tc["arguments"])
-                grounding = arguments.pop("grounding", "")
+                # Older providers may still return this retired diagnostic
+                # field.  It is not used to infer or authorize intent.
+                arguments.pop("grounding", None)
                 pending_actions.append({
                     "name": tc["name"],
                     "arguments": arguments,
-                    "grounding": grounding,
                 })
-
-            if len(pending_actions) > 1 and any(
-                not action.get("grounding") for action in pending_actions
-            ):
-                print("[VoiceChat] 多步计划缺少步骤级原文依据，拒绝提交")
-                pending_actions = []
-                response_text = "这个多步任务没有形成可靠的逐步计划，所以我没有执行。"
 
             if pending_actions and structured_ok:
                 action_state = self._execute_action_sequence(
@@ -588,7 +558,9 @@ class VoiceChatService:
         workflow = getattr(self, "_behavior_tree_workflow", None)
         if workflow is None:
             workflow = BehaviorTreeActionWorkflow(
-                authorize=validate_action_call,
+                authorize=lambda _prompt, name, arguments: (
+                    validate_action_arguments(name, arguments)
+                ),
                 execute=self._execute_tool_call,
                 cancelled=self._cancel_llm.is_set,
             )
@@ -613,19 +585,22 @@ class VoiceChatService:
         finally:
             self._last_llm_activity = time.time()
 
-    def _retry_conditional_plan(self, heard_text):
-        """Give the planner one bounded retry without exposing independent actions."""
+    def _plan_visual_task(self, heard_text):
+        """Semantically select one plain or conditional visual task."""
         plan_tools = [
-            tool for tool in get_multimodal_tools()
-            if tool.get("function", {}).get("name") == CONDITIONAL_TASK_TOOL_NAME
+            tool for tool in get_action_tools()
+            if tool.get("function", {}).get("name")
+            in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}
         ]
-        if len(plan_tools) != 1 or self._cancel_llm.is_set():
+        if len(plan_tools) != 2 or self._cancel_llm.is_set():
             return None
         messages = [
             {"role": "system", "content": (
-                "你是机器人条件任务规划器。根据用户已经说出的任务，调用 "
-                "run_conditional_task 生成一次观察、条件判断、一个动作的受限计划。"
-                "保留完整肯定或否定条件；不观察环境，不执行动作，也不声称已完成。"
+                "你是机器人视觉任务规划器。直接理解用户完整语义，不依赖固定连接词。"
+                "如果用户只要求查看当前画面，调用 inspect_camera；如果用户要求先观察"
+                "画面、再根据观察结果决定是否执行动作，调用 run_conditional_task。"
+                "如果不是视觉任务，不调用工具。只能选择一种任务，不观察环境、不执行"
+                "动作，也不声称已经完成。"
             )},
             {"role": "user", "content": heard_text},
         ]
@@ -635,18 +610,20 @@ class VoiceChatService:
                 return None
             calls, _content = streamed
             for call in calls:
-                if call.get("name") != CONDITIONAL_TASK_TOOL_NAME:
+                name = call.get("name")
+                if name not in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}:
                     continue
-                arguments = dict(call.get("arguments") or {})
+                raw_arguments = call.get("arguments")
+                if not isinstance(raw_arguments, dict):
+                    continue
+                arguments = dict(raw_arguments)
                 arguments.pop("grounding", None)
-                plan = canonicalize_conditional_action(heard_text, arguments)
-                allowed, _reason = validate_action_call(
-                    heard_text, CONDITIONAL_TASK_TOOL_NAME, plan
-                )
+                allowed, reason = validate_action_arguments(name, arguments)
                 if allowed:
-                    return {"name": CONDITIONAL_TASK_TOOL_NAME, "arguments": plan}
+                    return {"name": name, "arguments": arguments}
+                print(f"[VoiceChat] 视觉计划无效: {name} ({reason})")
         except Exception as exc:
-            print(f"[VoiceChat] 条件计划重试失败: {exc}")
+            print(f"[VoiceChat] 视觉任务规划失败: {exc}")
         return None
 
     def analyze_image(self, question: str, image_base64: str) -> str:

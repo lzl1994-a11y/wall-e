@@ -183,10 +183,11 @@ def set_vision_gate(enabled: bool) -> str:
 
 
 @mcp.tool()
-def inspect_camera(question: str = "") -> str:
+def inspect_camera(question: str = "", save_photo: bool = False) -> str:
     """仅当用户明确要求瓦力现在观察、拍摄或识别眼前现实画面时调用。
 
-    拍摄一帧当前摄像头画面并回答用户的视觉问题。谈论视觉或询问瓦力是否能看见
+    拍摄一帧当前摄像头画面。用户要求保存照片时使用 save_photo=true；需要理解或回答
+    画面内容时使用 save_photo=false，并把要回答的问题放入 question。谈论视觉或询问瓦力是否能看见
     不等于要求立即拍摄。系统会自动抓取一帧画面并交给视觉模型，question 应保留
     用户想知道的内容。不要把“看着我/跟着我”当成此工具，那些属于持续视觉跟随，
     应使用 set_tracking_mode。

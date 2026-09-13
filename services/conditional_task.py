@@ -25,6 +25,7 @@ CONDITIONAL_DECISION_TOOL_NAME = "conditional_decision"
 # Runtime argument validation, arbitration, timeouts and cancellation still
 # apply before the selected action reaches the hardware owner.
 CONDITIONAL_ACTION_TOOLS = frozenset({
+    "control_music",
     "express_emotion",
     "move_chassis",
     "play_sequence",
@@ -141,7 +142,7 @@ def conditional_task_tool_schema() -> dict[str, Any]:
                     "条件明确成立时执行的一个动作工具。举手、点头、挥手、转头等预设"
                     "身体动作必须使用 play_sequence；情绪身体表达使用 express_emotion；"
                     "底盘移动使用 move_chassis；持续注视或跟随使用 set_tracking_mode；"
-                    "停止全部动作使用 stop_all"
+                    "音乐控制使用 control_music；停止全部动作使用 stop_all"
                 ),
             },
             "action_arguments": {
@@ -183,6 +184,16 @@ def conditional_task_tool_schema() -> dict[str, Any]:
                         "minimum": 1,
                         "maximum": 3,
                         "description": "move_chassis 专用：移动秒数，默认 1 秒",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["play", "stop"],
+                        "description": "control_music 专用：播放或停止",
+                    },
+                    "track": {
+                        "type": "string",
+                        "maxLength": 200,
+                        "description": "control_music 专用：歌曲名；未指定时留空",
                     },
                 },
                 "additionalProperties": False,
