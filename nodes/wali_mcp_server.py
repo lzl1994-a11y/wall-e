@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import rclpy
@@ -12,6 +13,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from services.action_command import ACTION_REQUEST_TOPIC, build_action_cmd, new_action_request_id
+from services.action_plan import PlanValidationError, compile_action_plan
 from services.action_status import (
     ACTION_STATUS_TOPIC,
     TERMINAL_ACTION_STATUSES,
@@ -22,6 +24,10 @@ from services.mcp_gateway import (
     load_mcp_gateway_settings,
     require_safe_transport,
     token_from_environment,
+)
+from services.ros2_action_execution import (
+    Ros2ActionPlanExecutor,
+    create_wali_task_action_client,
 )
 
 
@@ -34,6 +40,16 @@ class RosActionExecutor(Node):
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_status, 10)
         self._condition = threading.Condition()
         self._statuses: dict[str, dict[str, str]] = {}
+        self._ros2_task_executor: Ros2ActionPlanExecutor | None = None
+        try:
+            client, goal_type = create_wali_task_action_client(
+                self, Path(__file__).resolve().parent.parent
+            )
+            self._ros2_task_executor = Ros2ActionPlanExecutor(client, goal_type)
+        except (ImportError, ModuleNotFoundError) as exc:
+            self.get_logger().warning(
+                f"WaliTask Action interface unavailable; using legacy topic fallback: {exc}"
+            )
         self.get_logger().info("Wali MCP ROS execution bridge online")
 
     def _on_status(self, message):
@@ -60,6 +76,12 @@ class RosActionExecutor(Node):
     ) -> dict[str, Any]:
         started = time.monotonic()
         deadline = started + timeout
+        request_id = new_action_request_id()
+        standard_result = self._try_execute_wali_task(
+            request_id, name, arguments, timeout=timeout
+        )
+        if standard_result is not None:
+            return standard_result
         if not self._wait_for_action_owner(min(deadline, started + 2.0)):
             return {
                 "status": "failed",
@@ -67,7 +89,6 @@ class RosActionExecutor(Node):
                 "reason": "ros_action_owner_unavailable",
             }
 
-        request_id = new_action_request_id()
         payload = build_action_cmd(
             name,
             arguments,
@@ -102,6 +123,52 @@ class RosActionExecutor(Node):
             "executor": latest["source"],
             **({"reason": latest["detail"]} if latest["detail"] else {}),
         }
+
+    def _try_execute_wali_task(
+        self,
+        request_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> dict[str, Any] | None:
+        """Prefer ExecuteTree, returning None only for legacy-topic fallback."""
+        executor = self._ros2_task_executor
+        if executor is None:
+            return None
+        try:
+            plan = compile_action_plan(
+                turn_id=request_id,
+                user_prompt=f"MCP: {name}",
+                actions=[{"name": name, "arguments": arguments}],
+            )
+        except PlanValidationError as exc:
+            return {
+                "status": "rejected",
+                "action": name,
+                "request_id": request_id,
+                "reason": str(exc),
+            }
+        result = executor.try_execute(plan, timeout=timeout)
+        if result is None:
+            return None
+        status = {
+            "success": "completed",
+            "rejected": "rejected",
+            "failure": "failed",
+            "halted": "interrupted",
+        }.get(str(result.get("status") or ""), "failed")
+        payload: dict[str, Any] = {
+            "status": status,
+            "action": name,
+            "request_id": request_id,
+            "plan_id": plan.plan_id,
+            "executor": str(result.get("source") or "ros2_action_client"),
+        }
+        reason = str(result.get("error") or "")
+        if reason:
+            payload["reason"] = reason
+        return payload
 
 
 def main(args=None):
