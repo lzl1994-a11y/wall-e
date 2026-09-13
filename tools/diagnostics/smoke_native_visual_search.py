@@ -59,7 +59,6 @@ def main() -> int:
     subscription = node.create_subscription(
         String, BEHAVIOR_TREE_STATUS_TOPIC, on_status, 10
     )
-    del subscription
 
     deadline = time.monotonic() + args.timeout
     next_publish = 0.0
@@ -71,6 +70,7 @@ def main() -> int:
                 next_publish = now + 0.5
             rclpy.spin_once(node, timeout_sec=0.1)
     finally:
+        node.destroy_subscription(subscription)
         node.destroy_node()
         rclpy.shutdown()
 
