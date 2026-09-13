@@ -27,7 +27,7 @@ def main():
         [
             "bash",
             "-c",
-            'source "$1" && source "$2" && exec "$3" --ros-args -p action_name:=wali_task',
+            'source "$1" && source "$2" && exec "$3"',
             "wali-bt-ros2-bridge",
             str(ros_setup),
             str(workspace_setup),

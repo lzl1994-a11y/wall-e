@@ -10,7 +10,7 @@ def test_official_behaviortree_ros2_is_pinned_as_a_submodule():
     assert "branch = humble" in modules
 
 
-def test_bridge_uses_official_tree_execution_server_and_action_lifecycle():
+def test_bridge_uses_official_execute_tree_interface_and_action_lifecycle():
     source = (
         ROOT
         / "cpp_nodes"
@@ -18,12 +18,13 @@ def test_bridge_uses_official_tree_execution_server_and_action_lifecycle():
         / "src"
         / "wali_bt_ros2_bridge.cpp"
     ).read_text(encoding="utf-8")
-    assert "public BT::TreeExecutionServer" in source
+    assert "btcpp_ros2_interfaces::action::ExecuteTree" in source
+    assert "rclcpp_action::create_server<ExecuteTree>" in source
     assert 'constexpr char kTreeName[] = "WaliTask"' in source
-    assert "onGoalReceived" in source
-    assert "onLoopFeedback" in source
-    assert "onTreeExecutionCompleted" in source
-    assert "cancel_legacy_plan" in source
+    assert "handle_goal" in source
+    assert "publish_feedback" in source
+    assert "handle_cancel" in source
+    assert "finish_goal" in source
     assert 'constexpr char kLegacyExecuteTopic[] = "/behavior_tree/execute"' in source
 
 

@@ -1,12 +1,11 @@
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 
-#include "behaviortree_cpp/action_node.h"
-#include "behaviortree_ros2/tree_execution_server.hpp"
+#include "btcpp_ros2_interfaces/action/execute_tree.hpp"
 #include "nlohmann/json.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/string.hpp"
 
 using Json = nlohmann::json;
@@ -14,17 +13,10 @@ using Json = nlohmann::json;
 namespace {
 
 constexpr char kTreeName[] = "WaliTask";
+constexpr char kActionName[] = "wali_task";
 constexpr char kLegacyExecuteTopic[] = "/behavior_tree/execute";
 constexpr char kLegacyCancelTopic[] = "/behavior_tree/cancel";
 constexpr char kLegacyStatusTopic[] = "/behavior_tree/status";
-
-const char kBridgeTreeXml[] = R"(
-<root BTCPP_format="4" main_tree_to_execute="WaliTask">
-  <BehaviorTree ID="WaliTask">
-    <LegacyTaskPlan/>
-  </BehaviorTree>
-</root>
-)";
 
 bool is_terminal(const std::string& status) {
   return status == "success" || status == "failure" || status == "halted" ||
@@ -33,133 +25,97 @@ bool is_terminal(const std::string& status) {
 
 }  // namespace
 
-class WaliTaskServer;
-
-class LegacyTaskPlanNode : public BT::StatefulActionNode {
+class WaliTaskActionBridge : public rclcpp::Node {
  public:
-  LegacyTaskPlanNode(const std::string& name, const BT::NodeConfig& config,
-                     WaliTaskServer* owner)
-      : BT::StatefulActionNode(name, config), owner_(owner) {}
+  using ExecuteTree = btcpp_ros2_interfaces::action::ExecuteTree;
+  using GoalHandle = rclcpp_action::ServerGoalHandle<ExecuteTree>;
 
-  static BT::PortsList providedPorts() { return {}; }
-  BT::NodeStatus onStart() override;
-  BT::NodeStatus onRunning() override;
-  void onHalted() override;
-
- private:
-  WaliTaskServer* owner_;
-};
-
-class WaliTaskServer : public BT::TreeExecutionServer {
- public:
-  explicit WaliTaskServer(const rclcpp::NodeOptions& options)
-      : BT::TreeExecutionServer(
-            std::make_shared<rclcpp::Node>("wali_task_action_server", options)) {
-    execute_pub_ = node()->create_publisher<std_msgs::msg::String>(
-        kLegacyExecuteTopic, 10);
-    cancel_pub_ = node()->create_publisher<std_msgs::msg::String>(
-        kLegacyCancelTopic, 10);
-    status_sub_ = node()->create_subscription<std_msgs::msg::String>(
+  WaliTaskActionBridge() : Node("wali_task_action_bridge") {
+    execute_pub_ = create_publisher<std_msgs::msg::String>(kLegacyExecuteTopic, 10);
+    cancel_pub_ = create_publisher<std_msgs::msg::String>(kLegacyCancelTopic, 10);
+    status_sub_ = create_subscription<std_msgs::msg::String>(
         kLegacyStatusTopic, 20,
         [this](std_msgs::msg::String::ConstSharedPtr message) {
           accept_legacy_status(message->data);
         });
+    action_server_ = rclcpp_action::create_server<ExecuteTree>(
+        this, kActionName,
+        [this](const rclcpp_action::GoalUUID& uuid,
+               std::shared_ptr<const ExecuteTree::Goal> goal) {
+          return handle_goal(uuid, std::move(goal));
+        },
+        [this](const std::shared_ptr<GoalHandle> goal_handle) {
+          return handle_cancel(goal_handle);
+        },
+        [this](const std::shared_ptr<GoalHandle> goal_handle) {
+          handle_accepted(goal_handle);
+        });
+    RCLCPP_INFO(get_logger(), "BehaviorTree.ROS2 ExecuteTree bridge is ready");
   }
 
-  bool start_legacy_plan() {
-    const auto& payload = goalPayload();
-    Json plan;
+ private:
+  rclcpp_action::GoalResponse handle_goal(
+      const rclcpp_action::GoalUUID&,
+      const std::shared_ptr<const ExecuteTree::Goal> goal) {
+    if (goal->target_tree != kTreeName || goal->payload.empty() ||
+        goal->payload.size() > 65536) {
+      return rclcpp_action::GoalResponse::REJECT;
+    }
     try {
-      plan = Json::parse(payload);
+      const auto plan = Json::parse(goal->payload);
+      if (!plan.is_object() || !plan.contains("plan_id") ||
+          !plan["plan_id"].is_string() || plan["plan_id"].get<std::string>().empty()) {
+        return rclcpp_action::GoalResponse::REJECT;
+      }
     } catch (const std::exception&) {
-      return false;
+      return rclcpp_action::GoalResponse::REJECT;
     }
-    const auto plan_id = plan.value("plan_id", "");
-    if (plan_id.empty() || execute_pub_->get_subscription_count() == 0) {
-      return false;
-    }
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      plan_id_ = plan_id;
-      terminal_status_.clear();
-      terminal_payload_.clear();
-      feedback_payload_.clear();
-      feedback_dirty_ = false;
-      cancel_sent_ = false;
-    }
-    std_msgs::msg::String message;
-    message.data = payload;
-    execute_pub_->publish(message);
-    return true;
-  }
-
-  BT::NodeStatus poll_legacy_plan() {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (terminal_status_.empty()) {
-      return BT::NodeStatus::RUNNING;
+    if (goal_reserved_ || current_goal_) {
+      return rclcpp_action::GoalResponse::REJECT;
     }
-    return terminal_status_ == "success" ? BT::NodeStatus::SUCCESS
-                                          : BT::NodeStatus::FAILURE;
+    goal_reserved_ = true;
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
-  void cancel_legacy_plan() {
+  rclcpp_action::CancelResponse handle_cancel(
+      const std::shared_ptr<GoalHandle> goal_handle) {
     std::string plan_id;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      if (cancel_sent_ || plan_id_.empty() || !terminal_status_.empty()) {
-        return;
+      if (!current_goal_ || current_goal_ != goal_handle || plan_id_.empty()) {
+        return rclcpp_action::CancelResponse::REJECT;
       }
-      cancel_sent_ = true;
       plan_id = plan_id_;
     }
     std_msgs::msg::String message;
     message.data = Json{{"plan_id", plan_id}}.dump();
     cancel_pub_->publish(message);
+    return rclcpp_action::CancelResponse::ACCEPT;
   }
 
- protected:
-  bool onGoalReceived(const std::string& tree_name,
-                      const std::string& payload) override {
-    if (tree_name != kTreeName || payload.empty() || payload.size() > 65536) {
-      return false;
+  void handle_accepted(const std::shared_ptr<GoalHandle> goal_handle) {
+    const auto goal = goal_handle->get_goal();
+    const auto plan = Json::parse(goal->payload);
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      goal_reserved_ = false;
+      current_goal_ = goal_handle;
+      plan_id_ = plan["plan_id"].get<std::string>();
     }
-    try {
-      const auto plan = Json::parse(payload);
-      return plan.is_object() && plan.contains("plan_id") &&
-             plan["plan_id"].is_string() && !plan["plan_id"].get<std::string>().empty();
-    } catch (const std::exception&) {
-      return false;
+    if (execute_pub_->get_subscription_count() == 0) {
+      finish_goal("failure", Json{{"plan_id", plan_id_},
+                                  {"status", "failure"},
+                                  {"results", Json::array()},
+                                  {"error", "legacy_behavior_tree_unavailable"}}
+                                 .dump());
+      return;
     }
+    std_msgs::msg::String message;
+    message.data = goal->payload;
+    execute_pub_->publish(message);
   }
 
-  void registerNodesIntoFactory(BT::BehaviorTreeFactory& factory) override {
-    BT::NodeBuilder builder = [this](const std::string& name,
-                                     const BT::NodeConfig& config) {
-      return std::make_unique<LegacyTaskPlanNode>(name, config, this);
-    };
-    factory.registerBuilder<LegacyTaskPlanNode>("LegacyTaskPlan", builder);
-    factory.registerBehaviorTreeFromText(kBridgeTreeXml);
-  }
-
-  std::optional<std::string> onLoopFeedback() override {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!feedback_dirty_) {
-      return std::nullopt;
-    }
-    feedback_dirty_ = false;
-    return feedback_payload_;
-  }
-
-  std::optional<std::string> onTreeExecutionCompleted(
-      BT::NodeStatus status, bool was_cancelled) override {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!terminal_payload_.empty()) {
-      return terminal_payload_;
-    }
-    return Json{{"status", was_cancelled ? "halted" : BT::toStr(status)}}.dump();
-  }
-
- private:
   void accept_legacy_status(const std::string& payload) {
     Json status;
     try {
@@ -167,51 +123,64 @@ class WaliTaskServer : public BT::TreeExecutionServer {
     } catch (const std::exception&) {
       return;
     }
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (plan_id_.empty() || status.value("plan_id", "") != plan_id_) {
+    std::shared_ptr<GoalHandle> goal;
+    std::string value;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (!current_goal_ || status.value("plan_id", "") != plan_id_) {
+        return;
+      }
+      goal = current_goal_;
+      value = status.value("status", "");
+    }
+    if (!is_terminal(value)) {
+      auto feedback = std::make_shared<ExecuteTree::Feedback>();
+      feedback->message = payload;
+      goal->publish_feedback(feedback);
       return;
     }
-    const auto value = status.value("status", "");
-    feedback_payload_ = payload;
-    feedback_dirty_ = true;
-    if (is_terminal(value)) {
-      terminal_status_ = value;
-      terminal_payload_ = payload;
+    finish_goal(value, payload);
+  }
+
+  void finish_goal(const std::string& status, const std::string& payload) {
+    std::shared_ptr<GoalHandle> goal;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      goal = current_goal_;
+      current_goal_.reset();
+      plan_id_.clear();
+      goal_reserved_ = false;
+    }
+    if (!goal) {
+      return;
+    }
+    auto result = std::make_shared<ExecuteTree::Result>();
+    result->return_message = payload;
+    result->node_status.status = status == "success"
+                                     ? result->node_status.SUCCESS
+                                     : result->node_status.FAILURE;
+    if (status == "success") {
+      goal->succeed(result);
+    } else if (status == "halted" && goal->is_canceling()) {
+      goal->canceled(result);
+    } else {
+      goal->abort(result);
     }
   }
 
   std::mutex state_mutex_;
+  bool goal_reserved_ = false;
   std::string plan_id_;
-  std::string terminal_status_;
-  std::string terminal_payload_;
-  std::string feedback_payload_;
-  bool feedback_dirty_ = false;
-  bool cancel_sent_ = false;
+  std::shared_ptr<GoalHandle> current_goal_;
+  rclcpp_action::Server<ExecuteTree>::SharedPtr action_server_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr execute_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr cancel_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr status_sub_;
 };
 
-BT::NodeStatus LegacyTaskPlanNode::onStart() {
-  return owner_->start_legacy_plan() ? BT::NodeStatus::RUNNING
-                                     : BT::NodeStatus::FAILURE;
-}
-
-BT::NodeStatus LegacyTaskPlanNode::onRunning() {
-  return owner_->poll_legacy_plan();
-}
-
-void LegacyTaskPlanNode::onHalted() { owner_->cancel_legacy_plan(); }
-
 int main(int argc, char* argv[]) {
   rclcpp::init(argc, argv);
-  rclcpp::NodeOptions options;
-  auto server = std::make_shared<WaliTaskServer>(options);
-  rclcpp::executors::MultiThreadedExecutor executor(
-      rclcpp::ExecutorOptions(), 0, false, std::chrono::milliseconds(250));
-  executor.add_node(server->node());
-  executor.spin();
-  executor.remove_node(server->node());
+  rclcpp::spin(std::make_shared<WaliTaskActionBridge>());
   rclcpp::shutdown();
   return 0;
 }
