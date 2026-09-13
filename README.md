@@ -412,6 +412,14 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 BehaviorTree.CPP 的异步 `StatefulActionNode` tick 每个动作，再通过 `/action_request`
 提交统一仲裁，并根据 `/action_status` 等待执行终态。原生节点未启动时会在提交前回退到兼容执行器，不会在动作
 已经下发后重复执行。取消计划会停止后续节点并下发一次 `stop_all`。
+
+BehaviorTree.ROS2 以固定版本的官方 Git 子模块增量接入。启用原生行为树时，
+`wali_bt_ros2_bridge` 同时提供标准 `btcpp_ros2_interfaces/action/ExecuteTree` Action Server
+`/wali_task`；目标树名为 `WaliTask`，`payload` 沿用当前受限计划 JSON。桥接层把 Action
+Goal/Feedback/Result/Cancel 映射到现有行为树协议，因此动作节点、资源仲裁和硬件 Topic
+无需一次性改写。后续技能迁移到独立 ROS Action Server 后，再逐步删除桥接协议。
+RDK 多架构安装的 BT.CPP CMake 兼容配置位于 `cmake/behaviortree_cpp`，官方子模块保持原样；
+运行 `tools/build_behaviortree_ros2.sh` 会单线程构建官方接口、包装库和桥接节点。
 文本/多模态对话、原生行为树、MCP 和手柄全部发往 `/action_request`；
 `action_coordinator_node` 按资源所有者与来源优先级仲裁后，才向现有执行器发布
 `/action_cmd`。手柄高于 MCP、MCP 高于行为树、行为树高于对话；`stop_all`

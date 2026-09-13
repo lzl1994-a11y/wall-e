@@ -170,6 +170,10 @@ def build_node_list(args):
             "behavior_tree",
             ROOT / "nodes" / "native_behavior_tree_launcher.py",
         ))
+        nodes.append(NodeEntry(
+            "behavior_tree_ros2_bridge",
+            ROOT / "nodes" / "native_behavior_tree_ros2_bridge_launcher.py",
+        ))
     if not args.no_web:
         nodes.append(NodeEntry("config_web", ROOT / "services" / "web_server.py"))
 

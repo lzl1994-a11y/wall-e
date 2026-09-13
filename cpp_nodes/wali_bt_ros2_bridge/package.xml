@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>wali_bt_ros2_bridge</name>
+  <version>0.1.0</version>
+  <description>BehaviorTree.ROS2 action-server bridge for the existing Wali executor.</description>
+  <maintainer email="wali@example.com">Wali</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>behaviortree_ros2</depend>
+  <depend>btcpp_ros2_interfaces</depend>
+  <depend>nlohmann_json</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

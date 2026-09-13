@@ -18,8 +18,10 @@ source "${ROS_SETUP}"
 set -u
 cd "${ROOT_DIR}"
 colcon build \
-  --base-paths "${ROOT_DIR}/cpp_nodes/BehaviorTree.ROS2" \
-  --packages-select btcpp_ros2_interfaces behaviortree_ros2 \
+  --base-paths \
+    "${ROOT_DIR}/cpp_nodes/BehaviorTree.ROS2" \
+    "${ROOT_DIR}/cpp_nodes/wali_bt_ros2_bridge" \
+  --packages-select btcpp_ros2_interfaces behaviortree_ros2 wali_bt_ros2_bridge \
   --executor sequential \
   --parallel-workers 1 \
   --cmake-args \
