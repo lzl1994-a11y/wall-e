@@ -85,6 +85,7 @@ class FastMcpToolTests(unittest.TestCase):
             conditional["required"],
             ["observation", "condition", "action_name", "action_arguments"],
         )
+        self.assertIn("follow_up_observation", conditional["properties"])
 
     def test_empty_fastmcp_registry_is_diagnostic_error_not_silent_empty_tools(self):
         async def no_tools():

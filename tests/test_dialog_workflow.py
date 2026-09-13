@@ -150,6 +150,44 @@ class ConditionalTaskWorkflowTests(unittest.TestCase):
             "play_sequence", {"sequence_name": "raise_hand"}
         )
 
+    def test_completed_action_can_capture_and_analyze_again(self):
+        capture = MagicMock(side_effect=[
+            SimpleNamespace(busy=False, last_frame=b"first"),
+            SimpleNamespace(busy=False, last_frame=b"second"),
+        ])
+        analyze = MagicMock(return_value="转身后看到电饭煲在右侧柜子旁。")
+        execute = MagicMock(return_value={
+            "status": "completed",
+            "action": "move_chassis",
+        })
+        workflow = ConditionalTaskWorkflow(
+            capture=capture,
+            evaluate=MagicMock(return_value={
+                "decision": "yes",
+                "evidence": "当前画面没有看到电饭煲",
+            }),
+            authorize=MagicMock(return_value=(True, "")),
+            execute=execute,
+            analyze=analyze,
+        )
+        plan = {
+            "observation": "查看当前画面里有没有电饭煲",
+            "condition": "当前画面没有看到电饭煲",
+            "action_name": "move_chassis",
+            "action_arguments": {"direction": "spin", "duration": 1},
+            "follow_up_observation": "转身后继续查看电饭煲在哪里",
+        }
+
+        result = workflow.invoke(
+            turn_id="turn-search", user_prompt="找电饭煲", plan=plan
+        )
+
+        self.assertEqual(result["answer"], "转身后看到电饭煲在右侧柜子旁。")
+        self.assertEqual(capture.call_count, 2)
+        analyze.assert_called_once_with(
+            b"second", "转身后继续查看电饭煲在哪里"
+        )
+
     def test_no_and_uncertain_never_execute(self):
         for decision, expected in (
             ("no", "条件不满足，我没有执行动作。"),

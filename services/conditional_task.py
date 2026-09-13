@@ -48,6 +48,7 @@ class ConditionalTaskPlan(TypedDict):
     condition: str
     action_name: str
     action_arguments: dict[str, Any]
+    follow_up_observation: str
 
 
 class ConditionalDecision(TypedDict):
@@ -70,32 +71,40 @@ def normalize_conditional_task_plan(value: Any) -> ConditionalTaskPlan:
     """Validate and normalize a model-proposed conditional task plan."""
     if not isinstance(value, dict):
         raise ValueError("conditional_plan_not_object")
-    allowed_keys = {"observation", "condition", "action_name", "action_arguments"}
-    if set(value) != allowed_keys:
+    required_keys = {"observation", "condition", "action_name", "action_arguments"}
+    allowed_keys = required_keys | {"follow_up_observation"}
+    if not required_keys <= set(value) or not set(value) <= allowed_keys:
         raise ValueError("conditional_plan_fields_invalid")
 
     observation = value.get("observation")
     condition = value.get("condition")
     action_name = value.get("action_name")
     action_arguments = value.get("action_arguments")
+    follow_up_observation = value.get("follow_up_observation", "")
     if not isinstance(observation, str) or not observation.strip():
         raise ValueError("conditional_observation_missing")
     if not isinstance(condition, str) or not condition.strip():
         raise ValueError("conditional_condition_missing")
     if len(observation.strip()) > 500 or len(condition.strip()) > 500:
         raise ValueError("conditional_text_too_long")
+    if not isinstance(follow_up_observation, str):
+        raise ValueError("conditional_follow_up_invalid")
+    if len(follow_up_observation.strip()) > 500:
+        raise ValueError("conditional_follow_up_too_long")
     if action_name not in CONDITIONAL_ACTION_TOOLS:
         raise ValueError("conditional_action_not_allowed")
     allowed, reason = validate_action_arguments(action_name, action_arguments)
     if not allowed:
         raise ValueError(f"conditional_action_{reason}")
 
-    return {
+    normalized: ConditionalTaskPlan = {
         "observation": observation.strip(),
         "condition": condition.strip(),
         "action_name": action_name,
         "action_arguments": dict(action_arguments),
+        "follow_up_observation": follow_up_observation.strip(),
     }
+    return normalized
 
 
 def parse_conditional_decision(value: Any) -> ConditionalDecision:
@@ -198,7 +207,15 @@ def conditional_task_tool_schema() -> dict[str, Any]:
                 },
                 "additionalProperties": False,
                 "description": (
-                    "对应动作的参数对象；只能填写该动作需要的一个参数。stop_all 使用空对象"
+                    "对应动作的参数对象；只能填写该动作需要的字段。stop_all 使用空对象"
+                ),
+            },
+            "follow_up_observation": {
+                "type": "string",
+                "maxLength": 500,
+                "description": (
+                    "可选。只有用户要求动作完成后再次查看时填写重新观察的问题；"
+                    "例如转身后继续寻找目标。不需要再次查看时留空"
                 ),
             },
         },

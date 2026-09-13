@@ -257,7 +257,7 @@ class ConditionalTaskState(TypedDict, total=False):
 
 
 class ConditionalTaskWorkflow:
-    """Observe once, evaluate one condition, and execute at most one action."""
+    """Observe, evaluate, act once, and optionally observe again."""
 
     def __init__(
         self,
@@ -266,11 +266,13 @@ class ConditionalTaskWorkflow:
         evaluate: Callable[[bytes, str, str], ConditionalDecision | dict | str],
         authorize: Callable[[str, str, dict[str, Any]], tuple[bool, str]],
         execute: Callable[[str, dict[str, Any]], dict[str, Any]],
+        analyze: Callable[[bytes, str], str] | None = None,
     ):
         self._capture = capture
         self._evaluate = evaluate
         self._authorize = authorize
         self._execute = execute
+        self._analyze = analyze
 
         builder = StateGraph(ConditionalTaskState)
         builder.add_node("capture_camera", self._capture_camera)
@@ -306,11 +308,46 @@ class ConditionalTaskWorkflow:
         plan: dict[str, Any],
     ) -> ConditionalTaskState:
         normalized = normalize_conditional_task_plan(plan)
-        return self._graph.invoke({
+        result = self._graph.invoke({
             "turn_id": turn_id,
             "user_prompt": user_prompt,
             "plan": normalized,
         })
+        follow_up = normalized.get("follow_up_observation", "")
+        action_result = result.get("action_result")
+        if (
+            follow_up
+            and isinstance(action_result, dict)
+            and action_result.get("status") == "completed"
+            and self._analyze is not None
+        ):
+            result.update(self._observe_after_action(follow_up))
+        return result
+
+    def _observe_after_action(self, question: str) -> ConditionalTaskState:
+        preview = self._capture()
+        if getattr(preview, "busy", False):
+            return {
+                "answer": "动作已经完成，但重新观察时摄像头正忙。",
+                "error": "follow_up_camera_preview_busy",
+            }
+        frame = getattr(preview, "last_frame", None)
+        if not frame:
+            return {
+                "answer": "动作已经完成，但重新观察时没有取得画面。",
+                "error": getattr(preview, "error", None)
+                or "follow_up_camera_frame_unavailable",
+            }
+        try:
+            answer = self._analyze(frame, question)
+            if not isinstance(answer, str) or not answer.strip():
+                raise RuntimeError("follow_up_analysis_empty")
+            return {"answer": answer.strip()}
+        except Exception as exc:
+            return {
+                "answer": "动作已经完成，但重新观察时没有分析出结果。",
+                "error": str(exc),
+            }
 
     def _capture_camera(self, _state: ConditionalTaskState) -> ConditionalTaskState:
         preview = self._capture()

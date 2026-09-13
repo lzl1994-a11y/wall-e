@@ -212,6 +212,7 @@ def run_conditional_task(
     condition: str,
     action_name: str,
     action_arguments: dict[str, Any],
+    follow_up_observation: str = "",
 ) -> str:
     """执行一次“观察画面 → 判断条件 → 条件成立才动作”的复合任务。
 
@@ -219,7 +220,8 @@ def run_conditional_task(
     不要把它拆成 inspect_camera 和独立动作工具，也不要同时调用本工具与 action_name 对应的
     动作工具。observation 描述要观察什么；condition 是仅依据当前画面判断的完整条件，
     可以是任意物体、人物、颜色、姿态、数量或空间关系，不要写死特定目标；action_name 和
-    action_arguments 描述条件明确成立时执行的一个动作。举手、点头、挥手、转头等预设动作
+    action_arguments 描述条件明确成立时执行的一个动作。用户还要求动作完成后重新查看时，
+    把重新观察的问题写入 follow_up_observation；否则留空。举手、点头、挥手、转头等预设动作
     必须使用 action_name="play_sequence"，例如举手参数为 {"sequence_name":"raise_hand"}、
     点头为 {"sequence_name":"basic_nod"}。条件不成立或无法确定时不会动作。
     能力询问、举例、假设讨论、故事、引用或没有要求立即执行的句子禁止调用。

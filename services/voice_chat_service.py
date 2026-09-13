@@ -599,6 +599,11 @@ class VoiceChatService:
                 "你是机器人视觉任务规划器。直接理解用户完整语义，不依赖固定连接词。"
                 "如果用户只要求查看当前画面，调用 inspect_camera；如果用户要求先观察"
                 "画面、再根据观察结果决定是否执行动作，调用 run_conditional_task。"
+                "如果还要求动作完成后再次查看，把重新观察的问题写入"
+                " follow_up_observation。"
+                "用户要求在房间、周围等大于单个视野的环境中寻找或定位目标时，应把它"
+                "理解为主动视觉搜索：当前视野未发现目标时，选择一个已注册的适当转向"
+                "动作，并在动作后继续观察；即使用户没有逐字指定转向方式也可以规划。"
                 "如果不是视觉任务，不调用工具。只能选择一种任务，不观察环境、不执行"
                 "动作，也不声称已经完成。"
             )},
@@ -682,8 +687,11 @@ class VoiceChatService:
     ) -> dict[str, str]:
         """Return a closed structured decision for a conditional task image."""
         prompt = (
-            "只依据附带的当前摄像头画面判断条件。必须调用 conditional_decision；"
-            "decision 只能是 yes、no、uncertain，无法确认时必须使用 uncertain。"
+            "只依据附带的当前摄像头画面，判断给出的条件本身是否成立。必须调用 "
+            "conditional_decision；decision 只能是 yes、no、uncertain。条件若描述"
+            "‘当前画面未看到/不可见某目标’，在画面清晰且确实没有可识别目标时应返回 yes；"
+            "不要把‘当前画面不可见’误解成‘目标在整个房间不存在’。只有画质、遮挡或目标"
+            "歧义导致连当前画面可见性也无法判断时才返回 uncertain。"
             "不要执行动作。\n"
             f"观察任务：{observation}\n判断条件：{condition}"
         )
@@ -692,7 +700,9 @@ class VoiceChatService:
                 "role": "system",
                 "content": (
                     "你是机器人视觉条件判断器。只能依据当前图片调用 "
-                    "conditional_decision；无法确认时必须返回 uncertain，禁止猜测。"
+                    "conditional_decision。严格判断条件的字面范围，区分‘当前画面不可见’"
+                    "与‘现实环境中不存在’；前者可以从清晰的当前画面直接判断。"
+                    "真正无法判断时返回 uncertain，禁止猜测。"
                     "不得输出台词、JSON 文本、思考过程或执行任何动作。"
                 ),
             },

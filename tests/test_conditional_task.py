@@ -48,6 +48,20 @@ class ConditionalTaskTests(unittest.TestCase):
 
         self.assertEqual(plan["action_arguments"]["direction"], "backward")
 
+    def test_plan_accepts_follow_up_observation_after_action(self):
+        plan = normalize_conditional_task_plan({
+            "observation": "查看当前画面里有没有电饭煲",
+            "condition": "当前画面没有看到电饭煲",
+            "action_name": "move_chassis",
+            "action_arguments": {"direction": "spin", "duration": 1},
+            "follow_up_observation": "转身后继续查看电饭煲在哪里",
+        })
+
+        self.assertEqual(
+            plan["follow_up_observation"],
+            "转身后继续查看电饭煲在哪里",
+        )
+
     def test_plan_accepts_conditional_music_control(self):
         plan = normalize_conditional_task_plan({
             "observation": "观察前方",
@@ -87,6 +101,8 @@ class ConditionalTaskTests(unittest.TestCase):
             action_arguments["properties"]["direction"]["enum"],
             ["forward", "backward", "spin", "left", "right"],
         )
+        self.assertIn("follow_up_observation", schema["properties"])
+        self.assertNotIn("follow_up_observation", schema["required"])
 
 
 if __name__ == "__main__":

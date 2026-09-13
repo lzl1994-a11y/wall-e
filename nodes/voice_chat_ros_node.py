@@ -483,6 +483,10 @@ class VoiceChatNode(Node):
                     name, arguments
                 ),
                 execute=self._execute_workflow_action,
+                analyze=lambda frame, question: self.vc.analyze_image(
+                    question,
+                    base64.b64encode(frame).decode("ascii"),
+                ),
             )
             self._conditional_task_workflow = workflow
         try:

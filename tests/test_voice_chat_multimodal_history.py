@@ -277,6 +277,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         request = service._stream_tool_calls.call_args
         self.assertEqual(len(request.kwargs["tools"]), 1)
         self.assertIn("uncertain", request.args[0][0]["content"])
+        self.assertIn("当前画面不可见", request.args[0][0]["content"])
         self.assertNotIn("direct_answer", request.args[0][0]["content"])
         self.assertEqual(
             request.kwargs["tool_choice"]["function"]["name"],
@@ -547,25 +548,28 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service = self._service()
         service.system_prompt = "system"
         plan = {
-            "observation": "观察前方",
-            "condition": "前方没有人",
-            "action_name": "play_sequence",
-            "action_arguments": {"sequence_name": "raise_hand"},
+            "observation": "查看当前画面里有没有电饭煲",
+            "condition": "当前画面没有看到电饭煲",
+            "action_name": "move_chassis",
+            "action_arguments": {"direction": "spin", "duration": 1},
+            "follow_up_observation": "转身后继续查看电饭煲在哪里",
         }
         service._stream_tool_calls = MagicMock(return_value=([{
             "name": "run_conditional_task",
             "arguments": {
                 **plan,
-                "grounding": "前方无人后举手",
+                "grounding": "找一下在哪里",
             },
         }], ""))
 
-        result = service._plan_visual_task("确认前方无人后举手")
+        result = service._plan_visual_task("这个房间里有个电饭煲，你找一下在哪里")
 
         self.assertEqual(
             result,
             {"name": "run_conditional_task", "arguments": plan},
         )
+        planner_prompt = service._stream_tool_calls.call_args.args[0][0]["content"]
+        self.assertIn("主动视觉搜索", planner_prompt)
 
     def test_malformed_structured_answer_never_starts_camera(self):
         service = self._service()
