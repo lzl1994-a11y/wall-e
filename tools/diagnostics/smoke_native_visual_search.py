@@ -18,8 +18,10 @@ import rclpy
 from std_msgs.msg import String
 
 from services.behavior_tree_protocol import (
+    BEHAVIOR_TREE_CANCEL_TOPIC,
     BEHAVIOR_TREE_EXECUTE_TOPIC,
     BEHAVIOR_TREE_STATUS_TOPIC,
+    encode_plan_cancel,
     parse_plan_status,
 )
 from services.visual_search import compile_visual_search_plan
@@ -44,17 +46,22 @@ def main() -> int:
         arguments={"target": args.target, "max_views": 2},
     )
     payload = json.dumps(plan.to_dict(), ensure_ascii=False, separators=(",", ":"))
-    received: dict[str, object] | None = None
+    accepted = False
+    terminal: dict[str, object] | None = None
 
     rclpy.init()
     node = rclpy.create_node("native_visual_search_smoke")
     publisher = node.create_publisher(String, BEHAVIOR_TREE_EXECUTE_TOPIC, 10)
+    cancel_publisher = node.create_publisher(String, BEHAVIOR_TREE_CANCEL_TOPIC, 10)
 
     def on_status(message: String) -> None:
-        nonlocal received
+        nonlocal accepted, terminal
         status = parse_plan_status(message.data)
         if status is not None and status["plan_id"] == plan.plan_id:
-            received = status
+            if status["status"] == "accepted":
+                accepted = True
+            elif status["status"] in {"success", "failure", "halted", "rejected"}:
+                terminal = status
 
     subscription = node.create_subscription(
         String, BEHAVIOR_TREE_STATUS_TOPIC, on_status, 10
@@ -62,34 +69,39 @@ def main() -> int:
 
     deadline = time.monotonic() + args.timeout
     next_publish = 0.0
+    cancel_sent = False
     try:
-        while received is None and time.monotonic() < deadline:
+        while terminal is None and time.monotonic() < deadline:
             now = time.monotonic()
-            if now >= next_publish and publisher.get_subscription_count() > 0:
+            if not accepted and now >= next_publish and publisher.get_subscription_count() > 0:
                 publisher.publish(String(data=payload))
                 next_publish = now + 0.5
+            if accepted and not cancel_sent and cancel_publisher.get_subscription_count() > 0:
+                cancel_publisher.publish(String(data=encode_plan_cancel(plan.plan_id)))
+                cancel_sent = True
             rclpy.spin_once(node, timeout_sec=0.1)
     finally:
         node.destroy_subscription(subscription)
         node.destroy_node()
         rclpy.shutdown()
 
-    if received is None:
-        print("native visual-search smoke: timed out waiting for plan status")
+    if terminal is None:
+        print("native visual-search smoke: timed out waiting for terminal status")
         return 1
     print(
         "native visual-search smoke:",
         json.dumps(
             {
-                "status": received["status"],
-                "error": received["error"],
-                "source": received["source"],
+                "accepted": accepted,
+                "status": terminal["status"],
+                "error": terminal["error"],
+                "source": terminal["source"],
             },
             ensure_ascii=False,
             separators=(",", ":"),
         ),
     )
-    return 0 if received["status"] == "accepted" else 1
+    return 0 if accepted and terminal["status"] == "halted" else 1
 
 
 if __name__ == "__main__":

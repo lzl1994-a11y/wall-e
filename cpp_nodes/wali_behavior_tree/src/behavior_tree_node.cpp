@@ -177,6 +177,16 @@ class BehaviorTreeNode : public rclcpp::Node {
     RCLCPP_INFO(get_logger(), "Native BehaviorTree.CPP action-plan owner is ready");
   }
 
+  ~BehaviorTreeNode() override {
+    if (tick_timer_) {
+      tick_timer_->cancel();
+    }
+    if (tree_) {
+      tree_->haltTree();
+      tree_.reset();
+    }
+  }
+
   bool start_step(unsigned index) {
     if (!tree_ || cancelled_ || index >= steps_.size() ||
         current_step_.has_value() ||
