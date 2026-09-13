@@ -38,6 +38,36 @@ class VisualSearchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "views"):
             normalize_visual_search_arguments({"target": "人", "max_views": 20})
 
+    def test_compiles_model_proposed_actions_after_a_successful_search(self):
+        plan = compile_visual_search_plan(
+            turn_id="turn-then",
+            arguments={
+                "target": "红色箱子",
+                "on_found_actions": [{
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "wave_hello"},
+                }],
+            },
+        )
+
+        payload = plan.to_dict()
+        self.assertEqual(payload["schema_version"], 4)
+        self.assertEqual(payload["root_type"], "VisualSearchThen")
+        self.assertEqual(payload["steps"][1]["name"], "play_sequence")
+        self.assertEqual(payload["steps"][1]["depends_on"], ["step-01"])
+        self.assertEqual(payload["on_found_actions"][0]["name"], "play_sequence")
+
+    def test_completion_actions_reject_unknown_or_open_shapes(self):
+        with self.assertRaisesRegex(ValueError, "completion_action"):
+            normalize_visual_search_arguments({
+                "target": "箱子", "on_found_actions": [{"name": "shell"}],
+            })
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            normalize_visual_search_arguments({
+                "target": "箱子",
+                "on_found_actions": [{"name": "search_environment", "arguments": {}}],
+            })
+
     def test_leaf_protocol_is_correlated(self):
         request = {
             "request_id": "req-1",

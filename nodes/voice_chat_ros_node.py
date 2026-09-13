@@ -523,11 +523,20 @@ class VoiceChatNode(Node):
                 "action": VISUAL_SEARCH_TOOL_NAME,
                 "reason": str(exc),
             }
+        for step in plan.steps[1:]:
+            allowed, reason = validate_action_arguments(step.name, step.arguments)
+            if not allowed:
+                return {
+                    "status": "rejected",
+                    "action": VISUAL_SEARCH_TOOL_NAME,
+                    "reason": f"completion_action_invalid:{step.step_id}:{reason}",
+                }
         self.tts_pub.publish(String(data="我找一下。"))
         self.get_logger().info(
             "Visual search submitted: "
             f"target={plan.target}, max_views={plan.max_views}, "
-            f"motion={plan.steps[0].arguments}"
+            f"motion={plan.steps[0].arguments}, "
+            f"on_found_actions={len(plan.steps) - 1}"
         )
         result = self._try_execute_native_plan(
             plan,

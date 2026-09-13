@@ -203,13 +203,17 @@ def search_environment(
     search_direction: str = "spin",
     motion_duration: int = 1,
     max_views: int = 3,
+    on_found_actions: list[dict[str, Any]] | None = None,
 ) -> str:
     """在大于单个摄像头视野的环境中主动寻找并定位目标。
 
     用户要求在房间或周围寻找人物、物体或位置时使用。target 是要寻找的目标；question
     是找到后要回答的问题。行为树会观察当前视野，未找到时执行转向，再重新观察，直到
     找到或达到 max_views。search_direction 通常使用 spin，也可按用户要求使用 left/right。
-    普通的单次查看使用 inspect_camera；一次观察后按条件做动作使用 run_conditional_task。
+    找到后若用户还要求执行动作，把它们按顺序放进 on_found_actions；每项必须是
+    {"name": 动作工具名, "arguments": 参数对象}。行为树只会在目标确实找到后执行
+    这些动作；未找到时会报告搜索结果并跳过它们。普通的单次查看使用 inspect_camera；
+    一次观察后按条件做动作使用 run_conditional_task。
     """
     return "ok"
 
