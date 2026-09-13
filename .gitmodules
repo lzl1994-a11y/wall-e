@@ -1,0 +1,4 @@
+[submodule "cpp_nodes/BehaviorTree.ROS2"]
+	path = cpp_nodes/BehaviorTree.ROS2
+	url = https://github.com/BehaviorTree/BehaviorTree.ROS2.git
+	branch = humble
