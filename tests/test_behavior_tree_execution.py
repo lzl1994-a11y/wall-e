@@ -280,6 +280,8 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn("ReportTargetNotFound", source)
         self.assertIn('root_type == "VisualSearch"', source)
         self.assertIn("createTreeFromFile", source)
+        self.assertIn('blackboard->set<int>("search_retries"', source)
+        self.assertIn('"rejected", Json::array()', source)
         visual_search = (root / "core" / "behavior_trees" /
                          "visual_search.xml").read_text(encoding="utf-8")
         self.assertIn("<RetryUntilSuccessful", visual_search)

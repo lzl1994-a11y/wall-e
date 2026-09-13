@@ -447,18 +447,20 @@ class BehaviorTreeNode : public rclcpp::Node {
       }
     } catch (const std::exception& error) {
       publish_plan_status(candidate_id.empty() ? "invalid-plan" : candidate_id,
-                          "rejected", {}, std::string("invalid_json:") + error.what());
+                          "rejected", Json::array(),
+                          std::string("invalid_json:") + error.what());
       return;
     }
 
     std::string error;
     if (!validate_plan(plan, error)) {
       publish_plan_status(candidate_id.empty() ? "invalid-plan" : candidate_id,
-                          "rejected", {}, error);
+                          "rejected", Json::array(), error);
       return;
     }
     if (tree_) {
-      publish_plan_status(candidate_id, "rejected", {}, "behavior_tree_busy");
+      publish_plan_status(candidate_id, "rejected", Json::array(),
+                          "behavior_tree_busy");
       return;
     }
 
@@ -487,7 +489,8 @@ class BehaviorTreeNode : public rclcpp::Node {
     try {
       if (root_type_ == "VisualSearch") {
         auto blackboard = BT::Blackboard::create();
-        blackboard->set<unsigned>("search_retries", visual_max_views_ - 1);
+        blackboard->set<int>("search_retries",
+                             static_cast<int>(visual_max_views_ - 1));
         tree_.emplace(factory_.createTreeFromFile(
             visual_search_tree_path_, blackboard));
       } else {
@@ -508,7 +511,7 @@ class BehaviorTreeNode : public rclcpp::Node {
         tree_.emplace(factory_.createTreeFromText(xml.str()));
       }
     } catch (const std::exception& exception) {
-      publish_plan_status(plan_id_, "rejected", {},
+      publish_plan_status(plan_id_, "rejected", Json::array(),
                           std::string("tree_build_failed:") + exception.what());
       clear_plan();
       return;
