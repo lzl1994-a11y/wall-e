@@ -261,12 +261,19 @@ class LaunchNodesTests(unittest.TestCase):
         },
     )
     def test_mcp_flag_adds_gateway_after_action_owner(self, _load_config):
-        names = [
-            entry.name
-            for entry in launch_nodes.build_node_list(launcher_args(mcp=True))
-        ]
+        entries = launch_nodes.build_node_list(launcher_args(mcp=True))
+        names = [entry.name for entry in entries]
         self.assertIn("mcp_gateway", names)
         self.assertLess(names.index("action"), names.index("mcp_gateway"))
+        gateway = next(entry for entry in entries if entry.name == "mcp_gateway")
+        self.assertEqual(gateway.environment_setup, launch_nodes.ROOT / "install" / "setup.bash")
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
+    def test_dialogue_nodes_source_workspace_action_overlay(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args())
+        llm = next(entry for entry in entries if entry.name == "llm")
+
+        self.assertEqual(llm.environment_setup, launch_nodes.ROOT / "install" / "setup.bash")
 
     @patch(
         "launch_nodes.load_config",

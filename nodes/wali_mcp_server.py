@@ -46,7 +46,7 @@ class RosActionExecutor(Node):
                 self, Path(__file__).resolve().parent.parent
             )
             self._ros2_task_executor = Ros2ActionPlanExecutor(client, goal_type)
-        except (ImportError, ModuleNotFoundError) as exc:
+        except Exception as exc:
             self.get_logger().warning(
                 f"WaliTask Action interface unavailable; using legacy topic fallback: {exc}"
             )

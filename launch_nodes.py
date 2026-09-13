@@ -149,6 +149,10 @@ def build_node_list(args):
             "1" if getattr(args, "save_voice_debug", False) else "0"
         )
     }
+    # Generated ROS 2 Action interfaces include native type-support libraries.
+    # Source this checkout's overlay in the same process that imports them.
+    # Nodes still retain their Topic fallback if the artifact is absent.
+    ros2_action_setup = ROOT / "install" / "setup.bash"
 
     # pipeline mode: CLI 优先 → config → keyboard
     if args.voice_chat:
@@ -181,6 +185,7 @@ def build_node_list(args):
         "llm",
         ROOT / "nodes" / "llm_ros_node.py",
         environment=voice_debug_env,
+        environment_setup=ros2_action_setup,
     ))
 
     # 音频播放管线（始终启动）
@@ -204,7 +209,11 @@ def build_node_list(args):
             )
         )
         if mcp_enabled:
-            nodes.append(NodeEntry("mcp_gateway", ROOT / "nodes" / "wali_mcp_server.py"))
+            nodes.append(NodeEntry(
+                "mcp_gateway",
+                ROOT / "nodes" / "wali_mcp_server.py",
+                environment_setup=ros2_action_setup,
+            ))
         nodes.append(NodeEntry("joy_control", ROOT / "nodes" / "joy_control_node.py"))
         if not args.no_hardware:
             if hardware_backend == "ubuntu_i2c":
@@ -217,6 +226,7 @@ def build_node_list(args):
             "voice_chat",
             ROOT / "nodes" / "voice_chat_ros_node.py",
             environment=voice_debug_env,
+            environment_setup=ros2_action_setup,
         ))
         nodes = [n for n in nodes if n.name != "llm"]
     elif pipeline == "asr_llm":
