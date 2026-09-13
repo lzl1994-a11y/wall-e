@@ -5,12 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import threading
 from pathlib import Path
 
 import rclpy
 from btcpp_ros2_interfaces.action import ExecuteTree
 from rclpy.action import ActionClient
+
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,7 +69,7 @@ def main() -> int:
             spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
             spin_thread.start()
             adapter_client, goal_type = create_wali_task_action_client(
-                node, Path(__file__).resolve().parents[2]
+                node, ROOT
             )
             result = Ros2ActionPlanExecutor(adapter_client, goal_type).try_execute(
                 InvalidPlan(plan_id, payload), timeout=args.timeout
