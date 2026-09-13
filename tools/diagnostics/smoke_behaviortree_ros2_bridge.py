@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
+from pathlib import Path
 
 import rclpy
 from btcpp_ros2_interfaces.action import ExecuteTree
@@ -14,6 +16,11 @@ from rclpy.action import ActionClient
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--timeout", type=float, default=8.0)
+    parser.add_argument(
+        "--adapter",
+        action="store_true",
+        help="exercise the repository's Ros2ActionPlanExecutor instead of a raw client",
+    )
     return parser.parse_args()
 
 
@@ -21,12 +28,8 @@ def main() -> int:
     args = parse_args()
     rclpy.init()
     node = rclpy.create_node("wali_bt_ros2_bridge_smoke")
-    client = ActionClient(node, ExecuteTree, "wali_task")
+    client = None
     try:
-        if not client.wait_for_server(timeout_sec=args.timeout):
-            print("BehaviorTree.ROS2 bridge smoke: action server unavailable")
-            return 1
-
         # Deliberately invalid schema: the legacy executor must reject it before
         # any action leaf or hardware command can run. This still verifies the
         # standard Action goal, forwarding, terminal result, and correlation.
@@ -42,6 +45,46 @@ def main() -> int:
             },
             separators=(",", ":"),
         )
+        if args.adapter:
+            from services.ros2_action_execution import (
+                Ros2ActionPlanExecutor,
+                create_wali_task_action_client,
+            )
+
+            class InvalidPlan:
+                def __init__(self, value, encoded_payload):
+                    self.plan_id = value
+                    self.steps = ()
+                    self._payload = encoded_payload
+
+                def to_dict(self):
+                    return json.loads(self._payload)
+
+            spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+            spin_thread.start()
+            adapter_client, goal_type = create_wali_task_action_client(
+                node, Path(__file__).resolve().parents[2]
+            )
+            result = Ros2ActionPlanExecutor(adapter_client, goal_type).try_execute(
+                InvalidPlan(plan_id, payload), timeout=args.timeout
+            )
+            adapter_client.destroy()
+            if result is None:
+                print("BehaviorTree.ROS2 bridge smoke: adapter found no server")
+                return 1
+            print(
+                "BehaviorTree.ROS2 bridge adapter smoke:",
+                json.dumps(
+                    {"status": result.get("status"), "error": result.get("error", "")},
+                    separators=(",", ":"),
+                ),
+            )
+            return 0 if result.get("status") == "rejected" else 1
+
+        client = ActionClient(node, ExecuteTree, "wali_task")
+        if not client.wait_for_server(timeout_sec=args.timeout):
+            print("BehaviorTree.ROS2 bridge smoke: action server unavailable")
+            return 1
         goal = ExecuteTree.Goal()
         goal.target_tree = "WaliTask"
         goal.payload = payload
@@ -80,7 +123,8 @@ def main() -> int:
         )
         return 0 if passed else 1
     finally:
-        client.destroy()
+        if client is not None:
+            client.destroy()
         node.destroy_node()
         rclpy.shutdown()
 

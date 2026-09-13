@@ -27,6 +27,8 @@ def create_wali_task_action_client(node: Any, root: Path) -> tuple[Any, type[Any
     import sys
 
     for pattern in (
+        "install/btcpp_ros2_interfaces/local/lib/python*/site-packages",
+        "install/btcpp_ros2_interfaces/local/lib/python*/dist-packages",
         "install/btcpp_ros2_interfaces/lib/python*/site-packages",
         "install/btcpp_ros2_interfaces/lib/python*/dist-packages",
     ):
