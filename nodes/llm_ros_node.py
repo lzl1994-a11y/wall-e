@@ -9,6 +9,7 @@ import time
 import traceback
 import uuid
 from collections import deque
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
@@ -19,6 +20,10 @@ from services.action_acknowledgement import action_acknowledgement
 from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_execution import CorrelatedActionExecutor
 from services.behavior_tree_execution import CorrelatedPlanExecutor
+from services.ros2_action_execution import (
+    Ros2ActionPlanExecutor,
+    create_wali_task_action_client,
+)
 from services.behavior_tree_protocol import (
     BEHAVIOR_TREE_CANCEL_TOPIC,
     BEHAVIOR_TREE_EXECUTE_TOPIC,
@@ -97,6 +102,7 @@ class LLMBrainNode(Node):
         self._conditional_task_workflow = None
         self._action_executor = CorrelatedActionExecutor()
         self._behavior_tree_executor = CorrelatedPlanExecutor()
+        self._ros2_task_executor = None
         self._voice_debug = RollingVoiceDebugStore()
         self.chat_history = deque(maxlen=24)
         self.punctuations = {'。', '？', '.', '?', '！', '!'}
@@ -130,6 +136,16 @@ class LLMBrainNode(Node):
             self._on_behavior_tree_status,
             10,
         )
+        try:
+            action_client, goal_type = create_wali_task_action_client(
+                self, Path(__file__).resolve().parent.parent
+            )
+            self._ros2_task_executor = Ros2ActionPlanExecutor(action_client, goal_type)
+            self.get_logger().info('BehaviorTree ROS2 Action client is ready.')
+        except Exception as exc:
+            self.get_logger().warning(
+                f'BehaviorTree ROS2 Action client unavailable; legacy fallback remains active: {exc}'
+            )
         self.create_subscription(
             String,
             ACTION_STATUS_TOPIC,
@@ -693,22 +709,11 @@ class LLMBrainNode(Node):
 
     def _execute_dialog_action_sequence(self, actions, *, user_prompt, turn_id):
         """Prefer the native tree owner and safely fall back when it is absent."""
-        plan_publisher = getattr(self, 'behavior_tree_publisher', None)
-        cancel_publisher = getattr(self, 'behavior_tree_cancel_publisher', None)
-        plan_executor = getattr(self, '_behavior_tree_executor', None)
-        if plan_publisher is not None and cancel_publisher is not None:
-            if plan_executor is None:
-                plan_executor = CorrelatedPlanExecutor()
-                self._behavior_tree_executor = plan_executor
+        if getattr(self, '_behavior_tree_executor', None) is not None:
             native = NativeBehaviorTreeWorkflow(
                 authorize=validate_action_call,
-                execute_plan=lambda plan: plan_executor.try_execute(
+                execute_plan=lambda plan: self._try_execute_native_plan(
                     plan,
-                    publish=lambda payload: plan_publisher.publish(String(data=payload)),
-                    cancel_publish=lambda payload: cancel_publisher.publish(
-                        String(data=payload)
-                    ),
-                    owner_available=lambda: plan_publisher.get_subscription_count() > 0,
                     cancelled=lambda: (
                         not getattr(self, '_worker_running', True)
                         or getattr(self, '_game_mode', 'robot') != 'robot'
@@ -737,6 +742,28 @@ class LLMBrainNode(Node):
             turn_id=turn_id,
             user_prompt=user_prompt,
             actions=actions,
+        )
+
+    def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
+        ros2_executor = getattr(self, '_ros2_task_executor', None)
+        if ros2_executor is not None:
+            result = ros2_executor.try_execute(
+                plan, timeout=timeout, cancelled=cancelled
+            )
+            if result is not None:
+                return result
+        executor = getattr(self, '_behavior_tree_executor', None)
+        publisher = getattr(self, 'behavior_tree_publisher', None)
+        cancel_publisher = getattr(self, 'behavior_tree_cancel_publisher', None)
+        if executor is None or publisher is None or cancel_publisher is None:
+            return None
+        return executor.try_execute(
+            plan,
+            publish=lambda payload: publisher.publish(String(data=payload)),
+            cancel_publish=lambda payload: cancel_publisher.publish(String(data=payload)),
+            owner_available=lambda: publisher.get_subscription_count() > 0,
+            timeout=timeout,
+            cancelled=cancelled,
         )
 
     def _on_behavior_tree_status(self, message):

@@ -33,6 +33,10 @@ from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_intent_guard import validate_action_arguments
 from services.action_status import ACTION_STATUS_TOPIC
 from services.behavior_tree_execution import CorrelatedPlanExecutor
+from services.ros2_action_execution import (
+    Ros2ActionPlanExecutor,
+    create_wali_task_action_client,
+)
 from services.behavior_tree_protocol import (
     BEHAVIOR_TREE_CANCEL_TOPIC,
     BEHAVIOR_TREE_EXECUTE_TOPIC,
@@ -97,6 +101,7 @@ class VoiceChatNode(Node):
         self.action_pub = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self._action_executor = CorrelatedActionExecutor()
         self._behavior_tree_executor = CorrelatedPlanExecutor()
+        self._ros2_task_executor = None
         self.behavior_tree_pub = self.create_publisher(
             String, BEHAVIOR_TREE_EXECUTE_TOPIC, 10
         )
@@ -109,6 +114,16 @@ class VoiceChatNode(Node):
             self._on_behavior_tree_status,
             10,
         )
+        try:
+            action_client, goal_type = create_wali_task_action_client(
+                self, Path(__file__).resolve().parent.parent
+            )
+            self._ros2_task_executor = Ros2ActionPlanExecutor(action_client, goal_type)
+            self.get_logger().info("BehaviorTree ROS2 Action client is ready")
+        except Exception as exc:
+            self.get_logger().warning(
+                f"BehaviorTree ROS2 Action client unavailable; legacy fallback remains active: {exc}"
+            )
         self.visual_search_status_pub = self.create_publisher(
             String, VISUAL_SEARCH_STATUS_TOPIC, 10
         )
@@ -514,13 +529,8 @@ class VoiceChatNode(Node):
             f"target={plan.target}, max_views={plan.max_views}, "
             f"motion={plan.steps[0].arguments}"
         )
-        result = self._behavior_tree_executor.try_execute(
+        result = self._try_execute_native_plan(
             plan,
-            publish=lambda payload: self.behavior_tree_pub.publish(String(data=payload)),
-            cancel_publish=lambda payload: self.behavior_tree_cancel_pub.publish(
-                String(data=payload)
-            ),
-            owner_available=lambda: self.behavior_tree_pub.get_subscription_count() > 0,
             timeout=plan.max_views * 50.0 + 10.0,
             cancelled=self.vc._cancel_llm.is_set,
         )
@@ -558,29 +568,41 @@ class VoiceChatNode(Node):
             if isinstance(action, dict)
         ):
             return None
-        publisher = getattr(self, "behavior_tree_pub", None)
-        cancel_publisher = getattr(self, "behavior_tree_cancel_pub", None)
-        executor = getattr(self, "_behavior_tree_executor", None)
-        if publisher is None or cancel_publisher is None or executor is None:
-            return None
         workflow = NativeBehaviorTreeWorkflow(
             authorize=lambda _prompt, name, arguments: validate_action_arguments(
                 name, arguments
             ),
-            execute_plan=lambda plan: executor.try_execute(
-                plan,
-                publish=lambda payload: publisher.publish(String(data=payload)),
-                cancel_publish=lambda payload: cancel_publisher.publish(
-                    String(data=payload)
-                ),
-                owner_available=lambda: publisher.get_subscription_count() > 0,
-                cancelled=self.vc._cancel_llm.is_set,
+            execute_plan=lambda plan: self._try_execute_native_plan(
+                plan, cancelled=self.vc._cancel_llm.is_set
             ),
         )
         return workflow.invoke(
             turn_id=self._ensure_turn_id(),
             user_prompt=heard_text,
             actions=actions,
+        )
+
+    def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
+        """Prefer standard ExecuteTree Action, then retain the legacy fallback."""
+        ros2_executor = getattr(self, "_ros2_task_executor", None)
+        if ros2_executor is not None:
+            result = ros2_executor.try_execute(
+                plan, timeout=timeout, cancelled=cancelled
+            )
+            if result is not None:
+                return result
+        executor = getattr(self, "_behavior_tree_executor", None)
+        publisher = getattr(self, "behavior_tree_pub", None)
+        cancel_publisher = getattr(self, "behavior_tree_cancel_pub", None)
+        if executor is None or publisher is None or cancel_publisher is None:
+            return None
+        return executor.try_execute(
+            plan,
+            publish=lambda payload: publisher.publish(String(data=payload)),
+            cancel_publish=lambda payload: cancel_publisher.publish(String(data=payload)),
+            owner_available=lambda: publisher.get_subscription_count() > 0,
+            timeout=timeout,
+            cancelled=cancelled,
         )
 
     def _process_conditional_task(self, plan):
