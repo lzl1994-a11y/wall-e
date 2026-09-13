@@ -387,13 +387,20 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 最终答案；“拍照”会预览 3 秒、保存末帧到本地且不调用模型。
 摄像头图像继续复用 `/camera_frame`，不会重复打开摄像头。默认配置如下：
 
-“观察环境，如果条件成立就执行动作”使用独立的 LangGraph 复合任务图：模型只生成
+“观察环境，如果条件成立就执行动作”使用独立的 LangGraph 复合任务图：模型生成
 `observation / condition / action_name / action_arguments` 受限计划，程序依次完成拍摄、
 `yes/no/uncertain` 条件判断、安全校验和动作执行。只有 `yes` 会下发动作，并且必须收到
 对应 `/action_status` 的 `completed` 终态才会向用户报告完成；`no`、`uncertain`、超时、
 畸形计划或动作失败都不会报告成功。条件内容不限于特定物体，可描述人物、颜色、姿态、
-数量或空间关系。当前单帧任务禁止自动移动底盘，仅开放有界预设动作、表情、跟踪开关与
-停止操作；需要移动的自主任务必须先接入连续感知和避障。
+数量或空间关系。
+
+“找一下某人/某物在哪里”不再伪装成一次性的真假条件，也不靠中文连接词或物体名称写死
+流程。模型只输出目标、问题、搜索方向和有界视角数；原生 BehaviorTree.CPP 从
+`core/behavior_trees/visual_search.xml` 加载通用搜索子树，以标准
+`Fallback + RetryUntilSuccessful + Timeout` 组合反复执行“视觉检测失败 → 转动底盘 →
+换视角检测”。视觉模型通过 `/visual_search/request` 和 `/visual_search/status` 充当感知
+叶节点，任一视角找到目标即成功返回，尝试耗尽则明确报告未找到。物体、人名、颜色和位置
+等开放语义均由模型判断，代码只约束可执行动作、次数、时长和 ROS 回执。
 
 普通对话中的动作会先编译成最多 8 步、由程序生成依赖和资源标签的受限 `ActionPlan`，
 完成参数和意图校验后优先交给原生行为树执行。每个顺序步骤由程序构造为
@@ -415,7 +422,7 @@ BehaviorTree.CPP 的异步 `StatefulActionNode` tick 每个动作，再通过 `/
 `Fallback` 执行一次全局安全停止，并保留每次尝试的回执。
 高优先级请求抢占正在运行的可取消动作时，协调器会通过 `/action_cancel`
 定向停止旧请求，并立即发布关联的 `interrupted` 终态，调用方无需等待超时。
-相机检查与条件任务仍由 LangGraph 管理。
+一次性相机检查与条件任务仍由 LangGraph 管理；需要多视角恢复的环境搜索由原生行为树管理。
 
 主程序启动时，`camera_capture_node` 会立即拉起唯一的 `hobot_usb_cam` 并保持热备；
 平时只丢弃未被租用的帧。视觉问答、拍照或跟踪请求只开启 `/camera_frame` 转发，
