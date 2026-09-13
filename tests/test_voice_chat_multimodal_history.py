@@ -284,6 +284,70 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
             "conditional_decision",
         )
 
+    def test_visual_search_view_forces_closed_target_result(self):
+        service = self._service()
+        service._stream_tool_calls = MagicMock(return_value=([{
+            "name": "visual_search_result",
+            "arguments": {
+                "status": "found",
+                "evidence": "画面左侧站着用户",
+                "response": "你在我的左前方。",
+            },
+        }], ""))
+
+        result = service.evaluate_visual_search("用户", "我在哪里", "aW1hZ2U=")
+
+        self.assertEqual(result["status"], "found")
+        request = service._stream_tool_calls.call_args
+        self.assertEqual(len(request.kwargs["tools"]), 1)
+        self.assertEqual(
+            request.kwargs["tool_choice"]["function"]["name"],
+            "visual_search_result",
+        )
+
+    def test_specialized_search_plan_overrides_conflicting_capability_label(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock(return_value={
+            "status": "completed",
+            "action": "search_environment",
+            "response": "你在我的右前方。",
+        })
+        service._llm_done = MagicMock()
+        search = {
+            "target": "用户",
+            "question": "用户在哪里",
+            "search_direction": "spin",
+            "motion_duration": 1,
+            "max_views": 3,
+        }
+        service._stream_tool_calls = MagicMock(side_effect=[([{
+            "name": "direct_answer",
+            "arguments": {
+                "heard_text": "你找一下我在哪",
+                "response": "我找一下。",
+                "intent_type": "capability_query",
+            },
+        }, {
+            "name": "inspect_camera",
+            "arguments": {"question": "用户在哪里"},
+        }], ""), ([{
+            "name": "search_environment",
+            "arguments": search,
+        }], "")])
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_tool_call.assert_called_once_with("search_environment", search)
+        service.on_llm_reply.assert_called_once_with("你在我的右前方。")
+
     def test_photo_transcript_runs_capture_callback_before_reply(self):
         service = self._service()
         service.multimodal = MagicMock()
@@ -548,14 +612,14 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service = self._service()
         service.system_prompt = "system"
         plan = {
-            "observation": "查看当前画面里有没有电饭煲",
-            "condition": "当前画面没有看到电饭煲",
-            "action_name": "move_chassis",
-            "action_arguments": {"direction": "spin", "duration": 1},
-            "follow_up_observation": "转身后继续查看电饭煲在哪里",
+            "target": "电饭煲",
+            "question": "电饭煲在哪里",
+            "search_direction": "spin",
+            "motion_duration": 1,
+            "max_views": 3,
         }
         service._stream_tool_calls = MagicMock(return_value=([{
-            "name": "run_conditional_task",
+            "name": "search_environment",
             "arguments": {
                 **plan,
                 "grounding": "找一下在哪里",
@@ -566,7 +630,7 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            {"name": "run_conditional_task", "arguments": plan},
+            {"name": "search_environment", "arguments": plan},
         )
         planner_prompt = service._stream_tool_calls.call_args.args[0][0]["content"]
         self.assertIn("主动视觉搜索", planner_prompt)

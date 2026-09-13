@@ -15,6 +15,7 @@ from services.conditional_task import (
     CONDITIONAL_TASK_TOOL_NAME,
     conditional_task_tool_schema,
 )
+from services.visual_search import VISUAL_SEARCH_TOOL_NAME
 
 mcp = FastMCP("Wali_Action_Center")
 LOGGER = logging.getLogger(__name__)
@@ -196,6 +197,24 @@ def inspect_camera(question: str = "", save_photo: bool = False) -> str:
 
 
 @mcp.tool()
+def search_environment(
+    target: str,
+    question: str = "",
+    search_direction: str = "spin",
+    motion_duration: int = 1,
+    max_views: int = 3,
+) -> str:
+    """在大于单个摄像头视野的环境中主动寻找并定位目标。
+
+    用户要求在房间或周围寻找人物、物体或位置时使用。target 是要寻找的目标；question
+    是找到后要回答的问题。行为树会观察当前视野，未找到时执行转向，再重新观察，直到
+    找到或达到 max_views。search_direction 通常使用 spin，也可按用户要求使用 left/right。
+    普通的单次查看使用 inspect_camera；一次观察后按条件做动作使用 run_conditional_task。
+    """
+    return "ok"
+
+
+@mcp.tool()
 def control_music(action: str, track: str = "") -> str:
     """播放或停止瓦力本地音乐目录中的歌曲。
 
@@ -212,7 +231,6 @@ def run_conditional_task(
     condition: str,
     action_name: str,
     action_arguments: dict[str, Any],
-    follow_up_observation: str = "",
 ) -> str:
     """执行一次“观察画面 → 判断条件 → 条件成立才动作”的复合任务。
 
@@ -220,8 +238,7 @@ def run_conditional_task(
     不要把它拆成 inspect_camera 和独立动作工具，也不要同时调用本工具与 action_name 对应的
     动作工具。observation 描述要观察什么；condition 是仅依据当前画面判断的完整条件，
     可以是任意物体、人物、颜色、姿态、数量或空间关系，不要写死特定目标；action_name 和
-    action_arguments 描述条件明确成立时执行的一个动作。用户还要求动作完成后重新查看时，
-    把重新观察的问题写入 follow_up_observation；否则留空。举手、点头、挥手、转头等预设动作
+    action_arguments 描述条件明确成立时执行的一个动作。举手、点头、挥手、转头等预设动作
     必须使用 action_name="play_sequence"，例如举手参数为 {"sequence_name":"raise_hand"}、
     点头为 {"sequence_name":"basic_nod"}。条件不成立或无法确定时不会动作。
     能力询问、举例、假设讨论、故事、引用或没有要求立即执行的句子禁止调用。
@@ -278,6 +295,17 @@ def _tighten_tool_schema(name, parameters):
             properties['track']['maxLength'] = 200
     elif name == 'inspect_camera' and 'question' in properties:
         properties['question']['maxLength'] = 500
+    elif name == VISUAL_SEARCH_TOOL_NAME:
+        if 'target' in properties:
+            properties['target']['maxLength'] = 200
+        if 'question' in properties:
+            properties['question']['maxLength'] = 500
+        if 'search_direction' in properties:
+            properties['search_direction']['enum'] = ['spin', 'left', 'right']
+        if 'motion_duration' in properties:
+            properties['motion_duration'].update({'minimum': 1, 'maximum': 3})
+        if 'max_views' in properties:
+            properties['max_views'].update({'minimum': 2, 'maximum': 4})
     return schema
 
 def get_chat_tools():

@@ -28,7 +28,7 @@ class FastMcpToolTests(unittest.TestCase):
 
     def test_fastmcp_2x_enumerates_openai_tools_with_schemas(self):
         tools = mcp_service.get_chat_tools()
-        self.assertEqual(len(tools), 8)
+        self.assertEqual(len(tools), 9)
         self.assertEqual(
             {item["function"]["name"] for item in tools},
             {
@@ -40,6 +40,7 @@ class FastMcpToolTests(unittest.TestCase):
                 "set_vision_gate",
                 "inspect_camera",
                 "run_conditional_task",
+                "search_environment",
             },
         )
         for item in tools:
@@ -85,7 +86,9 @@ class FastMcpToolTests(unittest.TestCase):
             conditional["required"],
             ["observation", "condition", "action_name", "action_arguments"],
         )
-        self.assertIn("follow_up_observation", conditional["properties"])
+        search = by_name["search_environment"]["parameters"]["properties"]
+        self.assertEqual(search["search_direction"]["enum"], ["spin", "left", "right"])
+        self.assertEqual(search["max_views"]["maximum"], 4)
 
     def test_empty_fastmcp_registry_is_diagnostic_error_not_silent_empty_tools(self):
         async def no_tools():

@@ -31,6 +31,8 @@ constexpr char kCancelTopic[] = "/behavior_tree/cancel";
 constexpr char kTreeStatusTopic[] = "/behavior_tree/status";
 constexpr char kActionRequestTopic[] = "/action_request";
 constexpr char kActionStatusTopic[] = "/action_status";
+constexpr char kVisualSearchRequestTopic[] = "/visual_search/request";
+constexpr char kVisualSearchStatusTopic[] = "/visual_search/status";
 constexpr std::size_t kMaxPlanSteps = 8;
 
 const std::set<std::string> kTerminalActionStatuses = {
@@ -93,6 +95,32 @@ class RecoveryStopNode : public BT::SyncActionNode {
   BehaviorTreeNode* owner_;
 };
 
+class VisualSearchNode : public BT::StatefulActionNode {
+ public:
+  VisualSearchNode(const std::string& name, const BT::NodeConfig& config,
+                   BehaviorTreeNode* owner)
+      : BT::StatefulActionNode(name, config), owner_(owner) {}
+  static BT::PortsList providedPorts() { return {}; }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+ private:
+  BehaviorTreeNode* owner_;
+};
+
+class SearchNotFoundNode : public BT::SyncActionNode {
+ public:
+  SearchNotFoundNode(const std::string& name, const BT::NodeConfig& config,
+                     BehaviorTreeNode* owner)
+      : BT::SyncActionNode(name, config), owner_(owner) {}
+  static BT::PortsList providedPorts() { return {}; }
+  BT::NodeStatus tick() override;
+
+ private:
+  BehaviorTreeNode* owner_;
+};
+
 class BehaviorTreeNode : public rclcpp::Node {
  public:
   BehaviorTreeNode() : Node("wali_behavior_tree_node") {
@@ -100,6 +128,8 @@ class BehaviorTreeNode : public rclcpp::Node {
         "skill_registry_path", "core/action_skills.json"));
     action_timeout_ = std::chrono::duration<double>(
         declare_parameter<double>("action_timeout_sec", 20.0));
+    visual_search_tree_path_ = declare_parameter<std::string>(
+        "visual_search_tree_path", "core/behavior_trees/visual_search.xml");
 
     action_command_pub_ = create_publisher<std_msgs::msg::String>(kActionRequestTopic, 10);
     tree_status_pub_ = create_publisher<std_msgs::msg::String>(kTreeStatusTopic, 10);
@@ -125,6 +155,24 @@ class BehaviorTreeNode : public rclcpp::Node {
       return std::make_unique<RecoveryStopNode>(name, config, this);
     };
     factory_.registerBuilder<RecoveryStopNode>("RecoveryStop", recovery_builder);
+    BT::NodeBuilder visual_builder = [this](const std::string& name,
+                                            const BT::NodeConfig& config) {
+      return std::make_unique<VisualSearchNode>(name, config, this);
+    };
+    factory_.registerBuilder<VisualSearchNode>("DetectVisualTarget", visual_builder);
+    BT::NodeBuilder not_found_builder = [this](const std::string& name,
+                                               const BT::NodeConfig& config) {
+      return std::make_unique<SearchNotFoundNode>(name, config, this);
+    };
+    factory_.registerBuilder<SearchNotFoundNode>("ReportTargetNotFound",
+                                                  not_found_builder);
+    visual_search_request_pub_ =
+        create_publisher<std_msgs::msg::String>(kVisualSearchRequestTopic, 10);
+    visual_search_status_sub_ = create_subscription<std_msgs::msg::String>(
+        kVisualSearchStatusTopic, 10,
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          on_visual_search_status(message->data);
+        });
     tick_timer_ = create_wall_timer(50ms, [this]() { tick_tree(); });
     RCLCPP_INFO(get_logger(), "Native BehaviorTree.CPP action-plan owner is ready");
   }
@@ -208,6 +256,59 @@ class BehaviorTreeNode : public rclcpp::Node {
     publish_emergency_stop_once();
   }
 
+  bool start_visual_search() {
+    if (!tree_ || cancelled_ || !visual_request_id_.empty() ||
+        visual_attempt_ >= visual_max_views_) {
+      return false;
+    }
+    ++visual_attempt_;
+    visual_request_id_ = random_id();
+    visual_terminal_.reset();
+    visual_deadline_ = std::chrono::steady_clock::now() + 45s;
+    publish(visual_search_request_pub_, Json{
+        {"request_id", visual_request_id_}, {"plan_id", plan_id_},
+        {"target", visual_target_}, {"question", visual_question_},
+        {"attempt", visual_attempt_}, {"max_views", visual_max_views_}});
+    return true;
+  }
+
+  BT::NodeStatus poll_visual_search() {
+    if (cancelled_) {
+      visual_request_id_.clear();
+      visual_terminal_.reset();
+      return BT::NodeStatus::FAILURE;
+    }
+    if (std::chrono::steady_clock::now() >= visual_deadline_) {
+      last_visual_status_ = "uncertain";
+      last_visual_evidence_ = "visual_search_timeout";
+      last_visual_response_ = "这次画面分析超时了。";
+      visual_request_id_.clear();
+      visual_terminal_.reset();
+      return BT::NodeStatus::FAILURE;
+    }
+    if (!visual_terminal_) {
+      return BT::NodeStatus::RUNNING;
+    }
+    const auto result = *visual_terminal_;
+    last_visual_status_ = result.value("status", "uncertain");
+    last_visual_evidence_ = result.value("evidence", "");
+    last_visual_response_ = result.value("response", "");
+    visual_request_id_.clear();
+    visual_terminal_.reset();
+    if (last_visual_status_ == "found") {
+      record_visual_result(true);
+      return BT::NodeStatus::SUCCESS;
+    }
+    return BT::NodeStatus::FAILURE;
+  }
+
+  void halt_visual_search() {
+    visual_request_id_.clear();
+    visual_terminal_.reset();
+  }
+
+  void report_target_not_found() { record_visual_result(false); }
+
  private:
   friend class RosActionNode;
 
@@ -253,8 +354,15 @@ class BehaviorTreeNode : public rclcpp::Node {
   }
 
   bool validate_plan(const Json& plan, std::string& error) {
-    if (!plan.is_object() || plan.value("schema_version", 0) != 2 ||
-        plan.value("root_type", "") != "Sequence") {
+    if (!plan.is_object()) {
+      error = "unsupported_plan_schema";
+      return false;
+    }
+    const auto root_type = plan.value("root_type", "");
+    const bool visual_search = root_type == "VisualSearch";
+    if ((!visual_search &&
+         (plan.value("schema_version", 0) != 2 || root_type != "Sequence")) ||
+        (visual_search && plan.value("schema_version", 0) != 3)) {
       error = "unsupported_plan_schema";
       return false;
     }
@@ -262,9 +370,24 @@ class BehaviorTreeNode : public rclcpp::Node {
         plan["plan_id"].get<std::string>().empty() || !plan.contains("steps") ||
         !plan["steps"].is_array() || plan["steps"].empty() ||
         plan["steps"].size() > kMaxPlanSteps ||
-        plan.value("on_failure", "") != "stop_remaining") {
+        plan.value("on_failure", "") !=
+            (visual_search ? "report_not_found" : "stop_remaining")) {
       error = "invalid_plan_envelope";
       return false;
+    }
+    if (visual_search) {
+      if (plan["steps"].size() != 1 || !plan.contains("target") ||
+          !plan["target"].is_string() || plan["target"].get<std::string>().empty() ||
+          plan["target"].get<std::string>().size() > 200 ||
+          !plan.contains("question") || !plan["question"].is_string() ||
+          plan["question"].get<std::string>().empty() ||
+          plan["question"].get<std::string>().size() > 500 ||
+          !plan.contains("max_views") || !plan["max_views"].is_number_unsigned() ||
+          plan["max_views"].get<unsigned>() < 2 ||
+          plan["max_views"].get<unsigned>() > 4) {
+        error = "invalid_visual_search_plan";
+        return false;
+      }
     }
 
     std::string previous;
@@ -294,8 +417,12 @@ class BehaviorTreeNode : public rclcpp::Node {
         error = "invalid_resources_" + std::to_string(index + 1);
         return false;
       }
+      const auto expected_attempts = visual_search
+          ? plan["max_views"].get<unsigned>() - 1
+          : skill->second["max_attempts"].get<unsigned>();
       if (step["timeout_ms"] != skill->second["timeout_ms"] ||
-          step["max_attempts"] != skill->second["max_attempts"]) {
+          step["max_attempts"].get<unsigned>() != expected_attempts ||
+          (visual_search && action_name != "move_chassis")) {
         error = "invalid_execution_policy_" + std::to_string(index + 1);
         return false;
       }
@@ -336,6 +463,12 @@ class BehaviorTreeNode : public rclcpp::Node {
     }
 
     plan_id_ = candidate_id;
+    root_type_ = plan.value("root_type", "Sequence");
+    if (root_type_ == "VisualSearch") {
+      visual_target_ = plan["target"].get<std::string>();
+      visual_question_ = plan["question"].get<std::string>();
+      visual_max_views_ = plan["max_views"].get<unsigned>();
+    }
     steps_.clear();
     results_ = Json::array();
     attempt_results_.clear();
@@ -351,23 +484,29 @@ class BehaviorTreeNode : public rclcpp::Node {
     attempt_results_.assign(steps_.size(), Json::array());
     attempt_counts_.assign(steps_.size(), 0);
 
-    std::ostringstream xml;
-    xml << R"(<root BTCPP_format="4" main_tree_to_execute="MainTree">)"
-        << R"(<BehaviorTree ID="MainTree"><Sequence name="ActionPlan">)";
-    for (std::size_t index = 0; index < steps_.size(); ++index) {
-      xml << R"(<Fallback name="StepRecovery">)"
-          << R"(<RetryUntilSuccessful num_attempts=")"
-          << steps_[index].max_attempts << R"(">)"
-          << R"(<Timeout msec=")" << steps_[index].timeout_ms + 100
-          << R"("><RosAction step_index=")" << index
-          << R"("/></Timeout></RetryUntilSuccessful>)"
-          << R"(<RecoveryStop step_index=")" << index
-          << R"("/></Fallback>)";
-    }
-    xml << "</Sequence></BehaviorTree></root>";
-
     try {
-      tree_.emplace(factory_.createTreeFromText(xml.str()));
+      if (root_type_ == "VisualSearch") {
+        auto blackboard = BT::Blackboard::create();
+        blackboard->set<unsigned>("search_retries", visual_max_views_ - 1);
+        tree_.emplace(factory_.createTreeFromFile(
+            visual_search_tree_path_, blackboard));
+      } else {
+        std::ostringstream xml;
+        xml << R"(<root BTCPP_format="4" main_tree_to_execute="MainTree">)"
+            << R"(<BehaviorTree ID="MainTree"><Sequence name="ActionPlan">)";
+        for (std::size_t index = 0; index < steps_.size(); ++index) {
+          xml << R"(<Fallback name="StepRecovery">)"
+              << R"(<RetryUntilSuccessful num_attempts=")"
+              << steps_[index].max_attempts << R"(">)"
+              << R"(<Timeout msec=")" << steps_[index].timeout_ms + 100
+              << R"("><RosAction step_index=")" << index
+              << R"("/></Timeout></RetryUntilSuccessful>)"
+              << R"(<RecoveryStop step_index=")" << index
+              << R"("/></Fallback>)";
+        }
+        xml << "</Sequence></BehaviorTree></root>";
+        tree_.emplace(factory_.createTreeFromText(xml.str()));
+      }
     } catch (const std::exception& exception) {
       publish_plan_status(plan_id_, "rejected", {},
                           std::string("tree_build_failed:") + exception.what());
@@ -407,6 +546,23 @@ class BehaviorTreeNode : public rclcpp::Node {
     }
   }
 
+  void on_visual_search_status(const std::string& payload) {
+    if (visual_request_id_.empty()) {
+      return;
+    }
+    try {
+      const auto status = Json::parse(payload);
+      const auto value = status.value("status", "");
+      if (status.value("request_id", "") == visual_request_id_ &&
+          status.value("plan_id", "") == plan_id_ &&
+          (value == "found" || value == "not_found" || value == "uncertain")) {
+        visual_terminal_ = status;
+      }
+    } catch (const std::exception&) {
+      return;
+    }
+  }
+
   void tick_tree() {
     if (!tree_) {
       return;
@@ -415,14 +571,16 @@ class BehaviorTreeNode : public rclcpp::Node {
     if (status == BT::NodeStatus::RUNNING) {
       return;
     }
-    while (results_.size() < steps_.size()) {
-      const auto& step = steps_[results_.size()];
-      auto skipped = step.original;
-      skipped["status"] = "skipped";
-      skipped["action"] = step.name;
-      skipped["reason"] = "prior_action_not_completed";
-      skipped["node_status"] = "idle";
-      results_.push_back(std::move(skipped));
+    if (root_type_ == "Sequence") {
+      while (results_.size() < steps_.size()) {
+        const auto& step = steps_[results_.size()];
+        auto skipped = step.original;
+        skipped["status"] = "skipped";
+        skipped["action"] = step.name;
+        skipped["reason"] = "prior_action_not_completed";
+        skipped["node_status"] = "idle";
+        results_.push_back(std::move(skipped));
+      }
     }
     const auto plan_status = cancelled_ ? "halted" :
         status == BT::NodeStatus::SUCCESS ? "success" : "failure";
@@ -469,6 +627,28 @@ class BehaviorTreeNode : public rclcpp::Node {
     current_terminal_.reset();
   }
 
+  void record_visual_result(bool found) {
+    Json result = {
+        {"name", "search_environment"},
+        {"action", "search_environment"},
+        {"status", "completed"},
+        {"node_status", "success"},
+        {"found", found},
+        {"target", visual_target_},
+        {"attempts", visual_attempt_},
+        {"evidence", last_visual_evidence_}};
+    if (found) {
+      result["response"] = last_visual_response_.empty()
+          ? "我找到" + visual_target_ + "了。"
+          : last_visual_response_;
+    } else {
+      result["response"] = "我查看了" + std::to_string(visual_attempt_) +
+          "个方向，仍然没有找到" + visual_target_ + "。";
+      result["search_status"] = last_visual_status_;
+    }
+    results_.push_back(std::move(result));
+  }
+
   void publish_emergency_stop_once() {
     if (stop_sent_) {
       return;
@@ -509,6 +689,16 @@ class BehaviorTreeNode : public rclcpp::Node {
     current_terminal_.reset();
     cancelled_ = false;
     stop_sent_ = false;
+    root_type_.clear();
+    visual_target_.clear();
+    visual_question_.clear();
+    visual_max_views_ = 0;
+    visual_attempt_ = 0;
+    visual_request_id_.clear();
+    visual_terminal_.reset();
+    last_visual_status_.clear();
+    last_visual_evidence_.clear();
+    last_visual_response_.clear();
   }
 
   BT::BehaviorTreeFactory factory_;
@@ -519,19 +709,33 @@ class BehaviorTreeNode : public rclcpp::Node {
   std::vector<Json> attempt_results_;
   std::vector<unsigned> attempt_counts_;
   std::string plan_id_;
+  std::string root_type_;
+  std::string visual_search_tree_path_;
   std::optional<unsigned> current_step_;
   std::string current_request_id_;
   std::optional<Json> current_terminal_;
   std::chrono::steady_clock::time_point step_deadline_;
+  std::chrono::steady_clock::time_point visual_deadline_;
   std::chrono::duration<double> action_timeout_{20.0};
   bool cancelled_ = false;
   bool stop_sent_ = false;
+  std::string visual_target_;
+  std::string visual_question_;
+  unsigned visual_max_views_ = 0;
+  unsigned visual_attempt_ = 0;
+  std::string visual_request_id_;
+  std::optional<Json> visual_terminal_;
+  std::string last_visual_status_;
+  std::string last_visual_evidence_;
+  std::string last_visual_response_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr action_command_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tree_status_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr execute_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr cancel_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr action_status_sub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr visual_search_request_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr visual_search_status_sub_;
   rclcpp::TimerBase::SharedPtr tick_timer_;
 };
 
@@ -556,6 +760,22 @@ BT::NodeStatus RecoveryStopNode::tick() {
   }
   owner_->recover_step(input.value());
   return BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus VisualSearchNode::onStart() {
+  return owner_->start_visual_search() ? BT::NodeStatus::RUNNING
+                                        : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus VisualSearchNode::onRunning() {
+  return owner_->poll_visual_search();
+}
+
+void VisualSearchNode::onHalted() { owner_->halt_visual_search(); }
+
+BT::NodeStatus SearchNotFoundNode::tick() {
+  owner_->report_target_not_found();
+  return BT::NodeStatus::SUCCESS;
 }
 
 int main(int argc, char** argv) {

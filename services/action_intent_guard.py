@@ -241,6 +241,14 @@ def _valid_arguments(name, arguments):
             and len(question) <= 500
             and isinstance(save_photo, bool)
         )
+    elif name == "search_environment":
+        try:
+            from services.visual_search import normalize_visual_search_arguments
+
+            normalize_visual_search_arguments(arguments)
+            valid = True
+        except (TypeError, ValueError):
+            valid = False
     elif name == "control_music":
         action = arguments.get("action")
         track = arguments.get("track", "")

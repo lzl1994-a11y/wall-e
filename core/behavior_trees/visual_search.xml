@@ -1,0 +1,22 @@
+<root BTCPP_format="4" main_tree_to_execute="VisualSearch">
+  <BehaviorTree ID="VisualSearch">
+    <Fallback name="FindOrReportNotFound">
+      <RetryUntilSuccessful num_attempts="{search_retries}">
+        <Fallback name="DetectOrChangeView">
+          <Timeout msec="45100">
+            <DetectVisualTarget/>
+          </Timeout>
+          <ForceFailure>
+            <Timeout msec="5100">
+              <RosAction step_index="0"/>
+            </Timeout>
+          </ForceFailure>
+        </Fallback>
+      </RetryUntilSuccessful>
+      <Timeout msec="45100">
+        <DetectVisualTarget/>
+      </Timeout>
+      <ReportTargetNotFound/>
+    </Fallback>
+  </BehaviorTree>
+</root>

@@ -17,6 +17,8 @@ ACTION_TOOL_POLICY = """
 本轮普通 content 必须留空，动作确认台词由系统另行生成。
 当用户要求“先观察现实画面，再根据观察条件决定是否动作”时，必须作为一个复合任务调用
 run_conditional_task，不得拆成 inspect_camera 与无条件动作，也不得重复调用其中的动作。
+当用户要求在房间或周围主动寻找、定位当前视野之外可能存在的目标时，调用
+search_environment，不要把搜索改写成 run_conditional_task。
 """.strip()
 
 DIALOG_EXPRESSION_POLICY = """

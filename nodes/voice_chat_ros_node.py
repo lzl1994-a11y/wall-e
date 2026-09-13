@@ -42,6 +42,14 @@ from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.camera_frame import save_camera_photo
 from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.dialog_workflow import ConditionalTaskWorkflow
+from services.visual_search import (
+    VISUAL_SEARCH_REQUEST_TOPIC,
+    VISUAL_SEARCH_STATUS_TOPIC,
+    VISUAL_SEARCH_TOOL_NAME,
+    compile_visual_search_plan,
+    encode_visual_search_status,
+    parse_visual_search_request,
+)
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
     GAME_MODE_STATE_TOPIC,
@@ -101,6 +109,16 @@ class VoiceChatNode(Node):
             self._on_behavior_tree_status,
             10,
         )
+        self.visual_search_status_pub = self.create_publisher(
+            String, VISUAL_SEARCH_STATUS_TOPIC, 10
+        )
+        self.create_subscription(
+            String,
+            VISUAL_SEARCH_REQUEST_TOPIC,
+            self._on_visual_search_request,
+            10,
+        )
+        self._visual_search_lock = threading.Lock()
         self._conditional_task_workflow = None
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_action_status, 10)
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
@@ -412,6 +430,8 @@ class VoiceChatNode(Node):
             return self._process_camera_inspection(arguments)
         if name == CONDITIONAL_TASK_TOOL_NAME:
             return self._process_conditional_task(arguments)
+        if name == VISUAL_SEARCH_TOOL_NAME:
+            return self._process_visual_search(arguments)
         allowed, reason = validate_action_arguments(name, arguments)
         if not allowed:
             return {"status": "rejected", "action": name, "reason": reason}
@@ -437,10 +457,103 @@ class VoiceChatNode(Node):
         if executor is not None:
             executor.accept_status(message.data)
 
+    def _on_visual_search_request(self, message):
+        request = parse_visual_search_request(message.data)
+        if request is None:
+            self.get_logger().warning("Ignored malformed visual-search request")
+            return
+        threading.Thread(
+            target=self._serve_visual_search_request,
+            args=(request,),
+            daemon=True,
+        ).start()
+
+    def _serve_visual_search_request(self, request):
+        with self._visual_search_lock:
+            try:
+                preview = self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
+                )
+                if preview.busy or not preview.last_frame:
+                    result = {
+                        "status": "uncertain",
+                        "evidence": preview.error or "camera_frame_unavailable",
+                        "response": "这次没有取得可判断的画面。",
+                    }
+                else:
+                    result = self.vc.evaluate_visual_search(
+                        request["target"],
+                        request["question"],
+                        base64.b64encode(preview.last_frame).decode("ascii"),
+                    )
+            except Exception as exc:
+                self.get_logger().error(f"Visual search view failed: {exc}")
+                result = {
+                    "status": "uncertain",
+                    "evidence": "visual_search_view_failed",
+                    "response": "这次画面没有分析成功。",
+                }
+            self.visual_search_status_pub.publish(String(data=encode_visual_search_status(
+                request, result
+            )))
+
+    def _process_visual_search(self, arguments):
+        try:
+            plan = compile_visual_search_plan(
+                turn_id=self._ensure_turn_id(), arguments=arguments
+            )
+        except (TypeError, ValueError) as exc:
+            return {
+                "status": "rejected",
+                "action": VISUAL_SEARCH_TOOL_NAME,
+                "reason": str(exc),
+            }
+        self.tts_pub.publish(String(data="我找一下。"))
+        self.get_logger().info(
+            "Visual search submitted: "
+            f"target={plan.target}, max_views={plan.max_views}, "
+            f"motion={plan.steps[0].arguments}"
+        )
+        result = self._behavior_tree_executor.try_execute(
+            plan,
+            publish=lambda payload: self.behavior_tree_pub.publish(String(data=payload)),
+            cancel_publish=lambda payload: self.behavior_tree_cancel_pub.publish(
+                String(data=payload)
+            ),
+            owner_available=lambda: self.behavior_tree_pub.get_subscription_count() > 0,
+            timeout=plan.max_views * 50.0 + 10.0,
+            cancelled=self.vc._cancel_llm.is_set,
+        )
+        if result is None:
+            return {
+                "status": "failed",
+                "action": VISUAL_SEARCH_TOOL_NAME,
+                "reason": "native_behavior_tree_unavailable",
+            }
+        search_results = [
+            item for item in result.get("results", [])
+            if item.get("action") == VISUAL_SEARCH_TOOL_NAME
+        ]
+        if result.get("status") == "success" and search_results:
+            final = dict(search_results[-1])
+            final["status"] = "completed"
+            self.get_logger().info(
+                "Visual search completed: "
+                f"found={final.get('found')}, attempts={final.get('attempts')}"
+            )
+            return final
+        return {
+            "status": "failed",
+            "action": VISUAL_SEARCH_TOOL_NAME,
+            "reason": result.get("error") or result.get("status") or "search_failed",
+        }
+
     def _execute_behavior_tree_plan(self, heard_text, actions):
         """Submit ordinary actions to the native tree; return None for fallback."""
         if any(
-            action.get("name") in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}
+            action.get("name") in {
+                "inspect_camera", CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME
+            }
             for action in actions
             if isinstance(action, dict)
         ):
@@ -483,10 +596,6 @@ class VoiceChatNode(Node):
                     name, arguments
                 ),
                 execute=self._execute_workflow_action,
-                analyze=lambda frame, question: self.vc.analyze_image(
-                    question,
-                    base64.b64encode(frame).decode("ascii"),
-                ),
             )
             self._conditional_task_workflow = workflow
         try:

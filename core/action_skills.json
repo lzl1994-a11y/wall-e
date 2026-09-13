@@ -90,6 +90,15 @@
       "timeout_ms": 30000,
       "max_attempts": 1,
       "supports_cancel": false
+    },
+    "search_environment": {
+      "owner": "wali_behavior_tree_node",
+      "plan_resources": ["camera", "chassis"],
+      "arbitration_resources": ["camera_owner", "motion_owner"],
+      "action_bus": false,
+      "timeout_ms": 60000,
+      "max_attempts": 1,
+      "supports_cancel": true
     }
   }
 }

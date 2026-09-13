@@ -10,10 +10,13 @@ from pathlib import Path
 def main():
     root = Path(__file__).resolve().parent.parent
     registry = str(root / "core" / "action_skills.json")
+    visual_search_tree = str(root / "core" / "behavior_trees" / "visual_search.xml")
     explicit = os.environ.get("WALI_BEHAVIOR_TREE_EXECUTABLE", "").strip()
     if explicit:
         os.execv(explicit, [
-            explicit, "--ros-args", "-p", f"skill_registry_path:={registry}"
+            explicit, "--ros-args",
+            "-p", f"skill_registry_path:={registry}",
+            "-p", f"visual_search_tree_path:={visual_search_tree}",
         ])
     local_binary = (
         root
@@ -33,22 +36,29 @@ def main():
                 [
                     "bash",
                     "-c",
-                    'source "$1" && exec "$2" --ros-args -p "skill_registry_path:=$3"',
+                    'source "$1" && exec "$2" --ros-args '
+                    '-p "skill_registry_path:=$3" '
+                    '-p "visual_search_tree_path:=$4"',
                     "wali-behavior-tree",
                     str(ros_setup),
                     executable,
                     registry,
+                    visual_search_tree,
                 ],
             )
         os.execv(executable, [
-            executable, "--ros-args", "-p", f"skill_registry_path:={registry}"
+            executable, "--ros-args",
+            "-p", f"skill_registry_path:={registry}",
+            "-p", f"visual_search_tree_path:={visual_search_tree}",
         ])
     ros2 = shutil.which("ros2")
     if not ros2:
         raise RuntimeError("ros2 executable not found")
     os.execv(ros2, [
         ros2, "run", "wali_behavior_tree", "behavior_tree_node",
-        "--ros-args", "-p", f"skill_registry_path:={registry}",
+        "--ros-args",
+        "-p", f"skill_registry_path:={registry}",
+        "-p", f"visual_search_tree_path:={visual_search_tree}",
     ])
 
 

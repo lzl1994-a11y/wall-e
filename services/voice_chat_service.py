@@ -47,6 +47,12 @@ from services.conditional_task import (
 )
 from services.action_intent_guard import validate_action_arguments
 from services.behavior_tree_workflow import BehaviorTreeActionWorkflow
+from services.visual_search import (
+    VISUAL_SEARCH_RESULT_TOOL_NAME,
+    VISUAL_SEARCH_TOOL_NAME,
+    parse_visual_search_result,
+    visual_search_result_tool,
+)
 from .audio_pipeline import AudioPipeline
 from .multimodal import create_multimodal
 from .voice_debug import RollingVoiceDebugStore
@@ -376,8 +382,11 @@ class VoiceChatService:
                 if isinstance(call, dict)
                 and call.get("name") != DIRECT_ANSWER_TOOL_NAME
             ]
+            visual_tool_names = {
+                "inspect_camera", CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME
+            }
             has_visual_proposal = any(
-                call.get("name") in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}
+                call.get("name") in visual_tool_names
                 for call in proposed_actions
             )
             needs_visual_replan = bool(
@@ -396,20 +405,26 @@ class VoiceChatService:
                 visual_plan
                 and visual_plan.get("name") == CONDITIONAL_TASK_TOOL_NAME
             )
+            compound_visual_intent = bool(
+                visual_plan
+                and visual_plan.get("name")
+                in {CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME}
+            )
             if needs_visual_replan:
                 non_visual_calls = [
                     call for call in tool_calls
                     if isinstance(call, dict)
-                    and call.get("name") not in {
-                        "inspect_camera", CONDITIONAL_TASK_TOOL_NAME
-                    }
+                    and call.get("name") not in visual_tool_names
                 ]
                 if visual_plan is not None:
                     tool_calls = (
                         [visual_plan]
-                        if conditional_intent
+                        if compound_visual_intent
                         else [*non_visual_calls, visual_plan]
                     )
+                    # The specialized planner resolves contradictory generic
+                    # intent labels from the audio turn.
+                    intent_type = "execute_task"
                 else:
                     tool_calls = [
                         call for call in non_visual_calls
@@ -470,7 +485,9 @@ class VoiceChatService:
                         f"intent={intent_type}, tool={tc['name']}"
                     )
                     continue
-                if conditional_intent and tc["name"] != "run_conditional_task":
+                if compound_visual_intent and tc["name"] not in {
+                    CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME
+                }:
                     print(
                         "[VoiceChat] 忽略被拆分的复合任务工具: "
                         f"{tc['name']}"
@@ -586,24 +603,22 @@ class VoiceChatService:
             self._last_llm_activity = time.time()
 
     def _plan_visual_task(self, heard_text):
-        """Semantically select one plain or conditional visual task."""
+        """Semantically select inspection, conditional action, or search."""
         plan_tools = [
             tool for tool in get_action_tools()
             if tool.get("function", {}).get("name")
-            in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}
+            in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME}
         ]
-        if len(plan_tools) != 2 or self._cancel_llm.is_set():
+        if len(plan_tools) != 3 or self._cancel_llm.is_set():
             return None
         messages = [
             {"role": "system", "content": (
                 "你是机器人视觉任务规划器。直接理解用户完整语义，不依赖固定连接词。"
                 "如果用户只要求查看当前画面，调用 inspect_camera；如果用户要求先观察"
                 "画面、再根据观察结果决定是否执行动作，调用 run_conditional_task。"
-                "如果还要求动作完成后再次查看，把重新观察的问题写入"
-                " follow_up_observation。"
                 "用户要求在房间、周围等大于单个视野的环境中寻找或定位目标时，应把它"
-                "理解为主动视觉搜索：当前视野未发现目标时，选择一个已注册的适当转向"
-                "动作，并在动作后继续观察；即使用户没有逐字指定转向方式也可以规划。"
+                "理解为主动视觉搜索并调用 search_environment；搜索循环和转向由行为树"
+                "负责，不要把搜索改写成否定条件任务。"
                 "如果不是视觉任务，不调用工具。只能选择一种任务，不观察环境、不执行"
                 "动作，也不声称已经完成。"
             )},
@@ -616,7 +631,9 @@ class VoiceChatService:
             calls, _content = streamed
             for call in calls:
                 name = call.get("name")
-                if name not in {"inspect_camera", CONDITIONAL_TASK_TOOL_NAME}:
+                if name not in {
+                    "inspect_camera", CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME
+                }:
                     continue
                 raw_arguments = call.get("arguments")
                 if not isinstance(raw_arguments, dict):
@@ -739,6 +756,59 @@ class VoiceChatService:
                 break
             return decision
         raise RuntimeError("视觉模型没有返回有效的 conditional_decision")
+
+    def evaluate_visual_search(
+        self,
+        target: str,
+        question: str,
+        image_base64: str,
+    ) -> dict[str, str]:
+        """Return a closed found/not-found result for one search-tree view."""
+        prompt = (
+            "只检查附带的当前摄像头图片，不考虑画面外或遮挡后的可能性。"
+            "如果当前图片清楚显示搜索目标，status=found，并在 response 中说明位置；"
+            "当前图片清晰但没有目标时 status=not_found；只有画面本身无法判断时才用"
+            " uncertain。必须调用 visual_search_result，不执行动作。\n"
+            f"搜索目标：{target}\n用户问题：{question}"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是行为树的视觉检测叶节点。只判断目标在当前图片中是否可见，"
+                    "必须返回结构化 visual_search_result，不规划动作，不输出普通文本。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                    },
+                ],
+            },
+        ]
+        tool = visual_search_result_tool()
+        streamed = self._stream_tool_calls(
+            messages,
+            tools=[tool],
+            tool_choice={
+                "type": "function",
+                "function": {"name": VISUAL_SEARCH_RESULT_TOOL_NAME},
+            },
+        )
+        if streamed is None:
+            raise RuntimeError("视觉搜索请求被中断")
+        calls, _raw_content = streamed
+        for call in calls:
+            if call.get("name") != VISUAL_SEARCH_RESULT_TOOL_NAME:
+                continue
+            result = parse_visual_search_result(call.get("arguments"))
+            if result is not None:
+                return result
+        raise RuntimeError("视觉模型没有返回有效的 visual_search_result")
 
     def _stream_tool_calls(self, messages, *, tools, tool_choice):
         """Return parsed tool calls and untrusted content for one LLM request."""

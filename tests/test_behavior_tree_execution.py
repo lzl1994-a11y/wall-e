@@ -276,6 +276,16 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn("<RetryUntilSuccessful", source)
         self.assertIn("<Timeout msec=", source)
         self.assertIn("RecoveryStopNode", source)
+        self.assertIn("DetectVisualTarget", source)
+        self.assertIn("ReportTargetNotFound", source)
+        self.assertIn('root_type == "VisualSearch"', source)
+        self.assertIn("createTreeFromFile", source)
+        visual_search = (root / "core" / "behavior_trees" /
+                         "visual_search.xml").read_text(encoding="utf-8")
+        self.assertIn("<RetryUntilSuccessful", visual_search)
+        self.assertIn("<Fallback", visual_search)
+        self.assertIn("<ForceFailure>", visual_search)
+        self.assertIn("<DetectVisualTarget/>", visual_search)
 
     def test_cmake_handles_humble_multiarch_behavior_tree_package(self):
         from pathlib import Path
@@ -299,6 +309,7 @@ class NativePackageContractTests(unittest.TestCase):
         self.assertIn('Path("/opt/ros") / ros_distro / "setup.bash"', launcher)
         self.assertIn('source "$1" && exec "$2"', launcher)
         self.assertIn("skill_registry_path:=", launcher)
+        self.assertIn("visual_search_tree_path:=", launcher)
         self.assertLess(launcher.index("local_binary.is_file()"), launcher.index("shutil.which"))
 
 
