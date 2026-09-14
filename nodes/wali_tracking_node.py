@@ -10,7 +10,6 @@
 import time
 import json
 import signal
-import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
@@ -20,6 +19,7 @@ from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
 from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.motion_arbiter import MOTOR_TRACKING_TOPIC
 from services.servo_motion_config import load_neck_kinematics
+from services.tracking_control import PID, TargetSelector
 
 from services.vision_pipeline_protocol import (
     TRACKING_SERVO_TARGET_TOPIC,
@@ -38,30 +38,6 @@ try:
     HAS_HOBOT_MSGS = True
 except ImportError:
     HAS_HOBOT_MSGS = False
-
-
-class PID:
-    def __init__(self, kp, ki, kd, out_min=-1.0, out_max=1.0):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.out_min = out_min
-        self.out_max = out_max
-        self.integral = 0.0
-        self.prev_error = None
-
-    def update(self, error, dt):
-        if dt <= 0.0:
-            return 0.0
-        self.integral += error * dt
-        derivative = 0.0 if self.prev_error is None else (error - self.prev_error) / dt
-        out = self.kp * error + self.ki * self.integral + self.kd * derivative
-        self.prev_error = error
-        return max(min(out, self.out_max), self.out_min)
-
-    def reset(self):
-        self.integral = 0.0
-        self.prev_error = None
 
 
 class WaliTrackingNode(Node):
@@ -115,7 +91,12 @@ class WaliTrackingNode(Node):
         self._last_detection_message = 0.0
         self._last_nonempty_detection = 0.0
         self._last_detection_warning = 0.0
-        self._target_tracks = {}
+        self._target_selector = TargetSelector(
+            image_width=self.IMG_WIDTH,
+            image_height=self.IMG_HEIGHT,
+            memory_seconds=self.TARGET_MEMORY_SEC,
+            filter_seconds=self.FILTER_TIME_SEC,
+        )
         self._last_horizontal_error = 0.0
 
         # ── PID 控制器 ──
@@ -322,26 +303,16 @@ class WaliTrackingNode(Node):
         if not boxes:
             return None
         now = time.monotonic()
-        previous = self._target_tracks.get(kind)
-        if previous is None or now - previous[1] > self.TARGET_MEMORY_SEC:
-            best = self._largest_box(boxes)
+        best, reacquired = self._target_selector.select(
+            boxes,
+            kind=kind,
+            dt=dt,
+            now=now,
+        )
+        if reacquired:
             self._pid_chassis_yaw.reset()
             self._pid_chassis_dist.reset()
             self._pid_neck_pitch.reset()
-        else:
-            old = previous[0]
-            def distance(box):
-                return math.hypot((box[0] - old[0]) / self.IMG_WIDTH,
-                                  (box[1] - old[1]) / self.IMG_HEIGHT)
-            candidates = [box for box in boxes
-                          if distance(box) <= 0.30
-                          and 0.25 <= box[2] / max(old[2], 1e-6) <= 4.0]
-            if not candidates:
-                return None
-            best = min(candidates, key=distance)
-            alpha = 1.0 - math.exp(-dt / self.FILTER_TIME_SEC)
-            best = tuple(a + alpha * (b - a) for a, b in zip(old, best))
-        self._target_tracks[kind] = (best, now)
         return best
 
 
@@ -458,7 +429,7 @@ class WaliTrackingNode(Node):
 
     @staticmethod
     def _largest_box(boxes):
-        return max(boxes, key=lambda box: box[2], default=None)
+        return TargetSelector.largest_box(boxes)
 
     def _mark_target_seen(self):
         self._last_target_seen = time.monotonic()
@@ -534,7 +505,7 @@ class WaliTrackingNode(Node):
         if mode in (self.MODE_BODY_FOLLOW, self.MODE_FACE_FOLLOW):
             self.mode = mode
             self._current_neck_pitch = self.GAZE_START_PITCH if mode == self.MODE_FACE_FOLLOW else 0.0
-            self._target_tracks.clear()
+            self._target_selector.clear()
             self._last_horizontal_error = 0.0
             self._stop_motor()
             self._publish_head_and_neck(0.0, self._current_neck_pitch)
