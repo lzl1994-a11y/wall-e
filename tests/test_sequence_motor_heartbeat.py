@@ -128,9 +128,7 @@ class SequenceMotorHeartbeatTests(unittest.TestCase):
         })))
         self.assertEqual(node._current_sequence, [])
         self.assertEqual(node._steps["head_yaw"], 0.0)
-        status = json.loads(node.publishers["/action_status"].messages[-1].data)
-        self.assertEqual(status["request_id"], "old")
-        self.assertEqual(status["status"], "interrupted")
+        self.assertEqual(node.publishers["/action_status"].messages, [])
 
     def test_symbolic_neck_pose_targets_follow_runtime_calibration(self):
         module = _load_module()

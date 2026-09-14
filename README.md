@@ -431,7 +431,7 @@ RDK 多架构安装的 BT.CPP CMake 兼容配置位于 `cmake/behaviortree_cpp`�
 只有 `failed/timeout` 可按白名单重试，`rejected/interrupted` 不会重复执行；尝试耗尽后
 `Fallback` 执行一次全局安全停止，并保留每次尝试的回执。
 高优先级请求抢占正在运行的可取消动作时，协调器会通过 `/action_cancel`
-定向停止旧请求，并立即发布关联的 `interrupted` 终态，调用方无需等待超时。
+定向停止旧请求，并立即发布唯一的 `interrupted` 终态；执行节点只落实停止、不重复回报，调用方无需等待超时。
 一次性相机检查与条件任务仍由 LangGraph 管理；需要多视角恢复的环境搜索由原生行为树管理。
 
 主程序启动时，`camera_capture_node` 会立即拉起唯一的 `hobot_usb_cam` 并保持热备；

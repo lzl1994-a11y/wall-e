@@ -173,7 +173,7 @@ class SequenceCommandControllerTests(unittest.TestCase):
         self.assertEqual(self._statuses(finished.effects), ["completed"])
         self.assertIn("motor_stop", [effect.kind for effect in finished.effects])
 
-    def test_targeted_cancel_interrupts_only_matching_sequence(self):
+    def test_targeted_cancel_stops_matching_sequence_without_duplicate_status(self):
         controller = self._controller(sequences={
             "dance": [{
                 "time": 2.0,
@@ -196,8 +196,54 @@ class SequenceCommandControllerTests(unittest.TestCase):
         })
 
         self.assertEqual(ignored, ())
-        self.assertEqual(self._statuses(cancelled), ["interrupted"])
+        self.assertEqual(self._statuses(cancelled), [])
         self.assertEqual(controller.runtime.timeline, [])
+
+    def test_game_mode_interruption_still_reports_sequence_status(self):
+        controller = self._controller(sequences={
+            "dance": [{
+                "time": 2.0,
+                "actions": [{"type": "express_emotion", "emotion": "happy"}],
+            }],
+        })
+        controller.handle_action({
+            "name": "play_sequence",
+            "arguments": {"sequence_name": "dance"},
+            "request_id": "dance-request",
+        }, wall_now=1.0, monotonic_now=1.0)
+
+        effects = controller.set_game_active(True)
+
+        self.assertEqual(self._statuses(effects), ["interrupted"])
+
+    def test_replacement_command_does_not_repeat_preemption_status(self):
+        controller = self._controller(sequences={
+            "dance": [{"time": 2.0, "actions": []}],
+        })
+        controller.handle_action({
+            "name": "play_sequence",
+            "arguments": {"sequence_name": "dance"},
+            "request_id": "old",
+        }, wall_now=1.0, monotonic_now=1.0)
+
+        effects = controller.handle_action({
+            "name": "express_emotion",
+            "arguments": {"emotion": "happy"},
+            "request_id": "new",
+        }, wall_now=1.1, monotonic_now=1.1)
+
+        statuses = [
+            effect.payload
+            for effect in effects
+            if effect.kind == "status"
+        ]
+        self.assertEqual(
+            [
+                (status["request"]["request_id"], status["status"])
+                for status in statuses
+            ],
+            [("new", "accepted"), ("new", "completed")],
+        )
 
     def test_dialog_expression_waits_for_explicit_motion(self):
         controller = self._controller()

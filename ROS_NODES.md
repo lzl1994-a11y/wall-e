@@ -55,7 +55,7 @@ walle_ear_node -> voice_text -> walle_llm_brain -> screen_dialog -> walle_serial
 | `full_ai_text` | `walle_llm_brain` | 当前默认无人订阅 | LLM 完整回复文本，等整轮生成结束后发布。 |
 | `/action_request` | 对话、行为树、MCP、手柄 | `action_coordinator_node` | 所有高层动作的唯一提交入口。 |
 | `/action_cmd` | `action_coordinator_node` | 动作、音乐、跟踪执行节点 | 经优先级和资源仲裁后的内部执行通道。 |
-| `/action_cancel` | `action_coordinator_node` | 支持取消的技能执行节点 | 定向中止被抢占或租约过期的 `request_id`。 |
+| `/action_cancel` | `action_coordinator_node` | 支持取消的技能执行节点 | 定向中止被抢占或租约过期的 `request_id`；协调器统一发布 `interrupted` 终态，执行节点只停止，不重复回报。 |
 | `/behavior_tree/execute` | 文本或多模态对话节点 | `wali_behavior_tree_node` | 提交由程序生成、已完成安全校验的受限 `ActionPlan`。 |
 | `/behavior_tree/status` | `wali_behavior_tree_node` | 文本或多模态对话节点 | 返回计划接收、运行及最终成功/失败/中断状态。 |
 | `/behavior_tree/cancel` | 文本或多模态对话节点 | `wali_behavior_tree_node` | 取消指定 `plan_id`；原生节点中止后续步骤并发布一次停止动作。 |

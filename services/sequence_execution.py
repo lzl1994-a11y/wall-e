@@ -455,11 +455,18 @@ class SequenceCommandController:
         arguments = request.get("arguments", {})
         effects: list[SequenceEffect] = []
 
-        effects.extend(self._interrupt_sequence("superseded_by_new_command"))
+        # The coordinator owns the terminal status for preempted leases.  Topic
+        # delivery order is not guaranteed, so a replacement command must also
+        # clear the previous request without publishing a duplicate terminal.
+        effects.extend(self._interrupt_sequence(
+            "superseded_by_new_command",
+            report_status=False,
+        ))
         if self.runtime.active_motor_command is not None:
             effects.extend(self._stop_motor(
                 status="interrupted",
                 detail="superseded_by_new_command",
+                report_status=False,
             ))
         self.runtime.clear_sequence()
         self.runtime.halt_interpolation()
@@ -522,7 +529,11 @@ class SequenceCommandController:
                     effects, request, "rejected", "unknown_or_empty_sequence"
                 )
         elif name == "stop_all":
-            effects.extend(self._stop_motor(status="interrupted", detail="stop_all"))
+            effects.extend(self._stop_motor(
+                status="interrupted",
+                detail="stop_all",
+                report_status=False,
+            ))
             self._append_status(effects, request, "completed")
         return tuple(effects)
 
@@ -531,14 +542,22 @@ class SequenceCommandController:
         reason = str(cancellation.get("reason") or "cancelled")
         effects: list[SequenceEffect] = []
         if self.sequence_request is not None and self.sequence_request.get("request_id") == request_id:
-            effects.extend(self._interrupt_sequence(reason))
+            effects.extend(self._interrupt_sequence(reason, report_status=False))
             self.runtime.clear_sequence(clear_explicit_motion=True)
             self.runtime.halt_interpolation()
             effects.append(SequenceEffect("cancel_auto_reset_timer"))
             if self.runtime.active_motor_command is not None and self.motor_request is None:
-                effects.extend(self._stop_motor(status="interrupted", detail=reason))
+                effects.extend(self._stop_motor(
+                    status="interrupted",
+                    detail=reason,
+                    report_status=False,
+                ))
         if self.motor_request is not None and self.motor_request.get("request_id") == request_id:
-            effects.extend(self._stop_motor(status="interrupted", detail=reason))
+            effects.extend(self._stop_motor(
+                status="interrupted",
+                detail=reason,
+                report_status=False,
+            ))
         return tuple(effects)
 
     def apply_tracking_targets(self, targets: Any, step_size: Any) -> None:
@@ -588,19 +607,32 @@ class SequenceCommandController:
                 self.runtime.trajectory.apply_targets(*pending)
         return SequenceTick(tuple(effects), result.servo_positions)
 
-    def _interrupt_sequence(self, detail: str) -> tuple[SequenceEffect, ...]:
+    def _interrupt_sequence(
+        self,
+        detail: str,
+        *,
+        report_status: bool = True,
+    ) -> tuple[SequenceEffect, ...]:
         request = self.sequence_request
         self.sequence_request = None
         effects: list[SequenceEffect] = []
-        self._append_status(effects, request, "interrupted", detail)
+        if report_status:
+            self._append_status(effects, request, "interrupted", detail)
         return tuple(effects)
 
-    def _stop_motor(self, *, status: str, detail: str) -> tuple[SequenceEffect, ...]:
+    def _stop_motor(
+        self,
+        *,
+        status: str,
+        detail: str,
+        report_status: bool = True,
+    ) -> tuple[SequenceEffect, ...]:
         self.runtime.stop_motor()
         request = self.motor_request
         self.motor_request = None
         effects: list[SequenceEffect] = [SequenceEffect("motor_stop")]
-        self._append_status(effects, request, status, detail)
+        if report_status:
+            self._append_status(effects, request, status, detail)
         return tuple(effects)
 
     def _consume_runtime_effects(
