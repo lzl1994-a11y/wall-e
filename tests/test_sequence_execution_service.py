@@ -1,6 +1,7 @@
 import unittest
 
 from services.sequence_execution import (
+    SequenceCommandController,
     SequenceLibrary,
     SequenceRuntime,
     ServoTrajectory,
@@ -138,6 +139,80 @@ class SequenceRuntimeTests(unittest.TestCase):
 
         self.assertEqual(runtime.trajectory.targets["head_yaw"], 7600)
         self.assertEqual(runtime.trajectory.steps["head_yaw"], 25)
+
+
+class SequenceCommandControllerTests(unittest.TestCase):
+    def _controller(self, *, sequences=None):
+        trajectory = ServoTrajectory(SERVOS)
+        library = SequenceLibrary(sequences or {}, {})
+        return SequenceCommandController(SequenceRuntime(library, trajectory))
+
+    @staticmethod
+    def _statuses(effects):
+        return [
+            effect.payload["status"]
+            for effect in effects
+            if effect.kind == "status"
+        ]
+
+    def test_move_request_completes_when_motor_deadline_expires(self):
+        controller = self._controller()
+        request = {
+            "name": "move_chassis",
+            "arguments": {"direction": "forward", "duration": 0.25},
+            "request_id": "move",
+        }
+
+        started = controller.handle_action(
+            request, wall_now=1.0, monotonic_now=10.0
+        )
+        finished = controller.tick(wall_now=1.5, monotonic_now=10.3)
+
+        self.assertEqual(self._statuses(started), ["accepted"])
+        self.assertIn("motor", [effect.kind for effect in started])
+        self.assertEqual(self._statuses(finished.effects), ["completed"])
+        self.assertIn("motor_stop", [effect.kind for effect in finished.effects])
+
+    def test_targeted_cancel_interrupts_only_matching_sequence(self):
+        controller = self._controller(sequences={
+            "dance": [{
+                "time": 2.0,
+                "actions": [{"type": "express_emotion", "emotion": "happy"}],
+            }],
+        })
+        controller.handle_action({
+            "name": "play_sequence",
+            "arguments": {"sequence_name": "dance"},
+            "request_id": "dance-request",
+        }, wall_now=1.0, monotonic_now=1.0)
+
+        ignored = controller.cancel({
+            "request_id": "other",
+            "reason": "preempted",
+        })
+        cancelled = controller.cancel({
+            "request_id": "dance-request",
+            "reason": "preempted",
+        })
+
+        self.assertEqual(ignored, ())
+        self.assertEqual(self._statuses(cancelled), ["interrupted"])
+        self.assertEqual(controller.runtime.timeline, [])
+
+    def test_dialog_expression_waits_for_explicit_motion(self):
+        controller = self._controller()
+        controller.handle_action({
+            "name": "manual_servo",
+            "arguments": {"targets": {"head_yaw": 5100}, "step_size": 100},
+            "request_id": "manual",
+        }, wall_now=1.0, monotonic_now=1.0)
+        controller.apply_dialog_expression({"head_yaw": 6200}, 50)
+
+        self.assertEqual(controller.runtime.trajectory.targets["head_yaw"], 5100)
+        controller.tick(wall_now=1.1, monotonic_now=1.1)
+
+        self.assertEqual(controller.runtime.trajectory.targets["head_yaw"], 6200)
+        self.assertFalse(controller.runtime.explicit_motion_active)
 
 
 if __name__ == "__main__":

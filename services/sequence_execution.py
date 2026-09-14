@@ -421,3 +421,212 @@ class SequenceRuntime:
                 for name in self.trajectory.virtual_state
             )
         )
+
+
+class SequenceCommandController:
+    """Apply high-level commands and own their ROS-independent lifecycle."""
+
+    SUPPORTED_ACTIONS = frozenset({
+        "express_emotion",
+        "move_chassis",
+        "manual_servo",
+        "play_sequence",
+        "stop_all",
+    })
+
+    def __init__(self, runtime: SequenceRuntime) -> None:
+        self.runtime = runtime
+        self.motor_request: dict[str, Any] | None = None
+        self.sequence_request: dict[str, Any] | None = None
+        self.pending_dialog_expression: tuple[Any, Any] | None = None
+        self.game_active = False
+
+    def handle_action(
+        self,
+        request: Mapping[str, Any],
+        *,
+        wall_now: float,
+        monotonic_now: float,
+    ) -> tuple[SequenceEffect, ...]:
+        if self.game_active or request.get("name") not in self.SUPPORTED_ACTIONS:
+            return ()
+        request = dict(request)
+        name = request["name"]
+        arguments = request.get("arguments", {})
+        effects: list[SequenceEffect] = []
+
+        effects.extend(self._interrupt_sequence("superseded_by_new_command"))
+        if self.runtime.active_motor_command is not None:
+            effects.extend(self._stop_motor(
+                status="interrupted",
+                detail="superseded_by_new_command",
+            ))
+        self.runtime.clear_sequence()
+        self.runtime.halt_interpolation()
+        effects.append(SequenceEffect("cancel_auto_reset_timer"))
+        effects.append(SequenceEffect("log_info", f"[Interrupt] Cleared state for tool: {name}"))
+
+        if name == "express_emotion":
+            self._append_status(effects, request, "accepted")
+            effects.extend(self.runtime.dispatch_action(
+                {"type": "express_emotion", "emotion": arguments.get("emotion", "happy")},
+                monotonic_now=monotonic_now,
+            ))
+            self._append_status(effects, request, "completed")
+        elif name == "move_chassis":
+            direction = arguments.get("direction", "")
+            if direction not in self.runtime.motion_to_motor:
+                self._append_status(effects, request, "rejected", "invalid_direction")
+                return tuple(effects)
+            self.motor_request = request if request.get("request_id") else None
+            self._append_status(effects, request, "accepted")
+            effects.extend(self._consume_runtime_effects(
+                self.runtime.dispatch_action(
+                    {
+                        "type": "motor",
+                        "direction": direction,
+                        "duration": float(arguments.get("duration", 1.0)),
+                    },
+                    monotonic_now=monotonic_now,
+                ),
+                motor_status="completed",
+            ))
+        elif name == "manual_servo":
+            self.runtime.explicit_motion_active = True
+            self._append_status(effects, request, "accepted")
+            effects.extend(self.runtime.dispatch_action(
+                {
+                    "type": "manual_servo",
+                    "targets": arguments.get("targets", {}),
+                    "step_size": arguments.get("step_size", 30.0),
+                },
+                monotonic_now=monotonic_now,
+            ))
+            self._append_status(effects, request, "completed")
+        elif name == "play_sequence":
+            sequence_name = arguments.get("sequence_name", "")
+            frame_count = self.runtime.start_sequence(sequence_name, now=wall_now)
+            if frame_count:
+                self.sequence_request = request if request.get("request_id") else None
+                self._append_status(effects, request, "accepted")
+                effects.append(SequenceEffect(
+                    "log_info",
+                    f"[Sequence] Playing sequence: {sequence_name} ({frame_count} frames)",
+                ))
+            else:
+                effects.append(SequenceEffect(
+                    "log_warning",
+                    f"[Sequence] Sequence '{sequence_name}' not found or empty",
+                ))
+                self._append_status(
+                    effects, request, "rejected", "unknown_or_empty_sequence"
+                )
+        elif name == "stop_all":
+            effects.extend(self._stop_motor(status="interrupted", detail="stop_all"))
+            self._append_status(effects, request, "completed")
+        return tuple(effects)
+
+    def cancel(self, cancellation: Mapping[str, Any]) -> tuple[SequenceEffect, ...]:
+        request_id = cancellation.get("request_id")
+        reason = str(cancellation.get("reason") or "cancelled")
+        effects: list[SequenceEffect] = []
+        if self.sequence_request is not None and self.sequence_request.get("request_id") == request_id:
+            effects.extend(self._interrupt_sequence(reason))
+            self.runtime.clear_sequence(clear_explicit_motion=True)
+            self.runtime.halt_interpolation()
+            effects.append(SequenceEffect("cancel_auto_reset_timer"))
+            if self.runtime.active_motor_command is not None and self.motor_request is None:
+                effects.extend(self._stop_motor(status="interrupted", detail=reason))
+        if self.motor_request is not None and self.motor_request.get("request_id") == request_id:
+            effects.extend(self._stop_motor(status="interrupted", detail=reason))
+        return tuple(effects)
+
+    def apply_tracking_targets(self, targets: Any, step_size: Any) -> None:
+        if not self.game_active:
+            self.runtime.trajectory.apply_targets(targets, step_size)
+
+    def apply_dialog_expression(self, targets: Any, step_size: Any) -> None:
+        pending = (targets, step_size)
+        if (
+            self.game_active
+            or self.runtime.explicit_motion_active
+            or self.runtime.active_motor_command is not None
+        ):
+            self.pending_dialog_expression = pending
+            return
+        self.pending_dialog_expression = None
+        self.runtime.trajectory.apply_targets(*pending)
+
+    def set_game_active(self, active: bool) -> tuple[SequenceEffect, ...]:
+        effects: list[SequenceEffect] = []
+        if active and not self.game_active:
+            effects.extend(self._interrupt_sequence("game_mode"))
+            self.runtime.clear_sequence()
+            self.runtime.halt_interpolation()
+            effects.append(SequenceEffect("cancel_auto_reset_timer"))
+            effects.extend(self._stop_motor(status="interrupted", detail="game_mode"))
+        self.game_active = active
+        return tuple(effects)
+
+    def tick(self, *, wall_now: float, monotonic_now: float) -> SequenceTick:
+        if self.game_active:
+            return SequenceTick((), {})
+        result = self.runtime.tick(wall_now=wall_now, monotonic_now=monotonic_now)
+        effects = list(self._consume_runtime_effects(
+            result.effects,
+            motor_status="completed",
+        ))
+        if self.sequence_request is not None and self.runtime.motion_complete():
+            request = self.sequence_request
+            self.sequence_request = None
+            self._append_status(effects, request, "completed")
+        if self.runtime.explicit_motion_active and self.runtime.motion_complete():
+            self.runtime.explicit_motion_active = False
+            if self.pending_dialog_expression is not None:
+                pending = self.pending_dialog_expression
+                self.pending_dialog_expression = None
+                self.runtime.trajectory.apply_targets(*pending)
+        return SequenceTick(tuple(effects), result.servo_positions)
+
+    def _interrupt_sequence(self, detail: str) -> tuple[SequenceEffect, ...]:
+        request = self.sequence_request
+        self.sequence_request = None
+        effects: list[SequenceEffect] = []
+        self._append_status(effects, request, "interrupted", detail)
+        return tuple(effects)
+
+    def _stop_motor(self, *, status: str, detail: str) -> tuple[SequenceEffect, ...]:
+        self.runtime.stop_motor()
+        request = self.motor_request
+        self.motor_request = None
+        effects: list[SequenceEffect] = [SequenceEffect("motor_stop")]
+        self._append_status(effects, request, status, detail)
+        return tuple(effects)
+
+    def _consume_runtime_effects(
+        self,
+        effects: tuple[SequenceEffect, ...],
+        *,
+        motor_status: str,
+    ) -> tuple[SequenceEffect, ...]:
+        consumed: list[SequenceEffect] = []
+        for effect in effects:
+            if effect.kind == "motor_stop":
+                consumed.extend(self._stop_motor(status=motor_status, detail=""))
+            else:
+                consumed.append(effect)
+        return tuple(consumed)
+
+    @staticmethod
+    def _append_status(
+        effects: list[SequenceEffect],
+        request: Mapping[str, Any] | None,
+        status: str,
+        detail: str = "",
+    ) -> None:
+        if request is not None and request.get("request_id"):
+            effects.append(SequenceEffect("status", {
+                "request": dict(request),
+                "status": status,
+                "detail": detail,
+            }))

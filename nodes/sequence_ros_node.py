@@ -15,6 +15,7 @@ from services.dialog_expression_protocol import DIALOG_EXPRESSION_TARGET_TOPIC
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 from services.sequence_execution import (
     DEFAULT_MOTION_TO_MOTOR,
+    SequenceCommandController,
     SequenceLibrary,
     SequenceRuntime,
     ServoTrajectory,
@@ -22,7 +23,7 @@ from services.sequence_execution import (
 )
 
 class SequenceRosNode(Node):
-    # 所有的动作预设已迁移至 sequences.yaml，由 _flatten_sequence 处理
+    # 所有动作预设由 SequenceLibrary 从 sequences.yaml 解析。
 
     MOTION_TO_MOTOR = DEFAULT_MOTION_TO_MOTOR
 
@@ -57,14 +58,9 @@ class SequenceRosNode(Node):
             self._trajectory,
             motion_to_motor=self.MOTION_TO_MOTOR,
         )
+        self._controller = SequenceCommandController(self._runtime)
 
-        # Requests stay in the ROS adapter because their completion is emitted
-        # through the action-status protocol.
-        self._motor_request = None
-        self._sequence_request = None
         self._auto_reset_timer = None
-        self._game_active = False
-        self._pending_dialog_expression = None
 
         # 3. ROS 接口
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
@@ -140,105 +136,62 @@ class SequenceRosNode(Node):
     @_explicit_motion_active.setter
     def _explicit_motion_active(self, value):
         self._runtime.explicit_motion_active = value
+
+    @property
+    def _motor_request(self):
+        return self._controller.motor_request
+
+    @_motor_request.setter
+    def _motor_request(self, value):
+        self._controller.motor_request = value
+
+    @property
+    def _sequence_request(self):
+        return self._controller.sequence_request
+
+    @_sequence_request.setter
+    def _sequence_request(self, value):
+        self._controller.sequence_request = value
+
+    @property
+    def _pending_dialog_expression(self):
+        return self._controller.pending_dialog_expression
+
+    @_pending_dialog_expression.setter
+    def _pending_dialog_expression(self, value):
+        self._controller.pending_dialog_expression = value
+
+    @property
+    def _game_active(self):
+        return self._controller.game_active
+
+    @_game_active.setter
+    def _game_active(self, value):
+        self._controller.game_active = value
         
     def _load_yaml(self, path):
         return load_yaml_mapping(path, on_error=self.get_logger().error)
 
-    def _clamp_pwm(self, name, raw_pwm):
-        """将传入的原始 PWM 值限制在安全的硬件限位内"""
-        return self._trajectory.clamp(name, raw_pwm)
-
-    def _servo_init(self, name, fallback):
-        return self._trajectory.initial(name, fallback)
-
     def _on_action_cmd(self, msg):
-        if self._game_active:
-            return
         request = parse_action_request(msg.data)
         if request is None:
             return
-        tool = request["name"]
-        args = request["arguments"]
-        request_id = request.get("request_id")
-
-        # Tracking and camera tools have separate owners. Ignoring them here
-        # also prevents an unrelated tool call from interrupting a sequence.
-        if tool not in {
-            "express_emotion", "move_chassis", "manual_servo",
-            "play_sequence", "stop_all",
-        }:
-            return
-
-        # ===== 外部打断机制核心：清空队列，并清零步长 =====
-        self._interrupt_sequence("superseded_by_new_command")
-        if self._active_motor_cmd is not None:
-            self._stop_motors(status="interrupted", detail="superseded_by_new_command")
-        self._runtime.clear_sequence()
-        self._runtime.halt_interpolation()
-        if self._auto_reset_timer:
-            self.destroy_timer(self._auto_reset_timer)
-            self._auto_reset_timer = None
-        self.get_logger().info(f"[Interrupt] Cleared state for tool: {tool}")
-
-        # ===== 指令分发 =====
-        if tool == "express_emotion":
-            self._publish_request_status(request, "accepted")
-            self._dispatch_action({"type": "express_emotion", "emotion": args.get("emotion", "happy")})
-            self._publish_request_status(request, "completed")
-            
-        elif tool == "move_chassis":
-            direction = args.get("direction", "")
-            if direction not in self.MOTION_TO_MOTOR:
-                self._publish_request_status(request, "rejected", "invalid_direction")
-                return
-            self._motor_request = request if request_id else None
-            self._publish_request_status(request, "accepted")
-            self._dispatch_action({
-                "type": "motor", 
-                "direction": direction,
-                "duration": float(args.get("duration", 1.0))
-            })
-            
-        elif tool == "manual_servo":
-            self._explicit_motion_active = True
-            self._publish_request_status(request, "accepted")
-            self._dispatch_action({
-                "type": "manual_servo",
-                "targets": args.get("targets", {}),
-                "step_size": args.get("step_size", 30.0)
-            })
-            self._publish_request_status(request, "completed")
-            
-
-        elif tool == "play_sequence":
-            seq_name = args.get("sequence_name", "")
-
-            frame_count = self._runtime.start_sequence(seq_name, now=time.time())
-            if frame_count:
-                self._sequence_request = request if request_id else None
-                self._publish_request_status(request, "accepted")
-                self.get_logger().info(
-                    f"[Sequence] Playing sequence: {seq_name} ({frame_count} frames)"
-                )
-            else:
-                self.get_logger().warn(f"[Sequence] Sequence '{seq_name}' not found or empty")
-                self._publish_request_status(request, "rejected", "unknown_or_empty_sequence")
-
-        elif tool == "stop_all":
-            self._stop_motors(status="interrupted", detail="stop_all")
-            self._publish_request_status(request, "completed")
+        effects = self._controller.handle_action(
+            request,
+            wall_now=time.time(),
+            monotonic_now=time.monotonic(),
+        )
+        self._publish_runtime_effects(effects)
 
     def _on_tracking_servo_targets(self, msg):
         """Update interpolated tracking targets without interrupting actions."""
-        if self._game_active:
-            return
         try:
             payload = json.loads(msg.data)
         except (AttributeError, TypeError, json.JSONDecodeError):
             return
         if not isinstance(payload, dict):
             return
-        self._apply_servo_targets(
+        self._controller.apply_tracking_targets(
             payload.get("targets", {}),
             payload.get("step_size", 40.0),
         )
@@ -251,12 +204,10 @@ class SequenceRosNode(Node):
             return
         if not isinstance(payload, dict):
             return
-        pending = (payload.get("targets", {}), payload.get("step_size", 12.0))
-        if self._game_active or self._explicit_motion_active or self._active_motor_cmd:
-            self._pending_dialog_expression = pending
-            return
-        self._pending_dialog_expression = None
-        self._apply_servo_targets(*pending)
+        self._controller.apply_dialog_expression(
+            payload.get("targets", {}),
+            payload.get("step_size", 12.0),
+        )
 
     def _publish_request_status(self, request, status, detail=""):
         request_id = request.get("request_id") if isinstance(request, dict) else None
@@ -270,45 +221,11 @@ class SequenceRosNode(Node):
             detail=detail,
         )))
 
-    def _interrupt_sequence(self, detail):
-        request = self._sequence_request
-        self._sequence_request = None
-        if request is not None:
-            self._publish_request_status(request, "interrupted", detail)
-
     def _on_action_cancel(self, message):
         cancellation = parse_action_cancel(message.data)
         if cancellation is None:
             return
-        request_id = cancellation["request_id"]
-        reason = cancellation["reason"]
-        if (
-            self._sequence_request is not None
-            and self._sequence_request.get("request_id") == request_id
-        ):
-            self._interrupt_sequence(reason)
-            self._runtime.clear_sequence(clear_explicit_motion=True)
-            self._runtime.halt_interpolation()
-            if self._auto_reset_timer is not None:
-                self.destroy_timer(self._auto_reset_timer)
-                self._auto_reset_timer = None
-            # Timeline motor frames have no separate motor request. They are
-            # owned by this sequence and must stop along with its servo frames.
-            if self._active_motor_cmd is not None and self._motor_request is None:
-                self._stop_motors(status="interrupted", detail=reason)
-        if (
-            self._motor_request is not None
-            and self._motor_request.get("request_id") == request_id
-        ):
-            self._stop_motors(status="interrupted", detail=reason)
-
-    def _flatten_sequence(self, seq_name, offset_time=0.0, depth=0):
-        """递归解析序列，将其扁平化为一维时间轴"""
-        return self._sequence_library.flatten(
-            seq_name,
-            offset_time=offset_time,
-            depth=depth,
-        )
+        self._publish_runtime_effects(self._controller.cancel(cancellation))
 
     def _reset_servos_to_init(self):
         self.get_logger().info("[Sequence] Auto-resetting servos to init state")
@@ -335,9 +252,20 @@ class SequenceRosNode(Node):
                 self._stop_motors()
             elif effect.kind == "emotion":
                 self.tft_pub.publish(String(data=f"eyeaction:{effect.payload}\n"))
-
-    def _apply_servo_targets(self, targets, step_size):
-        self._trajectory.apply_targets(targets, step_size)
+            elif effect.kind == "status":
+                self._publish_request_status(
+                    effect.payload["request"],
+                    effect.payload["status"],
+                    effect.payload["detail"],
+                )
+            elif effect.kind == "cancel_auto_reset_timer":
+                if self._auto_reset_timer is not None:
+                    self.destroy_timer(self._auto_reset_timer)
+                    self._auto_reset_timer = None
+            elif effect.kind == "log_info":
+                self.get_logger().info(effect.payload)
+            elif effect.kind == "log_warning":
+                self.get_logger().warn(effect.payload)
 
     def _stop_motors(self, status="completed", detail=""):
         msg = String()
@@ -349,17 +277,10 @@ class SequenceRosNode(Node):
         if request is not None:
             self._publish_request_status(request, status, detail)
 
-    def _publish_active_motor(self):
-        if self._active_motor_cmd is None:
-            return
-        self.motor_pub.publish(
-            String(data=json.dumps(self._active_motor_cmd, ensure_ascii=False))
-        )
-
     def _tick(self):
         if self._game_active:
             return
-        result = self._runtime.tick(
+        result = self._controller.tick(
             wall_now=time.time(),
             monotonic_now=time.monotonic(),
         )
@@ -370,35 +291,9 @@ class SequenceRosNode(Node):
             msg.data = json.dumps({"name": name, "pwm": pwm})
             self.servo_pub.publish(msg)
 
-        if (
-            self._sequence_request is not None
-            and self._runtime.motion_complete()
-        ):
-            request = self._sequence_request
-            self._sequence_request = None
-            self._publish_request_status(request, "completed")
-
-        if (
-            self._explicit_motion_active
-            and self._runtime.motion_complete()
-        ):
-            self._explicit_motion_active = False
-            if self._pending_dialog_expression is not None:
-                pending = self._pending_dialog_expression
-                self._pending_dialog_expression = None
-                self._apply_servo_targets(*pending)
-
     def _on_game_state(self, message):
         active = game_is_active(message.data)
-        if active and not self._game_active:
-            self._interrupt_sequence("game_mode")
-            self._runtime.clear_sequence()
-            self._runtime.halt_interpolation()
-            if self._auto_reset_timer:
-                self.destroy_timer(self._auto_reset_timer)
-                self._auto_reset_timer = None
-            self._stop_motors(status="interrupted", detail="game_mode")
-        self._game_active = active
+        self._publish_runtime_effects(self._controller.set_game_active(active))
 
 def main(args=None):
     rclpy.init(args=args)
