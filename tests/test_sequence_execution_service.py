@@ -1,6 +1,10 @@
 import unittest
 
-from services.sequence_execution import SequenceLibrary, ServoTrajectory
+from services.sequence_execution import (
+    SequenceLibrary,
+    SequenceRuntime,
+    ServoTrajectory,
+)
 
 
 SERVOS = {
@@ -78,6 +82,62 @@ class ServoTrajectoryTests(unittest.TestCase):
         self.assertEqual(trajectory.targets["eye_r"], 3000)
         self.assertEqual(changed["head_yaw"], 5000)
         self.assertEqual(changed["eye_r"], 2530)
+
+
+class SequenceRuntimeTests(unittest.TestCase):
+    def _runtime(self, *, sequences=None, poses=None):
+        trajectory = ServoTrajectory(SERVOS)
+        library = SequenceLibrary(sequences or {}, poses or {})
+        return SequenceRuntime(library, trajectory)
+
+    def test_timeline_is_sorted_and_dispatches_one_frame_per_tick(self):
+        runtime = self._runtime(sequences={
+            "demo": [
+                {"time": 0.5, "actions": [{"type": "express_emotion", "emotion": "happy"}]},
+                {"time": 0.1, "actions": [{"type": "express_emotion", "emotion": "sad"}]},
+            ],
+        })
+        self.assertEqual(runtime.start_sequence("demo", now=10.0), 2)
+
+        first = runtime.tick(wall_now=11.0, monotonic_now=20.0)
+        second = runtime.tick(wall_now=11.0, monotonic_now=20.02)
+
+        self.assertEqual([(item.kind, item.payload) for item in first.effects], [
+            ("emotion", "sad"),
+        ])
+        self.assertEqual([(item.kind, item.payload) for item in second.effects], [
+            ("emotion", "happy"),
+        ])
+
+    def test_motor_is_refreshed_until_its_deadline_then_stopped(self):
+        runtime = self._runtime()
+        started = runtime.dispatch_action(
+            {"type": "motor", "direction": "forward", "duration": 1.0},
+            monotonic_now=5.0,
+        )
+        active = runtime.tick(wall_now=0.0, monotonic_now=5.5)
+        stopped = runtime.tick(wall_now=0.0, monotonic_now=6.1)
+
+        self.assertEqual(started[0].kind, "motor")
+        self.assertEqual(active.effects[0].kind, "motor")
+        self.assertEqual(stopped.effects[0].kind, "motor_stop")
+        self.assertIsNone(runtime.active_motor_command)
+
+    def test_pose_dispatch_uses_runtime_servo_calibration(self):
+        runtime = self._runtime(poses={
+            "look": {
+                "default_step": 25,
+                "targets": {"head_yaw": "max"},
+            },
+        })
+
+        runtime.dispatch_action(
+            {"type": "pose", "name": "look"},
+            monotonic_now=0.0,
+        )
+
+        self.assertEqual(runtime.trajectory.targets["head_yaw"], 7600)
+        self.assertEqual(runtime.trajectory.steps["head_yaw"], 25)
 
 
 if __name__ == "__main__":

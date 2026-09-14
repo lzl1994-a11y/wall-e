@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,46 @@ from services.servo_motion_config import resolve_servo_target
 
 
 ErrorReporter = Callable[[str], None]
+
+
+DEFAULT_MOTION_TO_MOTOR = {
+    "forward": {
+        "left": {"action": 1, "throttle": 55},
+        "right": {"action": 1, "throttle": 55},
+    },
+    "backward": {
+        "left": {"action": 2, "throttle": 55},
+        "right": {"action": 2, "throttle": 55},
+    },
+    "spin": {
+        "left": {"action": 2, "throttle": 55},
+        "right": {"action": 1, "throttle": 55},
+    },
+    "left": {
+        "left": {"action": 2, "throttle": 45},
+        "right": {"action": 1, "throttle": 55},
+    },
+    "right": {
+        "left": {"action": 1, "throttle": 55},
+        "right": {"action": 2, "throttle": 45},
+    },
+}
+
+
+@dataclass(frozen=True)
+class SequenceEffect:
+    """An output requested by the pure sequence runtime."""
+
+    kind: str
+    payload: Any = None
+
+
+@dataclass(frozen=True)
+class SequenceTick:
+    """Outputs produced by one runtime control tick."""
+
+    effects: tuple[SequenceEffect, ...]
+    servo_positions: dict[str, int]
 
 
 def load_yaml_mapping(
@@ -242,3 +283,141 @@ class ServoTrajectory:
                 self.targets["eye_r"] = maximum_r
                 if self.steps.get("eye_r", 0) <= 0:
                     self.steps["eye_r"] = 30.0
+
+
+class SequenceRuntime:
+    """Own the timeline, action dispatch, and timed motor command lifecycle."""
+
+    def __init__(
+        self,
+        library: SequenceLibrary,
+        trajectory: ServoTrajectory,
+        *,
+        motion_to_motor: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.library = library
+        self.trajectory = trajectory
+        self.motion_to_motor = dict(motion_to_motor or DEFAULT_MOTION_TO_MOTOR)
+        self.timeline: list[dict[str, Any]] = []
+        self.sequence_started_at = 0.0
+        self.active_motor_command: Any = None
+        self.motor_stop_at = 0.0
+        self.explicit_motion_active = False
+
+    def start_sequence(self, name: str, *, now: float) -> int:
+        frames = self.library.flatten(name, offset_time=0.0)
+        if not frames:
+            self.explicit_motion_active = False
+            return 0
+        frames.sort(key=lambda item: item["time"])
+        self.timeline = frames
+        self.sequence_started_at = now
+        self.explicit_motion_active = True
+        return len(frames)
+
+    def clear_sequence(self, *, clear_explicit_motion: bool = False) -> None:
+        self.timeline = []
+        if clear_explicit_motion:
+            self.explicit_motion_active = False
+
+    def halt_interpolation(self) -> None:
+        for name in self.trajectory.steps:
+            self.trajectory.steps[name] = 0.0
+
+    def stop_motor(self) -> None:
+        self.active_motor_command = None
+        self.motor_stop_at = 0.0
+
+    def dispatch_action(
+        self,
+        action: Mapping[str, Any],
+        *,
+        monotonic_now: float,
+    ) -> tuple[SequenceEffect, ...]:
+        """Apply an action and return hardware-facing effects for the node."""
+        action_type = action.get("type")
+        if action_type == "servo":
+            name = action.get("name")
+            if name in self.trajectory.servos:
+                raw_pwm = action.get("pwm", action.get("angle", 4000))
+                target = self.trajectory.clamp(name, raw_pwm)
+                if target is not None:
+                    self.trajectory.targets[name] = target
+                    self.trajectory.steps[name] = float(action.get("step_size", 40.0))
+            return ()
+
+        if action_type == "pose":
+            pose = self.library.poses.get(action.get("name"))
+            if pose:
+                override_step = action.get("step_size")
+                default_step = pose.get("default_step", 2.0)
+                step = float(override_step if override_step is not None else default_step)
+                for name, raw_pwm in pose.get("targets", {}).items():
+                    if name not in self.trajectory.servos:
+                        continue
+                    target = self.trajectory.clamp(name, raw_pwm)
+                    if target is not None:
+                        self.trajectory.targets[name] = target
+                        self.trajectory.steps[name] = step
+            return ()
+
+        if action_type == "motor":
+            direction = action.get("direction", "forward")
+            duration = max(0.0, min(float(action.get("duration", 1.0)), 10.0))
+            command = self.motion_to_motor.get(direction)
+            if command is None:
+                return ()
+            if duration <= 0.0:
+                self.stop_motor()
+                return (SequenceEffect("motor_stop"),)
+            self.active_motor_command = command
+            self.motor_stop_at = monotonic_now + duration
+            return (SequenceEffect("motor", command),)
+
+        if action_type == "express_emotion":
+            return (SequenceEffect("emotion", action.get("emotion", "happy")),)
+
+        if action_type == "manual_servo":
+            self.trajectory.apply_targets(
+                action.get("targets", {}),
+                action.get("step_size", 30.0),
+            )
+        return ()
+
+    def tick(self, *, wall_now: float, monotonic_now: float) -> SequenceTick:
+        effects: list[SequenceEffect] = []
+        if self.active_motor_command is not None:
+            if monotonic_now >= self.motor_stop_at:
+                self.stop_motor()
+                effects.append(SequenceEffect("motor_stop"))
+            else:
+                effects.append(SequenceEffect("motor", self.active_motor_command))
+
+        # Preserve the existing behavior of dispatching at most one timeline
+        # frame per 50 Hz tick, even when several frames are already due.
+        if self.timeline:
+            frame = self.timeline[0]
+            if wall_now - self.sequence_started_at >= frame.get("time", 0):
+                self.timeline.pop(0)
+                for action in frame.get("actions", []):
+                    effects.extend(self.dispatch_action(
+                        action,
+                        monotonic_now=monotonic_now,
+                    ))
+
+        return SequenceTick(
+            effects=tuple(effects),
+            servo_positions=self.trajectory.tick(),
+        )
+
+    def motion_complete(self) -> bool:
+        return (
+            not self.timeline
+            and self.active_motor_command is None
+            and all(
+                self.trajectory.steps.get(name, 0.0) <= 0.0
+                or self.trajectory.virtual_state.get(name)
+                == self.trajectory.targets.get(name)
+                for name in self.trajectory.virtual_state
+            )
+        )

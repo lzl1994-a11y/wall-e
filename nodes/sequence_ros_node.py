@@ -14,7 +14,9 @@ from services.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
 from services.dialog_expression_protocol import DIALOG_EXPRESSION_TARGET_TOPIC
 from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 from services.sequence_execution import (
+    DEFAULT_MOTION_TO_MOTOR,
     SequenceLibrary,
+    SequenceRuntime,
     ServoTrajectory,
     load_yaml_mapping,
 )
@@ -22,13 +24,7 @@ from services.sequence_execution import (
 class SequenceRosNode(Node):
     # 所有的动作预设已迁移至 sequences.yaml，由 _flatten_sequence 处理
 
-    MOTION_TO_MOTOR = {
-        "forward":  {"left": {"action": 1, "throttle": 55}, "right": {"action": 1, "throttle": 55}},
-        "backward": {"left": {"action": 2, "throttle": 55}, "right": {"action": 2, "throttle": 55}},
-        "spin":     {"left": {"action": 2, "throttle": 55}, "right": {"action": 1, "throttle": 55}},
-        "left":     {"left": {"action": 2, "throttle": 45}, "right": {"action": 1, "throttle": 55}},
-        "right":    {"left": {"action": 1, "throttle": 55}, "right": {"action": 2, "throttle": 45}},
-    }
+    MOTION_TO_MOTOR = DEFAULT_MOTION_TO_MOTOR
 
     def __init__(self):
         super().__init__('sequence_ros_node')
@@ -56,17 +52,18 @@ class SequenceRosNode(Node):
         self._virtual_state = self._trajectory.virtual_state
         self._targets = self._trajectory.targets
         self._steps = self._trajectory.steps
+        self._runtime = SequenceRuntime(
+            self._sequence_library,
+            self._trajectory,
+            motion_to_motor=self.MOTION_TO_MOTOR,
+        )
 
-        # 时间轴与队列
-        self._current_sequence = []
-        self._sequence_start_time = 0.0
-        self._active_motor_cmd = None
-        self._motor_stop_at = 0.0
+        # Requests stay in the ROS adapter because their completion is emitted
+        # through the action-status protocol.
         self._motor_request = None
         self._sequence_request = None
         self._auto_reset_timer = None
         self._game_active = False
-        self._explicit_motion_active = False
         self._pending_dialog_expression = None
 
         # 3. ROS 接口
@@ -101,6 +98,48 @@ class SequenceRosNode(Node):
             f'Sequence ROS Node online, consuming {ACTION_COMMAND_TOPIC}. '
             '50Hz interpolation running.'
         )
+
+    # Compatibility properties keep diagnostics and existing integration tests
+    # stable while runtime state is now owned by the service.
+    @property
+    def _current_sequence(self):
+        return self._runtime.timeline
+
+    @_current_sequence.setter
+    def _current_sequence(self, value):
+        self._runtime.timeline = value
+
+    @property
+    def _sequence_start_time(self):
+        return self._runtime.sequence_started_at
+
+    @_sequence_start_time.setter
+    def _sequence_start_time(self, value):
+        self._runtime.sequence_started_at = value
+
+    @property
+    def _active_motor_cmd(self):
+        return self._runtime.active_motor_command
+
+    @_active_motor_cmd.setter
+    def _active_motor_cmd(self, value):
+        self._runtime.active_motor_command = value
+
+    @property
+    def _motor_stop_at(self):
+        return self._runtime.motor_stop_at
+
+    @_motor_stop_at.setter
+    def _motor_stop_at(self, value):
+        self._runtime.motor_stop_at = value
+
+    @property
+    def _explicit_motion_active(self):
+        return self._runtime.explicit_motion_active
+
+    @_explicit_motion_active.setter
+    def _explicit_motion_active(self, value):
+        self._runtime.explicit_motion_active = value
         
     def _load_yaml(self, path):
         return load_yaml_mapping(path, on_error=self.get_logger().error)
@@ -134,9 +173,8 @@ class SequenceRosNode(Node):
         self._interrupt_sequence("superseded_by_new_command")
         if self._active_motor_cmd is not None:
             self._stop_motors(status="interrupted", detail="superseded_by_new_command")
-        self._current_sequence = [] # 打断成组动作
-        for name in self._steps:
-            self._steps[name] = 0.0 # 清零步长，平滑运动瞬间停止
+        self._runtime.clear_sequence()
+        self._runtime.halt_interpolation()
         if self._auto_reset_timer:
             self.destroy_timer(self._auto_reset_timer)
             self._auto_reset_timer = None
@@ -174,20 +212,15 @@ class SequenceRosNode(Node):
 
         elif tool == "play_sequence":
             seq_name = args.get("sequence_name", "")
-            
-            # 使用时间轴扁平化算法拆解嵌套序列
-            flattened_frames = self._flatten_sequence(seq_name, offset_time=0.0)
-            if flattened_frames:
-                self._explicit_motion_active = True
-                # 按照绝对时间进行排序
-                flattened_frames.sort(key=lambda x: x['time'])
-                self._current_sequence = flattened_frames
-                self._sequence_start_time = time.time()
+
+            frame_count = self._runtime.start_sequence(seq_name, now=time.time())
+            if frame_count:
                 self._sequence_request = request if request_id else None
                 self._publish_request_status(request, "accepted")
-                self.get_logger().info(f"[Sequence] Playing sequence: {seq_name} ({len(flattened_frames)} frames)")
+                self.get_logger().info(
+                    f"[Sequence] Playing sequence: {seq_name} ({frame_count} frames)"
+                )
             else:
-                self._explicit_motion_active = False
                 self.get_logger().warn(f"[Sequence] Sequence '{seq_name}' not found or empty")
                 self._publish_request_status(request, "rejected", "unknown_or_empty_sequence")
 
@@ -254,10 +287,8 @@ class SequenceRosNode(Node):
             and self._sequence_request.get("request_id") == request_id
         ):
             self._interrupt_sequence(reason)
-            self._current_sequence = []
-            self._explicit_motion_active = False
-            for name in self._steps:
-                self._steps[name] = 0.0
+            self._runtime.clear_sequence(clear_explicit_motion=True)
+            self._runtime.halt_interpolation()
             if self._auto_reset_timer is not None:
                 self.destroy_timer(self._auto_reset_timer)
                 self._auto_reset_timer = None
@@ -287,55 +318,23 @@ class SequenceRosNode(Node):
             self._auto_reset_timer = None
 
     def _dispatch_action(self, act):
-        t = act.get('type')
-        if t == 'servo':
-            name = act.get('name')
-            if name in self._servos_config:
-                # 兼容 angle 字段（如果有），但更推荐直接使用 pwm 字段
-                val = act.get('pwm', act.get('angle', 4000))
-                target_pwm = self._clamp_pwm(name, val)
-                if target_pwm is not None:
-                    self._targets[name] = target_pwm
-                    self._steps[name] = float(act.get('step_size', 40.0))
-                    
-        elif t == 'pose':
-            pose_name = act.get('name')
-            pose_data = self._poses.get(pose_name)
-            if pose_data:
-                override_step = act.get('step_size')
-                default_step = pose_data.get('default_step', 2.0)
-                final_step = float(override_step if override_step is not None else default_step)
-                
-                for s_name, s_pwm in pose_data.get('targets', {}).items():
-                    if s_name in self._servos_config:
-                        target_pwm = self._clamp_pwm(s_name, s_pwm)
-                        if target_pwm is not None:
-                            self._targets[s_name] = target_pwm
-                            self._steps[s_name] = final_step
-                            
-        elif t == 'motor':
-            direction = act.get('direction', 'forward')
-            duration = max(0.0, min(float(act.get('duration', 1.0)), 10.0))
-            motor = self.MOTION_TO_MOTOR.get(direction)
-            if motor:
-                if duration <= 0.0:
-                    self._stop_motors()
-                    return
-                self._active_motor_cmd = motor
-                self._motor_stop_at = time.monotonic() + duration
-                self._publish_active_motor()
-                
-        elif t == 'express_emotion':
-            emotion = act.get('emotion', 'happy')
-            msg = String()
-            msg.data = f"eyeaction:{emotion}\n"
-            self.tft_pub.publish(msg)
-            
-        elif t == 'manual_servo':
-            self._apply_servo_targets(
-                act.get('targets', {}),
-                act.get('step_size', 30.0),
-            )
+        effects = self._runtime.dispatch_action(
+            act,
+            monotonic_now=time.monotonic(),
+        )
+        self._publish_runtime_effects(effects)
+
+    def _publish_runtime_effects(self, effects):
+        for effect in effects:
+            if effect.kind == "motor":
+                self.motor_pub.publish(String(data=json.dumps(
+                    effect.payload,
+                    ensure_ascii=False,
+                )))
+            elif effect.kind == "motor_stop":
+                self._stop_motors()
+            elif effect.kind == "emotion":
+                self.tft_pub.publish(String(data=f"eyeaction:{effect.payload}\n"))
 
     def _apply_servo_targets(self, targets, step_size):
         self._trajectory.apply_targets(targets, step_size)
@@ -344,8 +343,7 @@ class SequenceRosNode(Node):
         msg = String()
         msg.data = json.dumps(STOP_COMMAND, ensure_ascii=False)
         self.motor_pub.publish(msg)
-        self._active_motor_cmd = None
-        self._motor_stop_at = 0.0
+        self._runtime.stop_motor()
         request = self._motor_request
         self._motor_request = None
         if request is not None:
@@ -361,39 +359,20 @@ class SequenceRosNode(Node):
     def _tick(self):
         if self._game_active:
             return
-        if self._active_motor_cmd is not None:
-            if time.monotonic() >= self._motor_stop_at:
-                self._stop_motors()
-            else:
-                self._publish_active_motor()
+        result = self._runtime.tick(
+            wall_now=time.time(),
+            monotonic_now=time.monotonic(),
+        )
+        self._publish_runtime_effects(result.effects)
 
-        # 1. 时间轴播放器：按时间触发关键帧剧本
-        if self._current_sequence:
-            item = self._current_sequence[0]
-            if time.time() - self._sequence_start_time >= item.get('time', 0):
-                self._current_sequence.pop(0)
-                for act in item.get('actions', []):
-                    self._dispatch_action(act)
-
-        # 2. The ROS-independent trajectory service applies mechanical
-        # constraints and advances one 50 Hz interpolation step.
-        changed_servos = self._trajectory.tick()
-
-        # 3. Publish only positions changed by this control tick.
-        for name, pwm in changed_servos.items():
+        for name, pwm in result.servo_positions.items():
             msg = String()
             msg.data = json.dumps({"name": name, "pwm": pwm})
             self.servo_pub.publish(msg)
 
         if (
             self._sequence_request is not None
-            and not self._current_sequence
-            and self._active_motor_cmd is None
-            and all(
-                self._steps.get(name, 0.0) <= 0.0
-                or self._virtual_state.get(name) == self._targets.get(name)
-                for name in self._virtual_state
-            )
+            and self._runtime.motion_complete()
         ):
             request = self._sequence_request
             self._sequence_request = None
@@ -401,13 +380,7 @@ class SequenceRosNode(Node):
 
         if (
             self._explicit_motion_active
-            and not self._current_sequence
-            and self._active_motor_cmd is None
-            and all(
-                self._steps.get(name, 0.0) <= 0.0
-                or self._virtual_state.get(name) == self._targets.get(name)
-                for name in self._virtual_state
-            )
+            and self._runtime.motion_complete()
         ):
             self._explicit_motion_active = False
             if self._pending_dialog_expression is not None:
@@ -419,9 +392,8 @@ class SequenceRosNode(Node):
         active = game_is_active(message.data)
         if active and not self._game_active:
             self._interrupt_sequence("game_mode")
-            self._current_sequence = []
-            for name in self._steps:
-                self._steps[name] = 0.0
+            self._runtime.clear_sequence()
+            self._runtime.halt_interpolation()
             if self._auto_reset_timer:
                 self.destroy_timer(self._auto_reset_timer)
                 self._auto_reset_timer = None
