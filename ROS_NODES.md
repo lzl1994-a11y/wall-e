@@ -180,7 +180,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/audio_mixer.py` | 在统一采样时钟上混合语音和音乐，并实现音乐 20% 闪避及平滑恢复。 |
 | `services/dialog_workflow.py` | LangGraph 确定性编排：普通动作串行、拍照识别和条件任务；动作完成前不推进下一步。 |
 | `services/sequence_execution.py` | 与 ROS 无关的动作命令生命周期、序列展开和舵机轨迹执行；负责取消/中断、目标限位、机械联动约束与 50 Hz 插值计算。 |
-| `services/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：有界 PID、跨帧目标连续性、人体跟随电机计算、人脸注视及脖子俯仰计算。 |
+| `services/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：目标连续性、人体跟随、人脸注视、脖子俯仰，以及目标丢失后的保持、搜索、停止和退出状态机。 |
 | `core/action_skills.json` | 动作技能注册表；统一定义执行节点、计划/仲裁资源、超时、重试和可取消能力。 |
 | `services/action_cancel.py` | `/action_cancel` 定向取消协议的编解码与校验。 |
 | `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |

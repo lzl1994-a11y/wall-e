@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum
 
 
 TrackingBox = tuple[float, float, float]
@@ -33,6 +34,33 @@ class TrackingDecision:
     target_seen: bool
     motor: MotorTarget | None = None
     head: HeadTarget | None = None
+
+
+class LossState(str, Enum):
+    """Observable target-loss phases used by the tracking state machine."""
+
+    TRACKING = "tracking"
+    HOLDING = "holding"
+    SEARCHING = "searching"
+    SEARCH_STOPPED = "search_stopped"
+    DETECTOR_UNAVAILABLE = "detector_unavailable"
+    EXITED = "exited"
+
+
+class TrackingExitReason(str, Enum):
+    TARGET_LOST = "target_lost"
+    PIPELINE_STARTUP_TIMEOUT = "pipeline_startup_timeout"
+
+
+@dataclass(frozen=True)
+class LossDecision:
+    """Pure output from the target-loss state machine."""
+
+    state: LossState
+    state_changed: bool
+    motor: MotorTarget | None = None
+    head: HeadTarget | None = None
+    exit_reason: TrackingExitReason | None = None
 
 
 class PID:
@@ -160,6 +188,11 @@ class TrackingController:
         gaze_min_pitch: float,
         gaze_max_pitch: float,
         pitch_rate: float,
+        search_rotate_speed: float,
+        search_start_seconds: float,
+        search_stop_seconds: float,
+        tracking_shutdown_seconds: float,
+        pipeline_startup_timeout_seconds: float,
     ) -> None:
         self.image_width = image_width
         self.image_height = image_height
@@ -168,6 +201,11 @@ class TrackingController:
         self.gaze_min_pitch = gaze_min_pitch
         self.gaze_max_pitch = gaze_max_pitch
         self.pitch_rate = pitch_rate
+        self.search_rotate_speed = search_rotate_speed
+        self.search_start_seconds = search_start_seconds
+        self.search_stop_seconds = search_stop_seconds
+        self.tracking_shutdown_seconds = tracking_shutdown_seconds
+        self.pipeline_startup_timeout_seconds = pipeline_startup_timeout_seconds
         self.target_selector = TargetSelector(
             image_width=image_width,
             image_height=image_height,
@@ -179,12 +217,16 @@ class TrackingController:
         self.neck_pitch = PID(0.8, 0.0, 0.05)
         self.current_neck_pitch = 0.0
         self.last_horizontal_error = 0.0
+        self.loss_state = LossState.TRACKING
+        self._search_started = False
+        self._search_stopped = False
 
     def reset(self, *, gaze: bool) -> None:
         self.target_selector.clear()
         self.current_neck_pitch = self.gaze_start_pitch if gaze else 0.0
         self.last_horizontal_error = 0.0
         self.reset_control_history()
+        self.mark_target_seen()
 
     def reset_control_history(self) -> None:
         self.chassis_yaw.reset()
@@ -193,6 +235,106 @@ class TrackingController:
 
     def center_neck(self) -> None:
         self.current_neck_pitch = 0.0
+
+    def mark_target_seen(self) -> None:
+        self.loss_state = LossState.TRACKING
+        self._search_started = False
+        self._search_stopped = False
+
+    def handle_target_loss(
+        self,
+        *,
+        gaze: bool,
+        detector_ready: bool,
+        detector_stale: bool,
+        lost_seconds: float,
+        mode_seconds: float,
+    ) -> LossDecision:
+        """Advance target-loss handling and return effects for the ROS adapter."""
+        exit_reason = None
+        if detector_ready and lost_seconds >= self.tracking_shutdown_seconds:
+            state = LossState.EXITED
+            exit_reason = TrackingExitReason.TARGET_LOST
+        elif (
+            not detector_ready
+            and mode_seconds >= self.pipeline_startup_timeout_seconds
+        ):
+            state = LossState.EXITED
+            exit_reason = TrackingExitReason.PIPELINE_STARTUP_TIMEOUT
+        elif gaze:
+            state = (
+                LossState.SEARCH_STOPPED
+                if lost_seconds >= self.search_stop_seconds
+                else LossState.HOLDING
+            )
+        elif not detector_ready or detector_stale:
+            state = LossState.DETECTOR_UNAVAILABLE
+        elif lost_seconds >= self.search_stop_seconds:
+            state = LossState.SEARCH_STOPPED
+        elif lost_seconds >= self.search_start_seconds:
+            state = LossState.SEARCHING
+        elif lost_seconds >= 0.2:
+            state = LossState.HOLDING
+        else:
+            state = LossState.TRACKING
+
+        state_changed = state != self.loss_state
+        self.loss_state = state
+        if exit_reason is not None:
+            return LossDecision(
+                state=state,
+                state_changed=state_changed,
+                exit_reason=exit_reason,
+            )
+
+        stop = MotorTarget(left=0.0, right=0.0)
+        if gaze:
+            head = None
+            if state == LossState.SEARCH_STOPPED and not self._search_stopped:
+                head = HeadTarget(x_error=0.0, pitch=self.current_neck_pitch)
+                self._search_stopped = True
+            return LossDecision(
+                state=state,
+                state_changed=state_changed,
+                motor=stop,
+                head=head,
+            )
+
+        if state == LossState.DETECTOR_UNAVAILABLE:
+            return LossDecision(state=state, state_changed=state_changed, motor=stop)
+        if state == LossState.SEARCH_STOPPED:
+            if self._search_stopped:
+                return LossDecision(state=state, state_changed=state_changed)
+            self.center_neck()
+            self._search_started = False
+            self._search_stopped = True
+            return LossDecision(
+                state=state,
+                state_changed=state_changed,
+                motor=stop,
+                head=HeadTarget(x_error=0.0, pitch=0.0),
+            )
+        if state == LossState.SEARCHING:
+            speed = self.search_rotate_speed
+            motor = (
+                MotorTarget(left=-speed, right=speed)
+                if self.last_horizontal_error < 0.0
+                else MotorTarget(left=speed, right=-speed)
+            )
+            head = None
+            if not self._search_started:
+                self.center_neck()
+                head = HeadTarget(x_error=0.0, pitch=0.0)
+                self._search_started = True
+            return LossDecision(
+                state=state,
+                state_changed=state_changed,
+                motor=motor,
+                head=head,
+            )
+        if state == LossState.HOLDING:
+            return LossDecision(state=state, state_changed=state_changed, motor=stop)
+        return LossDecision(state=state, state_changed=state_changed)
 
     def follow_body(
         self,

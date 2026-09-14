@@ -19,7 +19,11 @@ from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
 from services.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.motion_arbiter import MOTOR_TRACKING_TOPIC
 from services.servo_motion_config import load_neck_kinematics
-from services.tracking_control import TrackingController
+from services.tracking_control import (
+    LossState,
+    TrackingController,
+    TrackingExitReason,
+)
 
 from services.vision_pipeline_protocol import (
     TRACKING_SERVO_TARGET_TOPIC,
@@ -85,8 +89,6 @@ class WaliTrackingNode(Node):
         self.mode = self.MODE_IDLE
         self._last_time = time.monotonic()
         self._joy_override = False # 若未来恢复 joy_override 机制
-        self._search_active = False
-        self._search_halted = False
         self._mode_started_at = time.monotonic()
         self._last_detection_message = 0.0
         self._last_nonempty_detection = 0.0
@@ -101,6 +103,11 @@ class WaliTrackingNode(Node):
             gaze_min_pitch=self.GAZE_MIN_PITCH,
             gaze_max_pitch=self.GAZE_MAX_PITCH,
             pitch_rate=self.PITCH_RATE,
+            search_rotate_speed=self.SEARCH_ROTATE_SPEED / 100.0,
+            search_start_seconds=self.SEARCH_START_DELAY_SEC,
+            search_stop_seconds=self.SEARCH_STOP_DELAY_SEC,
+            tracking_shutdown_seconds=self.TRACKING_SHUTDOWN_DELAY_SEC,
+            pipeline_startup_timeout_seconds=self.PIPELINE_STARTUP_TIMEOUT_SEC,
         )
         self._neck_kinematics = load_neck_kinematics()
 
@@ -255,16 +262,22 @@ class WaliTrackingNode(Node):
             self._last_detection_message > 0.0
             and self._last_detection_message >= self._mode_started_at
         )
-        if detector_ready and lost_seconds >= self.TRACKING_SHUTDOWN_DELAY_SEC:
+        decision = self._tracking_controller.handle_target_loss(
+            gaze=self.mode == self.MODE_FACE_FOLLOW,
+            detector_ready=detector_ready,
+            detector_stale=(
+                now - self._last_detection_message > self.DETECTION_STALE_SEC
+            ),
+            lost_seconds=lost_seconds,
+            mode_seconds=now - self._mode_started_at,
+        )
+        if decision.exit_reason == TrackingExitReason.TARGET_LOST:
             self.get_logger().warning(
                 "目标丢失超过60秒，退出视觉跟随并关闭跟踪摄像头"
             )
             self._set_tracking_mode(self.MODE_IDLE)
             return
-        if (
-            not detector_ready
-            and now - self._mode_started_at >= self.PIPELINE_STARTUP_TIMEOUT_SEC
-        ):
+        if decision.exit_reason == TrackingExitReason.PIPELINE_STARTUP_TIMEOUT:
             self.get_logger().warning(
                 "视觉检测管线启动超过180秒仍无消息，退出跟踪并释放摄像头"
             )
@@ -272,47 +285,19 @@ class WaliTrackingNode(Node):
             return
 
         self._warn_if_detection_is_missing(lost_seconds)
+        self._apply_loss_decision(decision)
+        if (
+            self.mode == self.MODE_BODY_FOLLOW
+            and decision.state == LossState.SEARCH_STOPPED
+            and decision.head is not None
+        ):
+            self.get_logger().warning("目标丢失超过5秒，停止旋转搜索")
 
-        # "look_at_me" is a stationary gaze mode. A detector warm-up or an
-        # empty result must never make the chassis rotate; keep sending the
-        # stop heartbeat so the motor watchdog also remains authoritative.
-        if self.mode == self.MODE_FACE_FOLLOW:
-            self._stop_motor()
-            if lost_seconds >= self.SEARCH_STOP_DELAY_SEC and not self._search_halted:
-                self._publish_head_and_neck(
-                    0.0, self._tracking_controller.current_neck_pitch
-                )
-                self._search_halted = True
-            return
-
-        # A cold/stalled detector cannot guide a search. Never rotate blindly
-        # during pipeline startup or keep the last forward command on a dropout.
-        if not detector_ready or now - self._last_detection_message > self.DETECTION_STALE_SEC:
-            self._stop_motor()
-            return
-
-        if lost_seconds >= self.SEARCH_STOP_DELAY_SEC:
-            if not self._search_halted:
-                self._stop_motor()
-                self._tracking_controller.center_neck()
-                self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
-                self._search_active = False
-                self._search_halted = True
-                self.get_logger().warning("目标丢失超过5秒，停止旋转搜索")
-            return
-
-        if lost_seconds >= self.SEARCH_START_DELAY_SEC:
-            # Heartbeat search in the last observed turn direction, 1s..5s.
-            if self._tracking_controller.last_horizontal_error < 0:
-                self._publish_motor(2, 1, self.SEARCH_ROTATE_SPEED)
-            else:
-                self._publish_motor(1, 2, self.SEARCH_ROTATE_SPEED)
-            if not self._search_active:
-                self._tracking_controller.center_neck()
-                self._publish_head_and_neck(x_error=0.0, pitch_val=0.0)
-                self._search_active = True
-        elif lost_seconds >= 0.2:
-            self._stop_motor()
+    def _apply_loss_decision(self, decision):
+        if decision.motor is not None:
+            self._publish_motor_diff(decision.motor.left, decision.motor.right)
+        if decision.head is not None:
+            self._publish_head_and_neck(decision.head.x_error, decision.head.pitch)
 
     def _warn_if_detection_is_missing(self, lost_seconds):
         if lost_seconds < self.SEARCH_STOP_DELAY_SEC:
@@ -357,8 +342,7 @@ class WaliTrackingNode(Node):
 
     def _mark_target_seen(self):
         self._last_target_seen = time.monotonic()
-        self._search_active = False
-        self._search_halted = False
+        self._tracking_controller.mark_target_seen()
 
     def _publish_vision_pipeline_command(self, command):
         self._vision_pipeline_pub.publish(String(data=command))
@@ -440,8 +424,6 @@ class WaliTrackingNode(Node):
             self._last_detection_warning = 0.0
             self._last_time = now
             self._last_target_seen = now
-            self._search_active = False
-            self._search_halted = False
             # The camera manager is the sole V4L2 owner.  Acquire it before
             # starting consumers so the detector can wait for /image instead
             # of racing a second hobot_usb_cam instance.
@@ -451,8 +433,6 @@ class WaliTrackingNode(Node):
             return True
         elif mode == self.MODE_IDLE:
             self.mode = self.MODE_IDLE
-            self._search_active = False
-            self._search_halted = False
             self._stop_motor()
             self._publish_head_and_neck(0.0, 0.0) # 回中
             self._set_vision_pipeline_enabled(False)
