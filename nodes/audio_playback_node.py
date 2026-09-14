@@ -34,6 +34,8 @@ from services.wake_audio_protocol import (
 
 
 class AudioPlaybackNode(Node):
+    _TTS_SEQUENCE_LABEL_PREFIX = "walle.tts_pcm_sequence:"
+
     def __init__(self):
         super().__init__("audio_playback_node")
 
@@ -53,6 +55,9 @@ class AudioPlaybackNode(Node):
             on_wake_complete=self._on_wake_complete,
             on_system_complete=self._on_system_complete,
         )
+        self._last_tts_sequence = 0
+        self._received_tts_chunks = 0
+        self._missing_tts_chunks = 0
         self._network_prompts = None
         try:
             self._network_prompts = Esp32NetworkPromptSelector(
@@ -61,7 +66,12 @@ class AudioPlaybackNode(Node):
         except (OSError, ValueError) as exc:
             self.get_logger().warning(f"ESP32 配网提示音不可用: {exc}")
 
-        self.create_subscription(UInt8MultiArray, "audio_output", self._on_audio, 10)
+        self.create_subscription(
+            UInt8MultiArray,
+            "audio_output",
+            self._on_audio,
+            QoSProfile(depth=128, reliability=ReliabilityPolicy.RELIABLE),
+        )
         self.create_subscription(UInt8MultiArray, MUSIC_AUDIO_TOPIC, self._on_music_audio, 10)
         self.create_subscription(String, WAKE_AUDIO_TOPIC, self._on_wake_audio, 10)
         self.create_subscription(String, SYSTEM_AUDIO_TOPIC, self._on_system_audio, 10)
@@ -84,10 +94,71 @@ class AudioPlaybackNode(Node):
 
     def _on_audio(self, msg):
         if not msg.data:
+            self._log_tts_turn_diagnostics()
             self._player.mark_turn_end()
             return
+        self._track_tts_sequence(msg)
         samples = np.frombuffer(bytes(msg.data), dtype=np.int16)
         self._player.play(samples)
+
+    def _track_tts_sequence(self, msg):
+        sequence = 0
+        for dimension in msg.layout.dim:
+            if dimension.label.startswith(self._TTS_SEQUENCE_LABEL_PREFIX):
+                try:
+                    sequence = int(
+                        dimension.label[len(self._TTS_SEQUENCE_LABEL_PREFIX):]
+                    )
+                except ValueError:
+                    self.get_logger().warning(
+                        f"Invalid TTS PCM sequence metadata: {dimension.label}"
+                    )
+                break
+        # Other publishers (for example FC audio) use the same topic but do
+        # not carry this diagnostic marker.
+        if sequence <= 0:
+            return
+
+        if self._last_tts_sequence:
+            expected = self._last_tts_sequence + 1
+            if sequence > expected:
+                missing = sequence - expected
+                self._missing_tts_chunks += missing
+                self.get_logger().warning(
+                    "TTS PCM sequence gap: expected=%d received=%d "
+                    "missing=%d" % (expected, sequence, missing)
+                )
+            elif sequence < expected:
+                # A TTS node restart restarts its local counter. Treat it as
+                # a new diagnostic stream rather than reporting a false gap.
+                self.get_logger().info(
+                    "TTS PCM sequence restarted: previous=%d received=%d"
+                    % (self._last_tts_sequence, sequence)
+                )
+                self._missing_tts_chunks = 0
+        elif sequence != 1:
+            self.get_logger().warning(
+                "TTS PCM sequence started at %d; earlier chunks were sent "
+                "before this playback node began receiving" % sequence
+            )
+
+        self._last_tts_sequence = sequence
+        self._received_tts_chunks += 1
+
+    def _log_tts_turn_diagnostics(self):
+        if not self._received_tts_chunks:
+            return
+        self.get_logger().info(
+            "TTS PCM diagnostics: received_chunks=%d missing_chunks=%d "
+            "last_sequence=%d" % (
+                self._received_tts_chunks,
+                self._missing_tts_chunks,
+                self._last_tts_sequence,
+            )
+        )
+        self._last_tts_sequence = 0
+        self._received_tts_chunks = 0
+        self._missing_tts_chunks = 0
 
     def _on_music_audio(self, msg):
         if not msg.data:

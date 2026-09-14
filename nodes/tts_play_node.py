@@ -10,12 +10,14 @@ from pathlib import Path
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, UInt8MultiArray
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from std_msgs.msg import MultiArrayDimension, String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio_buffer import StreamingPCMPrebuffer
 from services.audio_output import OUTPUT_SAMPLE_RATE
 from services.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
+from services.paced_pcm_output import PacedPCMOutput
 from services.tts_pipeline import OrderedTTSPipeline
 from services.tts_protocol import decode_turn_end
 from services.tts_service import TTSService
@@ -26,7 +28,11 @@ class TTSPlayNode(Node):
         super().__init__("tts_play_node")
 
         self.create_subscription(String, "tts_text", self._on_tts_text, 10)
-        self.audio_pub = self.create_publisher(UInt8MultiArray, "audio_output", 10)
+        self.audio_pub = self.create_publisher(
+            UInt8MultiArray,
+            "audio_output",
+            QoSProfile(depth=128, reliability=ReliabilityPolicy.RELIABLE),
+        )
 
         self.declare_parameter("voice", "zh-CN-YunxiaNeural")
         self.declare_parameter("rate", "+20%")
@@ -41,6 +47,8 @@ class TTSPlayNode(Node):
         self.declare_parameter("stream_chunk_ms", 100)
         self.declare_parameter("stream_prebuffer_ms", 400.0)
         self.declare_parameter("stream_idle_timeout_sec", 2.0)
+        self.declare_parameter("pcm_transport_prebuffer_ms", 400.0)
+        self.declare_parameter("pcm_transport_max_queued_sec", 60.0)
         self.voice = self.get_parameter("voice").value
         self.rate = self.get_parameter("rate").value
         self.pitch = self.get_parameter("pitch").value
@@ -55,6 +63,12 @@ class TTSPlayNode(Node):
         self.stream_prebuffer_ms = self.get_parameter("stream_prebuffer_ms").value
         self.stream_idle_timeout_sec = self.get_parameter(
             "stream_idle_timeout_sec"
+        ).value
+        self.pcm_transport_prebuffer_ms = self.get_parameter(
+            "pcm_transport_prebuffer_ms"
+        ).value
+        self.pcm_transport_max_queued_sec = self.get_parameter(
+            "pcm_transport_max_queued_sec"
         ).value
 
         self._tts = TTSService(
@@ -79,6 +93,19 @@ class TTSPlayNode(Node):
             prebuffer_ms=self.stream_prebuffer_ms,
         )
         self._stream_bytes = 0
+        # ``audio_output`` carries raw PCM, so a sequence number in the
+        # MultiArray metadata lets the receiver detect DDS/cache loss without
+        # changing the PCM payload or the topic contract.
+        self._audio_sequence = 0
+        self._turn_audio_chunks = 0
+        self._pcm_output = PacedPCMOutput(
+            sample_rate=self.sample_rate,
+            chunk_ms=self.stream_chunk_ms,
+            prebuffer_ms=self.pcm_transport_prebuffer_ms,
+            max_queued_audio_sec=self.pcm_transport_max_queued_sec,
+            on_pcm=self._publish_paced_pcm,
+            on_turn_end=self._publish_turn_end_marker,
+        )
 
         self._pipeline = OrderedTTSPipeline(
             synthesize=self._tts.synthesize,
@@ -105,7 +132,9 @@ class TTSPlayNode(Node):
             f"head={self.boundary_silence_ms}ms, tail={self.tail_silence_ms}ms, "
             f"stream_first={self.stream_first_segment}, chunk={self.stream_chunk_ms}ms, "
             f"prebuffer={self.stream_prebuffer_ms}ms, "
-            f"idle_timeout={self.stream_idle_timeout_sec}s)"
+            f"idle_timeout={self.stream_idle_timeout_sec}s, "
+            f"transport_prebuffer={self.pcm_transport_prebuffer_ms}ms, "
+            f"transport_queue={self.pcm_transport_max_queued_sec}s)"
         )
 
     def _on_tts_text(self, msg):
@@ -183,15 +212,34 @@ class TTSPlayNode(Node):
     def _publish_pcm(self, samples):
         if samples is None or len(samples) == 0:
             return 0
+        self._pcm_output.submit(samples)
+        return np.asarray(samples).nbytes
+
+    def _publish_paced_pcm(self, samples):
+        self._audio_sequence += 1
         msg = UInt8MultiArray(data=samples.tobytes())
+        msg.layout.dim.append(MultiArrayDimension(
+            label=f"walle.tts_pcm_sequence:{self._audio_sequence}",
+            size=len(msg.data),
+            stride=len(msg.data),
+        ))
         self.audio_pub.publish(msg)
-        return len(msg.data)
+        self._turn_audio_chunks += 1
 
     def _publish_turn_end(self, turn_id):
-        self.audio_pub.publish(UInt8MultiArray(data=[]))
+        self._pcm_output.finish_turn(turn_id)
         self._audio_trimmer.reset()
         self._stream_trimmer.reset()
         self._stream_prebuffer.reset()
+
+    def _publish_turn_end_marker(self, turn_id):
+        self.audio_pub.publish(UInt8MultiArray(data=[]))
+        self.get_logger().info(
+            f"TTS PCM diagnostics: turn={turn_id}, "
+            f"published_chunks={self._turn_audio_chunks}, "
+            f"last_sequence={self._audio_sequence}"
+        )
+        self._turn_audio_chunks = 0
         self.get_logger().info(f"TTS 轮次结束: {turn_id}")
 
     def _log_synthesis_error(self, text, error, elapsed):
@@ -201,6 +249,7 @@ class TTSPlayNode(Node):
 
     def destroy_node(self):
         self._pipeline.shutdown()
+        self._pcm_output.close()
         self._tts.shutdown()
         super().destroy_node()
 
