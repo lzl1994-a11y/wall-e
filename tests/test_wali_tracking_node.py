@@ -241,13 +241,19 @@ class WaliTrackingNodeTests(unittest.TestCase):
         module = _load_tracking_module()
         node = module.WaliTrackingNode()
         node._set_tracking_mode("look_at_me")
-        self.assertEqual(node._current_neck_pitch, node.GAZE_START_PITCH)
+        self.assertEqual(
+            node._tracking_controller.current_neck_pitch,
+            node.GAZE_START_PITCH,
+        )
         payload = json.loads(node.publishers["/servo_targets/tracking"].messages[-1].data)
         self.assertEqual(payload["targets"]["neck_bottom"],
                          node._neck_kinematics.targets(node.GAZE_START_PITCH)["neck_bottom"])
         for _ in range(100):
             node._handle_face_follow([], [(480, 480, 0.3)], 0.1)
-        self.assertEqual(node._current_neck_pitch, node.GAZE_START_PITCH)
+        self.assertEqual(
+            node._tracking_controller.current_neck_pitch,
+            node.GAZE_START_PITCH,
+        )
 
     def test_pitch_is_rate_limited_and_independent_of_frame_rate(self):
         module = _load_tracking_module()
@@ -256,27 +262,20 @@ class WaliTrackingNodeTests(unittest.TestCase):
             node = module.WaliTrackingNode()
             node._set_tracking_mode("look_at_me")
             for _ in range(fps):
-                before = node._current_neck_pitch
+                before = node._tracking_controller.current_neck_pitch
                 node._handle_face_follow([(480, 400, 0.05)], [], 1 / fps)
-                self.assertLessEqual(abs(node._current_neck_pitch - before),
+                self.assertLessEqual(abs(
+                    node._tracking_controller.current_neck_pitch - before
+                ),
                                      node.PITCH_RATE / fps + 1e-9)
-            pitches.append(node._current_neck_pitch)
+            pitches.append(node._tracking_controller.current_neck_pitch)
         self.assertAlmostEqual(*pitches, places=6)
         for _ in range(300):
             node._handle_face_follow([(480, 400, 0.05)], [], 0.1)
-        self.assertEqual(node._current_neck_pitch, node.GAZE_MIN_PITCH)
-
-    def test_target_does_not_switch_when_another_person_becomes_larger(self):
-        module = _load_tracking_module()
-        node = module.WaliTrackingNode()
-        with patch.object(module.time, "monotonic", return_value=100.0):
-            node._select_target([(200, 272, 0.2)], "body", 0.1)
-        with patch.object(module.time, "monotonic", return_value=100.1):
-            target = node._select_target([(205, 272, 0.18), (750, 272, 0.3)], "body", 0.1)
-            self.assertLess(target[0], 210)
-            self.assertIsNone(node._select_target([(750, 272, 0.3)], "body", 0.1))
-        with patch.object(module.time, "monotonic", return_value=102.0):
-            self.assertEqual(node._select_target([(750, 272, 0.3)], "body", 0.1)[0], 750)
+        self.assertEqual(
+            node._tracking_controller.current_neck_pitch,
+            node.GAZE_MIN_PITCH,
+        )
 
     def test_search_uses_last_direction_and_stops_when_detector_stalls(self):
         module = _load_tracking_module()
@@ -303,15 +302,6 @@ class WaliTrackingNodeTests(unittest.TestCase):
             node._control_tick()
         motor = json.loads(node.publishers["/motor_cmd/tracking"].messages[-1].data)
         self.assertEqual((motor["left"]["action"], motor["right"]["action"]), (0, 0))
-
-    def test_largest_face_box_is_selected(self):
-        module = _load_tracking_module()
-        boxes = [
-            (100.0, 100.0, 0.05),
-            (500.0, 250.0, 0.22),
-            (800.0, 300.0, 0.10),
-        ]
-        self.assertEqual(module.WaliTrackingNode._largest_box(boxes), boxes[1])
 
     def test_head_targets_use_dedicated_latest_value_topic(self):
         module = _load_tracking_module()
