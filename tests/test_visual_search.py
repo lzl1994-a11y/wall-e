@@ -2,6 +2,8 @@ import json
 import unittest
 
 from services.visual_search import (
+    VISUAL_SEARCH_TOOL_NAME,
+    VisualSearchWorkflow,
     compile_visual_search_plan,
     encode_visual_search_status,
     normalize_visual_search_arguments,
@@ -92,6 +94,57 @@ class VisualSearchTests(unittest.TestCase):
         self.assertIsNone(parse_visual_search_result({
             "status": "maybe", "evidence": "", "response": ""
         }))
+
+    def test_execution_workflow_validates_completion_actions_and_normalizes_result(self):
+        workflow = VisualSearchWorkflow(authorize=lambda _name, _arguments: (True, ""))
+        prepared = workflow.prepare(
+            turn_id="turn-1",
+            arguments={
+                "target": "箱子",
+                "on_found_actions": [{
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "wave_hello"},
+                }],
+            },
+        )
+
+        result = workflow.complete(prepared.plan, {
+            "status": "success",
+            "results": [{
+                "action": VISUAL_SEARCH_TOOL_NAME,
+                "status": "found",
+                "found": True,
+                "attempts": 2,
+            }],
+        })
+
+        self.assertIsNone(prepared.rejection)
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["found"])
+
+    def test_execution_workflow_rejects_invalid_completion_and_missing_executor(self):
+        workflow = VisualSearchWorkflow(
+            authorize=lambda _name, _arguments: (False, "invalid_arguments")
+        )
+        prepared = workflow.prepare(
+            turn_id="turn-1",
+            arguments={
+                "target": "箱子",
+                "on_found_actions": [{
+                    "name": "play_sequence",
+                    "arguments": {"sequence_name": "wave_hello"},
+                }],
+            },
+        )
+        plan = compile_visual_search_plan(
+            turn_id="turn-2", arguments={"target": "箱子"}
+        )
+
+        self.assertEqual(prepared.rejection["status"], "rejected")
+        self.assertEqual(
+            workflow.complete(plan, None)["reason"],
+            "native_behavior_tree_unavailable",
+        )
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ from services.visual_search import (
     VISUAL_SEARCH_REQUEST_TOPIC,
     VISUAL_SEARCH_STATUS_TOPIC,
     VISUAL_SEARCH_TOOL_NAME,
-    compile_visual_search_plan,
+    VisualSearchWorkflow,
     encode_visual_search_status,
     parse_visual_search_request,
 )
@@ -144,6 +144,9 @@ class VoiceChatNode(Node):
             10,
         )
         self._visual_search_lock = threading.Lock()
+        self._visual_search_workflow = VisualSearchWorkflow(
+            authorize=lambda name, arguments: validate_action_arguments(name, arguments)
+        )
         self._conditional_task_workflow = None
         self._camera_inspection_workflow = None
         self._photo_capture_workflow = None
@@ -501,24 +504,12 @@ class VoiceChatNode(Node):
             )))
 
     def _process_visual_search(self, arguments):
-        try:
-            plan = compile_visual_search_plan(
-                turn_id=self._ensure_turn_id(), arguments=arguments
-            )
-        except (TypeError, ValueError) as exc:
-            return {
-                "status": "rejected",
-                "action": VISUAL_SEARCH_TOOL_NAME,
-                "reason": str(exc),
-            }
-        for step in plan.steps[1:]:
-            allowed, reason = validate_action_arguments(step.name, step.arguments)
-            if not allowed:
-                return {
-                    "status": "rejected",
-                    "action": VISUAL_SEARCH_TOOL_NAME,
-                    "reason": f"completion_action_invalid:{step.step_id}:{reason}",
-                }
+        preparation = self._visual_search().prepare(
+            turn_id=self._ensure_turn_id(), arguments=arguments
+        )
+        if preparation.rejection is not None:
+            return preparation.rejection
+        plan = preparation.plan
         self.tts_pub.publish(String(data="我找一下。"))
         self.get_logger().info(
             "Visual search submitted: "
@@ -526,34 +517,27 @@ class VoiceChatNode(Node):
             f"motion={plan.steps[0].arguments}, "
             f"on_found_actions={len(plan.steps) - 1}"
         )
-        result = self._try_execute_native_plan(
+        execution = self._try_execute_native_plan(
             plan,
             timeout=plan.max_views * 50.0 + 10.0,
             cancelled=self.vc._cancel_llm.is_set,
         )
-        if result is None:
-            return {
-                "status": "failed",
-                "action": VISUAL_SEARCH_TOOL_NAME,
-                "reason": "native_behavior_tree_unavailable",
-            }
-        search_results = [
-            item for item in result.get("results", [])
-            if item.get("action") == VISUAL_SEARCH_TOOL_NAME
-        ]
-        if result.get("status") == "success" and search_results:
-            final = dict(search_results[-1])
-            final["status"] = "completed"
+        final = VisualSearchWorkflow.complete(plan, execution)
+        if final["status"] == "completed":
             self.get_logger().info(
                 "Visual search completed: "
                 f"found={final.get('found')}, attempts={final.get('attempts')}"
             )
-            return final
-        return {
-            "status": "failed",
-            "action": VISUAL_SEARCH_TOOL_NAME,
-            "reason": result.get("error") or result.get("status") or "search_failed",
-        }
+        return final
+
+    def _visual_search(self):
+        workflow = getattr(self, "_visual_search_workflow", None)
+        if workflow is None:
+            workflow = VisualSearchWorkflow(
+                authorize=lambda name, arguments: validate_action_arguments(name, arguments)
+            )
+            self._visual_search_workflow = workflow
+        return workflow
 
     def _execute_behavior_tree_plan(self, heard_text, actions):
         """Submit ordinary actions to the native tree; return None for fallback."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -95,6 +96,67 @@ class VisualSearchPlan:
         if self.on_found_actions:
             payload["on_found_actions"] = [dict(item) for item in self.on_found_actions]
         return payload
+
+
+@dataclass(frozen=True)
+class VisualSearchPreparation:
+    plan: VisualSearchPlan | None = None
+    rejection: dict[str, Any] | None = None
+
+
+class VisualSearchWorkflow:
+    """Prepare and normalize visual-search execution without ROS coupling."""
+
+    def __init__(
+        self,
+        *,
+        authorize: Callable[[str, dict[str, Any]], tuple[bool, str]],
+    ) -> None:
+        self._authorize = authorize
+
+    def prepare(self, *, turn_id: str, arguments: Any) -> VisualSearchPreparation:
+        try:
+            plan = compile_visual_search_plan(turn_id=turn_id, arguments=arguments)
+        except (TypeError, ValueError) as exc:
+            return VisualSearchPreparation(rejection={
+                "status": "rejected",
+                "action": VISUAL_SEARCH_TOOL_NAME,
+                "reason": str(exc),
+            })
+        for step in plan.steps[1:]:
+            allowed, reason = self._authorize(step.name, step.arguments)
+            if not allowed:
+                return VisualSearchPreparation(rejection={
+                    "status": "rejected",
+                    "action": VISUAL_SEARCH_TOOL_NAME,
+                    "reason": f"completion_action_invalid:{step.step_id}:{reason}",
+                })
+        return VisualSearchPreparation(plan=plan)
+
+    @staticmethod
+    def complete(
+        plan: VisualSearchPlan,
+        execution: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if execution is None:
+            return {
+                "status": "failed",
+                "action": VISUAL_SEARCH_TOOL_NAME,
+                "reason": "native_behavior_tree_unavailable",
+            }
+        search_results = [
+            item for item in execution.get("results", [])
+            if item.get("action") == VISUAL_SEARCH_TOOL_NAME
+        ]
+        if execution.get("status") == "success" and search_results:
+            result = dict(search_results[-1])
+            result["status"] = "completed"
+            return result
+        return {
+            "status": "failed",
+            "action": VISUAL_SEARCH_TOOL_NAME,
+            "reason": execution.get("error") or execution.get("status") or "search_failed",
+        }
 
 
 def compile_visual_search_plan(*, turn_id: str, arguments: dict[str, Any]) -> VisualSearchPlan:
@@ -239,6 +301,8 @@ __all__ = [
     "VISUAL_SEARCH_STATUS_TOPIC",
     "VISUAL_SEARCH_TOOL_NAME",
     "VisualSearchPlan",
+    "VisualSearchPreparation",
+    "VisualSearchWorkflow",
     "compile_visual_search_plan",
     "encode_visual_search_status",
     "normalize_visual_search_arguments",
