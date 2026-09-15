@@ -186,7 +186,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/dialog_action_execution.py` | 与 ROS 无关的对话动作执行适配器：绑定关联状态、请求发布、可用性检查、超时与来源标记。 |
 | `services/visual_search.py` | 视觉搜索计划、ROS 叶节点协议和执行工作流：校验完成动作、处理单次取帧/评估降级，并归一化行为树执行结果。 |
 | `services/native_plan_execution.py` | 与 ROS 无关的原生动作计划执行适配器：优先 ROS2 Action，Action 不可用时回退到关联话题执行，并转交状态消息。 |
-| `services/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机：维护模式切换、帧保留、间隔调度和并发防重。 |
+| `services/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机与工作流：维护模式切换、帧保留、间隔调度、请求编码和回复归一化。 |
 | `services/sequence_execution.py` | 与 ROS 无关的动作命令生命周期、序列展开和舵机轨迹执行；负责取消/中断、目标限位、机械联动约束与 50 Hz 插值计算。 |
 | `services/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：目标连续性、人体跟随、人脸注视、脖子俯仰，以及目标丢失后的保持、搜索、停止和退出状态机。 |
 | `core/action_skills.json` | 动作技能注册表；统一定义执行节点、计划/仲裁资源、超时、重试和可取消能力。 |

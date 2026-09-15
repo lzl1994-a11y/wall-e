@@ -69,7 +69,7 @@ from services.game_protocol import (
     game_mode_from_message,
 )
 from services.game_tft_stream import prepare_game_bgr
-from services.game_commentary import GameCommentaryController
+from services.game_commentary import GameCommentaryController, GameCommentaryWorkflow
 from services.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
@@ -181,6 +181,7 @@ class VoiceChatNode(Node):
         self.tft_preview_settings = load_tft_preview_settings()
         self.tft_preview = TftPreviewClient(self, logger=self.get_logger())
         self._game_commentary = GameCommentaryController()
+        self._game_commentary_workflow = None
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self.create_subscription(UInt8MultiArray, GAME_FRAME_TOPIC, self._on_game_frame, 1)
         self.create_timer(1.0, self._game_commentary_tick)
@@ -256,23 +257,30 @@ class VoiceChatNode(Node):
     def _run_game_commentary(self, jpeg):
         self.game_busy_pub.publish(String(data="busy"))
         try:
-            answer = self.vc.analyze_image(
-                "观察当前 FC 游戏画面，以瓦力的口吻说一句简短自然的中文评论。"
-                "可以提醒危险、鼓励玩家或描述关键局面；看不清时不要猜。",
-                base64.b64encode(jpeg).decode("ascii"),
-            )
-            answer = TTS_CLEAN_RE.sub("", str(answer or "")).strip()
-            if answer and self._game_commentary.can_publish_commentary():
-                self.tts_pub.publish(String(data=answer))
+            result = self._game_commentary_flow().invoke(jpeg)
+            if result.answer and self._game_commentary.can_publish_commentary():
+                self.tts_pub.publish(String(data=result.answer))
                 self._turn_controller.set_turn_id("game-" + uuid.uuid4().hex[:8])
                 self._on_llm_done()
             else:
                 self.game_busy_pub.publish(String(data="idle"))
+            if result.error:
+                self.get_logger().error(f"游戏画面识别失败: {result.error}")
         except Exception as exc:
-            self.get_logger().error(f"游戏画面识别失败: {exc}")
+            self.get_logger().error(f"游戏画面解说发布失败: {exc}")
             self.game_busy_pub.publish(String(data="idle"))
         finally:
             self._game_commentary.finish_commentary()
+
+    def _game_commentary_flow(self):
+        workflow = getattr(self, "_game_commentary_workflow", None)
+        if workflow is None:
+            workflow = GameCommentaryWorkflow(
+                analyze=self.vc.analyze_image,
+                clean=lambda text: TTS_CLEAN_RE.sub("", text).strip(),
+            )
+            self._game_commentary_workflow = workflow
+        return workflow
 
     def _run_camera_preview(self, *, duration_ms):
         return self.tft_preview.send_camera_preview(
