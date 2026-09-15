@@ -57,6 +57,7 @@ from services.visual_search import (
     VISUAL_SEARCH_STATUS_TOPIC,
     VISUAL_SEARCH_TOOL_NAME,
     VisualSearchWorkflow,
+    VisualSearchViewWorkflow,
     encode_visual_search_status,
     parse_visual_search_request,
 )
@@ -157,6 +158,7 @@ class VoiceChatNode(Node):
         self._visual_search_workflow = VisualSearchWorkflow(
             authorize=lambda name, arguments: validate_action_arguments(name, arguments)
         )
+        self._visual_search_view_workflow = None
         self._conditional_task_workflow = None
         self._camera_inspection_workflow = None
         self._photo_capture_workflow = None
@@ -458,31 +460,11 @@ class VoiceChatNode(Node):
 
     def _serve_visual_search_request(self, request):
         with self._visual_search_lock:
-            try:
-                preview = self._run_camera_preview(
-                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
-                )
-                if preview.busy or not preview.last_frame:
-                    result = {
-                        "status": "uncertain",
-                        "evidence": preview.error or "camera_frame_unavailable",
-                        "response": "这次没有取得可判断的画面。",
-                    }
-                else:
-                    result = self.vc.evaluate_visual_search(
-                        request["target"],
-                        request["question"],
-                        base64.b64encode(preview.last_frame).decode("ascii"),
-                    )
-            except Exception as exc:
-                self.get_logger().error(f"Visual search view failed: {exc}")
-                result = {
-                    "status": "uncertain",
-                    "evidence": "visual_search_view_failed",
-                    "response": "这次画面没有分析成功。",
-                }
+            decision = self._visual_search_view().invoke(request)
+            if decision.error:
+                self.get_logger().error(f"Visual search view failed: {decision.error}")
             self.visual_search_status_pub.publish(String(data=encode_visual_search_status(
-                request, result
+                request, decision.result
             )))
 
     def _process_visual_search(self, arguments):
@@ -519,6 +501,20 @@ class VoiceChatNode(Node):
                 authorize=lambda name, arguments: validate_action_arguments(name, arguments)
             )
             self._visual_search_workflow = workflow
+        return workflow
+
+    def _visual_search_view(self):
+        workflow = getattr(self, "_visual_search_view_workflow", None)
+        if workflow is None:
+            workflow = VisualSearchViewWorkflow(
+                capture=lambda: self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
+                ),
+                evaluate=lambda target, question, frame: self.vc.evaluate_visual_search(
+                    target, question, frame
+                ),
+            )
+            self._visual_search_view_workflow = workflow
         return workflow
 
     def _execute_behavior_tree_plan(self, heard_text, actions):

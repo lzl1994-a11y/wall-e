@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any
@@ -102,6 +103,55 @@ class VisualSearchPlan:
 class VisualSearchPreparation:
     plan: VisualSearchPlan | None = None
     rejection: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class VisualSearchViewDecision:
+    result: dict[str, str]
+    error: str | None = None
+
+
+class VisualSearchViewWorkflow:
+    """Capture and assess one correlated visual-search view without ROS."""
+
+    def __init__(
+        self,
+        *,
+        capture: Callable[[], Any],
+        evaluate: Callable[[str, str, str], dict[str, str]],
+    ) -> None:
+        self._capture = capture
+        self._evaluate = evaluate
+
+    def invoke(self, request: dict[str, Any]) -> VisualSearchViewDecision:
+        try:
+            preview = self._capture()
+            frame = getattr(preview, "last_frame", None)
+            if getattr(preview, "busy", False) or not frame:
+                return VisualSearchViewDecision(result={
+                    "status": "uncertain",
+                    "evidence": getattr(preview, "error", None)
+                    or "camera_frame_unavailable",
+                    "response": "这次没有取得可判断的画面。",
+                })
+            result = self._evaluate(
+                request["target"],
+                request["question"],
+                base64.b64encode(frame).decode("ascii"),
+            )
+            parsed = parse_visual_search_result(result)
+            if parsed is None:
+                raise ValueError("visual_search_result_invalid")
+            return VisualSearchViewDecision(result=parsed)
+        except Exception as exc:
+            return VisualSearchViewDecision(
+                result={
+                    "status": "uncertain",
+                    "evidence": "visual_search_view_failed",
+                    "response": "这次画面没有分析成功。",
+                },
+                error=str(exc),
+            )
 
 
 class VisualSearchWorkflow:
@@ -302,6 +352,8 @@ __all__ = [
     "VISUAL_SEARCH_TOOL_NAME",
     "VisualSearchPlan",
     "VisualSearchPreparation",
+    "VisualSearchViewDecision",
+    "VisualSearchViewWorkflow",
     "VisualSearchWorkflow",
     "compile_visual_search_plan",
     "encode_visual_search_status",

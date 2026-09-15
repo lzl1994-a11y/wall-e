@@ -4,6 +4,7 @@ import unittest
 from services.visual_search import (
     VISUAL_SEARCH_TOOL_NAME,
     VisualSearchWorkflow,
+    VisualSearchViewWorkflow,
     compile_visual_search_plan,
     encode_visual_search_status,
     normalize_visual_search_arguments,
@@ -145,6 +146,43 @@ class VisualSearchTests(unittest.TestCase):
             workflow.complete(plan, None)["reason"],
             "native_behavior_tree_unavailable",
         )
+
+    def test_view_workflow_evaluates_captured_frame_and_handles_unavailable_view(self):
+        preview = type("Preview", (), {"busy": False, "last_frame": b"jpeg", "error": ""})()
+        workflow = VisualSearchViewWorkflow(
+            capture=lambda: preview,
+            evaluate=lambda target, question, image: {
+                "status": "found",
+                "evidence": f"{target}:{image}",
+                "response": question,
+            },
+        )
+        request = {"target": "杯子", "question": "杯子在哪"}
+
+        decision = workflow.invoke(request)
+
+        self.assertEqual(decision.result["status"], "found")
+        self.assertIn("anBlZw==", decision.result["evidence"])
+        unavailable = VisualSearchViewWorkflow(
+            capture=lambda: type("Preview", (), {
+                "busy": True, "last_frame": None, "error": "camera_busy"
+            })(),
+            evaluate=lambda *_args: self.fail("must not evaluate an unavailable frame"),
+        ).invoke(request)
+        self.assertEqual(unavailable.result["evidence"], "camera_busy")
+
+    def test_view_workflow_returns_safe_result_when_evaluation_fails(self):
+        workflow = VisualSearchViewWorkflow(
+            capture=lambda: type("Preview", (), {
+                "busy": False, "last_frame": b"jpeg", "error": ""
+            })(),
+            evaluate=lambda *_args: (_ for _ in ()).throw(RuntimeError("model unavailable")),
+        )
+
+        decision = workflow.invoke({"target": "杯子", "question": "在哪"})
+
+        self.assertEqual(decision.result["evidence"], "visual_search_view_failed")
+        self.assertEqual(decision.error, "model unavailable")
 
 
 if __name__ == "__main__":
