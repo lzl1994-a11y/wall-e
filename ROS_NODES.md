@@ -184,6 +184,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/dialog_presentation.py` | 与 ROS 无关的语音对话屏幕呈现决策：构造唤醒、超时和最终回复的稳定字段。 |
 | `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
 | `services/dialog_action_execution.py` | 与 ROS 无关的对话动作执行适配器：绑定关联状态、请求发布、可用性检查、超时与来源标记。 |
+| `services/dialog_plan_execution.py` | 与 ROS 无关的对话原生计划路由：普通动作进入行为树，专用视觉工具回退到对应工作流。 |
 | `services/visual_search.py` | 视觉搜索计划、ROS 叶节点协议和执行工作流：校验完成动作、处理单次取帧/评估降级，并归一化行为树执行结果。 |
 | `services/native_plan_execution.py` | 与 ROS 无关的原生动作计划执行适配器：优先 ROS2 Action，Action 不可用时回退到关联话题执行，并转交状态消息。 |
 | `services/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机与工作流：维护模式切换、帧保留、间隔调度、请求编码和回复归一化。 |

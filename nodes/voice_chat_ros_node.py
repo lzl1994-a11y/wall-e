@@ -41,9 +41,7 @@ from services.behavior_tree_protocol import (
     BEHAVIOR_TREE_EXECUTE_TOPIC,
     BEHAVIOR_TREE_STATUS_TOPIC,
 )
-from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.camera_frame import save_camera_photo
-from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.dialog_workflow import (
     CameraInspectionWorkflow,
     ConditionalTaskWorkflow,
@@ -51,12 +49,12 @@ from services.dialog_workflow import (
 )
 from services.dialog_output import DialogOutputController
 from services.dialog_presentation import DialogPresentationController
+from services.dialog_plan_execution import DialogNativePlanWorkflow
 from services.dialog_tool_router import DialogToolRouter
 from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
 from services.visual_search import (
     VISUAL_SEARCH_REQUEST_TOPIC,
     VISUAL_SEARCH_STATUS_TOPIC,
-    VISUAL_SEARCH_TOOL_NAME,
     VisualSearchWorkflow,
     VisualSearchViewWorkflow,
     encode_visual_search_status,
@@ -151,6 +149,7 @@ class VoiceChatNode(Node):
             ),
             owner_available=lambda: self.behavior_tree_pub.get_subscription_count() > 0,
         )
+        self._dialog_native_plan_workflow = None
         self.visual_search_status_pub = self.create_publisher(
             String, VISUAL_SEARCH_STATUS_TOPIC, 10
         )
@@ -526,27 +525,25 @@ class VoiceChatNode(Node):
 
     def _execute_behavior_tree_plan(self, heard_text, actions):
         """Submit ordinary actions to the native tree; return None for fallback."""
-        if any(
-            action.get("name") in {
-                "inspect_camera", CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME
-            }
-            for action in actions
-            if isinstance(action, dict)
-        ):
-            return None
-        workflow = NativeBehaviorTreeWorkflow(
-            authorize=lambda _prompt, name, arguments: validate_action_arguments(
-                name, arguments
-            ),
-            execute_plan=lambda plan: self._try_execute_native_plan(
-                plan, cancelled=self.vc._cancel_llm.is_set
-            ),
-        )
-        return workflow.invoke(
+        return self._dialog_native_plan().invoke(
             turn_id=self._ensure_turn_id(),
             user_prompt=heard_text,
             actions=actions,
         )
+
+    def _dialog_native_plan(self):
+        workflow = getattr(self, "_dialog_native_plan_workflow", None)
+        if workflow is None:
+            workflow = DialogNativePlanWorkflow(
+                authorize=lambda _prompt, name, arguments: validate_action_arguments(
+                    name, arguments
+                ),
+                execute_plan=lambda plan: self._try_execute_native_plan(
+                    plan, cancelled=self.vc._cancel_llm.is_set
+                ),
+            )
+            self._dialog_native_plan_workflow = workflow
+        return workflow
 
     def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
         return self._native_plan().try_execute(
