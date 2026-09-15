@@ -12,7 +12,6 @@
 import base64
 import json
 import os
-import random
 import sys
 import threading
 import time
@@ -68,6 +67,7 @@ from services.game_protocol import (
     game_mode_from_message,
 )
 from services.game_tft_stream import prepare_game_bgr
+from services.game_commentary import GameCommentaryController
 from services.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
@@ -172,11 +172,7 @@ class VoiceChatNode(Node):
 
         self.tft_preview_settings = load_tft_preview_settings()
         self.tft_preview = TftPreviewClient(self, logger=self.get_logger())
-        self._game_mode = "robot"
-        self._game_frame_lock = threading.Lock()
-        self._latest_game_frame = None
-        self._next_game_commentary = None
-        self._game_commentary_running = False
+        self._game_commentary = GameCommentaryController()
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self.create_subscription(UInt8MultiArray, GAME_FRAME_TOPIC, self._on_game_frame, 1)
         self.create_timer(1.0, self._game_commentary_tick)
@@ -214,45 +210,23 @@ class VoiceChatNode(Node):
         mode = game_mode_from_message(message.data)
         if mode is None:
             return
-        previous = self._game_mode
-        self._game_mode = mode
+        decision = self._game_commentary.set_mode(mode)
         if mode != "robot":
-            if previous == "robot":
+            if decision.pause_voice:
                 self.vc.pause()
-            if mode == "playing" and previous != "playing":
-                self._schedule_next_game_commentary()
             return
-        if previous == "robot":
+        if not decision.resume_voice:
             return
-        with self._game_frame_lock:
-            self._latest_game_frame = None
-        self._next_game_commentary = None
         self.vc.resume()
 
     def _on_game_frame(self, message):
-        if self._game_mode == "robot":
-            return
         frame = decode_game_frame(bytes(message.data))
         if frame is None:
             return
-        raw, width, height, pitch = frame
-        with self._game_frame_lock:
-            self._latest_game_frame = frame
-
-    def _schedule_next_game_commentary(self):
-        self._next_game_commentary = time.monotonic() + random.uniform(50.0, 120.0)
+        self._game_commentary.accept_frame(frame)
 
     def _game_commentary_tick(self):
-        if self._game_mode != "playing" or self._game_commentary_running:
-            return
-        if self._next_game_commentary is None:
-            self._schedule_next_game_commentary()
-            return
-        if time.monotonic() < self._next_game_commentary:
-            return
-        with self._game_frame_lock:
-            frame = self._latest_game_frame
-        self._schedule_next_game_commentary()
+        frame = self._game_commentary.take_due_frame()
         if frame is None:
             return
         import numpy as np
@@ -261,8 +235,8 @@ class VoiceChatNode(Node):
         image = np.frombuffer(raw, dtype=np.uint8).reshape(height, pitch // 4, 4)
         jpeg = prepare_game_bgr(image[:, :width, :3], quality=75)
         if not jpeg:
+            self._game_commentary.finish_commentary()
             return
-        self._game_commentary_running = True
         threading.Thread(
             target=self._run_game_commentary,
             args=(jpeg,),
@@ -279,7 +253,7 @@ class VoiceChatNode(Node):
                 base64.b64encode(jpeg).decode("ascii"),
             )
             answer = TTS_CLEAN_RE.sub("", str(answer or "")).strip()
-            if answer and self._game_mode == "playing":
+            if answer and self._game_commentary.can_publish_commentary():
                 self.tts_pub.publish(String(data=answer))
                 self._turn_controller.set_turn_id("game-" + uuid.uuid4().hex[:8])
                 self._on_llm_done()
@@ -289,7 +263,7 @@ class VoiceChatNode(Node):
             self.get_logger().error(f"游戏画面识别失败: {exc}")
             self.game_busy_pub.publish(String(data="idle"))
         finally:
-            self._game_commentary_running = False
+            self._game_commentary.finish_commentary()
 
     def _run_camera_preview(self, *, duration_ms):
         return self.tft_preview.send_camera_preview(
@@ -331,11 +305,11 @@ class VoiceChatNode(Node):
         ).start()
 
     def _on_vad_speech_start(self):
-        if self._game_mode == "robot":
+        if self._game_commentary.mode == "robot":
             self.dialog_motion_pub.publish(String(data=VAD_SPEECH_STARTED))
 
     def _on_vad_speech_end(self):
-        if self._game_mode == "robot":
+        if self._game_commentary.mode == "robot":
             self.dialog_motion_pub.publish(String(data=VAD_SPEECH_ENDED))
 
     def _play_wake_response(self, request_id):
@@ -422,7 +396,7 @@ class VoiceChatNode(Node):
     def _schedule_capture_resume(self):
         """Discard the speaker's acoustic tail before reopening capture."""
         if (
-            getattr(self, "_game_mode", "robot") != "robot"
+            self._game_commentary.mode != "robot"
             or not self._output().can_resume_capture()
         ):
             return
@@ -437,7 +411,7 @@ class VoiceChatNode(Node):
             self._resume_timer.start()
 
     def _resume_capture_after_output(self):
-        if getattr(self, "_game_mode", "robot") != "robot":
+        if self._game_commentary.mode != "robot":
             return
         with self._timer_lock:
             self._resume_timer = None
