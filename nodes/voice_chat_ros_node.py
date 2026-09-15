@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
 from services.action_execution import CorrelatedActionExecutor
+from services.dialog_action_execution import DialogActionExecutor
 from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_intent_guard import validate_action_arguments
 from services.action_status import ACTION_STATUS_TOPIC
@@ -106,6 +107,11 @@ class VoiceChatNode(Node):
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self._action_executor = CorrelatedActionExecutor()
+        self._dialog_action_executor = DialogActionExecutor(
+            executor=self._action_executor,
+            publish=lambda payload: self.action_pub.publish(String(data=payload)),
+            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
+        )
         self._tool_router = DialogToolRouter(
             inspect_camera=self._process_camera_inspection,
             run_conditional_task=self._process_conditional_task,
@@ -427,12 +433,9 @@ class VoiceChatNode(Node):
         return self._tools().dispatch(name, arguments)
 
     def _execute_regular_tool_action(self, name, arguments):
-        result = self._action_executor.execute(
+        result = self._actions().execute(
             name,
             arguments,
-            publish=lambda payload: self.action_pub.publish(String(data=payload)),
-            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
-            timeout=20.0,
             source="voice_dialog",
             cancelled=self.vc._cancel_llm.is_set,
         )
@@ -440,9 +443,7 @@ class VoiceChatNode(Node):
         return result
 
     def _on_action_status(self, message):
-        executor = getattr(self, "_action_executor", None)
-        if executor is not None:
-            executor.accept_status(message.data)
+        self._actions().accept_status(message.data)
 
     def _on_behavior_tree_status(self, message):
         self._native_plan().accept_status(message.data)
@@ -619,12 +620,9 @@ class VoiceChatNode(Node):
         )
 
     def _execute_workflow_action(self, name, arguments):
-        return self._action_executor.execute(
+        return self._actions().execute(
             name,
             arguments,
-            publish=lambda payload: self.action_pub.publish(String(data=payload)),
-            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
-            timeout=20.0,
             source="voice_conditional_task",
         )
 
@@ -753,6 +751,22 @@ class VoiceChatNode(Node):
             )
             self._tool_router = router
         return router
+
+    def _actions(self):
+        adapter = getattr(self, "_dialog_action_executor", None)
+        if adapter is None:
+            executor = getattr(self, "_action_executor", None)
+            publisher = getattr(self, "action_pub", None)
+            adapter = DialogActionExecutor(
+                executor=executor,
+                publish=(lambda payload: publisher.publish(String(data=payload)))
+                if publisher is not None else lambda _payload: None,
+                owner_available=(
+                    lambda: publisher is not None and publisher.get_subscription_count() > 0
+                ),
+            )
+            self._dialog_action_executor = adapter
+        return adapter
 
     def _output(self):
         controller = getattr(self, "_output_controller", None)

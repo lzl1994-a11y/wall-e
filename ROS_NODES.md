@@ -182,6 +182,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
 | `services/dialog_output.py` | 与 ROS 无关的语音输出守卫：协调唤醒应答、TTS 播放完成、陈旧回执和安全恢复录音的条件。 |
 | `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
+| `services/dialog_action_execution.py` | 与 ROS 无关的对话动作执行适配器：绑定关联状态、请求发布、可用性检查、超时与来源标记。 |
 | `services/visual_search.py` | 视觉搜索计划、ROS 叶节点协议和执行工作流：校验完成动作、处理单次取帧/评估降级，并归一化行为树执行结果。 |
 | `services/native_plan_execution.py` | 与 ROS 无关的原生动作计划执行适配器：优先 ROS2 Action，Action 不可用时回退到关联话题执行，并转交状态消息。 |
 | `services/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机：维护模式切换、帧保留、间隔调度和并发防重。 |
