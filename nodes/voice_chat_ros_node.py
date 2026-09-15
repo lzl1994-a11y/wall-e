@@ -10,7 +10,6 @@
 """
 
 import base64
-import json
 import os
 import sys
 import threading
@@ -51,6 +50,7 @@ from services.dialog_workflow import (
     PhotoCaptureWorkflow,
 )
 from services.dialog_output import DialogOutputController
+from services.dialog_presentation import DialogPresentationController
 from services.dialog_tool_router import DialogToolRouter
 from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
 from services.visual_search import (
@@ -203,6 +203,7 @@ class VoiceChatNode(Node):
 
         self._turn_controller = DialogTurnController()
         self._output_controller = DialogOutputController()
+        self._presentation_controller = DialogPresentationController()
         self._timer_lock = threading.Lock()
         self._wake_watchdog = None
         self._resume_timer = None
@@ -299,10 +300,7 @@ class VoiceChatNode(Node):
         # 切 TFT 到聊天页面
         try:
             screen_msg = String()
-            screen_msg.data = json.dumps(
-                {"page": "chat", "text": "正在听...", "source": "wake_word"},
-                ensure_ascii=False,
-            )
+            screen_msg.data = self._screen_payload(self._presentation().wake_listening())
             self.dialog_pub.publish(screen_msg)
         except Exception:
             pass
@@ -710,23 +708,18 @@ class VoiceChatNode(Node):
             self.get_logger().info(f"[识别] {decision.corrected_text}")
         self.get_logger().info(f"[回复] {decision.ai_text[:80]}")
 
+        presentation = self._presentation().reply(
+            decision, getattr(self.vc, "last_action_results", [])
+        )
+
         # flush 残留 TTS 文本
-        if decision.tts_tail:
-            self.tts_pub.publish(String(data=decision.tts_tail))
-            self.get_logger().info(f"TTS tail: {decision.tts_tail[:80]}")
+        if presentation.tts_tail:
+            self.tts_pub.publish(String(data=presentation.tts_tail))
+            self.get_logger().info(f"TTS tail: {presentation.tts_tail[:80]}")
 
         # 屏幕对话框（对齐 llm_ros_node 格式）
         dialog = String()
-        action_results = getattr(self.vc, "last_action_results", [])
-        if not isinstance(action_results, list):
-            action_results = []
-        dialog.data = json.dumps({
-            "turn_id": decision.turn_id,
-            "corrected_text": decision.corrected_text,
-            "ai_text": decision.ai_text,
-            "actions": action_results,
-            "source": "voice_chat",
-        }, ensure_ascii=False)
+        dialog.data = self._screen_payload(presentation.screen_payload)
         self.dialog_pub.publish(dialog)
         self.get_logger().info(f"Screen: {decision.ai_text[:60]}")
 
@@ -775,6 +768,19 @@ class VoiceChatNode(Node):
             self._output_controller = controller
         return controller
 
+    def _presentation(self):
+        controller = getattr(self, "_presentation_controller", None)
+        if controller is None:
+            controller = DialogPresentationController()
+            self._presentation_controller = controller
+        return controller
+
+    @staticmethod
+    def _screen_payload(payload):
+        import json
+
+        return json.dumps(payload, ensure_ascii=False)
+
     def _on_llm_done(self):
         """关闭本轮 TTS；播放节点会在音频真正播完后结束回合。"""
         turn_id = self._turn().finish()
@@ -788,10 +794,7 @@ class VoiceChatNode(Node):
         self.get_logger().info("LLM 超时，切回待机")
         try:
             screen_msg = String()
-            screen_msg.data = json.dumps(
-                {"page": "idle", "text": "说「瓦力瓦力」唤醒我", "source": "timeout"},
-                ensure_ascii=False,
-            )
+            screen_msg.data = self._screen_payload(self._presentation().timed_out())
             self.dialog_pub.publish(screen_msg)
         except Exception:
             pass
