@@ -13,7 +13,6 @@ import base64
 import json
 import os
 import random
-import re
 import sys
 import threading
 import time
@@ -46,6 +45,7 @@ from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.camera_frame import save_camera_photo
 from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.dialog_workflow import ConditionalTaskWorkflow
+from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
 from services.visual_search import (
     VISUAL_SEARCH_REQUEST_TOPIC,
     VISUAL_SEARCH_STATUS_TOPIC,
@@ -84,8 +84,6 @@ from services.wake_audio_protocol import (
     encode_wake_audio,
 )
 
-# 去掉 TTS 不需要的符号（保留中文标点和空格）
-TTS_CLEAN_RE = re.compile(r'[*#_~`>\[\]\(\)\{\}]')
 OUTPUT_ECHO_GUARD_SECONDS = 0.35
 
 class VoiceChatNode(Node):
@@ -172,11 +170,7 @@ class VoiceChatNode(Node):
         self.vc.on_llm_done = self._on_llm_done
         self.vc.on_llm_timeout = self._on_llm_timeout
 
-        # 流式 TTS 状态
-        self._sentence_buffer = ""     # 当前攒的句子
-        self._punc_count = 0           # 标点计数
-        self._correction_done = False  # 第一行纠错已提取
-        self._active_turn_id = None
+        self._turn_controller = DialogTurnController()
         self._output_state_lock = threading.Lock()
         self._awaiting_tts_playback = False
         self._wake_response_active = False
@@ -184,8 +178,6 @@ class VoiceChatNode(Node):
         self._wake_watchdog = None
         self._shutting_down = False
         self._resume_timer = None
-        self.punctuations = {"。", "？", ".", "?", "！", "!"}
-
         # 唤醒应答 WAV 路径
         root = Path(__file__).resolve().parent.parent
         self._wake_wav = str(root / "assets" / "wake_response.wav")
@@ -265,7 +257,7 @@ class VoiceChatNode(Node):
             answer = TTS_CLEAN_RE.sub("", str(answer or "")).strip()
             if answer and self._game_mode == "playing":
                 self.tts_pub.publish(String(data=answer))
-                self._active_turn_id = "game-" + uuid.uuid4().hex[:8]
+                self._turn_controller.set_turn_id("game-" + uuid.uuid4().hex[:8])
                 self._on_llm_done()
             else:
                 self.game_busy_pub.publish(String(data="idle"))
@@ -740,77 +732,27 @@ class VoiceChatNode(Node):
 
     def _on_llm_chunk(self, text):
         """流式文本块：跳过纠错首行，2 标点攒一句 → tts_text。"""
-        if not text:
+        decision = self._turn().consume_chunk(text)
+        if decision is None or not decision.tts_text:
             return
-
-        self._ensure_turn_id()
-        self._sentence_buffer += text
-
-        # 跳过第一行（纠错文本前缀）
-        if not self._correction_done:
-            if "\n" in self._sentence_buffer:
-                parts = self._sentence_buffer.split("\n", 1)
-                self._sentence_buffer = parts[1] if len(parts) > 1 else ""
-                self._correction_done = True
-                # 检查新 buffer 里是否已有标点
-                self._punc_count = sum(
-                    1 for c in self._sentence_buffer if c in self.punctuations
-                )
-            elif len(self._sentence_buffer) > 60:
-                self._correction_done = True
-                self._punc_count = sum(
-                    1 for c in self._sentence_buffer if c in self.punctuations
-                )
-            else:
-                return
-
-        # 按标点累积
-        for char in text:
-            if char in self.punctuations:
-                self._punc_count += 1
-
-        if self._punc_count >= 2:
-            clean = self._sentence_buffer.strip()
-            tts_safe = TTS_CLEAN_RE.sub("", clean)
-            if tts_safe.strip():
-                msg = String()
-                msg.data = tts_safe.strip()
-                self.tts_pub.publish(msg)
-                self.get_logger().info(f"TTS: {tts_safe.strip()[:80]}")
-            self._sentence_buffer = ""
-            self._punc_count = 0
+        self.tts_pub.publish(String(data=decision.tts_text))
+        self.get_logger().info(f"TTS: {decision.tts_text[:80]}")
 
     def _on_llm_reply(self, text):
         """最终完整回复 → 解析 you/ai → screen_dialog。"""
-        text = text.strip()
-        if not text:
+        decision = self._turn().finish_reply(text)
+        if decision is None:
             return
 
-        turn_id = self._ensure_turn_id()
-
-        # 解析 you: / ai: 格式
-        corrected_text = ""
-        ai_text = text
-        if text.startswith("you:"):
-            lines = text.split("\n", 1)
-            corrected_text = lines[0][4:].strip()
-            ai_text = lines[1].strip() if len(lines) > 1 else ""
-            if ai_text.startswith("ai:"):
-                ai_text = ai_text[3:].strip()
-
         # 终端输出：让用户看到自己说了什么
-        if corrected_text:
-            self.get_logger().info(f"[识别] {corrected_text}")
-        self.get_logger().info(f"[回复] {ai_text[:80]}")
+        if decision.corrected_text:
+            self.get_logger().info(f"[识别] {decision.corrected_text}")
+        self.get_logger().info(f"[回复] {decision.ai_text[:80]}")
 
         # flush 残留 TTS 文本
-        if self._sentence_buffer.strip():
-            tts_safe = TTS_CLEAN_RE.sub("", self._sentence_buffer.strip())
-            if tts_safe.strip():
-                msg = String()
-                msg.data = tts_safe.strip()
-                self.tts_pub.publish(msg)
-                self.get_logger().info(f"TTS tail: {tts_safe.strip()[:80]}")
+        if decision.tts_tail:
+            self.tts_pub.publish(String(data=decision.tts_tail))
+            self.get_logger().info(f"TTS tail: {decision.tts_tail[:80]}")
 
         # 屏幕对话框（对齐 llm_ros_node 格式）
         dialog = String()
@@ -818,36 +760,32 @@ class VoiceChatNode(Node):
         if not isinstance(action_results, list):
             action_results = []
         dialog.data = json.dumps({
-            "turn_id": turn_id,
-            "corrected_text": corrected_text,
-            "ai_text": ai_text,
+            "turn_id": decision.turn_id,
+            "corrected_text": decision.corrected_text,
+            "ai_text": decision.ai_text,
             "actions": action_results,
             "source": "voice_chat",
         }, ensure_ascii=False)
         self.dialog_pub.publish(dialog)
-        self.get_logger().info(f"Screen: {ai_text[:60]}")
-
-        # 重置流式状态
-        self._sentence_buffer = ""
-        self._punc_count = 0
-        self._correction_done = False
+        self.get_logger().info(f"Screen: {decision.ai_text[:60]}")
 
     def _ensure_turn_id(self):
-        if self._active_turn_id is None:
-            self._active_turn_id = uuid.uuid4().hex[:12]
-        return self._active_turn_id
+        return self._turn().ensure_turn_id()
+
+    def _turn(self):
+        controller = getattr(self, "_turn_controller", None)
+        if controller is None:
+            controller = DialogTurnController()
+            self._turn_controller = controller
+        return controller
 
     def _on_llm_done(self):
         """关闭本轮 TTS；播放节点会在音频真正播完后结束回合。"""
-        turn_id = self._ensure_turn_id()
+        turn_id = self._turn().finish()
         with self._output_state_lock:
             self._awaiting_tts_playback = True
         self.tts_pub.publish(String(data=encode_turn_end(turn_id)))
         self.get_logger().info(f"TTS turn queued: {turn_id}")
-        self._sentence_buffer = ""
-        self._punc_count = 0
-        self._correction_done = False
-        self._active_turn_id = None
 
     # ── 超时回调 ──
     def _on_llm_timeout(self):

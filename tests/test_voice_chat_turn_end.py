@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from services.tts_protocol import decode_turn_end
 from services.wake_audio_protocol import decode_wake_audio, encode_wake_audio
+from services.dialog_turn import DialogTurnController
 
 
 class VoiceChatTurnEndTests(unittest.TestCase):
@@ -205,11 +206,7 @@ class VoiceChatTurnEndTests(unittest.TestCase):
     def test_completed_actions_are_forwarded_with_the_screen_dialog(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)
-        node._active_turn_id = "turn-music"
-        node._sentence_buffer = ""
-        node._punc_count = 0
-        node._correction_done = True
-        node.punctuations = {"。"}
+        node._turn_controller = DialogTurnController(turn_id_factory=lambda: "turn-music")
         node.tts_pub = MagicMock()
         node.dialog_pub = MagicMock()
         node.get_logger = lambda: MagicMock()
@@ -229,10 +226,9 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         node = node_class.__new__(node_class)
         node.tts_pub = MagicMock()
         node.get_logger = lambda: MagicMock()
-        node._active_turn_id = "turn-multimodal"
-        node._sentence_buffer = ""
-        node._punc_count = 0
-        node._correction_done = True
+        node._turn_controller = DialogTurnController(
+            turn_id_factory=lambda: "turn-multimodal"
+        )
         node._output_state_lock = threading.Lock()
         node._awaiting_tts_playback = False
 
@@ -240,10 +236,7 @@ class VoiceChatTurnEndTests(unittest.TestCase):
 
         marker = node.tts_pub.publish.call_args.args[0].data
         self.assertEqual(decode_turn_end(marker), "turn-multimodal")
-        self.assertIsNone(node._active_turn_id)
-        self.assertEqual(node._sentence_buffer, "")
-        self.assertEqual(node._punc_count, 0)
-        self.assertFalse(node._correction_done)
+        self.assertEqual(node._turn_controller.ensure_turn_id(), "turn-multimodal")
         self.assertTrue(node._awaiting_tts_playback)
         sys.modules.pop("nodes.voice_chat_ros_node", None)
 

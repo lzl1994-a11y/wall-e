@@ -179,6 +179,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/music_protocol.py` | 定义音乐 PCM、频谱和状态话题，避免播放与显示模块相互依赖。 |
 | `services/audio_mixer.py` | 在统一采样时钟上混合语音和音乐，并实现音乐 20% 闪避及平滑恢复。 |
 | `services/dialog_workflow.py` | LangGraph 确定性编排：普通动作串行、拍照识别和条件任务；动作完成前不推进下一步。 |
+| `services/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
 | `services/sequence_execution.py` | 与 ROS 无关的动作命令生命周期、序列展开和舵机轨迹执行；负责取消/中断、目标限位、机械联动约束与 50 Hz 插值计算。 |
 | `services/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：目标连续性、人体跟随、人脸注视、脖子俯仰，以及目标丢失后的保持、搜索、停止和退出状态机。 |
 | `core/action_skills.json` | 动作技能注册表；统一定义执行节点、计划/仲裁资源、超时、重试和可取消能力。 |
