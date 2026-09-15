@@ -45,6 +45,7 @@ from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.camera_frame import save_camera_photo
 from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.dialog_workflow import ConditionalTaskWorkflow
+from services.dialog_output import DialogOutputController
 from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
 from services.visual_search import (
     VISUAL_SEARCH_REQUEST_TOPIC,
@@ -171,12 +172,9 @@ class VoiceChatNode(Node):
         self.vc.on_llm_timeout = self._on_llm_timeout
 
         self._turn_controller = DialogTurnController()
-        self._output_state_lock = threading.Lock()
-        self._awaiting_tts_playback = False
-        self._wake_response_active = False
-        self._wake_request_id = None
+        self._output_controller = DialogOutputController()
+        self._timer_lock = threading.Lock()
         self._wake_watchdog = None
-        self._shutting_down = False
         self._resume_timer = None
         # 唤醒应答 WAV 路径
         root = Path(__file__).resolve().parent.parent
@@ -281,14 +279,10 @@ class VoiceChatNode(Node):
 
         # The shared playback node owns the speaker. Keep capture muted until
         # its matching wake acknowledgement and any queued TTS have finished.
-        with self._output_state_lock:
-            if self._shutting_down:
-                return
-            if self._wake_response_active:
-                return
-            self._wake_response_active = True
-            request_id = uuid.uuid4().hex
-            self._wake_request_id = request_id
+        request_id = uuid.uuid4().hex
+        if not self._output().start_wake(request_id).accepted:
+            return
+        with self._timer_lock:
             if self._resume_timer is not None:
                 self._resume_timer.cancel()
                 self._resume_timer = None
@@ -358,22 +352,20 @@ class VoiceChatNode(Node):
         self._finish_wake_response(message.data)
 
     def _finish_wake_response(self, request_id):
-        with self._output_state_lock:
-            if request_id != self._wake_request_id or not self._wake_response_active:
-                return
-            self._wake_request_id = None
-            self._wake_response_active = False
+        decision = self._output().finish_wake(request_id)
+        if not decision.accepted:
+            return
+        with self._timer_lock:
             if self._wake_watchdog is not None:
                 self._wake_watchdog.cancel()
                 self._wake_watchdog = None
-            resume = not self._awaiting_tts_playback and not self._shutting_down
-        if resume:
+        if decision.schedule_capture_resume:
             self._schedule_capture_resume()
 
     def _schedule_wake_watchdog(self, request_id):
-        with self._output_state_lock:
-            if self._shutting_down or request_id != self._wake_request_id:
-                return
+        if not self._output().wake_is_active(request_id):
+            return
+        with self._timer_lock:
             self._wake_watchdog = threading.Timer(
                 1.0, self._check_wake_playback_connection, args=(request_id,)
             )
@@ -383,9 +375,9 @@ class VoiceChatNode(Node):
     def _check_wake_playback_connection(self, request_id):
         # A duration timeout could reopen capture while earlier TTS is still
         # playing. Recover only if the speaker owner has disappeared instead.
-        with self._output_state_lock:
-            if self._shutting_down or request_id != self._wake_request_id:
-                return
+        if not self._output().wake_is_active(request_id):
+            return
+        with self._timer_lock:
             self._wake_watchdog = None
         if self.wake_audio_pub.get_subscription_count() == 0:
             self.get_logger().warn("音频播放节点已断开，结束唤醒应答等待")
@@ -397,21 +389,18 @@ class VoiceChatNode(Node):
         """Resume multimodal capture only after the queued TTS turn is done."""
         if msg.data != "idle":
             return
-        with self._output_state_lock:
-            if not self._awaiting_tts_playback:
-                return
-            self._awaiting_tts_playback = False
-            if self._wake_response_active:
-                return
-        self._schedule_capture_resume()
+        decision = self._output().finish_tts_playback()
+        if decision.schedule_capture_resume:
+            self._schedule_capture_resume()
 
     def _schedule_capture_resume(self):
         """Discard the speaker's acoustic tail before reopening capture."""
-        if getattr(self, "_game_mode", "robot") != "robot" or getattr(
-            self, "_shutting_down", False
+        if (
+            getattr(self, "_game_mode", "robot") != "robot"
+            or not self._output().can_resume_capture()
         ):
             return
-        with self._output_state_lock:
+        with self._timer_lock:
             if self._resume_timer is not None:
                 self._resume_timer.cancel()
             self._resume_timer = threading.Timer(
@@ -424,10 +413,10 @@ class VoiceChatNode(Node):
     def _resume_capture_after_output(self):
         if getattr(self, "_game_mode", "robot") != "robot":
             return
-        with self._output_state_lock:
+        with self._timer_lock:
             self._resume_timer = None
-            if self._wake_response_active or self._awaiting_tts_playback:
-                return
+        if not self._output().can_resume_capture():
+            return
         if self.vc.complete_output_playback():
             self.get_logger().info("扬声器尾音已清除，恢复多模态录音")
 
@@ -779,11 +768,17 @@ class VoiceChatNode(Node):
             self._turn_controller = controller
         return controller
 
+    def _output(self):
+        controller = getattr(self, "_output_controller", None)
+        if controller is None:
+            controller = DialogOutputController()
+            self._output_controller = controller
+        return controller
+
     def _on_llm_done(self):
         """关闭本轮 TTS；播放节点会在音频真正播完后结束回合。"""
         turn_id = self._turn().finish()
-        with self._output_state_lock:
-            self._awaiting_tts_playback = True
+        self._output().mark_tts_queued()
         self.tts_pub.publish(String(data=encode_turn_end(turn_id)))
         self.get_logger().info(f"TTS turn queued: {turn_id}")
 
@@ -803,8 +798,8 @@ class VoiceChatNode(Node):
 
     def destroy_node(self):
         self.get_logger().info("正在关闭语音直聊节点...")
-        with self._output_state_lock:
-            self._shutting_down = True
+        self._output().shutdown()
+        with self._timer_lock:
             if self._wake_watchdog is not None:
                 self._wake_watchdog.cancel()
                 self._wake_watchdog = None

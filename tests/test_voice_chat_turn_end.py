@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from services.tts_protocol import decode_turn_end
 from services.wake_audio_protocol import decode_wake_audio, encode_wake_audio
 from services.dialog_turn import DialogTurnController
+from services.dialog_output import DialogOutputController
 
 
 class VoiceChatTurnEndTests(unittest.TestCase):
@@ -59,13 +60,11 @@ class VoiceChatTurnEndTests(unittest.TestCase):
     def _make_wake_node(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)
-        node._output_state_lock = threading.Lock()
         node._wake_play_lock = threading.Lock()
-        node._awaiting_tts_playback = False
-        node._wake_response_active = True
-        node._wake_request_id = "wake-current"
+        node._output_controller = DialogOutputController()
+        node._output_controller.start_wake("wake-current")
+        node._timer_lock = threading.Lock()
         node._wake_watchdog = None
-        node._shutting_down = False
         node._resume_timer = None
         node._wake_wav = "wake_response.wav"
         node._schedule_capture_resume = MagicMock()
@@ -100,47 +99,46 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         audio.set_frame_rate.assert_called_once_with(48000)
         audio.set_channels.assert_called_once_with(1)
         audio.set_sample_width.assert_called_once_with(2)
-        self.assertTrue(node._wake_response_active)
+        self.assertTrue(node._output_controller.wake_response_active)
         node._schedule_capture_resume.assert_not_called()
 
         node._on_wake_audio_done(types.SimpleNamespace(data="wake-current"))
 
-        self.assertFalse(node._wake_response_active)
+        self.assertFalse(node._output_controller.wake_response_active)
         node._schedule_capture_resume.assert_called_once_with()
 
     def test_wake_start_preserves_pending_tts_completion(self):
         node = self._make_wake_node()
-        node._wake_response_active = False
-        node._wake_request_id = None
-        node._awaiting_tts_playback = True
+        node._output_controller.finish_wake("wake-current")
+        node._output_controller.mark_tts_queued()
         with patch("threading.Thread"):
             node._on_wake_word()
 
-        self.assertTrue(node._awaiting_tts_playback)
-        self.assertTrue(node._wake_response_active)
-        self.assertIsNotNone(node._wake_request_id)
+        self.assertTrue(node._output_controller.awaiting_tts_playback)
+        self.assertTrue(node._output_controller.wake_response_active)
+        self.assertIsNotNone(node._output_controller.wake_request_id)
         node.vc.begin_output_playback.assert_called_once_with()
 
     def test_wake_completion_cannot_finish_pending_tts(self):
         node = self._make_wake_node()
-        node._awaiting_tts_playback = True
+        node._output_controller.mark_tts_queued()
 
         node._on_wake_audio_done(types.SimpleNamespace(data="wake-current"))
 
-        self.assertFalse(node._wake_response_active)
-        self.assertTrue(node._awaiting_tts_playback)
+        self.assertFalse(node._output_controller.wake_response_active)
+        self.assertTrue(node._output_controller.awaiting_tts_playback)
         node._schedule_capture_resume.assert_not_called()
         node._on_playback_state(types.SimpleNamespace(data="idle"))
         node._schedule_capture_resume.assert_called_once_with()
 
     def test_tts_completion_cannot_finish_pending_wake(self):
         node = self._make_wake_node()
-        node._awaiting_tts_playback = True
+        node._output_controller.mark_tts_queued()
 
         node._on_playback_state(types.SimpleNamespace(data="idle"))
 
-        self.assertFalse(node._awaiting_tts_playback)
-        self.assertTrue(node._wake_response_active)
+        self.assertFalse(node._output_controller.awaiting_tts_playback)
+        self.assertTrue(node._output_controller.wake_response_active)
         node._schedule_capture_resume.assert_not_called()
         node._on_wake_audio_done(types.SimpleNamespace(data="wake-current"))
         node._schedule_capture_resume.assert_called_once_with()
@@ -150,8 +148,8 @@ class VoiceChatTurnEndTests(unittest.TestCase):
 
         node._on_wake_audio_done(types.SimpleNamespace(data="wake-previous"))
 
-        self.assertTrue(node._wake_response_active)
-        self.assertEqual(node._wake_request_id, "wake-current")
+        self.assertTrue(node._output_controller.wake_response_active)
+        self.assertEqual(node._output_controller.wake_request_id, "wake-current")
         node._schedule_capture_resume.assert_not_called()
 
     def test_missing_playback_node_skips_wake_and_releases_capture(self):
@@ -161,7 +159,7 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         node._play_wake_response("wake-current")
 
         node.wake_audio_pub.publish.assert_not_called()
-        self.assertFalse(node._wake_response_active)
+        self.assertFalse(node._output_controller.wake_response_active)
         node._schedule_capture_resume.assert_called_once_with()
 
     def test_failed_wake_decode_releases_capture(self):
@@ -170,7 +168,7 @@ class VoiceChatTurnEndTests(unittest.TestCase):
             node._play_wake_response("wake-current")
 
         node.wake_audio_pub.publish.assert_not_called()
-        self.assertFalse(node._wake_response_active)
+        self.assertFalse(node._output_controller.wake_response_active)
         node._schedule_capture_resume.assert_called_once_with()
 
     def test_connected_speaker_watchdog_waits_for_actual_completion(self):
@@ -178,7 +176,7 @@ class VoiceChatTurnEndTests(unittest.TestCase):
 
         node._check_wake_playback_connection("wake-current")
 
-        self.assertTrue(node._wake_response_active)
+        self.assertTrue(node._output_controller.wake_response_active)
         node._schedule_capture_resume.assert_not_called()
         node._schedule_wake_watchdog.assert_called_once_with("wake-current")
 
@@ -188,7 +186,7 @@ class VoiceChatTurnEndTests(unittest.TestCase):
 
         node._check_wake_playback_connection("wake-current")
 
-        self.assertFalse(node._wake_response_active)
+        self.assertFalse(node._output_controller.wake_response_active)
         node._schedule_capture_resume.assert_called_once_with()
 
     def test_wake_protocol_rejects_invalid_pcm_and_missing_correlation(self):
@@ -229,28 +227,26 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         node._turn_controller = DialogTurnController(
             turn_id_factory=lambda: "turn-multimodal"
         )
-        node._output_state_lock = threading.Lock()
-        node._awaiting_tts_playback = False
+        node._output_controller = DialogOutputController()
 
         node._on_llm_done()
 
         marker = node.tts_pub.publish.call_args.args[0].data
         self.assertEqual(decode_turn_end(marker), "turn-multimodal")
         self.assertEqual(node._turn_controller.ensure_turn_id(), "turn-multimodal")
-        self.assertTrue(node._awaiting_tts_playback)
+        self.assertTrue(node._output_controller.awaiting_tts_playback)
         sys.modules.pop("nodes.voice_chat_ros_node", None)
 
     def test_playback_idle_schedules_capture_resume(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)
-        node._output_state_lock = threading.Lock()
-        node._awaiting_tts_playback = True
-        node._wake_response_active = False
+        node._output_controller = DialogOutputController()
+        node._output_controller.mark_tts_queued()
         node._schedule_capture_resume = MagicMock()
 
         node._on_playback_state(types.SimpleNamespace(data="idle"))
 
-        self.assertFalse(node._awaiting_tts_playback)
+        self.assertFalse(node._output_controller.awaiting_tts_playback)
         node._schedule_capture_resume.assert_called_once_with()
         sys.modules.pop("nodes.voice_chat_ros_node", None)
 
