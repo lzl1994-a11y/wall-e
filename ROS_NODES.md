@@ -181,6 +181,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/dialog_workflow.py` | LangGraph 确定性编排：普通动作串行、拍照识别和条件任务；动作完成前不推进下一步。 |
 | `services/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
 | `services/dialog_output.py` | 与 ROS 无关的语音输出守卫：协调唤醒应答、TTS 播放完成、陈旧回执和安全恢复录音的条件。 |
+| `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
 | `services/sequence_execution.py` | 与 ROS 无关的动作命令生命周期、序列展开和舵机轨迹执行；负责取消/中断、目标限位、机械联动约束与 50 Hz 插值计算。 |
 | `services/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：目标连续性、人体跟随、人脸注视、脖子俯仰，以及目标丢失后的保持、搜索、停止和退出状态机。 |
 | `core/action_skills.json` | 动作技能注册表；统一定义执行节点、计划/仲裁资源、超时、重试和可取消能力。 |

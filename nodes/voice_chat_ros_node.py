@@ -46,6 +46,7 @@ from services.camera_frame import save_camera_photo
 from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.dialog_workflow import ConditionalTaskWorkflow
 from services.dialog_output import DialogOutputController
+from services.dialog_tool_router import DialogToolRouter
 from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
 from services.visual_search import (
     VISUAL_SEARCH_REQUEST_TOPIC,
@@ -99,6 +100,12 @@ class VoiceChatNode(Node):
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self._action_executor = CorrelatedActionExecutor()
+        self._tool_router = DialogToolRouter(
+            inspect_camera=self._process_camera_inspection,
+            run_conditional_task=self._process_conditional_task,
+            run_visual_search=self._process_visual_search,
+            execute_action=self._execute_regular_tool_action,
+        )
         self._behavior_tree_executor = CorrelatedPlanExecutor()
         self._ros2_task_executor = None
         self.behavior_tree_pub = self.create_publisher(
@@ -422,15 +429,9 @@ class VoiceChatNode(Node):
 
     # ── LLM 回调 ──
     def _on_tool_call(self, name, arguments):
-        if name == "inspect_camera":
-            return self._process_camera_inspection(arguments)
-        if name == CONDITIONAL_TASK_TOOL_NAME:
-            return self._process_conditional_task(arguments)
-        if name == VISUAL_SEARCH_TOOL_NAME:
-            return self._process_visual_search(arguments)
-        allowed, reason = validate_action_arguments(name, arguments)
-        if not allowed:
-            return {"status": "rejected", "action": name, "reason": reason}
+        return self._tools().dispatch(name, arguments)
+
+    def _execute_regular_tool_action(self, name, arguments):
         result = self._action_executor.execute(
             name,
             arguments,
@@ -767,6 +768,18 @@ class VoiceChatNode(Node):
             controller = DialogTurnController()
             self._turn_controller = controller
         return controller
+
+    def _tools(self):
+        router = getattr(self, "_tool_router", None)
+        if router is None:
+            router = DialogToolRouter(
+                inspect_camera=self._process_camera_inspection,
+                run_conditional_task=self._process_conditional_task,
+                run_visual_search=self._process_visual_search,
+                execute_action=self._execute_regular_tool_action,
+            )
+            self._tool_router = router
+        return router
 
     def _output(self):
         controller = getattr(self, "_output_controller", None)
