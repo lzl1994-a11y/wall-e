@@ -56,6 +56,14 @@ class CameraInspectionWorkflow:
             "user_prompt": user_prompt,
         })
 
+    @staticmethod
+    def question_from_arguments(arguments: Any) -> str:
+        if isinstance(arguments, dict):
+            question = arguments.get("question")
+            if isinstance(question, str) and question.strip():
+                return question.strip()
+        return "看看当前画面"
+
     def _capture_camera(self, _state: CameraInspectionState) -> CameraInspectionState:
         preview = self._capture()
         if getattr(preview, "busy", False):
@@ -88,6 +96,52 @@ class CameraInspectionWorkflow:
                 "answer": "这张图我没分析出来，你换个角度再让我看看。",
                 "error": str(exc),
             }
+
+
+class PhotoCaptureState(TypedDict, total=False):
+    frame: bytes
+    saved_path: str
+    answer: str
+    error: str
+
+
+class PhotoCaptureWorkflow:
+    """Capture one frame and save it without coupling to ROS or storage APIs."""
+
+    def __init__(
+        self,
+        *,
+        capture: Callable[[], Any],
+        save: Callable[[bytes], str],
+    ) -> None:
+        self._capture = capture
+        self._save = save
+
+    def invoke(self) -> PhotoCaptureState:
+        preview = self._capture()
+        if getattr(preview, "busy", False):
+            return {
+                "answer": "我正在拍上一张，等一下再试。",
+                "error": "camera_preview_busy",
+            }
+        frame = getattr(preview, "last_frame", None)
+        if not frame:
+            return {
+                "answer": "我现在拍不到照片，检查一下摄像头连接。",
+                "error": getattr(preview, "error", None) or "camera_frame_unavailable",
+            }
+        try:
+            saved_path = self._save(frame)
+        except Exception as exc:
+            return {
+                "answer": "照片拍到了，但保存失败了。",
+                "error": str(exc),
+            }
+        return {
+            "frame": frame,
+            "saved_path": saved_path,
+            "answer": "拍好了，照片已经保存。",
+        }
 
 
 class ActionSequenceState(TypedDict, total=False):

@@ -6,6 +6,7 @@ from services.dialog_workflow import (
     ActionSequenceWorkflow,
     CameraInspectionWorkflow,
     ConditionalTaskWorkflow,
+    PhotoCaptureWorkflow,
 )
 
 
@@ -111,6 +112,57 @@ class CameraInspectionWorkflowTests(unittest.TestCase):
             result["answer"],
             "这张图我没分析出来，你换个角度再让我看看。",
         )
+
+    def test_question_defaults_when_tool_arguments_are_missing_or_invalid(self):
+        self.assertEqual(
+            CameraInspectionWorkflow.question_from_arguments({}),
+            "看看当前画面",
+        )
+        self.assertEqual(
+            CameraInspectionWorkflow.question_from_arguments({"question": " 前方  "}),
+            "前方",
+        )
+
+
+class PhotoCaptureWorkflowTests(unittest.TestCase):
+    def test_success_saves_captured_frame(self):
+        save = MagicMock(return_value="/tmp/photo.jpg")
+        workflow = PhotoCaptureWorkflow(
+            capture=lambda: SimpleNamespace(busy=False, last_frame=b"jpeg"),
+            save=save,
+        )
+
+        result = workflow.invoke()
+
+        self.assertEqual(result["answer"], "拍好了，照片已经保存。")
+        self.assertEqual(result["saved_path"], "/tmp/photo.jpg")
+        save.assert_called_once_with(b"jpeg")
+
+    def test_busy_missing_frame_and_save_failure_are_user_safe(self):
+        cases = (
+            (
+                SimpleNamespace(busy=True, last_frame=None),
+                MagicMock(),
+                "我正在拍上一张，等一下再试。",
+            ),
+            (
+                SimpleNamespace(busy=False, last_frame=None, error="timeout"),
+                MagicMock(),
+                "我现在拍不到照片，检查一下摄像头连接。",
+            ),
+            (
+                SimpleNamespace(busy=False, last_frame=b"jpeg"),
+                MagicMock(side_effect=OSError("full")),
+                "照片拍到了，但保存失败了。",
+            ),
+        )
+        for preview, save, answer in cases:
+            with self.subTest(answer=answer):
+                result = PhotoCaptureWorkflow(
+                    capture=lambda preview=preview: preview,
+                    save=save,
+                ).invoke()
+                self.assertEqual(result["answer"], answer)
 
 
 class ConditionalTaskWorkflowTests(unittest.TestCase):

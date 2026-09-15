@@ -178,7 +178,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/music_spectrum.py` | 把频段值渲染为 TFT 原始帧；TCP 传输仍由 TFT 节点负责。 |
 | `services/music_protocol.py` | 定义音乐 PCM、频谱和状态话题，避免播放与显示模块相互依赖。 |
 | `services/audio_mixer.py` | 在统一采样时钟上混合语音和音乐，并实现音乐 20% 闪避及平滑恢复。 |
-| `services/dialog_workflow.py` | LangGraph 确定性编排：普通动作串行、拍照识别和条件任务；动作完成前不推进下一步。 |
+| `services/dialog_workflow.py` | 与 ROS 无关的对话工作流：相机检查、拍照保存、条件任务和动作序列；设备与模型访问均通过回调注入。 |
 | `services/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
 | `services/dialog_output.py` | 与 ROS 无关的语音输出守卫：协调唤醒应答、TTS 播放完成、陈旧回执和安全恢复录音的条件。 |
 | `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |

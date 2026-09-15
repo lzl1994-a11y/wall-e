@@ -44,7 +44,11 @@ from services.behavior_tree_protocol import (
 from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.camera_frame import save_camera_photo
 from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
-from services.dialog_workflow import ConditionalTaskWorkflow
+from services.dialog_workflow import (
+    CameraInspectionWorkflow,
+    ConditionalTaskWorkflow,
+    PhotoCaptureWorkflow,
+)
 from services.dialog_output import DialogOutputController
 from services.dialog_tool_router import DialogToolRouter
 from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
@@ -141,6 +145,8 @@ class VoiceChatNode(Node):
         )
         self._visual_search_lock = threading.Lock()
         self._conditional_task_workflow = None
+        self._camera_inspection_workflow = None
+        self._photo_capture_workflow = None
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_action_status, 10)
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
         self.dialog_motion_pub = self.create_publisher(
@@ -665,32 +671,16 @@ class VoiceChatNode(Node):
 
     def _process_camera_inspection(self, arguments):
         """Voice-selected camera inspection: preview, capture, then analyze."""
-        question = "看看当前画面"
-        if isinstance(arguments, dict):
-            value = arguments.get("question")
-            if isinstance(value, str) and value.strip():
-                question = value.strip()
-
         self.tts_pub.publish(String(data="好的，我看一下。"))
-        preview = self._run_camera_preview(
-            duration_ms=self.tft_preview_settings.recognition_duration_ms,
+        result = self._camera_inspection().invoke(
+            turn_id=self._ensure_turn_id(),
+            user_prompt=CameraInspectionWorkflow.question_from_arguments(arguments),
         )
-        if preview.busy:
-            return "我正在处理上一张画面，等一下再看。"
-        if not preview.last_frame:
+        if result.get("error"):
             self.get_logger().error(
-                f"Camera inspection failed: {preview.error or 'camera_frame_unavailable'}"
+                f"Camera inspection failed: {result['error']}"
             )
-            return "我现在看不到画面，检查一下摄像头连接。"
-
-        try:
-            image_base64 = base64.b64encode(preview.last_frame).decode("ascii")
-            return self.vc.analyze_image(question, image_base64)
-        except Exception as exc:
-            self.get_logger().error(
-                f"Vision request failed: {exc}\n{traceback.format_exc()}"
-            )
-            return "这张图我没分析出来，你换个角度再让我看看。"
+        return result["answer"]
 
     def _process_heard_camera_inspection(self, heard_text):
         """Run inspection selected from the structured audio transcript."""
@@ -699,26 +689,44 @@ class VoiceChatNode(Node):
     def _process_camera_photo(self):
         """Voice-selected photo request: capture and save without vision LLM."""
         self.tts_pub.publish(String(data="好的，准备拍照。"))
-        preview = self._run_camera_preview(
-            duration_ms=self.tft_preview_settings.photo_duration_ms,
-        )
-        if preview.busy:
-            return "我正在拍上一张，等一下再试。"
-        if not preview.last_frame:
+        result = self._photo_capture().invoke()
+        if result.get("error"):
             self.get_logger().error(
-                f"Camera photo failed: {preview.error or 'camera_frame_unavailable'}"
+                f"Camera photo failed: {result['error']}"
             )
-            return "我现在拍不到照片，检查一下摄像头连接。"
-        try:
-            saved = save_camera_photo(
-                preview.last_frame,
-                self.tft_preview_settings.photo_directory,
+        elif result.get("saved_path"):
+            self.get_logger().info(f"Camera photo saved: {result['saved_path']}")
+        return result["answer"]
+
+    def _camera_inspection(self):
+        workflow = getattr(self, "_camera_inspection_workflow", None)
+        if workflow is None:
+            workflow = CameraInspectionWorkflow(
+                capture=lambda: self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
+                ),
+                analyze=lambda frame, question: self.vc.analyze_image(
+                    question,
+                    base64.b64encode(frame).decode("ascii"),
+                ),
             )
-            self.get_logger().info(f"Camera photo saved: {saved}")
-            return "拍好了，照片已经保存。"
-        except Exception as exc:
-            self.get_logger().error(f"Camera photo save failed: {exc}")
-            return "照片拍到了，但保存失败了。"
+            self._camera_inspection_workflow = workflow
+        return workflow
+
+    def _photo_capture(self):
+        workflow = getattr(self, "_photo_capture_workflow", None)
+        if workflow is None:
+            workflow = PhotoCaptureWorkflow(
+                capture=lambda: self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.photo_duration_ms,
+                ),
+                save=lambda frame: save_camera_photo(
+                    frame,
+                    self.tft_preview_settings.photo_directory,
+                ),
+            )
+            self._photo_capture_workflow = workflow
+        return workflow
 
     def _on_llm_chunk(self, text):
         """流式文本块：跳过纠错首行，2 标点攒一句 → tts_text。"""
