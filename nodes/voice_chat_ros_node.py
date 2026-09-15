@@ -32,6 +32,7 @@ from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_intent_guard import validate_action_arguments
 from services.action_status import ACTION_STATUS_TOPIC
 from services.behavior_tree_execution import CorrelatedPlanExecutor
+from services.native_plan_execution import NativePlanExecutionAdapter
 from services.ros2_action_execution import (
     Ros2ActionPlanExecutor,
     create_wali_task_action_client,
@@ -134,6 +135,15 @@ class VoiceChatNode(Node):
             self.get_logger().warning(
                 f"BehaviorTree ROS2 Action client unavailable; legacy fallback remains active: {exc}"
             )
+        self._native_plan_adapter = NativePlanExecutionAdapter(
+            ros2_executor=self._ros2_task_executor,
+            legacy_executor=self._behavior_tree_executor,
+            publish=lambda payload: self.behavior_tree_pub.publish(String(data=payload)),
+            cancel_publish=lambda payload: self.behavior_tree_cancel_pub.publish(
+                String(data=payload)
+            ),
+            owner_available=lambda: self.behavior_tree_pub.get_subscription_count() > 0,
+        )
         self.visual_search_status_pub = self.create_publisher(
             String, VISUAL_SEARCH_STATUS_TOPIC, 10
         )
@@ -459,9 +469,7 @@ class VoiceChatNode(Node):
             executor.accept_status(message.data)
 
     def _on_behavior_tree_status(self, message):
-        executor = getattr(self, "_behavior_tree_executor", None)
-        if executor is not None:
-            executor.accept_status(message.data)
+        self._native_plan().accept_status(message.data)
 
     def _on_visual_search_request(self, message):
         request = parse_visual_search_request(message.data)
@@ -564,27 +572,30 @@ class VoiceChatNode(Node):
         )
 
     def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
-        """Prefer standard ExecuteTree Action, then retain the legacy fallback."""
-        ros2_executor = getattr(self, "_ros2_task_executor", None)
-        if ros2_executor is not None:
-            result = ros2_executor.try_execute(
-                plan, timeout=timeout, cancelled=cancelled
-            )
-            if result is not None:
-                return result
-        executor = getattr(self, "_behavior_tree_executor", None)
-        publisher = getattr(self, "behavior_tree_pub", None)
-        cancel_publisher = getattr(self, "behavior_tree_cancel_pub", None)
-        if executor is None or publisher is None or cancel_publisher is None:
-            return None
-        return executor.try_execute(
-            plan,
-            publish=lambda payload: publisher.publish(String(data=payload)),
-            cancel_publish=lambda payload: cancel_publisher.publish(String(data=payload)),
-            owner_available=lambda: publisher.get_subscription_count() > 0,
-            timeout=timeout,
-            cancelled=cancelled,
+        return self._native_plan().try_execute(
+            plan, timeout=timeout, cancelled=cancelled
         )
+
+    def _native_plan(self):
+        adapter = getattr(self, "_native_plan_adapter", None)
+        if adapter is None:
+            executor = getattr(self, "_behavior_tree_executor", None)
+            publisher = getattr(self, "behavior_tree_pub", None)
+            cancel_publisher = getattr(self, "behavior_tree_cancel_pub", None)
+            adapter = NativePlanExecutionAdapter(
+                ros2_executor=getattr(self, "_ros2_task_executor", None),
+                legacy_executor=executor,
+                publish=(lambda payload: publisher.publish(String(data=payload)))
+                if publisher is not None else None,
+                cancel_publish=(
+                    lambda payload: cancel_publisher.publish(String(data=payload))
+                ) if cancel_publisher is not None else None,
+                owner_available=(
+                    lambda: publisher is not None and publisher.get_subscription_count() > 0
+                ) if publisher is not None else None,
+            )
+            self._native_plan_adapter = adapter
+        return adapter
 
     def _process_conditional_task(self, plan):
         """Run one audio-selected observe-condition-action graph."""
