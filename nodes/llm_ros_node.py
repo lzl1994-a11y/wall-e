@@ -61,10 +61,7 @@ from services.conditional_task import (
     CONDITIONAL_TASK_TOOL_NAME,
     is_conditional_task_request,
 )
-from services.behavior_tree_workflow import (
-    BehaviorTreeActionWorkflow,
-    NativeBehaviorTreeWorkflow,
-)
+from services.llm_action_plan import LLMActionPlanWorkflow
 from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
 from services.voice_debug import RollingVoiceDebugStore
 
@@ -101,6 +98,7 @@ class LLMBrainNode(Node):
         self.llm = None
         self._camera_inspection_workflow = None
         self._conditional_task_workflow = None
+        self._llm_action_plan_workflow = None
         self._action_executor = CorrelatedActionExecutor()
         self._behavior_tree_executor = CorrelatedPlanExecutor()
         self._ros2_task_executor = None
@@ -702,40 +700,34 @@ class LLMBrainNode(Node):
 
     def _execute_dialog_action_sequence(self, actions, *, user_prompt, turn_id):
         """Prefer the native tree owner and safely fall back when it is absent."""
-        if getattr(self, '_behavior_tree_executor', None) is not None:
-            native = NativeBehaviorTreeWorkflow(
-                authorize=validate_action_call,
-                execute_plan=lambda plan: self._try_execute_native_plan(
-                    plan,
-                    cancelled=lambda: (
-                        not getattr(self, '_worker_running', True)
-                        or getattr(self, '_game_mode', 'robot') != 'robot'
-                    ),
-                ),
-            )
-            native_state = native.invoke(
-                turn_id=turn_id,
-                user_prompt=user_prompt,
-                actions=actions,
-            )
-            if native_state is not None:
-                return native_state
-
-        workflow = BehaviorTreeActionWorkflow(
-            authorize=validate_action_call,
-            execute=lambda name, arguments: self._execute_dialog_action(
-                name, arguments, turn_id
-            ),
-            cancelled=lambda: (
-                not getattr(self, '_worker_running', True)
-                or getattr(self, '_game_mode', 'robot') != 'robot'
-            ),
-        )
-        return workflow.invoke(
+        return self._action_plan_workflow().invoke(
             turn_id=turn_id,
             user_prompt=user_prompt,
             actions=actions,
         )
+
+    def _action_plan_workflow(self):
+        workflow = getattr(self, '_llm_action_plan_workflow', None)
+        if workflow is None:
+            cancelled = lambda: (
+                not getattr(self, '_worker_running', True)
+                or getattr(self, '_game_mode', 'robot') != 'robot'
+            )
+            workflow = LLMActionPlanWorkflow(
+                native_available=lambda: (
+                    getattr(self, '_behavior_tree_executor', None) is not None
+                ),
+                authorize=validate_action_call,
+                execute_plan=lambda plan: self._try_execute_native_plan(
+                    plan, cancelled=cancelled
+                ),
+                execute_action=lambda name, arguments, turn_id: (
+                    self._execute_dialog_action(name, arguments, turn_id)
+                ),
+                cancelled=cancelled,
+            )
+            self._llm_action_plan_workflow = workflow
+        return workflow
 
     def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
         return self._native_plan().try_execute(
