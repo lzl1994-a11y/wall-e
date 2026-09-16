@@ -38,6 +38,7 @@ from services.action_intent_guard import (
 from services.action_status import ACTION_STATUS_TOPIC
 from services.llm_service import LLMService
 from services.llm_response_policy import LLMResponsePolicy
+from services.llm_stream_response import StreamResponseAccumulator
 from services.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
@@ -375,15 +376,16 @@ class LLMBrainNode(Node):
                 f'[{turn_id}] Long-form request detected; max_tokens={max_tokens_override}.'
             )
 
-        text_buffer = ''
-        sentence_buffer = ''
+        accumulator = StreamResponseAccumulator(
+            punctuations=getattr(self, 'punctuations', {'。', '？', '.', '?', '！', '!'}),
+            clause_punctuations=getattr(self, 'CLAUSE_PUNCTUATIONS', {'，', ',', '；', ';', '：', ':'}),
+            first_tts_clause_min_chars=getattr(self, 'FIRST_TTS_CLAUSE_MIN_CHARS', 10),
+        )
         corrected_text = ''
         corrected_text_published = False
         actions = []
         pending_actions = []
-        rejected_actions = []
         action_failure = None
-        spoken_parts = []
         expression_published = False
 
         def publish_corrected(value):
@@ -410,7 +412,7 @@ class LLMBrainNode(Node):
                 expression_published = True
             spoken = self._publish_tts(value, turn_id)
             if spoken:
-                spoken_parts.append(spoken)
+                accumulator.record_spoken(spoken)
 
         # Correction metadata is an internal concern. Publish the ASR text for
         # the existing topic contract and ask the model for speech only.
@@ -440,51 +442,33 @@ class LLMBrainNode(Node):
             )
 
             for data in stream:
-                data_type = data.get('type')
+                decision = accumulator.process_event(data)
 
-                if data_type == 'text':
-                    chunk = data.get('content', '')
-                    text_buffer += chunk
-                    for char in chunk:
-                        sentence_buffer += char
-                        sentence_boundary = char in self.punctuations
-                        first_clause_boundary = (
-                            not spoken_parts
-                            and char in self.CLAUSE_PUNCTUATIONS
-                            and len(LLMResponsePolicy.clean_tts_text(sentence_buffer))
-                            >= self.FIRST_TTS_CLAUSE_MIN_CHARS
-                        )
-                        if sentence_boundary or first_clause_boundary:
-                            clean_sentence = sentence_buffer.strip()
-                            tts_safe = LLMResponsePolicy.clean_tts_text(clean_sentence)
+                for tts_text in decision.tts_sentences:
+                    publish_spoken(tts_text)
 
-                            if tts_safe.strip(' .,?!。，？！'):
-                                publish_spoken(tts_safe)
-
-                            sentence_buffer = ''
-
-                elif data_type == 'dialog_expression':
+                if decision.expression:
                     self.dialog_expression_publisher.publish(String(
                         data=encode_dialog_expression(
-                            data.get('expression'),
-                            data.get('intensity'),
+                            decision.expression.get('expression'),
+                            decision.expression.get('intensity'),
                             turn_id,
                         )
                     ))
                     expression_published = True
 
-                elif data_type == 'tool_call':
-                    action_name = data.get('name')
+                if decision.tool_call:
+                    action_name = decision.tool_call.get('name')
                     try:
-                        action_arguments = json.loads(data.get('arguments') or '{}')
+                        action_arguments = json.loads(decision.tool_call.get('arguments') or '{}')
                     except (TypeError, json.JSONDecodeError):
                         self.get_logger().warning(
                             f'[{turn_id}] Rejected malformed tool arguments: {action_name}'
                         )
-                        rejected_actions.append((action_name, "invalid_arguments"))
+                        accumulator.record_rejected_action(action_name, "invalid_arguments")
                         break
                     if conditional_request and action_name != CONDITIONAL_TASK_TOOL_NAME:
-                        rejected_actions.append((action_name, "compound_task_must_stay_atomic"))
+                        accumulator.record_rejected_action(action_name, "compound_task_must_stay_atomic")
                         self.get_logger().warning(
                             f'[{turn_id}] Rejected split compound-task tool: {action_name}'
                         )
@@ -495,7 +479,7 @@ class LLMBrainNode(Node):
                         action_arguments,
                     )
                     if not allowed:
-                        rejected_actions.append((action_name, rejection_reason))
+                        accumulator.record_rejected_action(action_name, rejection_reason)
                         self.get_logger().warning(
                             f'[{turn_id}] Rejected tool proposal: '
                             f'name={action_name} reason={rejection_reason}'
@@ -528,10 +512,11 @@ class LLMBrainNode(Node):
                         'name': action_name,
                         'arguments': action_arguments,
                     })
-
+                    accumulator.record_tool_proposal(action_payload)
                     self.get_logger().info(f'[{turn_id}] Tool call: {action_payload["name"]}')
-                elif data_type == 'done':
-                    finish_reason = data.get('finish_reason') or 'unknown'
+
+                if decision.finish_reason:
+                    finish_reason = decision.finish_reason
                     # rclpy identifies a logging call by its source location.  Calling
                     # different severity methods through one ``log`` variable makes a
                     # later request fail when its finish reason changes.
@@ -579,36 +564,24 @@ class LLMBrainNode(Node):
                 None,
             )
 
-        clean_tail = sentence_buffer.strip()
+        clean_tail = accumulator.take_tail_tts()
         if clean_tail:
-            tts_safe_tail = LLMResponsePolicy.clean_tts_text(clean_tail)
-            if tts_safe_tail.strip(' .,?!。，？！'):
-                publish_spoken(tts_safe_tail)
+            publish_spoken(clean_tail)
 
         final_user_memory = corrected_text if corrected_text else user_prompt
 
-        clean_text = self._sanitize_speech_text(text_buffer)
-        if action_failure:
-            clean_text = '这个动作没有确认完成，我已停止后续动作。'
-        elif rejected_actions:
-            clean_text = self._rejected_action_reply(rejected_actions)
-        if '\n' not in text_buffer and self._extract_corrected_text(text_buffer):
-            clean_text = ''
-
-        if not clean_text and spoken_parts:
-            clean_text = ''.join(spoken_parts).strip()
-        if not clean_text and actions:
-            clean_text = action_acknowledgement(actions)
-        if not clean_text and rejected_actions:
-            clean_text = self._rejected_action_reply(rejected_actions)
+        clean_text = accumulator.decide_final_text(
+            action_failure=action_failure,
+            actions=actions,
+        )
         if not clean_text:
             clean_text = self._retry_empty_answer(
                 turn_id,
                 corrected_text or user_prompt,
             )
         if not clean_text:
-            clean_text = '\u6211\u521a\u624d\u5361\u4f4f\u4e86\uff0c\u7b49\u6211\u7f13\u4e00\u4e0b\u3002'
-        if not spoken_parts:
+            clean_text = accumulator.FALLBACK_EMPTY_REPLY
+        if not accumulator.spoken_parts:
             publish_spoken(clean_text)
 
         self.chat_history.append({'role': 'user', 'content': final_user_memory})
@@ -1127,12 +1100,9 @@ class LLMBrainNode(Node):
             message['content'] = ''
         return message
 
-    @staticmethod
-    def _rejected_action_reply(rejected_actions):
-        names = {name for name, _reason in rejected_actions}
-        if 'inspect_camera' in names:
-            return '你是想让我打开摄像头看一下吗？'
-        return '我不太确定你是不是要我执行这个动作，可以再明确说一下吗？'
+    @classmethod
+    def _rejected_action_reply(cls, rejected_actions):
+        return StreamResponseAccumulator.rejected_action_reply(rejected_actions)
 
     @classmethod
     def _clean_visual_answer(cls, text):

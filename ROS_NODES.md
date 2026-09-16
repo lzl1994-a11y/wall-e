@@ -183,6 +183,8 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
 | `services/dialog_output.py` | 与 ROS 无关的语音输出守卫：协调唤醒应答、TTS 播放完成、陈旧回执和安全恢复录音的条件。 |
 | `services/dialog_presentation.py` | 与 ROS 无关的语音对话屏幕呈现决策：构造唤醒、超时和最终回复的稳定字段。 |
+| `services/llm_response_policy.py` | 与 ROS 无关的大模型纯文本清洗与长文本生成策略：负责 ASR 纠错元数据识别与剥离、回答前缀剥离、TTS 文本安全清洗以及视觉回答清洗。 |
+| `services/llm_stream_response.py` | 与 ROS 无关的流式模型事件累积与回复决策服务：负责文本分句、TTS 提前播报判定、尾句决策、工具调用与拒绝收集，以及最终回复决策。 |
 | `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
 | `services/dialog_action_execution.py` | 与 ROS 无关的对话动作执行适配器：绑定关联状态、请求发布、可用性检查、超时与来源标记。 |
 | `services/dialog_plan_execution.py` | 与 ROS 无关的对话原生计划路由：普通动作进入行为树，专用视觉工具回退到对应工作流。 |
