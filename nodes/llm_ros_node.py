@@ -37,6 +37,7 @@ from services.action_intent_guard import (
 )
 from services.action_status import ACTION_STATUS_TOPIC
 from services.llm_service import LLMService
+from services.llm_response_policy import LLMResponsePolicy
 from services.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
@@ -1216,7 +1217,7 @@ class LLMBrainNode(Node):
 
     @classmethod
     def _is_long_form_request(cls, user_prompt):
-        return bool(cls.LONG_FORM_REQUEST_RE.search(user_prompt or ''))
+        return LLMResponsePolicy.is_long_form_request(user_prompt)
 
     @classmethod
     def _needs_action_tools(cls, user_prompt):
@@ -1229,13 +1230,9 @@ class LLMBrainNode(Node):
         return True
 
     def _max_tokens_for_request(self, is_long_form):
-        if not is_long_form:
-            return None
         settings = getattr(self.llm, 'settings', {})
         configured_tokens = settings.get('max_tokens', 0) if isinstance(settings, dict) else 0
-        if not isinstance(configured_tokens, int):
-            configured_tokens = 0
-        return max(self.LONG_FORM_MAX_TOKENS, configured_tokens)
+        return LLMResponsePolicy.max_tokens(configured_tokens, long_form=is_long_form)
 
     def _extract_corrected_text(self, first_line):
         first_line = (first_line or '').strip()
