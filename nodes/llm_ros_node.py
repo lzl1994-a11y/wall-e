@@ -2,7 +2,6 @@
 import base64
 import json
 import queue
-import random
 import re
 import threading
 import time
@@ -50,6 +49,7 @@ from services.game_protocol import (
     game_mode_from_message,
 )
 from services.game_tft_stream import prepare_game_bgr
+from services.game_commentary import GameCommentaryController
 from services.tft_preview_client import TftPreviewClient
 from services.tft_preview_server import load_tft_preview_settings
 from services.tts_protocol import encode_turn_end
@@ -110,10 +110,7 @@ class LLMBrainNode(Node):
         self._request_queue = queue.Queue(maxsize=8)
         self._worker_running = False
         self._game_mode = "robot"
-        self._game_frame_lock = threading.Lock()
-        self._latest_game_frame = None
-        self._next_game_commentary = None
-        self._game_commentary_pending = False
+        self._game_commentary = GameCommentaryController()
 
         # Create ROS endpoints before the slow LLM client init. This lets DDS
         # discover `voice_text` while the model service is warming up.
@@ -200,41 +197,23 @@ class LLMBrainNode(Node):
             return
         previous = self._game_mode
         self._game_mode = mode
+        self._game_commentary.set_mode(mode)
         if mode != "robot":
-            if mode == "playing" and previous != "playing":
-                self._schedule_next_game_commentary()
             return
-
-        with self._game_frame_lock:
-            self._latest_game_frame = None
-        self._next_game_commentary = None
-        self._game_commentary_pending = False
+        if previous != "robot":
+            self._game_commentary.finish_commentary()
 
     def _on_game_frame(self, message):
-        if self._game_mode == "robot":
-            return
         frame = decode_game_frame(bytes(message.data))
         if frame is None:
             return
-        raw, width, height, pitch = frame
-        with self._game_frame_lock:
-            self._latest_game_frame = (raw, width, height, pitch)
-
-    def _schedule_next_game_commentary(self):
-        self._next_game_commentary = time.monotonic() + random.uniform(50.0, 120.0)
+        self._game_commentary.accept_frame(frame)
 
     def _game_commentary_tick(self):
-        if self._game_mode != "playing" or self._game_commentary_pending:
-            return
-        if self._next_game_commentary is None:
-            self._schedule_next_game_commentary()
-            return
-        if time.monotonic() < self._next_game_commentary:
-            return
-        with self._game_frame_lock:
-            frame = self._latest_game_frame
-        self._schedule_next_game_commentary()
+        frame = self._game_commentary.take_due_frame()
         if frame is None or self.llm is None:
+            if frame is not None:
+                self._game_commentary.finish_commentary()
             return
         import numpy as np
 
@@ -242,8 +221,8 @@ class LLMBrainNode(Node):
         image = np.frombuffer(raw, dtype=np.uint8).reshape(height, pitch // 4, 4)
         jpeg = prepare_game_bgr(image[:, :width, :3], quality=75)
         if not jpeg:
+            self._game_commentary.finish_commentary()
             return
-        self._game_commentary_pending = True
         try:
             self._request_queue.put_nowait({
                 'kind': 'game_vision',
@@ -251,7 +230,7 @@ class LLMBrainNode(Node):
                 'jpeg': jpeg,
             })
         except queue.Full:
-            self._game_commentary_pending = False
+            self._game_commentary.finish_commentary()
 
     def voice_callback(self, msg):
         """Queue the request so the ROS callback thread is never blocked by LLM I/O."""
@@ -309,7 +288,7 @@ class LLMBrainNode(Node):
                 self._finish_tts_turn(task.get('turn_id', ''))
             finally:
                 if task.get('kind') == 'game_vision':
-                    self._game_commentary_pending = False
+                    self._game_commentary.finish_commentary()
                 self._request_queue.task_done()
 
     def _process_game_vision_task(self, task):
