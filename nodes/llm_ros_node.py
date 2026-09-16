@@ -39,6 +39,7 @@ from services.action_status import ACTION_STATUS_TOPIC
 from services.llm_service import LLMService
 from services.llm_response_policy import LLMResponsePolicy
 from services.llm_stream_response import StreamResponseAccumulator
+from services.llm_conversation_history import LLMConversationHistory
 from services.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
@@ -584,52 +585,18 @@ class LLMBrainNode(Node):
         if not accumulator.spoken_parts:
             publish_spoken(clean_text)
 
-        self.chat_history.append({'role': 'user', 'content': final_user_memory})
-        
-        if actions:
-            openai_tool_calls = []
-            for i, act in enumerate(actions):
-                # We need a dummy ID for the history
-                call_id = f"call_{turn_id}_{i}"
-                act['id'] = call_id  # Save it so we can reference it in the tool message
-                openai_tool_calls.append({
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": act["name"],
-                        "arguments": act.get("arguments", "{}")
-                    }
-                })
-            # Keep the history protocol-valid and reinforce the same contract
-            # used by the system prompt: action proposals have no speech
-            # content; the deterministic acknowledgement is a following
-            # assistant message after all tool results.
-            self.chat_history.append({
-                'role': 'assistant',
-                'content': None,
-                'tool_calls': openai_tool_calls,
-            })
-        else:
-            self.chat_history.append({'role': 'assistant', 'content': clean_text})
-
         if clean_text:
             full_msg = String()
             full_msg.data = clean_text
             self.full_ai_publisher.publish(full_msg)
 
-        # Preserve the actual executor result, including interrupted/failed actions.
-        if actions:
-            for act in actions:
-                self.chat_history.append({
-                    'role': 'tool',
-                    'tool_call_id': act['id'],
-                    'name': act['name'],
-                    'content': json.dumps({
-                        'status': act.get('status', 'accepted'),
-                        'reason': act.get('reason', ''),
-                    }, ensure_ascii=False),
-                })
-            self.chat_history.append({'role': 'assistant', 'content': clean_text})
+        LLMConversationHistory.record_turn(
+            self.chat_history,
+            user_text=final_user_memory,
+            assistant_text=clean_text,
+            actions=actions,
+            turn_id=turn_id,
+        )
 
         self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
 
@@ -739,8 +706,11 @@ class LLMBrainNode(Node):
         self.corrected_publisher.publish(String(data=user_prompt))
         acknowledgement = action_acknowledgement([action_payload])
         self._publish_tts(acknowledgement, turn_id)
-        self.chat_history.append({'role': 'user', 'content': user_prompt})
-        self.chat_history.append({'role': 'assistant', 'content': acknowledgement})
+        LLMConversationHistory.record_dialog_turn(
+            self.chat_history,
+            user_text=user_prompt,
+            assistant_text=acknowledgement,
+        )
         self.full_ai_publisher.publish(String(data=acknowledgement))
         self._publish_screen_dialog(
             turn_id,
@@ -770,8 +740,11 @@ class LLMBrainNode(Node):
                 f'[{turn_id}] Camera inspection completed with error: {error}'
             )
         else:
-            self.chat_history.append({'role': 'user', 'content': user_prompt})
-            self.chat_history.append({'role': 'assistant', 'content': answer})
+            LLMConversationHistory.record_dialog_turn(
+                self.chat_history,
+                user_text=user_prompt,
+                assistant_text=answer,
+            )
             self.full_ai_publisher.publish(String(data=answer))
 
         self._publish_tts(answer, turn_id)
@@ -836,8 +809,11 @@ class LLMBrainNode(Node):
             )
 
         answer = '这个条件任务没有生成可执行计划，所以我没有观察或执行动作。'
-        self.chat_history.append({'role': 'user', 'content': user_prompt})
-        self.chat_history.append({'role': 'assistant', 'content': answer})
+        LLMConversationHistory.record_dialog_turn(
+            self.chat_history,
+            user_text=user_prompt,
+            assistant_text=answer,
+        )
         self.full_ai_publisher.publish(String(data=answer))
         self._publish_tts(answer, turn_id)
         self._publish_screen_dialog(
@@ -940,8 +916,11 @@ class LLMBrainNode(Node):
         else:
             self.get_logger().info(f'[{turn_id}] Conditional task completed.')
 
-        self.chat_history.append({'role': 'user', 'content': user_prompt})
-        self.chat_history.append({'role': 'assistant', 'content': answer})
+        LLMConversationHistory.record_dialog_turn(
+            self.chat_history,
+            user_text=user_prompt,
+            assistant_text=answer,
+        )
         self.full_ai_publisher.publish(String(data=answer))
         self._publish_tts(answer, turn_id)
         self._publish_screen_dialog(
@@ -1046,8 +1025,11 @@ class LLMBrainNode(Node):
                 error = str(exc)
 
         self._publish_tts(answer, turn_id)
-        self.chat_history.append({'role': 'user', 'content': user_prompt})
-        self.chat_history.append({'role': 'assistant', 'content': answer})
+        LLMConversationHistory.record_dialog_turn(
+            self.chat_history,
+            user_text=user_prompt,
+            assistant_text=answer,
+        )
         self.full_ai_publisher.publish(String(data=answer))
         self._publish_screen_dialog(turn_id, user_prompt, answer, [], error=error)
         self._finish_tts_turn(turn_id)
@@ -1061,44 +1043,17 @@ class LLMBrainNode(Node):
         )
 
     def _visual_history(self):
-        """只保留文本形式的最近上下文，避免把旧 tool 消息传给视觉模型。"""
-        history = []
-        for item in list(self.chat_history)[-8:]:
-            if item.get('role') not in {'user', 'assistant'}:
-                continue
-            if isinstance(item.get('content'), str) and item['content'].strip():
-                history.append({'role': item['role'], 'content': item['content']})
-        return history
+        return LLMConversationHistory.build_visual_history(self.chat_history)
 
     def _history_for_request(self):
-        history = [
-            message
-            for item in list(self.chat_history)[-self.CHAT_HISTORY_MESSAGES:]
-            if (message := self._text_only_history_message(item)) is not None
-        ]
-        while history and history[0].get('role') != 'user':
-            history.pop(0)
-        return history
+        max_messages = getattr(self, 'CHAT_HISTORY_MESSAGES', 12)
+        return LLMConversationHistory.build_request_history(
+            self.chat_history, max_messages=max_messages
+        )
 
     @staticmethod
     def _text_only_history_message(item):
-        """Copy one history item while permanently dropping image blocks."""
-        if not isinstance(item, dict):
-            return None
-        message = dict(item)
-        content = message.get('content')
-        if isinstance(content, list):
-            text_parts = []
-            for block in content:
-                if not isinstance(block, dict) or block.get('type') != 'text':
-                    continue
-                value = block.get('text')
-                if isinstance(value, str) and value.strip():
-                    text_parts.append(value.strip())
-            message['content'] = '\n'.join(text_parts)
-        elif content is not None and not isinstance(content, str):
-            message['content'] = ''
-        return message
+        return LLMConversationHistory.text_only_history_message(item)
 
     @classmethod
     def _rejected_action_reply(cls, rejected_actions):
