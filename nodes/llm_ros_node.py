@@ -20,6 +20,7 @@ from services.action_acknowledgement import action_acknowledgement
 from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_execution import CorrelatedActionExecutor
 from services.behavior_tree_execution import CorrelatedPlanExecutor
+from services.native_plan_execution import NativePlanExecutionAdapter
 from services.ros2_action_execution import (
     Ros2ActionPlanExecutor,
     create_wali_task_action_client,
@@ -146,6 +147,19 @@ class LLMBrainNode(Node):
             self.get_logger().warning(
                 f'BehaviorTree ROS2 Action client unavailable; legacy fallback remains active: {exc}'
             )
+        self._native_plan_adapter = NativePlanExecutionAdapter(
+            ros2_executor=self._ros2_task_executor,
+            legacy_executor=self._behavior_tree_executor,
+            publish=lambda payload: self.behavior_tree_publisher.publish(
+                String(data=payload)
+            ),
+            cancel_publish=lambda payload: self.behavior_tree_cancel_publisher.publish(
+                String(data=payload)
+            ),
+            owner_available=lambda: (
+                self.behavior_tree_publisher.get_subscription_count() > 0
+            ),
+        )
         self.create_subscription(
             String,
             ACTION_STATUS_TOPIC,
@@ -745,31 +759,33 @@ class LLMBrainNode(Node):
         )
 
     def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
-        ros2_executor = getattr(self, '_ros2_task_executor', None)
-        if ros2_executor is not None:
-            result = ros2_executor.try_execute(
-                plan, timeout=timeout, cancelled=cancelled
-            )
-            if result is not None:
-                return result
-        executor = getattr(self, '_behavior_tree_executor', None)
-        publisher = getattr(self, 'behavior_tree_publisher', None)
-        cancel_publisher = getattr(self, 'behavior_tree_cancel_publisher', None)
-        if executor is None or publisher is None or cancel_publisher is None:
-            return None
-        return executor.try_execute(
-            plan,
-            publish=lambda payload: publisher.publish(String(data=payload)),
-            cancel_publish=lambda payload: cancel_publisher.publish(String(data=payload)),
-            owner_available=lambda: publisher.get_subscription_count() > 0,
-            timeout=timeout,
-            cancelled=cancelled,
+        return self._native_plan().try_execute(
+            plan, timeout=timeout, cancelled=cancelled
         )
 
+    def _native_plan(self):
+        adapter = getattr(self, '_native_plan_adapter', None)
+        if adapter is None:
+            executor = getattr(self, '_behavior_tree_executor', None)
+            publisher = getattr(self, 'behavior_tree_publisher', None)
+            cancel_publisher = getattr(self, 'behavior_tree_cancel_publisher', None)
+            adapter = NativePlanExecutionAdapter(
+                ros2_executor=getattr(self, '_ros2_task_executor', None),
+                legacy_executor=executor,
+                publish=(lambda payload: publisher.publish(String(data=payload)))
+                if publisher is not None else None,
+                cancel_publish=(
+                    lambda payload: cancel_publisher.publish(String(data=payload))
+                ) if cancel_publisher is not None else None,
+                owner_available=(
+                    lambda: publisher is not None and publisher.get_subscription_count() > 0
+                ) if publisher is not None else None,
+            )
+            self._native_plan_adapter = adapter
+        return adapter
+
     def _on_behavior_tree_status(self, message):
-        executor = getattr(self, '_behavior_tree_executor', None)
-        if executor is not None:
-            executor.accept_status(message.data)
+        self._native_plan().accept_status(message.data)
 
     def _process_deterministic_safety_action(
         self,
