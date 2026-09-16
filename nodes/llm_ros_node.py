@@ -69,29 +69,13 @@ from services.voice_debug import RollingVoiceDebugStore
 
 class LLMBrainNode(Node):
     CHAT_HISTORY_MESSAGES = 12
-    LONG_FORM_REQUEST_RE = re.compile(
-        r"(?:背(?:诵)?|朗(?:诵|读)|念|读)(?:一下|一遍|给我听)?|"
-        r"全文|完整(?:版|内容)?|全部|整首|从头到尾"
-    )
-    LONG_FORM_MAX_TOKENS = 2048
+    LONG_FORM_REQUEST_RE = LLMResponsePolicy.LONG_FORM_REQUEST_RE
+    LONG_FORM_MAX_TOKENS = LLMResponsePolicy.LONG_FORM_MAX_TOKENS
     FIRST_TTS_CLAUSE_MIN_CHARS = 10
     CLAUSE_PUNCTUATIONS = {'，', ',', '；', ';', '：', ':'}
-    CORRECTION_LABELS = {
-        "\u4fee\u6b63\u6587\u672c",
-        "\u7ea0\u9519\u6587\u672c",
-        "\u6821\u6b63\u6587\u672c",
-        "\u8bc6\u522b\u4fee\u6b63",
-        "\u4fee\u6b63\u540e\u6587\u672c",
-        "corrected_text",
-        "corrected text",
-    }
-    TTS_CLEAN_RE = re.compile(
-        "[^\\w\\s\u4e00-\u9fa5\uff0c\u3002\uff1f\uff01\u3001\uff1a\uff1b\u201c\u201d\uff08\uff09\u300a\u300b.,?!]"
-    )
-    OUTPUT_LINE_PREFIX_RE = re.compile(
-        r"^\s*(?:\u7b2c\u4e8c\u884c|\u6700\u7ec8\u56de\u7b54|\u6700\u7ec8\u7b54\u6848|\u56de\u7b54|\u56de\u590d)\s*[:\uff1a]\s*",
-        re.IGNORECASE,
-    )
+    CORRECTION_LABELS = LLMResponsePolicy.CORRECTION_LABELS
+    TTS_CLEAN_RE = LLMResponsePolicy.TTS_CLEAN_RE
+    OUTPUT_LINE_PREFIX_RE = LLMResponsePolicy.OUTPUT_LINE_PREFIX_RE
 
     def __init__(self):
         super().__init__('walle_llm_brain')
@@ -467,12 +451,12 @@ class LLMBrainNode(Node):
                         first_clause_boundary = (
                             not spoken_parts
                             and char in self.CLAUSE_PUNCTUATIONS
-                            and len(self.TTS_CLEAN_RE.sub('', sentence_buffer).strip())
+                            and len(LLMResponsePolicy.clean_tts_text(sentence_buffer))
                             >= self.FIRST_TTS_CLAUSE_MIN_CHARS
                         )
                         if sentence_boundary or first_clause_boundary:
                             clean_sentence = sentence_buffer.strip()
-                            tts_safe = self.TTS_CLEAN_RE.sub('', clean_sentence)
+                            tts_safe = LLMResponsePolicy.clean_tts_text(clean_sentence)
 
                             if tts_safe.strip(' .,?!。，？！'):
                                 publish_spoken(tts_safe)
@@ -597,7 +581,7 @@ class LLMBrainNode(Node):
 
         clean_tail = sentence_buffer.strip()
         if clean_tail:
-            tts_safe_tail = self.TTS_CLEAN_RE.sub('', clean_tail)
+            tts_safe_tail = LLMResponsePolicy.clean_tts_text(clean_tail)
             if tts_safe_tail.strip(' .,?!。，？！'):
                 publish_spoken(tts_safe_tail)
 
@@ -1150,16 +1134,9 @@ class LLMBrainNode(Node):
             return '你是想让我打开摄像头看一下吗？'
         return '我不太确定你是不是要我执行这个动作，可以再明确说一下吗？'
 
-    @staticmethod
-    def _clean_visual_answer(text):
-        text = (text or '').strip()
-        if text.startswith('```'):
-            text = text.strip('`').strip()
-        # 防止兼容模型仍然套用本项目普通对话的标签格式。
-        for prefix in ('【修正文本】', '修正文本:', '修正文本：', 'ai:', 'AI:'):
-            if text.startswith(prefix):
-                text = text[len(prefix):].lstrip(' ：:')
-        return LLMBrainNode.TTS_CLEAN_RE.sub('', text).strip()
+    @classmethod
+    def _clean_visual_answer(cls, text):
+        return LLMResponsePolicy.clean_visual_answer(text)
 
     def _publish_tts(self, text, turn_id=''):
         safe = self._sanitize_speech_text(text)
@@ -1234,80 +1211,25 @@ class LLMBrainNode(Node):
         configured_tokens = settings.get('max_tokens', 0) if isinstance(settings, dict) else 0
         return LLMResponsePolicy.max_tokens(configured_tokens, long_form=is_long_form)
 
-    def _extract_corrected_text(self, first_line):
-        first_line = (first_line or '').strip()
-        if not first_line:
-            return None
+    @classmethod
+    def _extract_corrected_text(cls, first_line):
+        return LLMResponsePolicy.extract_corrected_text(first_line)
 
-        cleaned = first_line.lstrip(' \t>*-#')
-        cleaned = re.sub(
-            r"^\s*\u7b2c\u4e00\u884c\s*[:\uff1a]\s*",
-            "",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
+    @classmethod
+    def _strip_correction_line(cls, text):
+        return LLMResponsePolicy.strip_correction_line(text)
 
-        label = ''
-        value = ''
-        if cleaned.startswith('\u3010') and '\u3011' in cleaned:
-            label, value = cleaned[1:].split('\u3011', 1)
-        elif cleaned.startswith('[') and ']' in cleaned:
-            label, value = cleaned[1:].split(']', 1)
-        else:
-            value = cleaned
+    @classmethod
+    def _sanitize_speech_text(cls, text):
+        return LLMResponsePolicy.sanitize_speech_text(text)
 
-        if label:
-            label = label.strip().lower()
-            if label not in self.CORRECTION_LABELS:
-                return None
-            value = value.lstrip(' \t:\uff1a')
-            return value.strip().strip('"\u201c\u201d') or None
-
-        # Fallbacks for plain labeled responses, e.g. corrected_text: hello.
-        for sep in (':', '\uff1a'):
-            if sep not in value:
-                continue
-            maybe_label, maybe_text = value.split(sep, 1)
-            if maybe_label.strip().lower() in self.CORRECTION_LABELS:
-                return maybe_text.strip().strip('"\u201c\u201d') or None
-
-        for label in self.CORRECTION_LABELS:
-            if value.lower().startswith(label.lower()):
-                remainder = value[len(label):]
-                if remainder and remainder[0] not in ' \t:\uff1a':
-                    continue
-                maybe_text = remainder.strip(' \t:\uff1a')
-                return maybe_text.strip().strip('"\u201c\u201d') or None
-
-        return None
-
-    def _strip_correction_line(self, text):
-        if '\n' not in text:
-            return text
-        first_line, rest = text.split('\n', 1)
-        if self._extract_corrected_text(first_line):
-            return self._strip_answer_prefix(rest)
-        if self._is_correction_label_only(first_line):
-            if '\n' not in rest:
-                return ''
-            _, answer = rest.split('\n', 1)
-            return self._strip_answer_prefix(answer)
-        return text
-
-    def _sanitize_speech_text(self, text):
-        clean = self._strip_answer_prefix(self._strip_correction_line(text)).strip()
-        if '\n' not in clean and self._extract_corrected_text(clean):
-            return ''
-        return self.TTS_CLEAN_RE.sub('', clean).strip()
-
-    def _is_correction_label_only(self, text):
-        cleaned = (text or '').strip().lstrip(' \t>*-#')
-        cleaned = cleaned.strip('[]\u3010\u3011').strip(' \t:\uff1a').lower()
-        return cleaned in self.CORRECTION_LABELS
+    @classmethod
+    def _is_correction_label_only(cls, text):
+        return LLMResponsePolicy.is_correction_label_only(text)
 
     @classmethod
     def _strip_answer_prefix(cls, text):
-        return cls.OUTPUT_LINE_PREFIX_RE.sub('', text or '', count=1)
+        return LLMResponsePolicy.strip_answer_prefix(text)
 
     def _publish_screen_dialog(self, turn_id, corrected_text, ai_text, actions, error=None):
         payload = {

@@ -169,6 +169,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | 文件 | 作用 |
 | --- | --- |
 | `services/llm_service.py` | 封装 OpenAI/Kimi 兼容接口，提供流式大模型回复和工具调用结果。 |
+| `services/llm_response_policy.py` | 与 ROS 无关的文本 LLM 响应策略：长文本预算、纠错元数据剥离、回答前缀与安全 TTS/视觉文本清洗。 |
 | `services/camera_frame.py` | 请求摄像头租约，支持单帧或限时帧流，完成后立即释放；不会直接打开摄像头。 |
 | `services/camera_capture_protocol.py` | 定义唯一摄像头源话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 启动命令。 |
 | `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
