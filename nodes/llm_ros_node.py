@@ -45,6 +45,7 @@ from services.llm_request_preparation import (
     ROUTE_SAFETY_ACTION,
     prepare_voice_request,
 )
+from services.llm_tool_proposal import evaluate_tool_proposal
 from services.camera_frame import save_camera_photo
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
@@ -435,59 +436,62 @@ class LLMBrainNode(Node):
                     expression_published = True
 
                 if decision.tool_call:
-                    action_name = decision.tool_call.get('name')
-                    try:
-                        action_arguments = json.loads(decision.tool_call.get('arguments') or '{}')
-                    except (TypeError, json.JSONDecodeError):
-                        self.get_logger().warning(
-                            f'[{turn_id}] Rejected malformed tool arguments: {action_name}'
-                        )
-                        accumulator.record_rejected_action(action_name, "invalid_arguments")
-                        break
-                    if prepared_request.is_conditional_task and action_name != CONDITIONAL_TASK_TOOL_NAME:
-                        accumulator.record_rejected_action(action_name, "compound_task_must_stay_atomic")
-                        self.get_logger().warning(
-                            f'[{turn_id}] Rejected split compound-task tool: {action_name}'
-                        )
-                        continue
-                    allowed, rejection_reason = validate_action_call(
-                        user_prompt,
-                        action_name,
-                        action_arguments,
+                    proposal = evaluate_tool_proposal(
+                        decision.tool_call,
+                        user_prompt=user_prompt,
+                        conditional_request=prepared_request.is_conditional_task,
                     )
-                    if not allowed:
-                        accumulator.record_rejected_action(action_name, rejection_reason)
-                        self.get_logger().warning(
-                            f'[{turn_id}] Rejected tool proposal: '
-                            f'name={action_name} reason={rejection_reason}'
+                    if proposal.is_rejected:
+                        accumulator.record_rejected_action(
+                            proposal.action_name, proposal.rejection_reason
                         )
-                        break
-                    if action_name == 'inspect_camera':
-                        self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
-                        if action_arguments.get('save_photo') is True:
-                            self._process_camera_photo(turn_id, user_prompt)
+                        if proposal.is_malformed_arguments:
+                            self.get_logger().warning(
+                                f'[{turn_id}] Rejected malformed tool arguments: {proposal.action_name}'
+                            )
+                        elif proposal.rejection_reason == "compound_task_must_stay_atomic":
+                            self.get_logger().warning(
+                                f'[{turn_id}] Rejected split compound-task tool: {proposal.action_name}'
+                            )
                         else:
-                            self._process_camera_inspection(turn_id, user_prompt)
+                            self.get_logger().warning(
+                                f'[{turn_id}] Rejected tool proposal: '
+                                f'name={proposal.action_name} reason={proposal.rejection_reason}'
+                            )
+                        if proposal.should_continue:
+                            continue
+                        break
+
+                    if proposal.is_camera_photo:
+                        self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
+                        self._process_camera_photo(turn_id, user_prompt)
                         return
-                    if action_name == CONDITIONAL_TASK_TOOL_NAME:
+
+                    if proposal.is_camera_inspection:
+                        self.get_logger().info(f'[{turn_id}] Camera inspection tool requested.')
+                        self._process_camera_inspection(turn_id, user_prompt)
+                        return
+
+                    if proposal.is_conditional_task:
                         self.get_logger().info(
                             f'[{turn_id}] Conditional task workflow requested.'
                         )
                         self._process_conditional_task(
                             turn_id,
                             user_prompt,
-                            action_arguments,
+                            proposal.plan or proposal.arguments,
                         )
                         return
+
                     action_payload = {
                         'turn_id': turn_id,
-                        'name': action_name,
-                        'arguments': json.dumps(action_arguments, ensure_ascii=False),
+                        'name': proposal.action_name,
+                        'arguments': json.dumps(proposal.arguments, ensure_ascii=False),
                     }
                     actions.append(action_payload)
                     pending_actions.append({
-                        'name': action_name,
-                        'arguments': action_arguments,
+                        'name': proposal.action_name,
+                        'arguments': proposal.arguments,
                     })
                     accumulator.record_tool_proposal(action_payload)
                     self.get_logger().info(f'[{turn_id}] Tool call: {action_payload["name"]}')
