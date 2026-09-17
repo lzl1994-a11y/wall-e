@@ -189,6 +189,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/llm_request_preparation.py` | 与 ROS 无关的用户请求分流与普通模型请求准备服务：严格按照优先级分流安全停止动作、条件任务、拍照与单步视觉查看，并为普通对话准备拼音参考、Prompt 模板与 Token 配置。 |
 | `services/llm_tool_proposal.py` | 与 ROS 无关的模型工具提案决策服务：负责参数解析、意图校验、条件任务原子性保护，以及普通动作、拍照、视觉查看和条件任务的纯路由决策。 |
 | `services/llm_conditional_planning.py` | 与 ROS 无关的条件任务规划决策服务：负责原生工具事件解析、参数 JSON 解码、显式动作规范化、条件意图校验，以及兼容降级（fallback）提示词构造与 JSON 计划提取。 |
+| `services/llm_visual_request.py` | 与 ROS 无关的视觉模型请求准备与流式文本结果累积服务：负责游戏画面评论、相机问答和条件视觉判断的纯请求准备、图片 Base64 编码及流式文本累积。 |
 | `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
 | `services/dialog_action_execution.py` | 与 ROS 无关的对话动作执行适配器：绑定关联状态、请求发布、可用性检查、超时与来源标记。 |
 | `services/dialog_plan_execution.py` | 与 ROS 无关的对话原生计划路由：普通动作进入行为树，专用视觉工具回退到对应工作流。 |

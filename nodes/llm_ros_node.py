@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import base64
 import json
 import queue
 import re
@@ -51,6 +50,12 @@ from services.llm_request_preparation import (
     prepare_voice_request,
 )
 from services.llm_tool_proposal import evaluate_tool_proposal
+from services.llm_visual_request import (
+    VisualResponseAccumulator,
+    build_camera_qa_request,
+    build_conditional_vision_request,
+    build_game_vision_request,
+)
 from services.camera_frame import save_camera_photo
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
@@ -285,27 +290,20 @@ class LLMBrainNode(Node):
             return
         turn_id = task['turn_id']
         self.busy_publisher.publish(String(data="busy"))
-        prompt = (
-            "观察这张正在运行的 FC 游戏画面，以瓦力的口吻说一句简短自然的中文评论。"
-            "可以提醒危险、鼓励玩家或描述关键局面；看不清时不要猜。只输出可直接播报的一句话。"
-        )
         try:
-            chunks = []
+            request = build_game_vision_request(task['jpeg'])
+            accumulator = VisualResponseAccumulator()
             for data in self.llm.chat_stream(
-                prompt,
-                [],
-                image_base64=base64.b64encode(task['jpeg']).decode('ascii'),
-                tools_enabled=False,
-                structured_answer=False,
-                system_prompt=(
-                    "你是陪主人玩 FC 游戏的瓦力。只依据当前游戏截图简短评论，"
-                    "不输出分析过程。"
-                ),
-                max_tokens_override=96,
+                request.prompt,
+                request.history,
+                image_base64=request.image_base64,
+                tools_enabled=request.tools_enabled,
+                structured_answer=request.structured_answer,
+                system_prompt=request.system_prompt,
+                max_tokens_override=request.max_tokens_override,
             ):
-                if data.get('type') == 'text' and data.get('content'):
-                    chunks.append(data['content'])
-            answer = self._clean_visual_answer(''.join(chunks))
+                accumulator.process_event(data)
+            answer = accumulator.clean_answer()
             if not answer:
                 raise RuntimeError('游戏视觉模型返回空答案')
             self._publish_tts(answer, turn_id)
@@ -882,29 +880,23 @@ class LLMBrainNode(Node):
 
     def _evaluate_camera_condition(self, frame, observation, condition):
         """Ask the visual model for a closed yes/no/uncertain decision."""
-        image_b64 = base64.b64encode(frame).decode('ascii')
-        prompt = (
-            '请只依据附带的当前摄像头画面判断条件。返回一个 JSON 对象，且只能包含 '
-            'decision 和 evidence。decision 只能是 yes、no、uncertain；图片不足以确认时'
-            '必须使用 uncertain。不要执行动作，不要输出 Markdown 或其他文字。\n'
-            f'观察任务：{observation}\n判断条件：{condition}'
+        request = build_conditional_vision_request(
+            frame,
+            observation=observation,
+            condition=condition,
         )
-        chunks = []
+        accumulator = VisualResponseAccumulator()
         for data in self.llm.chat_stream(
-            prompt,
-            [],
-            image_base64=image_b64,
-            tools_enabled=False,
-            structured_answer=False,
-            system_prompt=(
-                '你是机器人视觉条件判断器。只能依据当前图片返回严格 JSON；'
-                '无法确认时必须返回 uncertain，禁止猜测。'
-            ),
-            max_tokens_override=160,
+            request.prompt,
+            request.history,
+            image_base64=request.image_base64,
+            tools_enabled=request.tools_enabled,
+            structured_answer=request.structured_answer,
+            system_prompt=request.system_prompt,
+            max_tokens_override=request.max_tokens_override,
         ):
-            if data.get('type') == 'text' and data.get('content'):
-                chunks.append(data['content'])
-        return ''.join(chunks).strip()
+            accumulator.process_event(data)
+        return accumulator.raw_text()
 
     def _execute_workflow_action(self, name, arguments):
         executor = self._action_executor
@@ -919,27 +911,23 @@ class LLMBrainNode(Node):
 
     def _analyze_camera_frame(self, frame, user_prompt):
         """Return a plain-text visual answer without requiring tool calling."""
-        image_b64 = base64.b64encode(frame).decode('ascii')
-        visual_prompt = (
-            '请根据我附带的摄像头画面回答用户的问题。只输出简短、自然、可直接播报的中文答案，'
-            '不要输出修正文本标签、分析过程、工具调用或括号说明。\n'
-            f'用户问题：{user_prompt}'
+        request = build_camera_qa_request(
+            frame,
+            user_prompt=user_prompt,
+            history=self._visual_history(),
         )
-        chunks = []
+        accumulator = VisualResponseAccumulator()
         for data in self.llm.chat_stream(
-            visual_prompt,
-            self._visual_history(),
-            image_base64=image_b64,
-            tools_enabled=False,
-            structured_answer=False,
-            system_prompt=(
-                '你是瓦力的视觉。只依据当前摄像头图片回答问题；看不清时明确说看不清，'
-                '不要猜测。答案使用简短自然的中文，不能输出分析过程或任何标签。'
-            ),
+            request.prompt,
+            request.history,
+            image_base64=request.image_base64,
+            tools_enabled=request.tools_enabled,
+            structured_answer=request.structured_answer,
+            system_prompt=request.system_prompt,
+            max_tokens_override=request.max_tokens_override,
         ):
-            if data.get('type') == 'text' and data.get('content'):
-                chunks.append(data['content'])
-        return self._clean_visual_answer(''.join(chunks))
+            accumulator.process_event(data)
+        return accumulator.clean_answer()
 
     def _process_camera_photo(self, turn_id, user_prompt):
         """确认 → TFT 预览 3 秒 → 保存末帧；不调用视觉模型。"""
