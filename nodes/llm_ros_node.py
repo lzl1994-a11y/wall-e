@@ -41,6 +41,7 @@ from services.action_status import ACTION_STATUS_TOPIC
 from services.llm_service import LLMService
 from services.llm_response_policy import LLMResponsePolicy
 from services.llm_stream_response import StreamResponseAccumulator
+from services.llm_voice_turn import LLMVoiceTurnState
 from services.llm_conversation_history import LLMConversationHistory
 from services.llm_request_preparation import (
     ROUTE_CAMERA_INSPECTION,
@@ -357,32 +358,24 @@ class LLMBrainNode(Node):
                 f'[{turn_id}] Long-form request detected; max_tokens={max_tokens_override}.'
             )
 
-        accumulator = StreamResponseAccumulator(
+        state = LLMVoiceTurnState(
+            user_prompt,
             punctuations=getattr(self, 'punctuations', {'。', '？', '.', '?', '！', '!'}),
             clause_punctuations=getattr(self, 'CLAUSE_PUNCTUATIONS', {'，', ',', '；', ';', '：', ':'}),
             first_tts_clause_min_chars=getattr(self, 'FIRST_TTS_CLAUSE_MIN_CHARS', 10),
         )
-        corrected_text = ''
-        corrected_text_published = False
-        actions = []
-        pending_actions = []
-        action_failure = None
-        expression_published = False
 
         def publish_corrected(value):
-            nonlocal corrected_text, corrected_text_published
-            corrected_text = (value or user_prompt).strip() or user_prompt
-            corrected_text_published = True
+            corrected = state.normalize_corrected_text(value)
             msg = String()
-            msg.data = corrected_text
+            msg.data = corrected
             self.corrected_publisher.publish(msg)
             self.get_logger().info(
-                f'[{turn_id}] Corrected text: raw="{user_prompt}" corrected="{corrected_text}"'
+                f'[{turn_id}] Corrected text: raw="{user_prompt}" corrected="{corrected}"'
             )
 
         def publish_spoken(value):
-            nonlocal expression_published
-            if not expression_published:
+            if state.needs_default_expression:
                 expression_publisher = getattr(
                     self, "dialog_expression_publisher", None
                 )
@@ -390,10 +383,10 @@ class LLMBrainNode(Node):
                     expression_publisher.publish(String(
                         data=encode_dialog_expression("neutral", "low", turn_id)
                     ))
-                expression_published = True
+                state.mark_expression_published()
             spoken = self._publish_tts(value, turn_id)
             if spoken:
-                accumulator.record_spoken(spoken)
+                state.record_spoken(spoken)
 
         # Correction metadata is an internal concern. Publish the ASR text for
         # the existing topic contract and ask the model for speech only.
@@ -423,7 +416,7 @@ class LLMBrainNode(Node):
             )
 
             for data in stream:
-                decision = accumulator.process_event(data)
+                decision = state.process_event(data)
 
                 for tts_text in decision.tts_sentences:
                     publish_spoken(tts_text)
@@ -436,7 +429,7 @@ class LLMBrainNode(Node):
                             turn_id,
                         )
                     ))
-                    expression_published = True
+                    state.mark_expression_published()
 
                 if decision.tool_call:
                     proposal = evaluate_tool_proposal(
@@ -445,7 +438,7 @@ class LLMBrainNode(Node):
                         conditional_request=prepared_request.is_conditional_task,
                     )
                     if proposal.is_rejected:
-                        accumulator.record_rejected_action(
+                        state.record_rejected_action(
                             proposal.action_name, proposal.rejection_reason
                         )
                         if proposal.is_malformed_arguments:
@@ -486,17 +479,11 @@ class LLMBrainNode(Node):
                         )
                         return
 
-                    action_payload = {
-                        'turn_id': turn_id,
-                        'name': proposal.action_name,
-                        'arguments': json.dumps(proposal.arguments, ensure_ascii=False),
-                    }
-                    actions.append(action_payload)
-                    pending_actions.append({
-                        'name': proposal.action_name,
-                        'arguments': proposal.arguments,
-                    })
-                    accumulator.record_tool_proposal(action_payload)
+                    action_payload = state.record_pending_action(
+                        turn_id,
+                        proposal.action_name,
+                        proposal.arguments,
+                    )
                     self.get_logger().info(f'[{turn_id}] Tool call: {action_payload["name"]}')
 
                 if decision.finish_reason:
@@ -515,57 +502,37 @@ class LLMBrainNode(Node):
 
         except Exception as e:
             self.get_logger().error(f'[{turn_id}] LLM request/stream failed: {e}\n{traceback.format_exc()}')
-            if not corrected_text_published:
+            if not state.corrected_text_published:
                 publish_corrected(user_prompt)
             failure_text = '\u6211\u521a\u624d\u5904\u7406\u5931\u8d25\u4e86\uff0c\u7a0d\u540e\u518d\u8bd5\u3002'
             publish_spoken(failure_text)
-            self._publish_screen_dialog(turn_id, corrected_text or user_prompt, failure_text, actions, error=str(e))
+            self._publish_screen_dialog(turn_id, state.corrected_text or user_prompt, failure_text, state.actions, error=str(e))
             self._finish_tts_turn(turn_id)
             return
 
-        if pending_actions:
+        if state.pending_actions:
             sequence = self._execute_dialog_action_sequence(
-                pending_actions,
+                state.pending_actions,
                 user_prompt=user_prompt,
                 turn_id=turn_id,
             )
-            sequence_results = sequence.get('results', [])
-            actions = []
-            for result in sequence_results:
-                actions.append({
-                    'turn_id': turn_id,
-                    'name': result.get('name') or result.get('action', ''),
-                    'arguments': json.dumps(result.get('arguments', {}), ensure_ascii=False),
-                    'status': result.get('status', 'failed'),
-                    'request_id': result.get('request_id', ''),
-                    'reason': result.get('reason', ''),
-                })
-            action_failure = next(
-                (
-                    result for result in sequence_results
-                    if result.get('status') not in {'completed', 'skipped'}
-                ),
-                None,
-            )
+            state.apply_action_sequence(sequence, turn_id)
 
-        clean_tail = accumulator.take_tail_tts()
+        clean_tail = state.take_tail_tts()
         if clean_tail:
             publish_spoken(clean_tail)
 
-        final_user_memory = corrected_text if corrected_text else user_prompt
-
-        clean_text = accumulator.decide_final_text(
-            action_failure=action_failure,
-            actions=actions,
-        )
-        if not clean_text:
-            clean_text = self._retry_empty_answer(
-                turn_id,
-                corrected_text or user_prompt,
+        decision = state.decide_final_turn()
+        clean_text = decision.clean_text
+        if decision.needs_empty_answer_retry:
+            clean_text = state.resolve_final_text(
+                self._retry_empty_answer(
+                    turn_id,
+                    state.corrected_text or user_prompt,
+                )
             )
-        if not clean_text:
-            clean_text = accumulator.FALLBACK_EMPTY_REPLY
-        if not accumulator.spoken_parts:
+
+        if decision.should_publish_final_tts:
             publish_spoken(clean_text)
 
         if clean_text:
@@ -575,13 +542,13 @@ class LLMBrainNode(Node):
 
         LLMConversationHistory.record_turn(
             self.chat_history,
-            user_text=final_user_memory,
+            user_text=decision.user_text,
             assistant_text=clean_text,
-            actions=actions,
+            actions=state.actions,
             turn_id=turn_id,
         )
 
-        self._publish_screen_dialog(turn_id, final_user_memory, clean_text, actions)
+        self._publish_screen_dialog(turn_id, decision.user_text, clean_text, state.actions)
 
         # TTS 和播放节点会按顺序处理该标记；真正播完后再恢复 ASR。
         self._finish_tts_turn(turn_id)
