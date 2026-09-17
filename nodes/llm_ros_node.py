@@ -29,9 +29,14 @@ from services.behavior_tree_protocol import (
     BEHAVIOR_TREE_STATUS_TOPIC,
 )
 from services.action_intent_guard import (
-    canonicalize_conditional_action,
     validate_action_arguments,
     validate_action_call,
+)
+from services.llm_conditional_planning import (
+    build_conditional_fallback_request,
+    evaluate_conditional_plan,
+    evaluate_native_conditional_event,
+    parse_conditional_fallback_json,
 )
 from services.action_status import ACTION_STATUS_TOPIC
 from services.llm_service import LLMService
@@ -747,41 +752,31 @@ class LLMBrainNode(Node):
                 only_action_name=CONDITIONAL_TASK_TOOL_NAME,
                 max_tokens_override=512,
             ):
-                if data.get('type') != 'tool_call':
-                    continue
-                if data.get('name') != CONDITIONAL_TASK_TOOL_NAME:
-                    continue
-                try:
-                    plan = json.loads(data.get('arguments') or '{}')
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                plan = canonicalize_conditional_action(user_prompt, plan)
-                allowed, reason = validate_action_call(
-                    user_prompt,
-                    CONDITIONAL_TASK_TOOL_NAME,
-                    plan,
+                decision = evaluate_native_conditional_event(
+                    data,
+                    user_prompt=user_prompt,
                 )
-                if not allowed:
+                if decision.is_ignored or decision.is_malformed:
+                    continue
+                if decision.is_rejected:
                     self.get_logger().warning(
-                        f'[{turn_id}] Rejected conditional plan: {reason}; '
-                        f'plan={json.dumps(plan, ensure_ascii=False)}'
+                        f'[{turn_id}] Rejected conditional plan: {decision.rejection_reason}; '
+                        f'plan={json.dumps(decision.plan, ensure_ascii=False)}'
                     )
                     continue
-                self._process_conditional_task(turn_id, user_prompt, plan)
-                return
-            plan = canonicalize_conditional_action(
-                user_prompt,
-                self._plan_conditional_task_as_json(user_prompt),
+                if decision.is_accepted and decision.plan is not None:
+                    self._process_conditional_task(turn_id, user_prompt, decision.plan)
+                    return
+
+            fallback_plan = self._plan_conditional_task_as_json(user_prompt)
+            decision = evaluate_conditional_plan(
+                fallback_plan,
+                user_prompt=user_prompt,
             )
-            allowed, reason = validate_action_call(
-                user_prompt,
-                CONDITIONAL_TASK_TOOL_NAME,
-                plan,
-            )
-            if allowed:
-                self._process_conditional_task(turn_id, user_prompt, plan)
+            if decision.is_accepted and decision.plan is not None:
+                self._process_conditional_task(turn_id, user_prompt, decision.plan)
                 return
-            error = reason or 'conditional_plan_missing'
+            error = decision.rejection_reason or 'conditional_plan_missing'
         except Exception as exc:
             error = str(exc)
             self.get_logger().error(
@@ -807,46 +802,19 @@ class LLMBrainNode(Node):
 
     def _plan_conditional_task_as_json(self, user_prompt):
         """Compatibility fallback for providers that omit function calls."""
-        prompt = (
-            '把下面的现实条件任务转换成一个 JSON 对象。只能输出 JSON，不要回答任务，'
-            '不要声称已经观察或执行。对象必须且只能包含 observation、condition、'
-            'action_name、action_arguments。condition 保留用户完整的肯定或否定条件。'
-            'action_name 只能是 play_sequence、express_emotion、set_tracking_mode、'
-            'set_vision_gate、stop_all。常用 play_sequence 参数：举手=raise_hand，'
-            '点头=basic_nod，挥手=wave_hello，双手放下=arms_down，回正=look_center；'
-            'action_arguments 必须是对应动作的参数对象。禁止使用 move_chassis。\n'
-            f'用户任务：{user_prompt}'
-        )
+        request = build_conditional_fallback_request(user_prompt)
         chunks = []
         for data in self.llm.chat_stream(
-            prompt,
-            [],
-            tools_enabled=False,
-            structured_answer=False,
-            system_prompt=(
-                '你是机器人条件任务规划器，只做受限 JSON 转换，不观察环境、不执行动作。'
-            ),
-            max_tokens_override=384,
+            request.prompt,
+            request.history,
+            tools_enabled=request.tools_enabled,
+            structured_answer=request.structured_answer,
+            system_prompt=request.system_prompt,
+            max_tokens_override=request.max_tokens_override,
         ):
             if data.get('type') == 'text' and data.get('content'):
                 chunks.append(data['content'])
-        raw = ''.join(chunks).strip()
-        if raw.startswith('```') and raw.endswith('```'):
-            lines = raw.splitlines()
-            raw = '\n'.join(lines[1:-1]).strip() if len(lines) >= 3 else raw
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            start, end = raw.find('{'), raw.rfind('}')
-            if start < 0 or end <= start:
-                raise ValueError('conditional_json_plan_missing')
-            value = json.loads(raw[start:end + 1])
-        if not isinstance(value, dict):
-            raise ValueError('conditional_json_plan_not_object')
-        # Action arguments are intentionally not validated here.  The caller
-        # first translates an explicit consequent such as “点头” to the local
-        # allowlist, then runs the same strict validator as native tool calls.
-        return value
+        return parse_conditional_fallback_json(chunks)
 
     def _process_conditional_task(self, turn_id, user_prompt, plan):
         """Run one validated observe-condition-action graph to completion."""
