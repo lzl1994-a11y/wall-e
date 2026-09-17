@@ -378,6 +378,114 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(decode_turn_end(messages[2]), "turn-photo")
         sys.modules.pop("nodes.llm_ros_node", None)
 
+    def test_photo_preview_busy_does_not_save_and_publishes_busy_answer(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.chat_history = deque(maxlen=40)
+        node.tts_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(
+            photo_duration_ms=3000,
+            recognition_duration_ms=1500,
+            hold_ms=3000,
+            fps=10,
+            photo_directory="/tmp/wali-photos",
+        )
+        node.tft_preview = MagicMock()
+        from services.tft_preview_server import PreviewResult
+        node.tft_preview.send_camera_preview.return_value = PreviewResult(
+            busy=True, last_frame=b"\xff\xd8photo\xff\xd9"
+        )
+        node.get_logger = lambda: MagicMock()
+
+        save = MagicMock()
+        with patch.dict(
+            node_class._process_camera_photo.__globals__,
+            {"save_camera_photo": save},
+        ):
+            node._process_camera_photo("turn-busy", "帮我拍张照片")
+
+        node.llm.chat_stream.assert_not_called()
+        save.assert_not_called()
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(messages[:2], ["好的，准备拍照。", "我正在拍上一张，等一下再试。"])
+        self.assertEqual(decode_turn_end(messages[2]), "turn-busy")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_photo_preview_no_frame_does_not_save_and_publishes_unavailable_answer(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.chat_history = deque(maxlen=40)
+        node.tts_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(
+            photo_duration_ms=3000,
+            recognition_duration_ms=1500,
+            hold_ms=3000,
+            fps=10,
+            photo_directory="/tmp/wali-photos",
+        )
+        node.tft_preview = MagicMock()
+        from services.tft_preview_server import PreviewResult
+        node.tft_preview.send_camera_preview.return_value = PreviewResult(
+            busy=False, last_frame=None, error="device_disconnected"
+        )
+        node.get_logger = lambda: MagicMock()
+
+        save = MagicMock()
+        with patch.dict(
+            node_class._process_camera_photo.__globals__,
+            {"save_camera_photo": save},
+        ):
+            node._process_camera_photo("turn-noframe", "帮我拍张照片")
+
+        node.llm.chat_stream.assert_not_called()
+        save.assert_not_called()
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(messages[:2], ["好的，准备拍照。", "这次没有拍到，检查一下摄像头连接。"])
+        self.assertEqual(decode_turn_end(messages[2]), "turn-noframe")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
+    def test_photo_preview_save_error_publishes_failure_answer(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.chat_history = deque(maxlen=40)
+        node.tts_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(
+            photo_duration_ms=3000,
+            recognition_duration_ms=1500,
+            hold_ms=3000,
+            fps=10,
+            photo_directory="/tmp/wali-photos",
+        )
+        node.tft_preview = MagicMock()
+        from services.tft_preview_server import PreviewResult
+        node.tft_preview.send_camera_preview.return_value = PreviewResult(
+            last_frame=b"\xff\xd8photo\xff\xd9"
+        )
+        node.get_logger = lambda: MagicMock()
+
+        save = MagicMock(side_effect=OSError("disk full"))
+        with patch.dict(
+            node_class._process_camera_photo.__globals__,
+            {"save_camera_photo": save},
+        ):
+            node._process_camera_photo("turn-save-err", "帮我拍张照片")
+
+        node.llm.chat_stream.assert_not_called()
+        save.assert_called_once_with(b"\xff\xd8photo\xff\xd9", "/tmp/wali-photos")
+        messages = [call.args[0].data for call in node.tts_publisher.publish.call_args_list]
+        self.assertEqual(messages[:2], ["好的，准备拍照。", "画面拍到了，但照片保存失败了。"])
+        self.assertEqual(decode_turn_end(messages[2]), "turn-save-err")
+        sys.modules.pop("nodes.llm_ros_node", None)
+
     def test_inspection_previews_for_1500ms_then_sends_last_frame_to_llm(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)

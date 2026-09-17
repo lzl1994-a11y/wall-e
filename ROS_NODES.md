@@ -193,6 +193,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/llm_voice_turn.py` | 与 ROS 无关的普通 LLM 对话回合状态与完成决策服务：负责纠错文本状态管理、表情状态维护、动作提案记录、动作结果归一化和最终回复决策。 |
 | `services/llm_empty_answer_retry.py` | 与 ROS 无关的空回复重试服务：负责空回复单次重试的 Prompt、Token 边界、模型请求参数和回复文本解析。 |
 | `services/conditional_task.py` | 与 ROS 无关的单步条件任务服务：负责条件任务意图判定、计划校验、视觉决策解析、执行结果归一化与回复决策。 |
+| `services/llm_photo_capture.py` | 与 ROS 无关的拍照流程状态决策服务：负责 LLM 节点拍照流程中的预览结果分类和保存结果纯决策；相机调用及文件保存仍由 Node 执行。 |
 | `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
 | `services/dialog_action_execution.py` | 与 ROS 无关的对话动作执行适配器：绑定关联状态、请求发布、可用性检查、超时与来源标记。 |
 | `services/dialog_plan_execution.py` | 与 ROS 无关的对话原生计划路由：普通动作进入行为树，专用视觉工具回退到对应工作流。 |
