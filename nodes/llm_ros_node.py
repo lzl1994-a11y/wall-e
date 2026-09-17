@@ -57,6 +57,10 @@ from services.llm_visual_request import (
     build_conditional_vision_request,
     build_game_vision_request,
 )
+from services.llm_empty_answer_retry import (
+    EmptyAnswerRetryAccumulator,
+    build_empty_answer_retry_request,
+)
 from services.camera_frame import save_camera_photo
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
@@ -983,34 +987,22 @@ class LLMBrainNode(Node):
         self.get_logger().warning(
             f'[{turn_id}] LLM returned no answer text; retrying once without tools.'
         )
-        retry_prompt = (
-            f'用户说：{user_prompt}\n'
-            '请直接用一到两句简短自然的中文回答。只输出回答正文，不要输出纠错标签、'
-            '分析过程、Markdown、动作说明或任何前缀。'
-        )
-        settings = getattr(self.llm, 'settings', {})
-        configured_tokens = settings.get('max_tokens', 0) if isinstance(settings, dict) else 0
-        retry_tokens = configured_tokens if isinstance(configured_tokens, int) else 0
-        if retry_tokens <= 0:
-            retry_tokens = 256
-        retry_tokens = min(max(retry_tokens, 128), 256)
         try:
-            chunks = []
+            request = build_empty_answer_retry_request(
+                user_prompt,
+                history=self._history_for_request(),
+                settings=getattr(self.llm, 'settings', {}),
+            )
+            accumulator = EmptyAnswerRetryAccumulator()
             for data in self.llm.chat_stream(
-                retry_prompt,
-                self._history_for_request(),
-                tools_enabled=False,
-                structured_answer=False,
-                max_tokens_override=retry_tokens,
+                request.prompt,
+                request.history,
+                tools_enabled=request.tools_enabled,
+                structured_answer=request.structured_answer,
+                max_tokens_override=request.max_tokens_override,
             ):
-                if data.get('type') == 'text' and data.get('content'):
-                    chunks.append(data['content'])
-            raw = ''.join(chunks).strip()
-            if not raw:
-                return ''
-            if '\n' not in raw and self._extract_corrected_text(raw):
-                return ''
-            answer = self._sanitize_speech_text(raw)
+                accumulator.process_event(data)
+            answer = accumulator.parse_answer()
             if answer:
                 self.get_logger().info(f'[{turn_id}] Empty-answer retry succeeded.')
             return answer
