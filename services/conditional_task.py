@@ -8,6 +8,7 @@ the graph boundary before any ROS command is published.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import re
 from typing import Any, Literal, TypedDict
@@ -238,10 +239,63 @@ __all__ = [
     "CONDITIONAL_DECISION_TOOL_NAME",
     "CONDITIONAL_TASK_TOOL_NAME",
     "ConditionalDecision",
+    "ConditionalTaskOutcome",
     "ConditionalTaskPlan",
+    "build_conditional_task_failure_outcome",
+    "build_conditional_task_outcome",
     "conditional_decision_tool",
     "conditional_task_tool_schema",
     "is_conditional_task_request",
     "normalize_conditional_task_plan",
     "parse_conditional_decision",
 ]
+
+
+@dataclass(frozen=True)
+class ConditionalTaskOutcome:
+    answer: str
+    error: str | None = None
+    actions: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def has_error(self) -> bool:
+        return bool(self.error)
+
+
+def build_conditional_task_outcome(
+    result: dict[str, Any],
+    plan: dict[str, Any],
+) -> ConditionalTaskOutcome:
+    """Normalize workflow execution results into a user-facing outcome."""
+    answer = result.get("answer") or "这次任务没有完成。"
+    error = result.get("error")
+
+    action_result = result.get("action_result")
+    actions: list[dict[str, Any]] = []
+    if isinstance(action_result, dict):
+        actions.append({
+            "name": action_result.get("action") or plan.get("action_name", ""),
+            "arguments": json.dumps(
+                plan.get("action_arguments", {}),
+                ensure_ascii=False,
+            ),
+            "status": action_result.get("status", "failed"),
+            "request_id": action_result.get("request_id", ""),
+        })
+
+    return ConditionalTaskOutcome(
+        answer=answer,
+        error=error,
+        actions=actions,
+    )
+
+
+def build_conditional_task_failure_outcome(
+    error: str | None = None,
+) -> ConditionalTaskOutcome:
+    """Build standardized failure outcome when conditional task execution throws an exception."""
+    return ConditionalTaskOutcome(
+        answer="这个任务计划没有通过检查，所以我没有执行动作。",
+        error=error,
+        actions=[],
+    )

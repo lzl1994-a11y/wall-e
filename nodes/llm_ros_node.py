@@ -77,7 +77,11 @@ from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     encode_dialog_expression,
 )
-from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
+from services.conditional_task import (
+    CONDITIONAL_TASK_TOOL_NAME,
+    build_conditional_task_failure_outcome,
+    build_conditional_task_outcome,
+)
 from services.llm_action_plan import LLMActionPlanWorkflow
 from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
 from services.voice_debug import RollingVoiceDebugStore
@@ -807,28 +811,16 @@ class LLMBrainNode(Node):
                 user_prompt=user_prompt,
                 plan=plan,
             )
-            answer = result.get('answer') or '这次任务没有完成。'
-            error = result.get('error')
+            outcome = build_conditional_task_outcome(result, plan)
         except Exception as exc:
             self.get_logger().error(
                 f'[{turn_id}] Conditional task failed: {exc}\n{traceback.format_exc()}'
             )
-            result = {}
-            answer = '这个任务计划没有通过检查，所以我没有执行动作。'
-            error = str(exc)
+            outcome = build_conditional_task_failure_outcome(str(exc))
 
-        action_result = result.get('action_result')
-        actions = []
-        if isinstance(action_result, dict):
-            actions.append({
-                'name': action_result.get('action') or plan.get('action_name', ''),
-                'arguments': json.dumps(plan.get('action_arguments', {}), ensure_ascii=False),
-                'status': action_result.get('status', 'failed'),
-                'request_id': action_result.get('request_id', ''),
-            })
-        if error:
+        if outcome.error:
             self.get_logger().warning(
-                f'[{turn_id}] Conditional task completed with error: {error}'
+                f'[{turn_id}] Conditional task completed with error: {outcome.error}'
             )
         else:
             self.get_logger().info(f'[{turn_id}] Conditional task completed.')
@@ -836,16 +828,16 @@ class LLMBrainNode(Node):
         LLMConversationHistory.record_dialog_turn(
             self.chat_history,
             user_text=user_prompt,
-            assistant_text=answer,
+            assistant_text=outcome.answer,
         )
-        self.full_ai_publisher.publish(String(data=answer))
-        self._publish_tts(answer, turn_id)
+        self.full_ai_publisher.publish(String(data=outcome.answer))
+        self._publish_tts(outcome.answer, turn_id)
         self._publish_screen_dialog(
             turn_id,
             user_prompt,
-            answer,
-            actions,
-            error=error,
+            outcome.answer,
+            outcome.actions,
+            error=outcome.error,
         )
         self._finish_tts_turn(turn_id)
 
