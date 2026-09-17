@@ -13,7 +13,6 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, UInt8MultiArray
-from pypinyin import Style, pinyin
 
 from services.action_acknowledgement import action_acknowledgement
 from services.action_command import ACTION_REQUEST_TOPIC
@@ -31,7 +30,6 @@ from services.behavior_tree_protocol import (
 )
 from services.action_intent_guard import (
     canonicalize_conditional_action,
-    deterministic_safety_action,
     validate_action_arguments,
     validate_action_call,
 )
@@ -40,11 +38,14 @@ from services.llm_service import LLMService
 from services.llm_response_policy import LLMResponsePolicy
 from services.llm_stream_response import StreamResponseAccumulator
 from services.llm_conversation_history import LLMConversationHistory
-from services.camera_frame import (
-    is_camera_inspection_request,
-    is_camera_photo_request,
-    save_camera_photo,
+from services.llm_request_preparation import (
+    ROUTE_CAMERA_INSPECTION,
+    ROUTE_CAMERA_PHOTO,
+    ROUTE_CONDITIONAL_TASK,
+    ROUTE_SAFETY_ACTION,
+    prepare_voice_request,
 )
+from services.camera_frame import save_camera_photo
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
     GAME_MODE_STATE_TOPIC,
@@ -60,10 +61,7 @@ from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     encode_dialog_expression,
 )
-from services.conditional_task import (
-    CONDITIONAL_TASK_TOOL_NAME,
-    is_conditional_task_request,
-)
+from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.llm_action_plan import LLMActionPlanWorkflow
 from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
 from services.voice_debug import RollingVoiceDebugStore
@@ -317,61 +315,39 @@ class LLMBrainNode(Node):
         busy_msg.data = "busy"
         self.busy_publisher.publish(busy_msg)
 
-        safety_action = deterministic_safety_action(user_prompt)
-        if safety_action is not None:
+        model_settings = getattr(self.llm, 'settings', {})
+        prepared_request = prepare_voice_request(
+            user_prompt,
+            model_settings=model_settings,
+        )
+
+        if prepared_request.route == ROUTE_SAFETY_ACTION:
             self._process_deterministic_safety_action(
                 turn_id,
                 user_prompt,
-                *safety_action,
+                prepared_request.safety_action_name,
+                prepared_request.safety_action_arguments,
             )
             return
 
-        conditional_request = is_conditional_task_request(user_prompt)
-        if conditional_request:
+        if prepared_request.route == ROUTE_CONDITIONAL_TASK:
             self._process_conditional_task_request(turn_id, user_prompt)
             return
 
-        # 拍照只保存本地文件，不进入视觉模型。复合条件任务必须保持原子性，
-        # 不能被单步拍照/查看的快捷路由提前截断。
-        if is_camera_photo_request(user_prompt) and not conditional_request:
+        if prepared_request.route == ROUTE_CAMERA_PHOTO:
             self._process_camera_photo(turn_id, user_prompt)
             return
 
-        # 单步视觉查看直接进入确定性工作流；复合条件任务交给专用工具规划。
-        if is_camera_inspection_request(user_prompt) and not conditional_request:
+        if prepared_request.route == ROUTE_CAMERA_INSPECTION:
             self._process_camera_inspection(turn_id, user_prompt)
             return
 
-        py_list = pinyin(user_prompt, style=Style.NORMAL)
-        py_str = ' '.join([item[0] for item in py_list])
-        is_long_form = self._is_long_form_request(user_prompt)
-        # Tool availability must not depend on a keyword gate. ASR wording and
-        # natural requests such as “旋转头/转个头” are semantic decisions for
-        # the model, not a brittle regex. Explicit visual/retry paths below
-        # still call chat_stream(tools_enabled=False) by design.
-        tools_enabled = True
-        if is_long_form:
-            response_policy = (
-                "这是朗读、背诵或完整内容请求。请连续完整输出用户要求的正文，"
-                "不要只给标题、简介或开头一句；除非用户明确只要片段。"
-            )
-        else:
-            response_policy = "普通对话保持一到两句、简短自然。"
-
-        augmented_prompt = (
-            f"\u539f\u59cb ASR \u6587\u672c\uff1a{user_prompt}\n"
-            f"\u62fc\u97f3\u53c2\u8003\uff1a{py_str}\n\n"
-            "\u8bf7\u7ed3\u5408\u5bf9\u8bdd\u4e0a\u4e0b\u6587\u548c\u62fc\u97f3\u9759\u9ed8\u7406\u89e3\u7528\u6237\u672c\u610f\uff0c\u7136\u540e\u76f4\u63a5\u56de\u7b54\u3002"
-            "\u53ea\u8f93\u51fa\u53ef\u4ee5\u901a\u8fc7\u626c\u58f0\u5668\u64ad\u653e\u7684\u6700\u7ec8\u53f0\u8bcd\uff0c\u4e0d\u8981\u8f93\u51fa\u6216\u590d\u8ff0\u539f\u59cb ASR \u6587\u672c\u3001"
-            "\u62fc\u97f3\u3001\u4fee\u6b63\u6587\u672c\u3001\u7ea0\u9519\u7ed3\u679c\u3001\u5206\u6790\u3001\u601d\u8003\u3001\u8ba1\u5212\u3001\u89c4\u5219\u590d\u8ff0\u3001\u793a\u4f8b\u3001\u5217\u8868\u3001Markdown\u3001"
-            "\u62ec\u53f7\u8bf4\u660e\u3001Function Calling \u5b57\u6837\u3001\u5de5\u5177\u540d\u6216\u5de5\u5177\u53c2\u6570\u3002"
-            "\u9700\u8981\u52a8\u4f5c\u65f6\u53ea\u4f7f\u7528\u539f\u751f\u5de5\u5177\u8c03\u7528\uff0c\u4e0d\u8981\u5728\u6587\u5b57\u4e2d\u63cf\u8ff0\u8c03\u7528\u8fc7\u7a0b\u3002"
-            f"{response_policy}"
-        )
+        augmented_prompt = prepared_request.augmented_prompt
+        tools_enabled = prepared_request.tools_enabled
+        max_tokens_override = prepared_request.max_tokens_override
 
         self.get_logger().info(f'[{turn_id}] Sending request to LLM...')
         self.get_logger().info(f'[{turn_id}] Control tools enabled for semantic handling.')
-        max_tokens_override = self._max_tokens_for_request(is_long_form)
         if max_tokens_override is not None:
             self.get_logger().info(
                 f'[{turn_id}] Long-form request detected; max_tokens={max_tokens_override}.'
@@ -468,7 +444,7 @@ class LLMBrainNode(Node):
                         )
                         accumulator.record_rejected_action(action_name, "invalid_arguments")
                         break
-                    if conditional_request and action_name != CONDITIONAL_TASK_TOOL_NAME:
+                    if prepared_request.is_conditional_task and action_name != CONDITIONAL_TASK_TOOL_NAME:
                         accumulator.record_rejected_action(action_name, "compound_task_must_stay_atomic")
                         self.get_logger().warning(
                             f'[{turn_id}] Rejected split compound-task tool: {action_name}'
