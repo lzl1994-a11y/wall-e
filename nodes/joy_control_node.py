@@ -14,6 +14,13 @@ from services.action_command import ACTION_REQUEST_TOPIC
 import evdev
 from evdev import ecodes
 
+from services.joystick_servo_targets import (
+    AXIS_L2,
+    AXIS_R2,
+    AXIS_RX,
+    AXIS_RY,
+    compute_joystick_servo_targets,
+)
 from services.motor_control import mix_differential_drive
 from services.motion_arbiter import MOTOR_JOYSTICK_TOPIC, STOP_COMMAND
 from services.remote_control_config import RemoteControlConfigWatcher
@@ -29,10 +36,6 @@ from services.game_protocol import (
 # --- 按键/轴映射 ---
 AXIS_LX = 0  # 左摇杆 X
 AXIS_LY = 1  # 左摇杆 Y
-AXIS_RX = 3  # 右摇杆 X
-AXIS_RY = 4  # 右摇杆 Y
-AXIS_L2 = 2  # LT 扳机
-AXIS_R2 = 5  # RT 扳机
 HAT_X = 16   # 十字键 X
 HAT_Y = 17   # 十字键 Y
 
@@ -265,28 +268,12 @@ class JoyControlNode(Node):
             self.motor_pub.publish(msg_m)
 
         # 2. 结算舵机指令 manual_servo (右摇杆、扳机、自动复位计时器)
-        targets = {}
-        
-        # 头部方向 (右摇杆)
-        rx = self._axes[AXIS_RX] # 左:-1, 右:1
-        ry = self._axes[AXIS_RY] # 上:1, 下:-1
-        
-        targets['head_yaw'] = int(5000 - rx * 2600) # rx=1(右) -> 1920, rx=-1(左) -> 7600
-        
-        # 脖子俯仰：中心、上下限和双舵机联动均来自 config.yaml。
-        targets.update(self._neck_kinematics.targets(ry))
-
-        # 眼睛扳机 (L2/R2: 0.0 ~ 1.0)
-        l2 = self._axes[AXIS_L2]
-        r2 = self._axes[AXIS_R2]
-        targets['eye_l'] = int(7500 - l2 * 2500) # 0->7500, 1->5000
-        targets['eye_r'] = int(2000 + r2 * 2000) # 0->2000, 1->4000
-
-        # 手臂与眉毛 (倒计时逻辑)
-        targets['arm_l'] = 6000 if now < self._auto_timers['arm_l'] else 2000
-        targets['arm_r'] = 4000 if now < self._auto_timers['arm_r'] else 8000
-        targets['eyebrow_l'] = 5700 if now < self._auto_timers['eyebrow_l'] else 8000
-        targets['eyebrow_r'] = 4200 if now < self._auto_timers['eyebrow_r'] else 1920
+        targets = compute_joystick_servo_targets(
+            self._axes,
+            self._auto_timers,
+            now,
+            self._neck_kinematics,
+        )
 
         # 发送 manual_servo
         msg_s = String()
