@@ -313,6 +313,194 @@ class JoyControlNodeContractTests(unittest.TestCase):
         self.assertIsNone(node._scan_thread)
         self.assertEqual(node.device.path, "/dev/input/event2")
 
+    def test_button_x_and_y_release_publishes_action_command(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        # Press X then release X -> publishes wave_hello
+        node.device.read_loop = lambda: [
+            _Event(module.ecodes.EV_KEY, module.BTN_X, 1),
+            _Event(module.ecodes.EV_KEY, module.BTN_X, 0),
+        ]
+        node._run_control()
+
+        self.assertEqual(len(node.action_pub.messages), 1)
+        msg_x = json.loads(node.action_pub.messages[0].data)
+        self.assertEqual(msg_x["name"], "wave_hello")
+        self.assertEqual(msg_x["source"], "joystick")
+
+        # Press Y then release Y -> publishes raise_hand
+        node.device.read_loop = lambda: [
+            _Event(module.ecodes.EV_KEY, module.BTN_Y, 1),
+            _Event(module.ecodes.EV_KEY, module.BTN_Y, 0),
+        ]
+        node._run_control()
+
+        self.assertEqual(len(node.action_pub.messages), 2)
+        msg_y = json.loads(node.action_pub.messages[1].data)
+        self.assertEqual(msg_y["name"], "raise_hand")
+        self.assertEqual(msg_y["source"], "joystick")
+
+    def test_button_a_and_b_press_publishes_action_command(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        node.device.read_loop = lambda: [
+            _Event(module.ecodes.EV_KEY, module.BTN_A, 1),
+            _Event(module.ecodes.EV_KEY, module.BTN_B, 1),
+            _Event(module.ecodes.EV_KEY, module.BTN_A, 0),  # release ignored
+            _Event(module.ecodes.EV_KEY, module.BTN_B, 2),  # repeat ignored
+        ]
+        node._run_control()
+
+        self.assertEqual(len(node.action_pub.messages), 2)
+        msg_a = json.loads(node.action_pub.messages[0].data)
+        self.assertEqual(msg_a["name"], "happy_dance")
+        msg_b = json.loads(node.action_pub.messages[1].data)
+        self.assertEqual(msg_b["name"], "sad_react")
+
+    def test_button_l1_and_r1_press_updates_eyebrow_timers(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        with patch("time.time", return_value=1000.0):
+            node.device.read_loop = lambda: [
+                _Event(module.ecodes.EV_KEY, module.BTN_L1, 1),
+                _Event(module.ecodes.EV_KEY, module.BTN_R1, 1),
+            ]
+            node._run_control()
+
+        self.assertEqual(node._auto_timers["eyebrow_l"], 1003.0)
+        self.assertEqual(node._auto_timers["eyebrow_r"], 1003.0)
+
+    def test_hat_directions_update_arm_timers_via_run_control(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        with patch("time.time", return_value=2000.0):
+            node.device.read_loop = lambda: [
+                _Event(module.ecodes.EV_ABS, module.HAT_X, -1),
+            ]
+            node._run_control()
+            self.assertEqual(node._auto_timers["arm_l"], 2003.0)
+            self.assertEqual(node._auto_timers["arm_r"], 0.0)
+
+            node.device.read_loop = lambda: [
+                _Event(module.ecodes.EV_ABS, module.HAT_X, 1),
+            ]
+            node._run_control()
+            self.assertEqual(node._auto_timers["arm_r"], 2003.0)
+
+            node.device.read_loop = lambda: [
+                _Event(module.ecodes.EV_ABS, module.HAT_Y, 1),
+            ]
+            node._run_control()
+            self.assertEqual(node._auto_timers["arm_l"], 0.0)
+            self.assertEqual(node._auto_timers["arm_r"], 0.0)
+
+    def test_chord_hold_2s_triggers_game_toggle_and_suppresses_release_actions(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        # Use mock monotonic clock for chord hold
+        now_mono = [100.0]
+        node._button_policy = module.JoystickButtonPolicy(
+            hold_seconds=2.0,
+            chord_clock=lambda: now_mono[0],
+        )
+
+        # Press X and Y
+        node.device.read_loop = lambda: [
+            _Event(module.ecodes.EV_KEY, module.BTN_X, 1),
+            _Event(module.ecodes.EV_KEY, module.BTN_Y, 1),
+        ]
+        node._run_control()
+
+        # Advance clock and tick
+        now_mono[0] += 2.0
+        node._tick_loop()
+
+        # Game toggle request was published
+        self.assertEqual(len(node.game_request_pub.messages), 1)
+        req = json.loads(node.game_request_pub.messages[0].data)
+        self.assertEqual(req["request"], "toggle")
+        self.assertEqual(req["controller"], "/dev/input/event2")
+        self.assertTrue(node._button_policy.chord_fired)
+
+        # Releasing X and Y must NOT send wave_hello or raise_hand
+        node.device.read_loop = lambda: [
+            _Event(module.ecodes.EV_KEY, module.BTN_X, 0),
+            _Event(module.ecodes.EV_KEY, module.BTN_Y, 0),
+        ]
+        node._run_control()
+        self.assertEqual(node.action_pub.messages, [])
+        self.assertFalse(node._button_policy.chord_fired)
+
+    def test_game_mode_active_suppresses_buttons_but_keeps_hat(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        # Receive game state active message
+        node._on_game_state(_String(data=json.dumps({"mode": "menu"})))
+        self.assertTrue(node._game_active)
+
+        # Pressing A, B, L1, R1, X, Y produces no action command
+        with patch("time.time", return_value=500.0):
+            node.device.read_loop = lambda: [
+                _Event(module.ecodes.EV_KEY, module.BTN_A, 1),
+                _Event(module.ecodes.EV_KEY, module.BTN_B, 1),
+                _Event(module.ecodes.EV_KEY, module.BTN_L1, 1),
+                _Event(module.ecodes.EV_KEY, module.BTN_X, 1),
+                _Event(module.ecodes.EV_KEY, module.BTN_X, 0),
+            ]
+            node._run_control()
+
+        self.assertEqual(node.action_pub.messages, [])
+        self.assertEqual(node._auto_timers["eyebrow_l"], 0.0)
+
+        # HAT events are NOT suppressed by game mode
+        with patch("time.time", return_value=500.0):
+            node.device.read_loop = lambda: [
+                _Event(module.ecodes.EV_ABS, module.HAT_X, -1),
+            ]
+            node._run_control()
+
+        self.assertEqual(node._auto_timers["arm_l"], 503.0)
+
+    def test_game_mode_change_suppresses_pending_chord_toggle(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+        now_mono = [100.0]
+        node._button_policy = module.JoystickButtonPolicy(
+            hold_seconds=2.0,
+            chord_clock=lambda: now_mono[0],
+        )
+        node.device.read_loop = lambda: [
+            _Event(module.ecodes.EV_KEY, module.BTN_X, 1),
+            _Event(module.ecodes.EV_KEY, module.BTN_Y, 1),
+        ]
+        node._run_control()
+
+        now_mono[0] += 2.0
+        node._on_game_state(_String(data=json.dumps({"mode": "menu"})))
+        node._tick_loop()
+        self.assertEqual(node.game_request_pub.messages, [])
+
+        node.device.read_loop = lambda: [
+            _Event(module.ecodes.EV_KEY, module.BTN_A, 1),
+            _Event(module.ecodes.EV_KEY, module.BTN_Y, 0),
+            _Event(module.ecodes.EV_KEY, module.BTN_X, 0),
+        ]
+        node._run_control()
+        self.assertEqual(node.action_pub.messages, [])
+
 
 if __name__ == "__main__":
     unittest.main()
