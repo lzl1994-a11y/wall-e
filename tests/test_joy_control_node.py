@@ -249,6 +249,45 @@ class JoyControlNodeContractTests(unittest.TestCase):
 
         self.assertEqual(node._axes[module.AXIS_RX], 0.75)
 
+    def test_invalid_axis_range_is_neutral_and_does_not_stop_event_loop(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+        node._axes[module.AXIS_LY] = 0.6
+        node.device.capabilities = lambda verbose=False: {
+            3: [
+                (module.AXIS_LY, _AbsInfo(100, 100)),
+                (module.AXIS_LX, _AbsInfo(-100, 100)),
+            ]
+        }
+        node.device.read_loop = lambda: [
+            _Event(3, module.AXIS_LY, 100),
+            _Event(3, module.AXIS_LX, 50),
+        ]
+
+        node._run_control()
+
+        self.assertEqual(node._axes[module.AXIS_LY], 0.0)
+        self.assertEqual(node._axes[module.AXIS_LX], 0.5)
+
+    def test_invalid_drive_axis_range_stops_previous_motion_on_next_tick(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+        node._was_moving = True
+        node._axes[module.AXIS_LY] = 0.6
+        node.device.capabilities = lambda verbose=False: {
+            3: [(module.AXIS_LY, _AbsInfo(100, 100))]
+        }
+        node.device.read_loop = lambda: [_Event(3, module.AXIS_LY, 100)]
+
+        node._run_control()
+        node._tick_loop()
+
+        self.assertEqual(node._axes[module.AXIS_LY], 0.0)
+        self.assertEqual(json.loads(node.motor_pub.messages[-1].data), module.STOP_COMMAND)
+        self.assertFalse(node._was_moving)
+
     def test_hat_events_do_not_update_axes(self):
         module = _load_module()
         node = self._create_node(module)

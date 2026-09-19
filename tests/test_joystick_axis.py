@@ -88,5 +88,17 @@ class JoystickAxisNormalizationTests(unittest.TestCase):
             0.5,
         )
 
+    def test_invalid_calibration_range_fails_closed(self):
+        for minimum, maximum in ((100, 100), (200, 100)):
+            with self.subTest(minimum=minimum, maximum=maximum):
+                self.assertEqual(
+                    normalize_axis_value(250, minimum, maximum, is_trigger=True),
+                    0.0,
+                )
+                self.assertEqual(
+                    normalize_axis_value(250, minimum, maximum, deadzone=0.15),
+                    0.0,
+                )
+
 if __name__ == "__main__":
     unittest.main()

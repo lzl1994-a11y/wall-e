@@ -14,6 +14,9 @@ def normalize_axis_value(
 ) -> float:
     """Normalize a raw axis value using device calibration without upper clipping.
 
+    A zero-width or inverted device range returns a neutral value so a bad
+    calibration cannot crash the joystick reader or produce a large command.
+
     For triggers:
         n_val = max(0, raw_value - min_value) / max(1, max_value - min_value)
         Does not apply deadzone, does not invert, does not clip upper bound.
@@ -24,6 +27,9 @@ def normalize_axis_value(
         If abs(n_val) < deadzone: n_val = 0.0
         If invert_y: n_val = -n_val
     """
+    if max_value <= min_value:
+        return 0.0
+
     if is_trigger:
         return max(0, raw_value - min_value) / max(1, max_value - min_value)
 
