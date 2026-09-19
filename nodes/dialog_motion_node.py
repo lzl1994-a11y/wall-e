@@ -18,15 +18,16 @@ import yaml
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from services.dialog_expression_pose import (
+    resolve_dialog_expression_pose,
+    resolve_pose_targets,
+)
 from services.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TARGET_TOPIC,
     DIALOG_EXPRESSION_TOPIC,
     decode_dialog_expression,
 )
-from services.servo_motion_config import (
-    neck_kinematics_from_servos,
-    resolve_servo_target,
-)
+from services.servo_motion_config import neck_kinematics_from_servos
 from services.tts_protocol import decode_turn_end
 
 
@@ -159,7 +160,9 @@ class DialogMotionNode(Node):
             for name, value in (sequence_data.get("poses") or {}).items()
             if name.startswith("expression_") and isinstance(value, dict)
         }
-        self._neutral_targets = self._resolved_expression_targets("neutral")
+        self._neutral_targets = resolve_pose_targets(
+            self._expression_poses.get("neutral"), self._servos
+        )
         self._active_expression = "neutral"
         self._state = "idle"
         self._target_pub = self.create_publisher(
@@ -206,33 +209,19 @@ class DialogMotionNode(Node):
             )
 
     def _publish_expression_pose(self, expression, intensity, state):
-        pose = self._expression_poses.get(expression) or self._expression_poses.get("neutral", {})
-        targets = self._resolved_expression_targets(expression)
-        factors = {"low": 0.6, "medium": 0.85, "high": 1.0}
-        factor = factors.get(intensity, 0.6)
-        if self._neutral_targets and expression != "neutral":
-            targets = {
-                name: int(round(
-                    self._neutral_targets.get(name, target)
-                    + (target - self._neutral_targets.get(name, target)) * factor
-                ))
-                for name, target in targets.items()
-            }
+        decision = resolve_dialog_expression_pose(
+            self._expression_poses,
+            self._servos,
+            expression,
+            intensity=intensity,
+            default_step=self._sampler.step_size,
+            neutral_targets=self._neutral_targets,
+        )
         self._publish_pose(
             state,
-            targets,
-            step_size=pose.get("default_step", self._sampler.step_size),
+            decision.targets,
+            step_size=decision.step_size,
         )
-
-    def _resolved_expression_targets(self, expression):
-        pose = self._expression_poses.get(expression) or self._expression_poses.get("neutral", {})
-        targets = {}
-        for name, raw_target in pose.get("targets", {}).items():
-            servo = self._servos.get(name)
-            target = resolve_servo_target(servo, raw_target) if servo else None
-            if target is not None:
-                targets[name] = target
-        return targets
 
     def _on_playback_state(self, message):
         # This existing state is emitted only after the queued audio has

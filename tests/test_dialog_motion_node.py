@@ -164,6 +164,43 @@ class DialogMotionNodeTests(unittest.TestCase):
                 self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
                 self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
 
+    def test_non_neutral_expression_publishes_configured_targets_and_step_size(self):
+        module = _load_module()
+        node = module.DialogMotionNode()
+        publisher = node.publishers["/servo_targets/dialog_expression"]
+
+        node.subscriptions["dialog_expression"](_String(json.dumps({
+            "expression": "happy", "intensity": "high", "turn_id": "t2"
+        })))
+
+        self.assertEqual(len(publisher.messages), 1)
+        happy_msg = json.loads(publisher.messages[-1].data)
+        self.assertEqual(happy_msg["source"], "dialog_motion")
+        self.assertEqual(happy_msg["step_size"], 24.0)
+        self.assertEqual(happy_msg["targets"]["eyebrow_r"], 3400)
+        self.assertEqual(happy_msg["targets"]["eyebrow_l"], 6520)
+        self.assertEqual(happy_msg["targets"]["eye_r"], 3000)
+        self.assertEqual(happy_msg["targets"]["eye_l"], 6500)
+        self.assertEqual(node._active_expression, "happy")
+        self.assertEqual(node._state, "speaking")
+
+    def test_neutral_target_cache_does_not_parse_step_size_during_startup(self):
+        module = _load_module()
+        servos = module._load_dialog_servos()
+        sequences = {"poses": {
+            "expression_neutral": {
+                "default_step": "invalid",
+                "targets": {"neck_top": "init"},
+            },
+        }}
+
+        with patch.object(module, "_load_dialog_servos", return_value=servos), \
+                patch.object(module.yaml, "safe_load", return_value=sequences):
+            node = module.DialogMotionNode()
+
+        self.assertEqual(node._neutral_targets, {"neck_top": servos["neck_top"]["init"]})
+        self.assertEqual(node.publishers["/servo_targets/dialog_expression"].messages, [])
+
 
 if __name__ == "__main__":
     unittest.main()
