@@ -14,6 +14,7 @@ from services.action_command import ACTION_REQUEST_TOPIC
 import evdev
 from evdev import ecodes
 
+from services.joystick_axis import normalize_axis_value
 from services.joystick_servo_targets import (
     AXIS_L2,
     AXIS_R2,
@@ -179,26 +180,20 @@ class JoyControlNode(Node):
                             self._auto_timers['arm_l'] = 0.0
                             self._auto_timers['arm_r'] = 0.0
                     elif code in self._axes:
-                        # 归一化
                         info = None
                         for c, a in self.device.capabilities(verbose=False).get(3, []):
                             if c == code:
                                 info = a
                                 break
                         if info:
-                            if code in (AXIS_L2, AXIS_R2):
-                                # 扳机 (0 ~ 255) -> 0.0 ~ 1.0
-                                n_val = max(0, val - info.min) / max(1, info.max - info.min)
-                                self._axes[code] = n_val
-                            else:
-                                # 摇杆 (-32768 ~ 32767) -> -1.0 ~ 1.0
-                                mid = (info.min + info.max) / 2.0
-                                n_val = (val - mid) / float(info.max - mid)
-                                if abs(n_val) < self.deadzone: n_val = 0.0
-                                # Y轴翻转，让上推变为正
-                                if code in (AXIS_LY, AXIS_RY):
-                                    n_val = -n_val
-                                self._axes[code] = n_val
+                            self._axes[code] = normalize_axis_value(
+                                val,
+                                info.min,
+                                info.max,
+                                deadzone=self.deadzone,
+                                is_trigger=code in (AXIS_L2, AXIS_R2),
+                                invert_y=code in (AXIS_LY, AXIS_RY),
+                            )
 
                 elif event.type == ecodes.EV_KEY:
                     if event.code in {BTN_X, BTN_Y} and event.value in {0, 1}:

@@ -52,6 +52,19 @@ class _Node:
         return _Logger()
 
 
+class _Event:
+    def __init__(self, type_, code, value):
+        self.type = type_
+        self.code = code
+        self.value = value
+
+
+class _AbsInfo:
+    def __init__(self, min_val, max_val):
+        self.min = min_val
+        self.max = max_val
+
+
 def _load_module():
     fake_rclpy = types.ModuleType("rclpy")
     fake_node = types.ModuleType("rclpy.node")
@@ -61,6 +74,8 @@ def _load_module():
 
     fake_evdev = types.ModuleType("evdev")
     fake_ecodes = types.ModuleType("evdev.ecodes")
+    fake_ecodes.EV_ABS = 3
+    fake_ecodes.EV_KEY = 1
     fake_evdev.ecodes = fake_ecodes
     fake_evdev.list_devices = lambda: []
 
@@ -172,6 +187,92 @@ class JoyControlNodeContractTests(unittest.TestCase):
 
         self.assertEqual(node.action_pub.messages, [])
         self.assertEqual(node.motor_pub.messages, [])
+
+    def test_ev_abs_stick_event_updates_axes(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        node.device.capabilities = lambda verbose=False: {
+            3: [
+                (module.AXIS_LX, _AbsInfo(-100, 100)),
+                (module.AXIS_LY, _AbsInfo(-100, 100)),
+            ]
+        }
+        # LX=50 -> 0.5 (above deadzone 0.15)
+        # LY=50 -> -0.5 (Y-inverted)
+        events = [
+            _Event(3, module.AXIS_LX, 50),
+            _Event(3, module.AXIS_LY, 50),
+        ]
+        node.device.read_loop = lambda: events
+
+        node._run_control()
+
+        self.assertAlmostEqual(node._axes[module.AXIS_LX], 0.5)
+        self.assertAlmostEqual(node._axes[module.AXIS_LY], -0.5)
+
+    def test_ev_abs_trigger_event_updates_axes(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        node.device.capabilities = lambda verbose=False: {
+            3: [
+                (module.AXIS_L2, _AbsInfo(0, 255)),
+                (module.AXIS_R2, _AbsInfo(100, 300)),
+            ]
+        }
+        events = [
+            _Event(3, module.AXIS_L2, 127.5),
+            _Event(3, module.AXIS_R2, 200),
+        ]
+        node.device.read_loop = lambda: events
+
+        node._run_control()
+
+        self.assertAlmostEqual(node._axes[module.AXIS_L2], 0.5)
+        self.assertAlmostEqual(node._axes[module.AXIS_R2], 0.5)
+
+    def test_missing_capability_info_preserves_axis_value(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        node._axes[module.AXIS_RX] = 0.75
+        node.device.capabilities = lambda verbose=False: {3: []}
+
+        events = [_Event(3, module.AXIS_RX, 100)]
+        node.device.read_loop = lambda: events
+
+        node._run_control()
+
+        self.assertEqual(node._axes[module.AXIS_RX], 0.75)
+
+    def test_hat_events_do_not_update_axes(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node.running = True
+
+        initial_axes = dict(node._axes)
+        events = [
+            _Event(3, module.HAT_X, -1),
+            _Event(3, module.HAT_Y, 1),
+        ]
+        node.device.read_loop = lambda: events
+
+        node._run_control()
+
+        self.assertEqual(node._axes, initial_axes)
+        # HAT_Y==1 resets timers to 0.0
+        self.assertEqual(node._auto_timers["arm_l"], 0.0)
+        self.assertEqual(node._auto_timers["arm_r"], 0.0)
+
+    def test_scan_thread_not_started_when_mocked(self):
+        module = _load_module()
+        node = self._create_node(module)
+        self.assertIsNone(node._scan_thread)
+        self.assertEqual(node.device.path, "/dev/input/event2")
 
 
 if __name__ == "__main__":
