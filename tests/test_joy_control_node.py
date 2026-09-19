@@ -152,27 +152,57 @@ class JoyControlNodeContractTests(unittest.TestCase):
         module = _load_module()
         node = self._create_node(module)
 
-        # Non-zero left stick drives differential mixing
+        # 1. Non-zero left stick drives differential mixing
         node._axes[module.AXIS_LY] = 0.6
         node._axes[module.AXIS_LX] = 0.2
 
         node._tick_loop()
 
         self.assertEqual(len(node.motor_pub.messages), 1)
+        self.assertEqual(len(node.action_pub.messages), 1)
         motor_cmd = json.loads(node.motor_pub.messages[0].data)
         self.assertIn("left", motor_cmd)
         self.assertIn("right", motor_cmd)
         self.assertTrue(node._was_moving)
 
-        # Resetting axes stops motors
+        # 2. Continuous motion on subsequent tick continues to publish every tick
+        node._tick_loop()
+        self.assertEqual(len(node.motor_pub.messages), 2)
+        self.assertEqual(len(node.action_pub.messages), 2)
+        self.assertTrue(node._was_moving)
+
+        # 3. Resetting axes stops motors once and clears moving flag
         node._axes[module.AXIS_LY] = 0.0
         node._axes[module.AXIS_LX] = 0.0
 
         node._tick_loop()
 
-        self.assertEqual(len(node.motor_pub.messages), 2)
-        stop_cmd = json.loads(node.motor_pub.messages[1].data)
+        self.assertEqual(len(node.motor_pub.messages), 3)
+        self.assertEqual(len(node.action_pub.messages), 3)
+        stop_cmd = json.loads(node.motor_pub.messages[2].data)
         self.assertEqual(stop_cmd, module.STOP_COMMAND)
+        self.assertFalse(node._was_moving)
+
+        # 4. Continuous idle does NOT repeat stop command, while manual_servo is still published
+        node._tick_loop()
+
+        self.assertEqual(len(node.motor_pub.messages), 3)
+        self.assertEqual(len(node.action_pub.messages), 4)
+        self.assertFalse(node._was_moving)
+
+    def test_failed_stop_publish_keeps_moving_state_for_retry(self):
+        module = _load_module()
+        node = self._create_node(module)
+        node._was_moving = True
+
+        with patch.object(node.motor_pub, "publish", side_effect=OSError("publish failed")):
+            with self.assertRaises(OSError):
+                node._tick_loop()
+
+        self.assertTrue(node._was_moving)
+        node._tick_loop()
+        self.assertEqual(len(node.motor_pub.messages), 1)
+        self.assertEqual(json.loads(node.motor_pub.messages[0].data), module.STOP_COMMAND)
         self.assertFalse(node._was_moving)
 
     def test_game_mode_suppresses_servo_and_motor_output(self):

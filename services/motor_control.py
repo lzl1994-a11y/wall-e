@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 
 def speed_to_motor(speed: float) -> dict[str, int]:
     """Convert a normalized signed speed into the motor command protocol."""
@@ -43,3 +45,34 @@ def motor_inversion_flags(motors: object) -> dict[str, bool]:
         if side:
             flags[side] = bool(motor.get("invert_direction", False))
     return flags
+
+
+@dataclass(frozen=True)
+class JoystickMotorDecision:
+    """Motor publish decision for one tick of joystick processing."""
+
+    command: dict[str, dict[str, int]] | None = None
+    should_stop: bool = False
+    is_moving: bool = False
+
+
+def compute_joystick_motor_decision(
+    forward: float,
+    turn: float,
+    was_moving: bool,
+) -> JoystickMotorDecision:
+    """Compute motor command and moving state for a tick from left stick axes.
+
+    1. If either forward or turn is non-zero:
+       Returns driving motor command via mix_differential_drive(forward, turn),
+       should_stop=False, is_moving=True.
+    2. If both forward and turn are 0.0:
+       - If was_moving is True: returns command=None, should_stop=True, is_moving=False.
+       - If was_moving is False: returns command=None, should_stop=False, is_moving=False.
+    """
+    if forward == 0.0 and turn == 0.0:
+        return JoystickMotorDecision(should_stop=bool(was_moving))
+
+    return JoystickMotorDecision(
+        command=mix_differential_drive(forward, turn), is_moving=True
+    )
