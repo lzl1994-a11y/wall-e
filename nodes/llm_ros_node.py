@@ -85,11 +85,6 @@ from services.llm_empty_answer_retry import (
     build_empty_answer_retry_request,
 )
 from services.camera_frame import save_camera_photo
-from services.llm_photo_capture import (
-    decide_photo_preview,
-    photo_save_failed,
-    photo_save_succeeded,
-)
 
 # Game protocol and streaming services.
 # 游戏协议与视频流服务。
@@ -1138,29 +1133,36 @@ class LLMBrainNode(Node):
         preview = self._run_camera_preview(
             duration_ms=self.tft_preview_settings.photo_duration_ms,
         )
-        decision = decide_photo_preview(preview)
-        if decision.should_save:
+        if preview.busy:
+            answer = '我正在拍上一张，等一下再试。'
+            error = 'camera_preview_busy'
+        elif not preview.last_frame:
+            answer = '这次没有拍到，检查一下摄像头连接。'
+            error = preview.error or 'camera_frame_unavailable'
+        else:
             try:
                 photo_path = save_camera_photo(
-                    decision.frame,
+                    preview.last_frame,
                     self.tft_preview_settings.photo_directory,
                 )
                 self.get_logger().info(f'[{turn_id}] Photo saved: {photo_path}')
-                decision = photo_save_succeeded()
+                answer = '拍好了，照片已经保存。'
+                error = None
             except Exception as exc:
                 self.get_logger().error(
                     f'[{turn_id}] Photo save failed: {exc}\n{traceback.format_exc()}'
                 )
-                decision = photo_save_failed(str(exc))
+                answer = '画面拍到了，但照片保存失败了。'
+                error = str(exc)
 
-        self._publish_tts(decision.answer, turn_id)
+        self._publish_tts(answer, turn_id)
         LLMConversationHistory.record_dialog_turn(
             self.chat_history,
             user_text=user_prompt,
-            assistant_text=decision.answer,
+            assistant_text=answer,
         )
-        self.full_ai_publisher.publish(String(data=decision.answer))
-        self._publish_screen_dialog(turn_id, user_prompt, decision.answer, [], error=decision.error)
+        self.full_ai_publisher.publish(String(data=answer))
+        self._publish_screen_dialog(turn_id, user_prompt, answer, [], error=error)
         self._finish_tts_turn(turn_id)
 
     def _run_camera_preview(self, *, duration_ms):

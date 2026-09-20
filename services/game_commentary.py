@@ -5,7 +5,6 @@ from __future__ import annotations
 import random
 import threading
 import time
-import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -16,36 +15,6 @@ class GameModeDecision:
     pause_voice: bool = False
     resume_voice: bool = False
     clear_frame: bool = False
-
-
-@dataclass(frozen=True)
-class GameCommentaryResult:
-    answer: str = ""
-    error: str | None = None
-
-
-GAME_COMMENTARY_PROMPT = (
-    "观察当前 FC 游戏画面，以瓦力的口吻说一句简短自然的中文评论。"
-    "可以提醒危险、鼓励玩家或描述关键局面；看不清时不要猜。"
-)
-
-
-class GameCommentaryWorkflow:
-    """Prepare one game-screen LLM request and normalize its spoken reply."""
-
-    def __init__(self, *, analyze: Callable[[str, str], Any], clean: Callable[[str], str]):
-        self._analyze = analyze
-        self._clean = clean
-
-    def invoke(self, jpeg: bytes) -> GameCommentaryResult:
-        try:
-            answer = self._clean(str(self._analyze(
-                GAME_COMMENTARY_PROMPT,
-                base64.b64encode(jpeg).decode("ascii"),
-            ) or ""))
-            return GameCommentaryResult(answer=answer)
-        except Exception as exc:
-            return GameCommentaryResult(error=str(exc))
 
 
 class GameCommentaryController:
@@ -126,9 +95,6 @@ class GameCommentaryController:
 
 
 __all__ = [
-    "GAME_COMMENTARY_PROMPT",
     "GameCommentaryController",
-    "GameCommentaryResult",
-    "GameCommentaryWorkflow",
     "GameModeDecision",
 ]

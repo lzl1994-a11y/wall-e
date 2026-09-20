@@ -26,11 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.voice_chat_service import VoiceChatService
 from services.action_execution import CorrelatedActionExecutor
-from services.dialog_action_execution import DialogActionExecutor
 from services.action_command import ACTION_REQUEST_TOPIC
 from services.action_intent_guard import validate_action_arguments
 from services.action_status import ACTION_STATUS_TOPIC
 from services.behavior_tree_execution import CorrelatedPlanExecutor
+from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.native_plan_execution import NativePlanExecutionAdapter
 from services.ros2_action_execution import (
     Ros2ActionPlanExecutor,
@@ -48,15 +48,15 @@ from services.dialog_workflow import (
     PhotoCaptureWorkflow,
 )
 from services.dialog_output import DialogOutputController
-from services.dialog_presentation import DialogPresentationController
-from services.dialog_plan_execution import DialogNativePlanWorkflow
 from services.dialog_tool_router import DialogToolRouter
 from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
+from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.visual_search import (
     VISUAL_SEARCH_REQUEST_TOPIC,
     VISUAL_SEARCH_STATUS_TOPIC,
     VisualSearchWorkflow,
     VisualSearchViewWorkflow,
+    VISUAL_SEARCH_TOOL_NAME,
     encode_visual_search_status,
     parse_visual_search_request,
 )
@@ -67,7 +67,7 @@ from services.game_protocol import (
     game_mode_from_message,
 )
 from services.game_tft_stream import prepare_game_bgr
-from services.game_commentary import GameCommentaryController, GameCommentaryWorkflow
+from services.game_commentary import GameCommentaryController
 from services.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
@@ -92,6 +92,10 @@ from services.wake_audio_protocol import (
 )
 
 OUTPUT_ECHO_GUARD_SECONDS = 0.35
+GAME_COMMENTARY_PROMPT = (
+    "观察当前 FC 游戏画面，以瓦力的口吻说一句简短自然的中文评论。"
+    "可以提醒危险、鼓励玩家或描述关键局面；看不清时不要猜。"
+)
 
 class VoiceChatNode(Node):
     def __init__(self):
@@ -105,11 +109,6 @@ class VoiceChatNode(Node):
         self.dialog_pub = self.create_publisher(String, "screen_dialog", 10)
         self.action_pub = self.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self._action_executor = CorrelatedActionExecutor()
-        self._dialog_action_executor = DialogActionExecutor(
-            executor=self._action_executor,
-            publish=lambda payload: self.action_pub.publish(String(data=payload)),
-            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
-        )
         self._tool_router = DialogToolRouter(
             inspect_camera=self._process_camera_inspection,
             run_conditional_task=self._process_conditional_task,
@@ -149,7 +148,6 @@ class VoiceChatNode(Node):
             ),
             owner_available=lambda: self.behavior_tree_pub.get_subscription_count() > 0,
         )
-        self._dialog_native_plan_workflow = None
         self.visual_search_status_pub = self.create_publisher(
             String, VISUAL_SEARCH_STATUS_TOPIC, 10
         )
@@ -180,7 +178,6 @@ class VoiceChatNode(Node):
         self.tft_preview_settings = load_tft_preview_settings()
         self.tft_preview = TftPreviewClient(self, logger=self.get_logger())
         self._game_commentary = GameCommentaryController()
-        self._game_commentary_workflow = None
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self.create_subscription(UInt8MultiArray, GAME_FRAME_TOPIC, self._on_game_frame, 1)
         self.create_timer(1.0, self._game_commentary_tick)
@@ -203,7 +200,6 @@ class VoiceChatNode(Node):
 
         self._turn_controller = DialogTurnController()
         self._output_controller = DialogOutputController()
-        self._presentation_controller = DialogPresentationController()
         self._timer_lock = threading.Lock()
         self._wake_watchdog = None
         self._resume_timer = None
@@ -256,30 +252,22 @@ class VoiceChatNode(Node):
     def _run_game_commentary(self, jpeg):
         self.game_busy_pub.publish(String(data="busy"))
         try:
-            result = self._game_commentary_flow().invoke(jpeg)
-            if result.answer and self._game_commentary.can_publish_commentary():
-                self.tts_pub.publish(String(data=result.answer))
+            answer = self.vc.analyze_image(
+                GAME_COMMENTARY_PROMPT,
+                base64.b64encode(jpeg).decode("ascii"),
+            )
+            answer = TTS_CLEAN_RE.sub("", str(answer or "")).strip()
+            if answer and self._game_commentary.can_publish_commentary():
+                self.tts_pub.publish(String(data=answer))
                 self._turn_controller.set_turn_id("game-" + uuid.uuid4().hex[:8])
                 self._on_llm_done()
             else:
                 self.game_busy_pub.publish(String(data="idle"))
-            if result.error:
-                self.get_logger().error(f"游戏画面识别失败: {result.error}")
         except Exception as exc:
-            self.get_logger().error(f"游戏画面解说发布失败: {exc}")
+            self.get_logger().error(f"游戏画面识别失败: {exc}")
             self.game_busy_pub.publish(String(data="idle"))
         finally:
             self._game_commentary.finish_commentary()
-
-    def _game_commentary_flow(self):
-        workflow = getattr(self, "_game_commentary_workflow", None)
-        if workflow is None:
-            workflow = GameCommentaryWorkflow(
-                analyze=self.vc.analyze_image,
-                clean=lambda text: TTS_CLEAN_RE.sub("", text).strip(),
-            )
-            self._game_commentary_workflow = workflow
-        return workflow
 
     def _run_camera_preview(self, *, duration_ms):
         return self.tft_preview.send_camera_preview(
@@ -307,7 +295,9 @@ class VoiceChatNode(Node):
         # 切 TFT 到聊天页面
         try:
             screen_msg = String()
-            screen_msg.data = self._screen_payload(self._presentation().wake_listening())
+            screen_msg.data = self._screen_payload(
+                {"page": "chat", "text": "正在听...", "source": "wake_word"}
+            )
             self.dialog_pub.publish(screen_msg)
         except Exception:
             pass
@@ -438,9 +428,12 @@ class VoiceChatNode(Node):
         return self._tools().dispatch(name, arguments)
 
     def _execute_regular_tool_action(self, name, arguments):
-        result = self._actions().execute(
+        result = self._action_executor.execute(
             name,
             arguments,
+            publish=lambda payload: self.action_pub.publish(String(data=payload)),
+            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
+            timeout=20.0,
             source="voice_dialog",
             cancelled=self.vc._cancel_llm.is_set,
         )
@@ -448,7 +441,9 @@ class VoiceChatNode(Node):
         return result
 
     def _on_action_status(self, message):
-        self._actions().accept_status(message.data)
+        executor = getattr(self, "_action_executor", None)
+        if executor is not None:
+            executor.accept_status(message.data)
 
     def _on_behavior_tree_status(self, message):
         self._native_plan().accept_status(message.data)
@@ -525,25 +520,27 @@ class VoiceChatNode(Node):
 
     def _execute_behavior_tree_plan(self, heard_text, actions):
         """Submit ordinary actions to the native tree; return None for fallback."""
-        return self._dialog_native_plan().invoke(
+        if any(
+            action.get("name") in {
+                "inspect_camera", CONDITIONAL_TASK_TOOL_NAME, VISUAL_SEARCH_TOOL_NAME
+            }
+            for action in actions
+            if isinstance(action, dict)
+        ):
+            return None
+        workflow = NativeBehaviorTreeWorkflow(
+            authorize=lambda _prompt, name, arguments: validate_action_arguments(
+                name, arguments
+            ),
+            execute_plan=lambda plan: self._try_execute_native_plan(
+                plan, cancelled=self.vc._cancel_llm.is_set
+            ),
+        )
+        return workflow.invoke(
             turn_id=self._ensure_turn_id(),
             user_prompt=heard_text,
             actions=actions,
         )
-
-    def _dialog_native_plan(self):
-        workflow = getattr(self, "_dialog_native_plan_workflow", None)
-        if workflow is None:
-            workflow = DialogNativePlanWorkflow(
-                authorize=lambda _prompt, name, arguments: validate_action_arguments(
-                    name, arguments
-                ),
-                execute_plan=lambda plan: self._try_execute_native_plan(
-                    plan, cancelled=self.vc._cancel_llm.is_set
-                ),
-            )
-            self._dialog_native_plan_workflow = workflow
-        return workflow
 
     def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
         return self._native_plan().try_execute(
@@ -623,9 +620,12 @@ class VoiceChatNode(Node):
         )
 
     def _execute_workflow_action(self, name, arguments):
-        return self._actions().execute(
+        return self._action_executor.execute(
             name,
             arguments,
+            publish=lambda payload: self.action_pub.publish(String(data=payload)),
+            owner_available=lambda: self.action_pub.get_subscription_count() > 0,
+            timeout=20.0,
             source="voice_conditional_task",
         )
 
@@ -713,18 +713,23 @@ class VoiceChatNode(Node):
             self.get_logger().info(f"[识别] {decision.corrected_text}")
         self.get_logger().info(f"[回复] {decision.ai_text[:80]}")
 
-        presentation = self._presentation().reply(
-            decision, getattr(self.vc, "last_action_results", [])
-        )
-
         # flush 残留 TTS 文本
-        if presentation.tts_tail:
-            self.tts_pub.publish(String(data=presentation.tts_tail))
-            self.get_logger().info(f"TTS tail: {presentation.tts_tail[:80]}")
+        if decision.tts_tail:
+            self.tts_pub.publish(String(data=decision.tts_tail))
+            self.get_logger().info(f"TTS tail: {decision.tts_tail[:80]}")
 
         # 屏幕对话框（对齐 llm_ros_node 格式）
         dialog = String()
-        dialog.data = self._screen_payload(presentation.screen_payload)
+        action_results = getattr(self.vc, "last_action_results", [])
+        if not isinstance(action_results, list):
+            action_results = []
+        dialog.data = self._screen_payload({
+            "turn_id": decision.turn_id,
+            "corrected_text": decision.corrected_text,
+            "ai_text": decision.ai_text,
+            "actions": action_results,
+            "source": "voice_chat",
+        })
         self.dialog_pub.publish(dialog)
         self.get_logger().info(f"Screen: {decision.ai_text[:60]}")
 
@@ -750,34 +755,11 @@ class VoiceChatNode(Node):
             self._tool_router = router
         return router
 
-    def _actions(self):
-        adapter = getattr(self, "_dialog_action_executor", None)
-        if adapter is None:
-            executor = getattr(self, "_action_executor", None)
-            publisher = getattr(self, "action_pub", None)
-            adapter = DialogActionExecutor(
-                executor=executor,
-                publish=(lambda payload: publisher.publish(String(data=payload)))
-                if publisher is not None else lambda _payload: None,
-                owner_available=(
-                    lambda: publisher is not None and publisher.get_subscription_count() > 0
-                ),
-            )
-            self._dialog_action_executor = adapter
-        return adapter
-
     def _output(self):
         controller = getattr(self, "_output_controller", None)
         if controller is None:
             controller = DialogOutputController()
             self._output_controller = controller
-        return controller
-
-    def _presentation(self):
-        controller = getattr(self, "_presentation_controller", None)
-        if controller is None:
-            controller = DialogPresentationController()
-            self._presentation_controller = controller
         return controller
 
     @staticmethod
@@ -799,7 +781,11 @@ class VoiceChatNode(Node):
         self.get_logger().info("LLM 超时，切回待机")
         try:
             screen_msg = String()
-            screen_msg.data = self._screen_payload(self._presentation().timed_out())
+            screen_msg.data = self._screen_payload({
+                "page": "idle",
+                "text": "说「瓦力瓦力」唤醒我",
+                "source": "timeout",
+            })
             self.dialog_pub.publish(screen_msg)
         except Exception:
             pass

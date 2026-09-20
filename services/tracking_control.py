@@ -6,22 +6,9 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import NamedTuple
 
 
 TrackingBox = tuple[float, float, float]
-
-
-class DetectionTargetBoxes(NamedTuple):
-    """Classified tracking bounding boxes and discovered ROI types."""
-
-    body_boxes: list[TrackingBox]
-    face_boxes: list[TrackingBox]
-    roi_types: list[str]
-
-    @property
-    def has_boxes(self) -> bool:
-        return bool(self.body_boxes or self.face_boxes)
 
 
 @dataclass(frozen=True)
@@ -456,38 +443,3 @@ class TrackingController:
     def _horizontal_error(self, cx: float) -> float:
         # The source image is horizontally flipped by the vision pipeline.
         return -(cx - self.image_width / 2.0) / (self.image_width / 2.0)
-
-
-def classify_detection_targets(
-    targets: Iterable[object],
-    image_width: float,
-    image_height: float,
-) -> DetectionTargetBoxes:
-    """Extract and classify detection ROIs into body and face tracking boxes.
-
-    Computes box center (cx, cy) and area ratio (width * height / image_area).
-    Collects sorted, deduplicated string representations of all encountered ROI types.
-    """
-    body_boxes: list[TrackingBox] = []
-    face_boxes: list[TrackingBox] = []
-    raw_types: set[str] = set()
-
-    for target in targets:
-        for roi in target.rois:
-            raw_types.add(str(roi.type))
-            rect = roi.rect
-            if rect.width <= 0 or rect.height <= 0:
-                continue
-            cx = rect.x_offset + rect.width / 2.0
-            cy = rect.y_offset + rect.height / 2.0
-            area_ratio = (rect.width * rect.height) / (image_width * image_height)
-            if roi.type in ("body", "person"):
-                body_boxes.append((cx, cy, area_ratio))
-            elif roi.type in ("face", "head"):
-                face_boxes.append((cx, cy, area_ratio))
-
-    return DetectionTargetBoxes(
-        body_boxes=body_boxes,
-        face_boxes=face_boxes,
-        roi_types=sorted(raw_types),
-    )

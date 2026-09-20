@@ -1,4 +1,4 @@
-from services.game_commentary import GameCommentaryController, GameCommentaryWorkflow
+from services.game_commentary import GameCommentaryController
 
 
 class _Clock:
@@ -53,29 +53,3 @@ def test_robot_mode_discards_frames_and_prevents_late_commentary_output():
     assert controller.can_publish_commentary() is False
     controller.finish_commentary()
     assert controller.accept_frame("new-frame") is False
-
-
-def test_game_commentary_workflow_encodes_image_and_normalizes_reply():
-    received = []
-    workflow = GameCommentaryWorkflow(
-        analyze=lambda prompt, image: received.append((prompt, image)) or "*小心！*",
-        clean=lambda text: text.replace("*", "").strip(),
-    )
-
-    result = workflow.invoke(b"jpeg")
-
-    assert result.answer == "小心！"
-    assert result.error is None
-    assert received[0][1] == "anBlZw=="
-
-
-def test_game_commentary_workflow_returns_error_without_leaking_exception():
-    workflow = GameCommentaryWorkflow(
-        analyze=lambda *_args: (_ for _ in ()).throw(RuntimeError("model unavailable")),
-        clean=str,
-    )
-
-    result = workflow.invoke(b"jpeg")
-
-    assert result.answer == ""
-    assert result.error == "model unavailable"

@@ -182,7 +182,6 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/dialog_workflow.py` | 与 ROS 无关的对话工作流：相机检查、拍照保存、条件任务和动作序列；设备与模型访问均通过回调注入。 |
 | `services/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
 | `services/dialog_output.py` | 与 ROS 无关的语音输出守卫：协调唤醒应答、TTS 播放完成、陈旧回执和安全恢复录音的条件。 |
-| `services/dialog_presentation.py` | 与 ROS 无关的语音对话屏幕呈现决策：构造唤醒、超时和最终回复的稳定字段。 |
 | `services/llm_response_policy.py` | 与 ROS 无关的大模型纯文本清洗与长文本生成策略：负责 ASR 纠错元数据识别与剥离、回答前缀剥离、TTS 文本安全清洗以及视觉回答清洗。 |
 | `services/llm_stream_response.py` | 与 ROS 无关的流式模型事件累积与回复决策服务：负责文本分句、TTS 提前播报判定、尾句决策、工具调用与拒绝收集，以及最终回复决策。 |
 | `services/llm_conversation_history.py` | 与 ROS 无关的对话历史筛选、清洗与写回服务：负责请求历史截断、移除图片块、视觉历史文本提取，以及普通回复与工具动作回复的写回。 |
@@ -193,13 +192,10 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 | `services/llm_voice_turn.py` | 与 ROS 无关的普通 LLM 对话回合状态与完成决策服务：负责纠错文本状态管理、表情状态维护、动作提案记录、动作结果归一化和最终回复决策。 |
 | `services/llm_empty_answer_retry.py` | 与 ROS 无关的空回复重试服务：负责空回复单次重试的 Prompt、Token 边界、模型请求参数和回复文本解析。 |
 | `services/conditional_task.py` | 与 ROS 无关的单步条件任务服务：负责条件任务意图判定、计划校验、视觉决策解析、执行结果归一化与回复决策。 |
-| `services/llm_photo_capture.py` | 与 ROS 无关的拍照流程状态决策服务：负责 LLM 节点拍照流程中的预览结果分类和保存结果纯决策；相机调用及文件保存仍由 Node 执行。 |
 | `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
-| `services/dialog_action_execution.py` | 与 ROS 无关的对话动作执行适配器：绑定关联状态、请求发布、可用性检查、超时与来源标记。 |
-| `services/dialog_plan_execution.py` | 与 ROS 无关的对话原生计划路由：普通动作进入行为树，专用视觉工具回退到对应工作流。 |
 | `services/visual_search.py` | 视觉搜索计划、ROS 叶节点协议和执行工作流：校验完成动作、处理单次取帧/评估降级，并归一化行为树执行结果。 |
 | `services/native_plan_execution.py` | 与 ROS 无关的原生动作计划执行适配器：优先 ROS2 Action，Action 不可用时回退到关联话题执行，并转交状态消息。 |
-| `services/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机与工作流：维护模式切换、帧保留、间隔调度、请求编码和回复归一化。 |
+| `services/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机：维护模式切换、帧保留和间隔调度。 |
 | `services/sequence_execution.py` | 与 ROS 无关的动作命令生命周期、序列展开和舵机轨迹执行；负责取消/中断、目标限位、机械联动约束与 50 Hz 插值计算。 |
 | `services/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：目标连续性、人体跟随、人脸注视、脖子俯仰，以及目标丢失后的保持、搜索、停止和退出状态机。 |
 | `core/action_skills.json` | 动作技能注册表；统一定义执行节点、计划/仲裁资源、超时、重试和可取消能力。 |
