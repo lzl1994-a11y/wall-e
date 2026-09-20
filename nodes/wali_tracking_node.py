@@ -23,6 +23,7 @@ from services.tracking_control import (
     LossState,
     TrackingController,
     TrackingExitReason,
+    classify_detection_targets,
 )
 
 from services.vision_pipeline_protocol import (
@@ -182,40 +183,25 @@ class WaliTrackingNode(Node):
         dt = max(0.001, min(elapsed, 0.1))
         self._last_time = now
 
-        body_boxes = []
-        face_boxes = []
+        boxes = classify_detection_targets(
+            msg.targets,
+            self.IMG_WIDTH,
+            self.IMG_HEIGHT,
+        )
 
-        for target in msg.targets:
-            for roi in target.rois:
-                rect = roi.rect
-                if rect.width <= 0 or rect.height <= 0:
-                    continue
-                cx = rect.x_offset + rect.width / 2.0
-                cy = rect.y_offset + rect.height / 2.0
-                area_ratio = (rect.width * rect.height) / (self.IMG_WIDTH * self.IMG_HEIGHT)
-                if roi.type in ["body", "person"]:
-                    body_boxes.append((cx, cy, area_ratio))
-                elif roi.type in ["face", "head"]:
-                    face_boxes.append((cx, cy, area_ratio))
-
-        if body_boxes or face_boxes:
+        if boxes.has_boxes:
             self._last_nonempty_detection = now
 
         if not detector_was_ready:
-            roi_types = sorted({
-                str(roi.type)
-                for target in msg.targets
-                for roi in target.rois
-            })
             self.get_logger().info(
                 "视觉检测链路已连通: "
-                f"targets={len(msg.targets)} roi_types={roi_types or '-'}"
+                f"targets={len(msg.targets)} roi_types={boxes.roi_types or '-'}"
             )
 
         if self.mode == self.MODE_BODY_FOLLOW:
-            self._handle_body_follow(body_boxes, dt)
+            self._handle_body_follow(boxes.body_boxes, dt)
         elif self.mode == self.MODE_FACE_FOLLOW:
-            self._handle_face_follow(face_boxes, body_boxes, dt)
+            self._handle_face_follow(boxes.face_boxes, boxes.body_boxes, dt)
 
     def _handle_body_follow(self, body_boxes, dt):
         """模式 1: 纯底盘跟随 (前进后退+左右转)，摄像头仰俯锁定平视"""

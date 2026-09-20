@@ -338,6 +338,124 @@ class WaliTrackingNodeTests(unittest.TestCase):
         node.destroy_node.assert_called_once_with()
         shutdown.assert_called_once_with()
 
+    def test_on_detection_first_message_logs_connection_with_roi_types(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        node._set_tracking_mode("follow_me")
+        detection = types.SimpleNamespace(
+            targets=[types.SimpleNamespace(
+                rois=[
+                    types.SimpleNamespace(
+                        type="body",
+                        rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=50, height=100),
+                    ),
+                    types.SimpleNamespace(
+                        type="face",
+                        rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=0, height=20),
+                    ),
+                    types.SimpleNamespace(
+                        type="car",
+                        rect=types.SimpleNamespace(x_offset=20, y_offset=20, width=80, height=80),
+                    ),
+                ]
+            )]
+        )
+
+        node._on_detection(detection)
+
+        info_logs = [msg for lvl, msg in node.logger.messages if lvl == "info"]
+        self.assertTrue(
+            any("视觉检测链路已连通" in msg and "roi_types=['body', 'car', 'face']" in msg for msg in info_logs)
+        )
+
+    def test_on_detection_updates_last_nonempty_detection_only_for_valid_targets(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        node._set_tracking_mode("follow_me")
+        node._last_nonempty_detection = 0.0
+
+        invalid_detection = types.SimpleNamespace(
+            targets=[types.SimpleNamespace(
+                rois=[
+                    types.SimpleNamespace(
+                        type="unknown",
+                        rect=types.SimpleNamespace(x_offset=0, y_offset=0, width=50, height=50),
+                    ),
+                    types.SimpleNamespace(
+                        type="body",
+                        rect=types.SimpleNamespace(x_offset=0, y_offset=0, width=0, height=50),
+                    ),
+                ]
+            )]
+        )
+        with patch.object(module.time, "monotonic", return_value=50.0):
+            node._on_detection(invalid_detection)
+        self.assertEqual(node._last_nonempty_detection, 0.0)
+
+        valid_detection = types.SimpleNamespace(
+            targets=[types.SimpleNamespace(
+                rois=[
+                    types.SimpleNamespace(
+                        type="body",
+                        rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=50, height=50),
+                    ),
+                ]
+            )]
+        )
+        with patch.object(module.time, "monotonic", return_value=55.0):
+            node._on_detection(valid_detection)
+        self.assertEqual(node._last_nonempty_detection, 55.0)
+
+    def test_on_detection_dispatches_body_and_face_follow(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+
+        detection = types.SimpleNamespace(
+            targets=[types.SimpleNamespace(
+                rois=[
+                    types.SimpleNamespace(
+                        type="body",
+                        rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=50, height=100),
+                    ),
+                    types.SimpleNamespace(
+                        type="face",
+                        rect=types.SimpleNamespace(x_offset=20, y_offset=20, width=30, height=30),
+                    ),
+                ]
+            )]
+        )
+
+        with patch.object(node, "_handle_body_follow") as mock_body:
+            node._set_tracking_mode("follow_me")
+            node._on_detection(detection)
+            self.assertEqual(mock_body.call_count, 1)
+            body_boxes = mock_body.call_args[0][0]
+            self.assertEqual(len(body_boxes), 1)
+
+        with patch.object(node, "_handle_face_follow") as mock_face:
+            node._set_tracking_mode("look_at_me")
+            node._on_detection(detection)
+            self.assertEqual(mock_face.call_count, 1)
+            face_boxes, body_boxes = mock_face.call_args[0][:2]
+            self.assertEqual(len(face_boxes), 1)
+            self.assertEqual(len(body_boxes), 1)
+
+    def test_on_detection_ignores_in_idle_or_joy_override(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        detection = types.SimpleNamespace(targets=[])
+
+        # Idle mode
+        self.assertEqual(node.mode, node.MODE_IDLE)
+        node._on_detection(detection)
+        self.assertEqual(node._last_detection_message, 0.0)
+
+        # Joy override
+        node._set_tracking_mode("follow_me")
+        node._joy_override = True
+        node._on_detection(detection)
+        self.assertEqual(node._last_detection_message, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

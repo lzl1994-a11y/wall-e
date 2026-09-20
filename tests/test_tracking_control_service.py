@@ -1,12 +1,15 @@
+import types
 import unittest
 
 from services.tracking_control import (
+    DetectionTargetBoxes,
     HeadTarget,
     LossState,
     PID,
     TargetSelector,
     TrackingController,
     TrackingExitReason,
+    classify_detection_targets,
 )
 
 
@@ -257,6 +260,178 @@ class TrackingControllerTests(unittest.TestCase):
             TrackingExitReason.PIPELINE_STARTUP_TIMEOUT,
         )
 
+
+class ClassifyDetectionTargetsTests(unittest.TestCase):
+    def test_empty_targets_returns_empty_result(self):
+        result_empty = classify_detection_targets([], 960, 544)
+        self.assertEqual(result_empty.body_boxes, [])
+        self.assertEqual(result_empty.face_boxes, [])
+        self.assertEqual(result_empty.roi_types, [])
+        self.assertFalse(result_empty.has_boxes)
+
+    def test_malformed_targets_are_not_silently_treated_as_empty(self):
+        with self.assertRaises(TypeError):
+            classify_detection_targets(None, 960, 544)
+        with self.assertRaises(AttributeError):
+            classify_detection_targets([types.SimpleNamespace()], 960, 544)
+        with self.assertRaises(AttributeError):
+            classify_detection_targets(
+                [types.SimpleNamespace(rois=[types.SimpleNamespace(type="body")])],
+                960,
+                544,
+            )
+
+    def test_body_and_person_classified_as_body_boxes(self):
+        targets = [
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="body",
+                    rect=types.SimpleNamespace(x_offset=100, y_offset=200, width=50, height=100),
+                ),
+                types.SimpleNamespace(
+                    type="person",
+                    rect=types.SimpleNamespace(x_offset=200, y_offset=250, width=60, height=120),
+                ),
+            ])
+        ]
+        result = classify_detection_targets(targets, 960, 544)
+        self.assertEqual(len(result.body_boxes), 2)
+        self.assertEqual(len(result.face_boxes), 0)
+        self.assertTrue(result.has_boxes)
+        self.assertEqual(result.roi_types, ["body", "person"])
+
+    def test_face_and_head_classified_as_face_boxes(self):
+        targets = [
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="face",
+                    rect=types.SimpleNamespace(x_offset=50, y_offset=60, width=40, height=40),
+                ),
+                types.SimpleNamespace(
+                    type="head",
+                    rect=types.SimpleNamespace(x_offset=150, y_offset=160, width=45, height=45),
+                ),
+            ])
+        ]
+        result = classify_detection_targets(targets, 960, 544)
+        self.assertEqual(len(result.face_boxes), 2)
+        self.assertEqual(len(result.body_boxes), 0)
+        self.assertTrue(result.has_boxes)
+        self.assertEqual(result.roi_types, ["face", "head"])
+
+    def test_unknown_types_not_in_boxes_but_in_roi_types(self):
+        targets = [
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="car",
+                    rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=100, height=100),
+                ),
+                types.SimpleNamespace(
+                    type="dog",
+                    rect=types.SimpleNamespace(x_offset=20, y_offset=20, width=50, height=50),
+                ),
+            ])
+        ]
+        result = classify_detection_targets(targets, 960, 544)
+        self.assertEqual(result.body_boxes, [])
+        self.assertEqual(result.face_boxes, [])
+        self.assertEqual(result.roi_types, ["car", "dog"])
+        self.assertFalse(result.has_boxes)
+
+    def test_invalid_dimensions_skipped_for_boxes_but_recorded_in_roi_types(self):
+        targets = [
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="body",
+                    rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=0, height=100),
+                ),
+                types.SimpleNamespace(
+                    type="face",
+                    rect=types.SimpleNamespace(x_offset=20, y_offset=20, width=50, height=-5),
+                ),
+                types.SimpleNamespace(
+                    type="unknown",
+                    rect=types.SimpleNamespace(x_offset=30, y_offset=30, width=-10, height=-10),
+                ),
+            ])
+        ]
+        result = classify_detection_targets(targets, 960, 544)
+        self.assertEqual(result.body_boxes, [])
+        self.assertEqual(result.face_boxes, [])
+        self.assertEqual(result.roi_types, ["body", "face", "unknown"])
+        self.assertFalse(result.has_boxes)
+
+    def test_box_coordinate_and_area_ratio_calculation(self):
+        targets = [
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="body",
+                    rect=types.SimpleNamespace(x_offset=100, y_offset=50, width=80, height=120),
+                )
+            ])
+        ]
+        result = classify_detection_targets(targets, 960, 544)
+        self.assertEqual(len(result.body_boxes), 1)
+        cx, cy, area_ratio = result.body_boxes[0]
+        self.assertEqual(cx, 100 + 80 / 2.0)
+        self.assertEqual(cy, 50 + 120 / 2.0)
+        self.assertEqual(area_ratio, (80 * 120) / (960 * 544))
+
+    def test_out_of_frame_coordinates_and_area_are_not_clamped(self):
+        targets = [types.SimpleNamespace(rois=[types.SimpleNamespace(
+            type="body",
+            rect=types.SimpleNamespace(
+                x_offset=-30, y_offset=80, width=150, height=200
+            ),
+        )])]
+        result = classify_detection_targets(targets, 100, 100)
+        self.assertEqual(result.body_boxes, [(45.0, 180.0, 3.0)])
+
+    def test_preserves_target_and_roi_order(self):
+        targets = [
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="body",
+                    rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=20, height=20),
+                ),
+                types.SimpleNamespace(
+                    type="body",
+                    rect=types.SimpleNamespace(x_offset=30, y_offset=30, width=20, height=20),
+                ),
+            ]),
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="body",
+                    rect=types.SimpleNamespace(x_offset=50, y_offset=50, width=20, height=20),
+                ),
+            ]),
+        ]
+        result = classify_detection_targets(targets, 960, 544)
+        self.assertEqual([b[0] for b in result.body_boxes], [20.0, 40.0, 60.0])
+
+    def test_roi_types_deduplicated_and_sorted(self):
+        targets = [
+            types.SimpleNamespace(rois=[
+                types.SimpleNamespace(
+                    type="person",
+                    rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=20, height=20),
+                ),
+                types.SimpleNamespace(
+                    type="face",
+                    rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=20, height=20),
+                ),
+                types.SimpleNamespace(
+                    type="body",
+                    rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=20, height=20),
+                ),
+                types.SimpleNamespace(
+                    type="face",
+                    rect=types.SimpleNamespace(x_offset=10, y_offset=10, width=20, height=20),
+                ),
+            ])
+        ]
+        result = classify_detection_targets(targets, 960, 544)
+        self.assertEqual(result.roi_types, ["body", "face", "person"])
 
 if __name__ == "__main__":
     unittest.main()
