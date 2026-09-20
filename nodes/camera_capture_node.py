@@ -25,8 +25,10 @@ from services.camera_capture_protocol import (
     CAMERA_SOURCE_TOPIC,
     CAMERA_STATUS_TOPIC,
     CameraLeaseBook,
+    CameraWatchdogAction,
     build_hobot_camera_command,
     decode_camera_command,
+    evaluate_camera_watchdog,
     jpeg_from_ros_image,
 )
 from services.usb_devices import resolve_camera_device
@@ -148,12 +150,19 @@ class CameraCaptureNode(Node):
                 force=True,
             )
 
-        if (
-            self._camera_process is not None
-            and self._last_source_frame < self._process_started_at
-            and now - self._process_started_at > self.FIRST_FRAME_TIMEOUT_SEC
-        ):
-            waited = now - self._process_started_at
+        decision = evaluate_camera_watchdog(
+            process_alive=self._camera_process is not None,
+            now=now,
+            process_started_at=self._process_started_at,
+            last_source_frame=self._last_source_frame,
+            last_output_frame=self._last_output_frame,
+            has_active_leases=self._leases.active,
+            retry_after=self._retry_after,
+            first_frame_timeout_sec=self.FIRST_FRAME_TIMEOUT_SEC,
+            frame_timeout_sec=self.FRAME_TIMEOUT_SEC,
+        )
+
+        if decision.action == CameraWatchdogAction.FIRST_FRAME_TIMEOUT:
             device = self._camera_device or "未知设备"
             topic_diagnostic = self._camera_topic_diagnostic()
             self._stop_camera_process()
@@ -162,19 +171,14 @@ class CameraCaptureNode(Node):
                 "error",
                 source=CAMERA_SOURCE_TOPIC,
                 error=(
-                    f"hobot_usb_cam 首帧等待超时（设备 {device}，已等待 {waited:.1f}s）"
+                    f"hobot_usb_cam 首帧等待超时（设备 {device}，已等待 {decision.elapsed_sec:.1f}s）"
                     f"{('；' + topic_diagnostic) if topic_diagnostic else ''}"
                 ),
                 force=True,
             )
             return
 
-        if (
-            self._camera_process is not None
-            and self._last_source_frame >= self._process_started_at
-            and now - self._last_source_frame > self.FRAME_TIMEOUT_SEC
-        ):
-            stalled = now - self._last_source_frame
+        if decision.action == CameraWatchdogAction.FRAME_TIMEOUT:
             device = self._camera_device or "未知设备"
             self._stop_camera_process()
             self._retry_after = now + self.RETRY_DELAY_SEC
@@ -183,26 +187,18 @@ class CameraCaptureNode(Node):
                 source=CAMERA_SOURCE_TOPIC,
                 error=(
                     f"hobot_usb_cam 画面中断（设备 {device}，"
-                    f"{stalled:.1f}s 没有有效新帧）"
+                    f"{decision.elapsed_sec:.1f}s 没有有效新帧）"
                 ),
                 force=True,
             )
             return
 
-        if self._camera_process is None and now >= self._retry_after:
+        if decision.action == CameraWatchdogAction.START_PROCESS:
             self._start_camera_process()
             return
 
-        if self._camera_process is not None:
-            if self._leases.active:
-                state = "streaming" if now - self._last_output_frame <= 1.0 else "starting"
-            else:
-                state = (
-                    "standby"
-                    if self._last_source_frame >= self._process_started_at
-                    else "starting"
-                )
-            self._publish_status(state, source=CAMERA_SOURCE_TOPIC)
+        if decision.action == CameraWatchdogAction.PUBLISH_STATUS:
+            self._publish_status(decision.state, source=CAMERA_SOURCE_TOPIC)
 
     def _camera_topic_diagnostic(self) -> str:
         """Report graph state without assuming the camera message type."""

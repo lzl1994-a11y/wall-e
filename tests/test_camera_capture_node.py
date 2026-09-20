@@ -305,6 +305,107 @@ class CameraCaptureNodeTests(unittest.TestCase):
         status = node.publishers["/camera_capture_status"].messages[-1]
         self.assertIn("画面中断", status.data)
 
+    def test_process_exit_honors_retry_delay_before_restarting(self):
+        module = _load_camera_capture_module()
+        first = _FakeProcess()
+        second = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", side_effect=[first, second]) as popen,
+        ):
+            node = module.CameraCaptureNode()
+            self.assertEqual(popen.call_count, 1)
+            first.returncode = 1
+            node._tick()
+            self.assertIsNone(node._camera_process)
+            status = node.publishers["/camera_capture_status"].messages[-1]
+            self.assertIn("已退出，退出码 1", status.data)
+
+            # Next tick while now < retry_after should NOT restart process
+            node._tick()
+            self.assertEqual(popen.call_count, 1)
+            self.assertIsNone(node._camera_process)
+
+            # Once retry delay passed, next tick restarts process
+            node._retry_after = 0.0
+            node._tick()
+            self.assertEqual(popen.call_count, 2)
+            self.assertIs(node._camera_process, second)
+
+    def test_first_frame_timeout_diagnostic_and_retry_delay(self):
+        module = _load_camera_capture_module()
+        first = _FakeProcess()
+        second = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video0"),
+            patch.object(module.subprocess, "Popen", side_effect=[first, second]) as popen,
+        ):
+            node = module.CameraCaptureNode()
+            node._process_started_at = time.monotonic() - node.FIRST_FRAME_TIMEOUT_SEC - 1.0
+            node._tick()
+
+            self.assertTrue(first.terminated)
+            self.assertIsNone(node._camera_process)
+            status = node.publishers["/camera_capture_status"].messages[-1]
+            self.assertIn("首帧等待超时", status.data)
+
+            # Still in retry delay: should not restart immediately on next tick
+            node._tick()
+            self.assertEqual(popen.call_count, 1)
+
+            # After retry delay: should restart
+            node._retry_after = 0.0
+            node._tick()
+            self.assertEqual(popen.call_count, 2)
+            self.assertIs(node._camera_process, second)
+
+    def test_frame_timeout_and_retry_delay(self):
+        module = _load_camera_capture_module()
+        first = _FakeProcess()
+        second = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video0"),
+            patch.object(module.subprocess, "Popen", side_effect=[first, second]) as popen,
+            patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
+        ):
+            node = module.CameraCaptureNode()
+            node._on_source_image(
+                _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            )
+            now = time.monotonic()
+            node._process_started_at = now - 10.0
+            node._last_source_frame = now - node.FRAME_TIMEOUT_SEC - 0.5
+            node._tick()
+
+            self.assertTrue(first.terminated)
+            self.assertIsNone(node._camera_process)
+            status = node.publishers["/camera_capture_status"].messages[-1]
+            self.assertIn("画面中断", status.data)
+
+            # Retry delay prevents immediate restart
+            node._tick()
+            self.assertEqual(popen.call_count, 1)
+
+    def test_tick_publishes_streaming_when_lease_active_and_output_fresh(self):
+        module = _load_camera_capture_module()
+        process = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video0"),
+            patch.object(module.subprocess, "Popen", return_value=process),
+            patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
+        ):
+            node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "client", 10)))
+            node._on_source_image(
+                _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            )
+            now = time.monotonic()
+            node._last_output_frame = now
+            node._last_status_signature = None
+            node._tick()
+            status = node.publishers["/camera_capture_status"].messages[-1]
+            self.assertIn('"state":"streaming"', status.data)
+
 
 if __name__ == "__main__":
     unittest.main()

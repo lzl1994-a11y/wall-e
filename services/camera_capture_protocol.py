@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +80,97 @@ class CameraLeaseBook:
     @property
     def count(self) -> int:
         return len(self._leases)
+
+
+class CameraWatchdogAction(str, Enum):
+    """Actions produced by the camera capture watchdog decision."""
+
+    FIRST_FRAME_TIMEOUT = "first_frame_timeout"
+    FRAME_TIMEOUT = "frame_timeout"
+    START_PROCESS = "start_process"
+    PUBLISH_STATUS = "publish_status"
+    NONE = "none"
+
+
+@dataclass(frozen=True)
+class CameraWatchdogDecision:
+    """Pure decision outcome produced by the camera watchdog check."""
+
+    action: CameraWatchdogAction
+    state: str | None = None
+    elapsed_sec: float = 0.0
+
+
+DEFAULT_FIRST_FRAME_TIMEOUT_SEC = 45.0
+DEFAULT_FRAME_TIMEOUT_SEC = 3.0
+DEFAULT_OUTPUT_ACTIVE_WINDOW_SEC = 1.0
+
+
+def evaluate_camera_watchdog(
+    *,
+    now: float,
+    process_alive: bool = False,
+    process_started_at: float = 0.0,
+    last_source_frame: float = 0.0,
+    last_output_frame: float = 0.0,
+    has_active_leases: bool = False,
+    retry_after: float = 0.0,
+    first_frame_timeout_sec: float = DEFAULT_FIRST_FRAME_TIMEOUT_SEC,
+    frame_timeout_sec: float = DEFAULT_FRAME_TIMEOUT_SEC,
+    output_active_window_sec: float = DEFAULT_OUTPUT_ACTIVE_WINDOW_SEC,
+) -> CameraWatchdogDecision:
+    """Evaluate camera process watchdog and status transitions.
+
+    Pure decision logic:
+    1. If process is alive:
+       - If last_source_frame < process_started_at:
+         first frame timeout when now - process_started_at > first_frame_timeout_sec.
+       - If last_source_frame >= process_started_at:
+         stream stall when now - last_source_frame > frame_timeout_sec.
+       - Otherwise, normal status selection:
+         - has_active_leases: 'streaming' if now - last_output_frame <= output_active_window_sec else 'starting'
+         - no active leases: 'standby' if last_source_frame >= process_started_at else 'starting'
+    2. If process is not alive:
+       - start process when now >= retry_after
+       - otherwise no action (waiting for retry delay)
+    """
+    if process_alive:
+        if last_source_frame < process_started_at:
+            waited = now - process_started_at
+            if waited > first_frame_timeout_sec:
+                return CameraWatchdogDecision(
+                    action=CameraWatchdogAction.FIRST_FRAME_TIMEOUT,
+                    elapsed_sec=waited,
+                )
+        else:
+            stalled = now - last_source_frame
+            if stalled > frame_timeout_sec:
+                return CameraWatchdogDecision(
+                    action=CameraWatchdogAction.FRAME_TIMEOUT,
+                    elapsed_sec=stalled,
+                )
+
+        if has_active_leases:
+            state = (
+                "streaming"
+                if now - last_output_frame <= output_active_window_sec
+                else "starting"
+            )
+        else:
+            state = (
+                "standby"
+                if last_source_frame >= process_started_at
+                else "starting"
+            )
+        return CameraWatchdogDecision(
+            action=CameraWatchdogAction.PUBLISH_STATUS,
+            state=state,
+        )
+
+    if now >= retry_after:
+        return CameraWatchdogDecision(action=CameraWatchdogAction.START_PROCESS)
+
+    return CameraWatchdogDecision(action=CameraWatchdogAction.NONE)
 
 
 def build_hobot_camera_command(
