@@ -41,9 +41,15 @@ class McpGatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ASCII"):
             require_safe_transport(settings, "令牌" * 20)
 
-    def test_token_is_read_only_from_environment(self):
-        with patch.dict(os.environ, {MCP_TOKEN_ENV: "  token-value  "}, clear=False):
-            self.assertEqual(token_from_environment(), "token-value")
+    def test_token_falls_back_to_environment_when_config_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing_config = Path(directory) / "missing-config.yaml"
+            with patch(
+                "services.mcp_gateway.DEFAULT_CONFIG_PATH", missing_config
+            ), patch.dict(
+                os.environ, {MCP_TOKEN_ENV: "  token-value  "}, clear=False
+            ):
+                self.assertEqual(token_from_environment(), "token-value")
 
     def test_config_token_is_preferred_over_environment(self):
         with tempfile.TemporaryDirectory() as directory:
