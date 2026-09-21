@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+from numpy import testing as np_testing
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -61,7 +62,9 @@ class ArecordInputStreamTests(unittest.TestCase):
         self.assertEqual(command[:4], ["arecord", "-q", "-D", "plughw:3,0"])
         self.assertIn("48000", command)
         self.assertEqual(received[0][1], 4)
-        np.testing.assert_allclose(received[0][0], source.astype(np.float32) / 32768.0)
+        np_testing.assert_allclose(
+            received[0][0], source.astype(np.float32) / 32768.0
+        )
 
 
 if __name__ == "__main__":

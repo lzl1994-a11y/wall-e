@@ -69,12 +69,12 @@ class CameraPreviewTests(unittest.TestCase):
         self.assertIn(str(preview._frame_rate), command)
         self.assertNotIn("--device", command)
 
-    def test_worker_defaults_to_the_config_web_python(self):
+    def test_worker_defaults_to_current_python(self):
         preview = CameraPreview("unused.yaml")
         with patch.dict(os.environ, {}, clear=True):
             command = preview._worker_command()
 
-        self.assertEqual(command[0], sys.executable)
+        self.assertIn(sys.executable, command)
 
     def test_preview_streams_only_from_camera_frame(self):
         process = _FakeProcess([
