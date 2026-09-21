@@ -11,6 +11,7 @@ from rclpy.node import Node
 from std_msgs.msg import String, UInt8MultiArray
 
 from services.fc_game_session import FcGameSession
+from services.game_exit_barrier import GameExitBarrier
 from services.game_mode import GameModeController, InvalidGameTransition
 from services.game_protocol import (
     GAME_FRAME_TOPIC,
@@ -59,8 +60,7 @@ class GameModeNode(Node):
         self._latest_frame = None
         self._frame_sequence = 0
         self._published_frame_sequence = 0
-        self._awaiting_audio_end = False
-        self._audio_finished = False
+        self._exit_barrier = GameExitBarrier()
         self._exit_timer: threading.Timer | None = None
         self._publish_state()
         self.create_timer(1.0, self._publish_state)
@@ -155,7 +155,7 @@ class GameModeNode(Node):
                 self._controller.request_exit()
                 self._publish_state()
             if self._controller.mode.value == "exiting":
-                if self._audio_finished or not self._awaiting_audio_end:
+                if self._exit_barrier.mark_session_finished():
                     self._complete_exit()
                 else:
                     self._start_exit_timeout()
@@ -163,8 +163,7 @@ class GameModeNode(Node):
 
     def _prepare_audio_end(self):
         with self._state_lock:
-            self._awaiting_audio_end = True
-            self._audio_finished = False
+            self._exit_barrier.prepare_audio_end()
 
     def _start_exit_timeout(self):
         if self._exit_timer is not None:
@@ -181,9 +180,8 @@ class GameModeNode(Node):
             self._exit_timer = None
             if timer is not None and timer is not threading.current_thread():
                 timer.cancel()
-            self._awaiting_audio_end = False
-            self._audio_finished = False
             self._controller.robot_surface_ready()
+            self._exit_barrier.reset()
             self._publish_state()
 
     def _queue_game_frame(self, raw: bytes, width: int, height: int, pitch: int):
@@ -210,10 +208,11 @@ class GameModeNode(Node):
         elif message.data == "idle":
             self._playback.muted = False
             with self._state_lock:
-                if self._awaiting_audio_end:
-                    self._audio_finished = True
-                    if self._controller.mode.value == "exiting":
-                        self._complete_exit()
+                if (
+                    self._exit_barrier.mark_audio_finished()
+                    and self._controller.mode.value == "exiting"
+                ):
+                    self._complete_exit()
 
     def _publish_state(self):
         policy = self._controller.policy
