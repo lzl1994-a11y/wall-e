@@ -1,6 +1,6 @@
 # ROS Node Architecture Audit
 
-Date: 2026-09-18  
+Date: 2026-09-21
 Scope: read-only review of every `nodes/*.py` entry point and the default
 `launch_nodes.py` process graph.  This is an inventory, not authorization to
 merge nodes or move code.
@@ -26,10 +26,10 @@ themselves with installed C++ executables and are included for completeness.
 | `ai_msg_scaler_node.py` / `ai_msg_scaler` | Utility, not launcher-managed | P `/hobot_mono2d_body_detection` (parameterized); S `/image`, `/hobot_mono2d_body_detection_raw` | No device ownership; maintains latest image size/stamp. | No project service. Coordinate transform and clipping are pure logic, but this path is currently superseded by the padded detector pipeline. Do not extract or revive it without a real deployment need. |
 | `audio_playback_node.py` / `audio_playback_node` | Default | P `llm_busy`, wake/system done; S `audio_output`, `/music_audio`, wake/system audio, ESP32 network status | Starts/stops one playback backend; **sole sound-card/output-stream owner** and mixer lifecycle. | `mixing_playback_service`, audio/wake/system/music protocols, network prompt selector. Keep separate from TTS generation. |
 | `camera_capture_node.py` / `camera_capture_node` | Default | P `/camera_frame`, `/camera_capture_status`; S `/camera_capture_cmd`, `/image` | Starts, health-checks, restarts, and stops the single `hobot_usb_cam`; leases only gate frame relay. **Sole physical camera/V4L2 owner.** | `camera_capture_protocol`, `usb_devices`. Process and lease boundary correctly remain in Node. |
-| `dialog_motion_node.py` / `dialog_motion_node` | Default with serial cluster | P dialog expression target; S `llm_busy`, `tts_text`, dialog expression | Timer emits speech/expression poses; no hardware access, but owns the dialog-motion presentation lifecycle. | expression and TTS protocols, `servo_motion_config`. `DialogPoseSampler` contains deterministic pose sampling and is the one future pure-service extraction candidate if this behavior expands. |
+| `dialog_motion_node.py` / `dialog_motion_node` | Default with serial cluster | P dialog expression target; S `llm_busy`, `tts_text`, dialog expression | Reads motion configuration, tracks dialogue state, and publishes speech/expression poses on its timer; no hardware access. | `dialog_pose_sampler` owns coupled eye, mirrored eyebrow, head-yaw, neck-kinematics, and limit-safe speaking-pose sampling; `dialog_expression_pose` resolves configured expression targets and intensity. Node remains the ROS/config/effect adapter. Extraction is complete for this phase. |
 | `doa_ros_node.py` / `doa_ros_node` | Optional tracking; `--no-doa` disables | P `/doa_angle` | Reconnect timer opens/closes the D-DOA serial listener. **Sole DOA serial-device owner.** | `serial_broker`, `doa_listener`, `usb_devices`. Hardware bridge; keep isolated. |
-| `game_mode_node.py` / `game_mode_node` | Default | P game state/frame, `audio_output`; S game mode request, `llm_busy` | Session thread owns emulator/game session and stream flushing. **Exclusive game/emulator session.** | `fc_game_session`, `game_mode`, game protocol. Controller owns state transitions; Node supplies ROS/audio effects. |
-| `hardware_bridge_node.py` / `hardware_bridge_node` | Default only for `serial_mcu` hardware backend | P `/pca9685_raw`; S `/servo_cmd`, `/motor_cmd` | Flush timer combines state and enforces watchdog. Owns the downstream serial-MCU command boundary, not the serial port itself. | motor normalization/inversion and `motor_watchdog`. Hardware effect adapter; no merge with serial screen/NETCFG owner. |
+| `game_mode_node.py` / `game_mode_node` | Default | P game state/frame, `audio_output`; S game mode request, `llm_busy` | Owns `FcGameSession`, its thread/locks, frame coalescing, ROS effects, and the 15-second exit timer. **Exclusive game/emulator session.** | `game_mode` owns mode transitions and capability policy; `game_exit_barrier` owns the pure session-finished/trailing-audio exit gate; `fc_game_session` owns emulator execution. Extraction is complete for this phase. |
+| `hardware_bridge_node.py` / `hardware_bridge_node` | Default only for `serial_mcu` hardware backend | P `/pca9685_raw`; S `/servo_cmd`, `/motor_cmd` | Reads hardware configuration, maps servo names, validates JSON/motor commands, applies direction inversion, enforces the watchdog, and publishes complete output frames. Owns the downstream serial-MCU command boundary, not the serial port itself. | `pca9685_output_state` owns all 15 channel values, configuration-derived initial values, forced motor-channel zeroing, dirty tracking, servo/motor conversion, and payload encoding; motor normalization/inversion and `motor_watchdog` remain separate policies. Extraction is complete for this phase; never merge with the mutually exclusive I2C backend. |
 | `hobot_vision_node.py` / `hobot_vision_control` | Optional tracking | S `/vision_pipeline_cmd`, `/image_nv12`, `/image_padded_nv12`; child processes publish detection | Starts/reaps codec, padder, and BPU detector group; command only enables result accounting. **Exclusive BPU detector process group.** | vision runtime/pipeline and camera protocols. Keep separate from camera owner because failure and restart boundaries differ. |
 | `i2c_hardware_node.py` / `i2c_hardware_node` | Default only for `ubuntu_i2c` hardware backend | S `/servo_cmd`, `/motor_cmd` | Watchdog owns direct servo/motor output. **Sole I2C/PCA9685 owner** in this backend. | `servo_control`, motor normalization/watchdog. Mutually exclusive with serial-MCU backend, never merge. |
 | `joy_control_node.py` / `joy_control_node` | Default with serial cluster | P `/action_request`, `/motor_cmd/joystick`, game mode request; S game mode state | Device scanning thread and polling timers own controller connection/heartbeats. **Exclusive joystick input device.** | remote-control config, drive mixing, neck kinematics, game hotkey/protocol. Mapping policies are mostly already delegated; lifecycle must remain Node-side. |
@@ -76,20 +76,45 @@ screen/hardware bridge are not merge candidates.
 1. No node merge is currently justified. Every default or optional operational
    node owns a distinct lifecycle, exclusive device/process, safety boundary,
    or externally visible protocol.
-2. The completed Sequence, Tracking, text LLM, and Voice Chat extractions match
-   their intended boundary: their Node layers turn service decisions into ROS,
-   device, and external-model effects.
-3. `ai_msg_scaler_node.py` is the only visible pure-computation-heavy Node,
-   but it is utility-only and bypassed by the present padded detector pipeline.
-   It should be retired or refactored only when a deployment again uses it;
-   changing it now would be speculative.
-4. `DialogPoseSampler` is a small deterministic policy inside
-   `dialog_motion_node.py`. It is a possible future service extraction only if
-   dialog motion receives broader behavior changes or standalone tests; its
-   current size does not justify a mechanical split.
-5. Service-directory reclassification is intentionally deferred. This audit
-   establishes dependency and ownership boundaries first; moving files now
-   would create churn without a demonstrated import or responsibility problem.
+2. There is no remaining Node extraction with a clear benefit greater than its
+   added module and API cost. The text LLM, Voice Chat, Sequence, Tracking,
+   camera capture, joystick control, serial-MCU hardware bridge, dialogue
+   motion, and game-mode nodes have completed their intended pure-policy or
+   pure-state extraction for this phase.
+3. The remaining larger Nodes primarily coordinate ROS effects, threads or
+   child processes, exclusive hardware, external protocols, and failure
+   containment. File length alone is not a reason to extract another layer.
+4. `audio_playback_node.py` retains a small TTS PCM sequence diagnostic. It is
+   coupled to logging and does not currently justify a separate state service.
+5. `serial_ros_node.py` remains large because it owns the serial bridge,
+   NETCFG workers, TFT effects, and their failure boundary. It does not contain
+   one complete pure state model that can be moved without adapter churn.
+6. `ai_msg_scaler_node.py` is utility-only and bypassed by the deployed padded
+   detector pipeline. Refactoring it without a deployed caller would be
+   speculative.
+7. The `serial_mcu` and `ubuntu_i2c` hardware backends remain mutually
+   exclusive. Their resource ownership and failure boundaries must stay
+   separate.
+8. Service-directory reclassification is intentionally deferred. Moving files
+   now would create churn without a demonstrated import or responsibility
+   problem.
 
-No ROS launch, hardware node, camera, motor, or physical-device test was run
-for this audit.
+## Refactoring guardrails learned
+
+- A joystick motor-tick service containing only a short three-state decision
+  was removed because it added an API without creating a meaningful model.
+- Single-caller forwarding layers and simple payload wrappers were removed;
+  production effects remain in the natural owning Node.
+- A detection-transform extraction from `ai_msg_scaler_node.py` was discarded
+  because that Node is absent from the deployed launch path.
+- Extraction now requires a complete, continuous, independently testable pure
+  algorithm or state model. A single caller is acceptable only when that
+  algorithmic or state value is real.
+- Nodes continue to own ROS, logging, threads, files, hardware, and publication
+  effects. Reducing Node line count is not an architectural objective.
+- Do not add Controller, Workflow, Decision, Adapter, compatibility aliases, or
+  public methods unless production code needs the resulting abstraction.
+- Every public service API must have a production caller.
+
+No ROS launch, hardware node, camera, game, audio-device, motor, servo, or
+physical-device test was run for this audit.
