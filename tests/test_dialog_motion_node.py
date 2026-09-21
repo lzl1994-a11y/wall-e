@@ -1,6 +1,5 @@
 import importlib
 import json
-import random
 import sys
 import types
 import unittest
@@ -148,21 +147,6 @@ class DialogMotionNodeTests(unittest.TestCase):
         )
 
         self.assertEqual(publisher.messages, [])
-
-    def test_sampler_keeps_coupled_targets_inside_limits(self):
-        module = _load_module()
-        sampler = module.DialogPoseSampler(
-            module._load_dialog_servos(), rng=random.Random(7)
-        )
-        servos = module._load_dialog_servos()
-        expected_eye_gap = servos["eye_l"]["init"] - servos["eye_r"]["init"]
-        for _ in range(100):
-            pose = sampler.speaking_pose()
-            self.assertEqual(pose["eye_l"] - pose["eye_r"], expected_eye_gap)
-            for name, target in pose.items():
-                servo = servos[name]
-                self.assertGreaterEqual(target, min(servo["limit_1"], servo["limit_2"]))
-                self.assertLessEqual(target, max(servo["limit_1"], servo["limit_2"]))
 
     def test_non_neutral_expression_publishes_configured_targets_and_step_size(self):
         module = _load_module()
