@@ -79,11 +79,11 @@ LLM / 多模态 -> /tft_preview_request -> tft_tcp_service_node
               -> 热备 BPU 检测进程（仅有租约时收到帧）
 ```
 
-`camera_capture_node` 启动时即拉起唯一的 `hobot_usb_cam` 并持续检查首帧、断流和进程退出；
-异常时自动重启。预览消费者只订阅 `/camera_frame`，不直接打开摄像头。客户端使用带超时的
-租约来控制帧转发：`wali_tracking_node` 在跟随/注视期间持有独立租约，拍照和预览只增加、
-释放自己的租约。全部租约释放或过期后停止向 `/camera_frame` 转发，但物理摄像头保持热备；
-只有 `camera_capture_node` 退出时才关闭 `hobot_usb_cam`。
+`camera_capture_node` 启动时即拉起唯一的 `hobot_usb_cam`，并检查进程退出以及取流期间的首帧、
+断流异常。预览消费者只订阅 `/camera_frame`，不直接打开摄像头。客户端使用带超时的租约控制
+实际 UVC 取流：第一个租约通过 `/set_capture` 执行 V4L2 `STREAMON`，最后一个租约释放或过期
+后执行 `STREAMOFF`。空闲时 `hobot_usb_cam` 进程、设备句柄和配置保持热备，但摄像头不再产生或
+传输帧；恢复无需重启进程或重新打开设备。只有 `camera_capture_node` 退出时才关闭进程和设备。
 
 ### 视觉跟踪链路（--tracking）
 
@@ -112,7 +112,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
-| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：保持 `hobot_usb_cam` 热备并自愈，按租约将 `/image` 适配为预览 JPEG。 |
+| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：保持 `hobot_usb_cam` 进程热备并自愈，按租约切换 V4L2 取流并将 `/image` 适配为预览 JPEG。 |
 | `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_targets/tracking`, `/motor_cmd/tracking`, `/vision_pipeline_cmd`, `/camera_capture_cmd` | 视觉跟踪中枢。跟随/注视时持有摄像头租约，并控制检测管线。 |
 | `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd`, `/camera_frame` | `/hobot_mono2d_body_detection` | 热备 RDK 编解码、补边和 `mono2d_body_detection`；跟踪命令只切换结果使用状态，不反复加载模型。 |
 | `nodes/motion_arbiter_node.py` | `motion_arbiter_node` | 运动控制启用时 | `/motor_cmd/joystick`, `/motor_cmd/tracking`, `/motor_cmd/autonomy` | `/motor_cmd` | 唯一电机命令仲裁器，执行手柄 > 跟踪 > 自主动作的优先级，并在上游命令超时后停车。 |
@@ -127,7 +127,7 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
 | `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | `camera_capture_node` | 摄像头唯一原始 JPEG 图像源，类型为 `sensor_msgs/msg/CompressedImage`。 |
 | `/camera_frame` | `camera_capture_node` | TFT、Web preview、RDK 解码器 | 从 `/image` 按租约转发的 `sensor_msgs/msg/CompressedImage`；热备检测进程空闲时不收帧。 |
-| `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、复用、错误和当前客户端数量。 |
+| `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、真实停流热备、错误和当前客户端数量。 |
 | `/servo_targets/tracking` | `wali_tracking_node` | `sequence_ros_node` | 深度为 1 的最新头颈目标；只更新插值目标，不打断高层动作。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |
 | `/motor_cmd/joystick` | `joy_control_node` | `motion_arbiter_node` | 最高优先级手柄电机心跳。 |
@@ -156,7 +156,7 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 {"turn_id":"...","name":"set_vision_gate","arguments":{"enabled":false}}   // 关闭跟踪
 ```
 
-进入跟随或注视模式时先申请摄像头；`/camera_capture_status` 确认收到有效帧后才允许使用 BPU 检测结果。物理摄像头与 BPU 检测进程均已热备，请求只打开 `/camera_frame` 帧转发。运行中连续 3 秒无有效帧时，摄像头管理节点发布错误并自动重启摄像头，检测进程保持存活并等待画面恢复。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并关闭帧转发。多张人脸同时出现时，注视模式选择面积最大的人脸。
+进入跟随或注视模式时先申请摄像头；`camera_capture_node` 从 `STREAMOFF` 热备恢复取流，`/camera_capture_status` 确认收到有效帧后才允许使用 BPU 检测结果。运行中连续 3 秒无有效帧时，摄像头管理节点发布错误并自动重启摄像头，检测进程保持存活并等待画面恢复。目标丢失 1 秒后开始慢速搜索，5 秒后停止搜索并原地等待；连续 60 秒未识别到目标则切回 `idle`，停止电机并释放摄像头租约。多张人脸同时出现时，注视模式选择面积最大的人脸。
 
 跟踪期间胸前 TFT 使用与游戏模式相同的持久流传输。整个跟踪会话只发送一次无限时长的
 `STREAM_START`；内部摄像头租约分段续期不会再产生周期性的 `STREAM_END`，只有跟踪暂停、

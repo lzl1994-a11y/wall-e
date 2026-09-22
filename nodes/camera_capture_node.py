@@ -16,10 +16,12 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.vision.camera_capture_protocol import (
+    CAMERA_CAPTURE_SERVICE,
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
     CAMERA_SOURCE_TOPIC,
@@ -59,6 +61,10 @@ class CameraCaptureNode(Node):
         self._retry_after = 0.0
         self._last_status_signature: tuple | None = None
         self._last_status_publish = 0.0
+        self._capture_enabled: bool | None = None
+        self._capture_request = None
+        self._capture_request_target: bool | None = None
+        self._capture_service_warning_at = 0.0
 
         # ``hobot_usb_cam`` is launched only here and publishes the canonical
         # JPEG stream on /image.  The deployed TogetherROS hobot_usb_cam
@@ -75,6 +81,7 @@ class CameraCaptureNode(Node):
             10,
         )
         self._status_pub = self.create_publisher(String, CAMERA_STATUS_TOPIC, 10)
+        self._capture_client = self.create_client(SetBool, CAMERA_CAPTURE_SERVICE)
         self.create_subscription(String, CAMERA_COMMAND_TOPIC, self._on_command, 10)
         # ROS 2 Humble does not allow one node to subscribe to the same topic
         # with incompatible message types. Keep this endpoint aligned with the
@@ -86,9 +93,9 @@ class CameraCaptureNode(Node):
             qos_profile_sensor_data,
         )
         self._timer = self.create_timer(0.2, self._tick)
-        # Keep the physical camera process warm for the lifetime of this node.
-        # Leases gate frame relay only; they must not reopen the V4L2 device for
-        # every visual request.
+        # Keep the camera process and V4L2 configuration warm for this node's
+        # lifetime. Leases toggle VIDIOC_STREAMON/OFF through hobot_usb_cam's
+        # set_capture service, so standby does not transfer or generate frames.
         self._tick()
         self.get_logger().info(
             f"摄像头热备节点上线: {CAMERA_SOURCE_TOPIC} -> {CAMERA_FRAME_TOPIC}"
@@ -121,7 +128,8 @@ class CameraCaptureNode(Node):
         if validate_decode:
             self._last_decode_validation = now
         if not self._leases.active:
-            self._publish_status("standby", source=CAMERA_SOURCE_TOPIC)
+            state = "standby" if self._capture_enabled is False else "stopping"
+            self._publish_status(state, source=CAMERA_SOURCE_TOPIC)
             return
         self._frame_pub.publish(
             CompressedImage(
@@ -142,6 +150,7 @@ class CameraCaptureNode(Node):
             self._camera_process = None
             self._camera_device = ""
             self._process_started_at = 0.0
+            self._reset_capture_state()
             self._retry_after = now + self.RETRY_DELAY_SEC
             self._publish_status(
                 "error",
@@ -149,6 +158,20 @@ class CameraCaptureNode(Node):
                 error=f"hobot_usb_cam 已退出，退出码 {code}",
                 force=True,
             )
+
+        if self._camera_process is not None:
+            self._sync_capture_state(now=now)
+            if not self._leases.active:
+                state = (
+                    "standby"
+                    if self._capture_enabled is False and self._capture_request is None
+                    else "stopping"
+                )
+                self._publish_status(state, source=CAMERA_SOURCE_TOPIC)
+                return
+            if self._capture_enabled is not True or self._capture_request is not None:
+                self._publish_status("starting", source=CAMERA_SOURCE_TOPIC)
+                return
 
         decision = evaluate_camera_watchdog(
             process_alive=self._camera_process is not None,
@@ -200,6 +223,78 @@ class CameraCaptureNode(Node):
         if decision.action == CameraWatchdogAction.PUBLISH_STATUS:
             self._publish_status(decision.state, source=CAMERA_SOURCE_TOPIC)
 
+    def _sync_capture_state(self, *, now: float | None = None) -> None:
+        """Drive hobot_usb_cam's V4L2 stream without restarting its process."""
+        if self._camera_process is None or self._capture_request is not None:
+            return
+        desired = self._leases.active
+        if self._capture_enabled is desired:
+            return
+        current_time = time.monotonic() if now is None else now
+        if not self._capture_client.service_is_ready():
+            if current_time - self._capture_service_warning_at >= 10.0:
+                self._capture_service_warning_at = current_time
+                self.get_logger().warn(
+                    f"等待 {CAMERA_CAPTURE_SERVICE} 服务，摄像头尚未进入真实热备"
+                )
+            return
+
+        request = SetBool.Request()
+        request.data = desired
+        try:
+            future = self._capture_client.call_async(request)
+        except Exception as exc:
+            self.get_logger().warn(f"切换摄像头采集状态失败: {exc}")
+            return
+        self._capture_request = future
+        self._capture_request_target = desired
+        future.add_done_callback(self._on_capture_response)
+
+    def _on_capture_response(self, future) -> None:
+        if future is not self._capture_request:
+            return
+        target = self._capture_request_target
+        self._capture_request = None
+        self._capture_request_target = None
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().warn(f"摄像头采集服务调用失败: {exc}")
+            return
+
+        # The deployed hobot_usb_cam executes STREAMON/OFF and returns the
+        # message below, but leaves SetBool.success at its default false value.
+        # Accept its explicit completion message while still honoring corrected
+        # package versions that set success=true.
+        expected = "Start Capturing" if target else "Stop Capturing"
+        if not getattr(response, "success", False) and getattr(response, "message", "") != expected:
+            self.get_logger().warn(
+                f"摄像头采集服务拒绝请求: {getattr(response, 'message', '')}"
+            )
+            return
+
+        self._capture_enabled = bool(target)
+        now = time.monotonic()
+        if self._capture_enabled:
+            self._last_source_frame = 0.0
+            self._last_output_frame = 0.0
+            self._last_decode_validation = 0.0
+            self._process_started_at = now
+            self._publish_status("starting", source=CAMERA_SOURCE_TOPIC, force=True)
+            self.get_logger().info("摄像头退出热备，恢复 UVC 取流")
+        else:
+            self._last_output_frame = 0.0
+            self._publish_status("standby", source=CAMERA_SOURCE_TOPIC, force=True)
+            self.get_logger().info("摄像头进入真实热备，UVC 已停止取流")
+
+        # A lease may have changed while the service request was in flight.
+        self._sync_capture_state(now=now)
+
+    def _reset_capture_state(self) -> None:
+        self._capture_enabled = None
+        self._capture_request = None
+        self._capture_request_target = None
+
     def _camera_topic_diagnostic(self) -> str:
         """Report graph state without assuming the camera message type."""
         try:
@@ -249,6 +344,10 @@ class CameraCaptureNode(Node):
         self._last_output_frame = 0.0
         self._last_decode_validation = 0.0
         self._process_started_at = time.monotonic()
+        # hobot_usb_cam starts V4L2 capture during process initialization.
+        self._capture_enabled = True
+        self._capture_request = None
+        self._capture_request_target = None
         self._publish_status("starting", source=CAMERA_SOURCE_TOPIC, force=True)
         self.get_logger().info(
             f"启动唯一 hobot_usb_cam: {device} -> {CAMERA_SOURCE_TOPIC}"
@@ -257,6 +356,7 @@ class CameraCaptureNode(Node):
     def _stop_camera_process(self) -> None:
         process = self._camera_process
         self._camera_process = None
+        self._reset_capture_state()
         if process is None or process.poll() is not None:
             return
         try:

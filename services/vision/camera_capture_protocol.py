@@ -14,6 +14,7 @@ from typing import Any
 CAMERA_FRAME_TOPIC = "/camera_frame"
 CAMERA_COMMAND_TOPIC = "/camera_capture_cmd"
 CAMERA_STATUS_TOPIC = "/camera_capture_status"
+CAMERA_CAPTURE_SERVICE = "/set_capture"
 # The one canonical stream produced by the only ``hobot_usb_cam`` process.
 # Tracking consumes it directly; the capture manager adapts it to the public
 # CompressedImage preview topic for legacy preview/photo consumers.

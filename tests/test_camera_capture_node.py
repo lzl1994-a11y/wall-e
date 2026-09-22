@@ -45,6 +45,44 @@ class _FakeLogger:
         pass
 
 
+class _FakeSetBool:
+    class Request:
+        def __init__(self):
+            self.data = False
+
+
+class _FakeServiceResponse:
+    def __init__(self, enabled):
+        # Match the deployed hobot_usb_cam bug: the operation completes but
+        # SetBool.success remains at its default false value.
+        self.success = False
+        self.message = "Start Capturing" if enabled else "Stop Capturing"
+
+
+class _FakeFuture:
+    def __init__(self, response):
+        self._response = response
+
+    def result(self):
+        return self._response
+
+    def add_done_callback(self, callback):
+        callback(self)
+
+
+class _FakeClient:
+    def __init__(self):
+        self.requests = []
+        self.ready = True
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        self.requests.append(request.data)
+        return _FakeFuture(_FakeServiceResponse(request.data))
+
+
 class _FakeNodeBase:
     def __init__(self, _name):
         self.publishers = {}
@@ -52,6 +90,7 @@ class _FakeNodeBase:
         self.publisher_qos = {}
         self.subscriptions = {}
         self.subscription_types = {}
+        self.clients = {}
 
     def create_publisher(self, message_type, topic, qos):
         publisher = _FakePublisher(topic)
@@ -64,6 +103,11 @@ class _FakeNodeBase:
         self.subscriptions.setdefault(topic, []).append(callback)
         self.subscription_types.setdefault(topic, []).append(message_type)
         return object()
+
+    def create_client(self, _service_type, service_name):
+        client = _FakeClient()
+        self.clients[service_name] = client
+        return client
 
     def create_timer(self, _period, _callback):
         return object()
@@ -116,12 +160,15 @@ def _load_camera_capture_module():
     fake_sensor_module.CompressedImage = _FakeCompressedImage
     fake_std_module = types.ModuleType("std_msgs.msg")
     fake_std_module.String = _FakeString
+    fake_std_srvs_module = types.ModuleType("std_srvs.srv")
+    fake_std_srvs_module.SetBool = _FakeSetBool
     modules = {
         "rclpy": fake_rclpy,
         "rclpy.node": fake_node_module,
         "rclpy.qos": fake_qos_module,
         "sensor_msgs.msg": fake_sensor_module,
         "std_msgs.msg": fake_std_module,
+        "std_srvs.srv": fake_std_srvs_module,
     }
     sys.modules.pop("nodes.camera_capture_node", None)
     with patch.dict(sys.modules, modules):
@@ -153,6 +200,8 @@ class CameraCaptureNodeTests(unittest.TestCase):
 
         self.assertFalse(process.terminated)
         self.assertIs(node._camera_process, process)
+        self.assertEqual(node.clients["/set_capture"].requests, [False])
+        self.assertFalse(node._capture_enabled)
 
         node.destroy_node()
         self.assertTrue(process.terminated)
@@ -220,6 +269,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
             patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
         ):
             node = module.CameraCaptureNode()
+            node._tick()
             node._on_source_image(
                 _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
             )
@@ -227,6 +277,22 @@ class CameraCaptureNodeTests(unittest.TestCase):
         self.assertEqual(node.publishers["/camera_frame"].messages, [])
         status = node.publishers["/camera_capture_status"].messages[-1]
         self.assertIn('"state":"standby"', status.data)
+
+    def test_standby_resumes_capture_without_restarting_process(self):
+        module = _load_camera_capture_module()
+        process = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", return_value=process) as popen,
+        ):
+            node = module.CameraCaptureNode()
+            node._tick()
+            node._on_command(_FakeString(encode_camera_command("acquire", "web", 5)))
+
+        self.assertEqual(node.clients["/set_capture"].requests, [False, True])
+        self.assertTrue(node._capture_enabled)
+        self.assertEqual(popen.call_count, 1)
+        self.assertIs(node._camera_process, process)
 
     def test_expired_lease_keeps_camera_in_standby(self):
         module = _load_camera_capture_module()
@@ -245,6 +311,8 @@ class CameraCaptureNodeTests(unittest.TestCase):
 
         self.assertFalse(process.terminated)
         self.assertIs(node._camera_process, process)
+        self.assertEqual(node.clients["/set_capture"].requests, [False])
+        self.assertFalse(node._capture_enabled)
         status = node.publishers["/camera_capture_status"].messages[-1]
         self.assertIn('"state":"standby"', status.data)
 
@@ -341,6 +409,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
             patch.object(module.subprocess, "Popen", side_effect=[first, second]) as popen,
         ):
             node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "llm", 10)))
             node._process_started_at = time.monotonic() - node.FIRST_FRAME_TIMEOUT_SEC - 1.0
             node._tick()
 
@@ -369,6 +438,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
             patch.object(module, "jpeg_from_ros_image", return_value=b"frame"),
         ):
             node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "llm", 10)))
             node._on_source_image(
                 _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
             )
