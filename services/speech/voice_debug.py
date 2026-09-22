@@ -30,6 +30,8 @@ class RollingVoiceDebugStore:
         self.root = Path(root or "~/.wali_debug/voice").expanduser()
         self.limit = int(limit)
         self._lock = threading.Lock()
+        self._name_lock = threading.Lock()
+        self._last_timestamp_ns = 0
 
     def save_file(self, group: str, source, suffix=None):
         if not self.enabled:
@@ -63,8 +65,18 @@ class RollingVoiceDebugStore:
         return target
 
     def _new_path(self, group: str, suffix: str) -> Path:
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        unique = f"{time.time_ns() % 1_000_000_000:09d}-{uuid.uuid4().hex[:6]}"
+        # English: some embedded Linux clocks return the same time_ns value for
+        # several rapid writes. Enforce a per-store monotonic stamp so filename
+        # ordering remains creation ordering; UUID is retained only for uniqueness.
+        # 中文：部分嵌入式 Linux 时钟在连续写入时会返回相同的 time_ns。这里为每个
+        # 存储实例强制生成单调递增时间戳，使文件名排序等同于创建顺序；UUID 仅防重名。
+        with self._name_lock:
+            stamp_ns = max(time.time_ns(), self._last_timestamp_ns + 1)
+            self._last_timestamp_ns = stamp_ns
+        timestamp = time.strftime(
+            "%Y%m%d-%H%M%S", time.localtime(stamp_ns // 1_000_000_000)
+        )
+        unique = f"{stamp_ns % 1_000_000_000:09d}-{uuid.uuid4().hex[:6]}"
         return self.root / group / f"{timestamp}-{unique}{suffix}"
 
     def _prune(self, directory: Path):

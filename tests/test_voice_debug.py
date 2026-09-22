@@ -19,8 +19,13 @@ class VoiceDebugTests(unittest.TestCase):
     def test_store_keeps_latest_twenty_files_per_group(self):
         with tempfile.TemporaryDirectory(prefix="wali-voice-debug-") as temp_dir:
             store = RollingVoiceDebugStore(enabled=True, root=temp_dir, limit=20)
-            for index in range(23):
-                store.save_json("llm_input", {"index": index})
+            # Reproduce coarse embedded clocks where consecutive calls share a tick.
+            with patch(
+                "services.speech.voice_debug.time.time_ns",
+                return_value=1_700_000_000_000_000_000,
+            ):
+                for index in range(23):
+                    store.save_json("llm_input", {"index": index})
 
             files = list((Path(temp_dir) / "llm_input").glob("*.json"))
             values = {json.loads(path.read_text(encoding="utf-8"))["index"] for path in files}
