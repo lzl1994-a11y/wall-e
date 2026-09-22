@@ -1,4 +1,17 @@
-# services/llm/llm_service.py
+"""Provider-compatible text LLM service with guarded action-tool proposals.
+
+English: this module prepares text-only conversation history, streams visible
+answers, accumulates native function calls, and applies a structured JSON
+fallback only when a provider explicitly rejects tool/function parameters.  It
+does not execute actions.  Returned tool proposals are consumed by higher-level
+guards and the action pipeline, preserving the rule that model output is
+untrusted until locally validated.
+
+中文：本模块准备纯文本对话历史、流式输出可见回答、累积原生 Function Calling，并且只在
+供应商明确拒绝工具参数时启用结构化 JSON 降级。它不会执行任何动作；返回的工具提案还需
+交给上层意图守卫和动作管线校验，从而保证“模型输出在本地验证前均不可信”的安全边界。
+"""
+
 import json
 import logging
 import yaml
@@ -74,6 +87,17 @@ def _is_tool_calling_rejection(exc: Exception) -> bool:
 
 
 class LLMService:
+    """Coordinate one configured text model and its optional tool-capable model.
+
+    Configuration may select a separate ``tool_model`` when the main chat model
+    cannot reliably call functions.  Visual/retry requests can remain on the
+    base model, while tools-enabled turns use the resolved tool model.  History
+    is copied and stripped of old image/audio blocks before every request.
+
+    协调配置中的主文本模型和可选工具模型。当主模型不能可靠调用函数时，可单独配置
+    ``tool_model``；视觉或重试请求仍使用基础模型，需要工具的轮次使用解析后的工具模型。
+    每次请求前都会复制历史并剥离旧图片、音频块，避免大对象泄漏到后续上下文。
+    """
     def __init__(self, config_path="core/config.yaml"):
         # [ZH] 1. 从配置文件读取配置
         # [EN] 1. Load configuration from YAML file

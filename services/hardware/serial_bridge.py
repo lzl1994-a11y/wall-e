@@ -1,4 +1,18 @@
-# services/hardware/serial_bridge.py
+"""Own the long-lived ESP32 serial connection used by screen and motion traffic.
+
+English: the bridge combines reconnect/backoff policy, physical-write
+serialization, screen wake state, and sequence-routed network-configuration
+replies.  One permanent reader thread consumes serial input and dispatches
+NETCFG lines to the waiter registered for that sequence number.  Long Wi-Fi
+operations therefore do not hold the write lock or block unrelated screen and
+motion messages.
+
+中文：本模块持有屏幕与运动控制共用的 ESP32 长连接，统一处理重连退避、物理写串行化、
+屏幕唤醒状态，以及按序列号路由的配网响应。唯一常驻读取线程消费串口输入，并把 NETCFG
+响应分发给登记了对应序列号的等待者；耗时较长的 Wi-Fi 操作不会长期占用写锁，也不会
+阻塞屏幕或运动消息。
+"""
+
 import serial
 import threading
 import time
@@ -13,9 +27,16 @@ RECONNECT_MAX_DELAY_SEC = 30.0
 
 
 class SerialBridge:
-    """
-    瓦力纯净硬件网桥服务 (完全解耦 ROS)
-    职责：连接下位机，提供最基础的发送接口，并自动管理屏幕的唤醒状态。
+    """Thread-safe, ROS-independent bridge to the selected ESP32 controller.
+
+    ``SerialBroker`` discovers the configured device; this class keeps it
+    connected, detects selector changes, serializes writes, and exposes a small
+    raw-send/exclusive-operation API.  It never interprets high-level dialog or
+    motion intent—the caller must provide an already encoded device payload.
+
+    这是一个线程安全且不依赖 ROS 的 ESP32 网桥。``SerialBroker`` 负责发现配置设备，本类
+    负责维持连接、检测 USB 选择变更、串行化写入，并提供最小的原始发送与独占操作接口。
+    它不解释对话或运动意图；调用方必须先把目标转换为下位机能够理解的载荷。
     """
     def __init__(self, device_name="WALL_E_TFT", timeout_seconds=30.0, config_path=DEFAULT_CONFIG_PATH):
         self.device_name = device_name
@@ -28,9 +49,11 @@ class SerialBridge:
         self._connection_failure_logged = False
         self._next_selection_check_at = 0.0
         self._selection_config_mtime_ns = self._config_mtime_ns()
-        # Only physical writes are serialized. A permanent reader dispatches
-        # NETCFG replies by sequence, so waiting for a long Wi-Fi/TCP APPLY does
-        # not block screen or motion writes.
+        # English: only bytes written to the physical port share this lock. The
+        # permanent reader below routes NETCFG replies by sequence, so a slow
+        # Wi-Fi/TCP APPLY may wait for its reply without blocking other writers.
+        # 中文：此锁只串行化真正写入物理串口的字节。常驻读取线程按序列号路由 NETCFG
+        # 响应，因此耗时的 Wi-Fi/TCP APPLY 可以等待回包而不阻塞其他发送者。
         self._io_lock = threading.RLock()
         self._connection_lock = threading.RLock()
         self._response_condition = threading.Condition()
@@ -228,6 +251,16 @@ class SerialBridge:
         return ""
 
     def send_raw(self, payload: str, *, block=True, wake_screen=True):
+        """Send one encoded line after reconnect and optional wake handling.
+
+        ``block=False`` performs a best-effort nonblocking lock acquisition and
+        returns ``False`` when another writer is active.  ``wake_screen=False``
+        is reserved for protocol traffic that must not alter UI wake state.
+
+        在完成必要的重连和可选唤醒后发送一条已编码消息。``block=False`` 表示仅尝试获取
+        写锁，其他发送者正在工作时立即返回 ``False``；``wake_screen=False`` 用于不得改变
+        UI 唤醒状态的协议流量。
+        """
         """Send normal screen/motion traffic while holding the shared USB lock."""
         if not self._io_lock.acquire(blocking=block):
             return False
@@ -262,6 +295,11 @@ class SerialBridge:
             session.close()
 
     def close(self):
+        """Stop the reader, wake pending NETCFG waiters, and close the port.
+
+        停止读取线程、唤醒仍在等待配网响应的调用方并关闭串口，使进程退出时不会留下
+        后台线程或永久等待者。
+        """
         """安全释放串口"""
         if hasattr(self, "_reader_stop"):
             self._reader_stop.set()

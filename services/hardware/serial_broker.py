@@ -1,3 +1,16 @@
+"""Discover serial devices without leaking port-selection policy into nodes.
+
+English: USB selectors from configuration narrow the preferred candidates, and
+an application-level ``WHO_ARE_YOU`` handshake establishes the actual device
+identity.  A controlled fallback is allowed only for a requested identity; a
+port that answered as another device is cached by fingerprint so repeated scans
+do not keep resetting unrelated controllers.
+
+中文：配置中的 USB 选择器用于缩小首选候选端口，真正的设备身份仍通过应用层
+``WHO_ARE_YOU`` 握手确认。只有调用方明确要求某个身份时才允许受控回退；若某端口回应为
+其他设备，会按硬件指纹缓存拒绝结果，避免后续扫描反复复位无关控制器。
+"""
+
 import serial
 import serial.tools.list_ports
 import time
@@ -5,8 +18,15 @@ import time
 from services.hardware.usb_devices import DEFAULT_CONFIG_PATH, serial_ports_for_role
 
 class SerialBroker:
-    """
-    瓦力硬件串口发现与仲裁服务
+    """Map stable firmware identities to currently available serial paths.
+
+    The mapping is rebuilt on each scan because Linux device names may change
+    after reconnect.  Selection metadata is a hint rather than an identity:
+    only a successful handshake may populate ``device_map``.
+
+    把稳定的固件身份映射到当前串口路径。每次扫描都会重建映射，因为 Linux 设备名可能在
+    重连后变化。USB 选择信息只是候选提示而不是设备身份，只有成功握手才能写入
+    ``device_map``。
     """
     
     def __init__(self, config_path=DEFAULT_CONFIG_PATH):

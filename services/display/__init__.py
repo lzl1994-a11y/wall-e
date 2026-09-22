@@ -1,5 +1,16 @@
-"""TFT and virtual-display protocols, clients, servers, and state.
+"""TFT and virtual-display protocols, sessions, rendering, and state.
 
-显示层封装 TFT 与虚拟显示的协议、客户端、服务端和文本状态。调用方只提交待展示的
-内容，连接、编码和会话细节由本层负责，以便替换显示终端。
+English
+-------
+Display services define preview request/result messages, TCP framing, TFT text
+rendering, virtual-display state, and bridge/client/server behavior.  Callers
+submit semantic content or prepared frames; this package owns connection and
+encoding details.  It does not choose dialog answers or game actions.  A new
+screen backend should implement this boundary without changing its producers.
+
+中文
+----
+显示层定义预览请求与结果消息、TCP 帧协议、TFT 文本渲染、虚拟显示状态以及桥接、客户端、
+服务端行为。调用方只提交语义内容或已准备好的画面，连接和编码细节由本包负责；本层不决定
+对话答案或游戏动作。未来更换屏幕后端时，应实现同一显示边界，而不是修改所有内容生产者。
 """

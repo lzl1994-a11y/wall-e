@@ -1,3 +1,15 @@
+"""Read direction-of-arrival angles from the dedicated serial sensor.
+
+English: ``DOAListener`` owns only the serial connection and background read
+thread.  A valid firmware heartbeat line containing ``status:alive`` and an
+``az:<degrees>`` field is converted to an integer callback.  ROS publication,
+tracking decisions, and head motion remain the caller's responsibility.
+
+中文：``DOAListener`` 只管理声源定位传感器的串口连接和后台读取线程。固件必须发送同时
+包含 ``status:alive`` 与 ``az:<角度>`` 的完整行，服务才会把角度转换成整数并触发回调。
+ROS 发布、目标跟踪和头部运动决策均由调用方负责，避免传感器驱动包含业务行为。
+"""
+
 import serial
 import time
 import re
@@ -5,9 +17,15 @@ import threading
 import sys
 
 class DOAListener:
-    """
-    瓦力听觉神经封装类 (TDOA 声源定位串口读取服务)
-    设计目标: 彻底免疫 Windows CDC 驱动 Bug，暴力抓取，不丢字节
+    """Manage one TDOA serial reader and deliver validated azimuth callbacks.
+
+    The reader uses a short serial timeout so ``stop`` can terminate promptly.
+    Input decoding is tolerant of invalid UTF-8 bytes, but a callback is emitted
+    only for a complete alive/status line matching the documented angle format.
+
+    管理一个 TDOA 串口读取器，并只对校验通过的方位角触发回调。较短的串口超时保证
+    ``stop`` 不会被永久阻塞；无效 UTF-8 字节会被忽略，但不完整或不含存活状态的行不会
+    被当作有效测量，从而避免串口噪声触发运动。
     """
     def __init__(self, port=None, baudrate=115200, on_angle_received=None):
         self.port = port
@@ -20,6 +38,11 @@ class DOAListener:
         self.angle_pattern = re.compile(r'az:(-?\d+)')
 
     def start(self):
+        """Open the configured port and start the daemon reader thread.
+
+        打开配置串口并启动守护读取线程。初始化失败时返回 ``False``，不会留下一个标记为
+        运行中但实际没有串口的半初始化实例；成功后返回 ``True``。
+        """
         try:
             # timeout=0.1 是给暴力 read 用的，防止线程死锁
             self.ser = serial.Serial(self.port, self.baudrate, timeout=0.1)
@@ -68,6 +91,11 @@ class DOAListener:
                 time.sleep(0.1)
 
     def stop(self):
+        """Stop reading, join a foreign reader thread, and close the port.
+
+        停止读取；若由其他线程调用则等待后台线程退出，随后关闭串口。读取线程内部调用
+        清理时不会等待自身，避免发生自连接死锁。
+        """
         self.is_running = False
         if self._listen_thread and self._listen_thread is not threading.current_thread():
             self._listen_thread.join(timeout=1.0)

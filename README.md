@@ -497,7 +497,66 @@ tft_preview:
 
 ### Service 功能目录
 
-`services/` 保留原有文件名，并按职责分为 12 个包：`action`（动作契约与仲裁）、`orchestration`（计划和行为树编排）、`motion`（运动规则）、`hardware`（设备与底层协议）、`audio`（采集与播放）、`speech`（ASR/TTS）、`llm`（模型、多模态与工具分发）、`dialog`（对话策略）、`vision`（图像与视觉流程）、`game`（模拟器与游戏策略）、`display`（TFT/虚拟显示）和 `integrations`（Web/MCP 外部入口）。每个包的 `__init__.py` 均用中英双语说明边界；节点通过完整包路径引用服务，设备驱动不再与业务服务混放在同一平面目录。
+`services/` 已从单层文件目录整理为 12 个按职责划分的功能包。原有 Python 文件名保持不变，调用方统一使用完整包路径，例如 `services.motion.motion_arbiter` 和 `services.hardware.serial_bridge`。分类的目的不只是让目录整齐，而是明确“业务决策在哪里结束、设备实现从哪里开始”，避免以后增加硬件或模型供应商时继续扩大节点文件。
+
+整体调用方向如下：
+
+```text
+外部入口 / 用户交互
+ integrations   dialog   llm   game
+         \        |      /     /
+          orchestration + action
+                    |
+                  motion
+                    |
+                 hardware
+
+ speech 使用 audio 完成音频输入输出
+ vision 使用 display 输出预览或跟踪画面
+ nodes 只负责 ROS I/O、定时器和进程生命周期
+```
+
+这不是要求所有模块形成完全没有横向关系的单向链。例如游戏需要显示协议，音频需要查询声卡设备，视觉搜索需要动作契约。但跨包依赖必须通过明确的公开模块完成，不能依赖“文件恰好在同一目录”而使用模糊相对导入。
+
+| 功能包 | 核心职责 | 代表文件 | 不应该放入的内容 |
+| --- | --- | --- | --- |
+| `action` | 动作命令、回执、状态、取消、资源仲裁、能力注册和意图安全校验 | `action_command.py`、`action_arbitration.py`、`action_intent_guard.py` | 串口写入、ROS 节点生命周期、具体舵机通道编码 |
+| `orchestration` | 动作计划、行为树、条件任务、执行结果归一化和可取消工作流 | `action_plan.py`、`behavior_tree_workflow.py`、`conditional_task.py` | 绕过动作仲裁直接操作硬件 |
+| `motion` | 摇杆映射、运动仲裁、看门狗、舵机目标、履带命令和动作序列插值 | `motion_arbiter.py`、`motor_watchdog.py`、`sequence_execution.py` | PWM/CAN/串口报文格式和设备连接 |
+| `hardware` | USB 选择、串口发现与重连、PCA9685、ESP32 配网、舵机和板级接口 | `serial_bridge.py`、`pca9685_output_state.py`、`servo_control.py` | 对话意图、模型提示词和动作业务编排 |
+| `audio` | PCM 采集、缓冲、混音、重采样、播放、音乐解码和频谱 | `audio_pipeline.py`、`audio_mixer.py`、`playback_service.py` | ASR/TTS 供应商选择和对话回复决策 |
+| `speech` | ASR/STT/TTS 适配、模型路径校验和语音调试产物 | `stt_service.py`、`tts_service.py`、`asr/` | 用户回复内容、动作选择和物理声卡枚举规则 |
+| `llm` | 模型请求准备、流式响应、工具声明与分发、多模态适配和历史管理 | `llm_service.py`、`tool_dispatcher.py`、`multimodal/` | 直接发布电机或舵机命令 |
+| `dialog` | 对话轮次、分句、输出守卫、表情姿态和交互工作流 | `dialog_turn.py`、`dialog_output.py`、`dialog_workflow.py` | 模型供应商协议和设备驱动实现 |
+| `vision` | 摄像头租约与帧协议、预览、图像产物校验、跟踪画面和视觉搜索 | `camera_frame.py`、`camera_preview.py`、`visual_search.py` | 多个消费者各自打开物理摄像头 |
+| `game` | libretro 会话、手柄输入、菜单、热键、音视频适配和退出屏障 | `fc_game_session.py`、`game_mode.py`、`game_tft_stream.py` | 通用运动控制或显示设备连接实现 |
+| `display` | TFT/虚拟显示协议、连接会话、文本渲染、客户端和服务端 | `tft_preview_protocol.py`、`tft_preview_server.py`、`virtual_display.py` | 决定对话答案或游戏行为 |
+| `integrations` | Web 配置服务、MCP 网关、外部输入校验、鉴权与白名单 | `web_server.py`、`mcp_gateway.py` | 任意 Shell、文件系统或无限制 ROS 接口暴露 |
+
+#### 节点与 Service 的边界
+
+`nodes/` 是 ROS 边界：负责创建 publisher/subscriber/service/action、处理 ROS 消息类型、调度 timer，并管理进程启动和关闭。可独立测试的状态机、参数校验、数值换算和业务决策应放入对应的 Service。节点可以组合多个 Service，但 Service 不应为了取得一个 ROS Node 对象而反向依赖具体节点。
+
+少量 Service 包含明确命名的传输适配器，例如 `ros2_action_execution.py` 和 TFT ROS 客户端。这些文件只负责把稳定 Service 契约翻译成传输调用，不在适配器里重新实现业务规则。这样既避免为了“纯净分层”制造大量空壳，也能把 ROS 依赖限制在可识别的位置。
+
+#### 跨包引用规则
+
+1. 跨功能包使用完整导入路径，例如 `from services.audio.audio_pipeline import AudioPipeline`；只有同一子包内紧密相关的实现才使用相对导入。
+2. `__init__.py` 主要记录包职责，不批量重新导出内部类。显式导入能看清真实依赖，也能降低循环导入和可选依赖在启动时被意外加载的风险。
+3. 从 Service 文件定位 `core/config.yaml`、模型或资源文件时，必须以仓库根目录为基准。由于文件现在多了一层功能目录，不能继续假定 `services/` 的父目录层级不变。
+4. 外部入口脚本必须支持项目启动器使用的路径。当前 Web 服务入口是 `services/integrations/web_server.py`，启动清单和直接运行命令必须保持一致。
+5. 新文件先按“它负责做决策，还是负责执行设备协议”判断位置。前者通常进入 `action`、`orchestration`、`motion`、`dialog` 等业务包，后者进入 `hardware`、`audio`、`display` 或具体供应商适配包。
+
+#### 更换硬件时的改动范围
+
+以未来更换 CAN 总线舵机为例，正常情况下应在 `services/hardware/` 增加 CAN 连接、设备发现和目标编码实现，再在硬件节点或配置选择处接入新的后端。`services/motion/` 仍然输出相同的关节/角度目标，动作编排、对话和 LLM 工具契约无需理解 CAN 帧。如果更换硬件迫使这些上层模块解析 CAN ID，说明驱动边界已经泄漏，应先调整接口而不是继续向上添加条件分支。
+
+各功能包的 `__init__.py` 还提供中英双语的详细职责、允许依赖和禁止事项说明。完成目录或导入调整后，至少运行：
+
+```powershell
+python -m compileall -q launch_nodes.py nodes services tests tools
+python -m pytest tests -q
+```
 
 ### 视觉双模式系统 (`wali_tracking_node.py`)
 

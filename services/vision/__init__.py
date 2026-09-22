@@ -1,5 +1,18 @@
-"""Camera-frame, preview, tracking-display, and visual-search services.
+"""Camera frames, previews, runtime validation, and visual-search workflows.
 
-视觉层负责图像帧、预览、视觉检索和跟踪画面处理。它使用抽象的帧与管线协议，物理
-摄像头的生命周期仍由节点边界管理，避免算法逻辑绑定具体采集设备。
+English
+-------
+Vision services define camera lease/frame protocols, convert and validate image
+artifacts, manage preview workers, prepare tracking display frames, and execute
+visual-search decisions.  The physical camera process and ROS subscriptions
+remain node-owned; consumers request frames through the shared protocol instead
+of opening the camera independently.  This guarantees a single capture owner
+and keeps visual reasoning testable with injected frames.
+
+中文
+----
+视觉层定义摄像头租约与帧协议，负责图像产物转换和校验、预览工作进程、跟踪显示帧以及
+视觉搜索决策。物理摄像头进程和 ROS 订阅仍由节点持有；所有消费者必须通过共享协议请求
+画面，不能各自打开摄像头。这样既保证唯一采集所有者，也能通过注入测试帧独立验证视觉
+推理和工作流。
 """

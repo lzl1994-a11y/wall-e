@@ -1,7 +1,20 @@
 # services/llm/mcp_service.py
-# 瓦力工具注册中心 — 纯签名声明
-# ROS 模式下仅负责告诉 LLM "有哪些工具可用"，具体执行由各 ROS 节点完成
-# LLM 返回 tool_call → /action_request 仲裁 → /action_cmd 执行
+"""Declare the robot's model-visible tool registry without executing hardware.
+
+English: FastMCP decorators provide canonical names, descriptions, and schemas.
+``get_chat_tools`` converts those definitions into OpenAI-compatible function
+tools and tightens schemas so malformed or unexpected arguments fail closed.
+In ROS mode, a model tool call is only a proposal: it flows through
+``/action_request`` arbitration and reaches an executor through ``/action_cmd``.
+This module may enumerate capabilities, but it must not publish ROS messages,
+open devices, or run arbitrary shell commands.
+
+中文：FastMCP 装饰器提供统一的工具名称、说明和参数模式；``get_chat_tools`` 将其转换为
+OpenAI 兼容的函数工具，并收紧 JSON Schema，使缺失、畸形或额外参数按失败关闭处理。
+在 ROS 模式中，模型工具调用只是提案，必须经过 ``/action_request`` 仲裁，再通过
+``/action_cmd`` 到达执行者。本模块可以枚举能力，但不得自行发布 ROS 消息、打开设备或
+执行任意 Shell 命令。
+"""
 
 import asyncio
 import copy
