@@ -2,7 +2,7 @@
 
 import unittest
 
-from services.joystick_button_policy import (
+from services.motion.joystick_button_policy import (
     BTN_A,
     BTN_B,
     BTN_L1,

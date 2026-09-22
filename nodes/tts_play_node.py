@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TTS 播放节点：订阅 tts_text → TTSService 合成 → /audio_output（PCM int16）
 
-只负责 ROS I/O。合成逻辑在 services/tts_service.py。
+只负责 ROS I/O。合成逻辑在 services/speech/tts_service.py。
 """
 
 import sys
@@ -14,13 +14,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import MultiArrayDimension, String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from services.audio_buffer import StreamingPCMPrebuffer
-from services.audio_output import OUTPUT_SAMPLE_RATE
-from services.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
-from services.paced_pcm_output import PacedPCMOutput
-from services.tts_pipeline import OrderedTTSPipeline
-from services.tts_protocol import decode_turn_end
-from services.tts_service import TTSService
+from services.audio.audio_buffer import StreamingPCMPrebuffer
+from services.audio.audio_output import OUTPUT_SAMPLE_RATE
+from services.audio.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
+from services.audio.paced_pcm_output import PacedPCMOutput
+from services.speech.tts_pipeline import OrderedTTSPipeline
+from services.speech.tts_protocol import decode_turn_end
+from services.speech.tts_service import TTSService
 
 
 class TTSPlayNode(Node):

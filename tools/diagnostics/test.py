@@ -9,8 +9,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from services.llm_service import LLMService
-from services.tts_service import TTSService
+from services.llm.llm_service import LLMService
+from services.speech.tts_service import TTSService
 
 def main():
     print("🚀 正在初始化大模型服务...")

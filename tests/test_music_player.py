@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from services.music_player import MusicPlayer, SpectrumAnalyzer, resolve_track
-from services.music_protocol import decode_music_state, encode_music_state
-from services.music_spectrum import render_spectrum_frame
+from services.audio.music_player import MusicPlayer, SpectrumAnalyzer, resolve_track
+from services.audio.music_protocol import decode_music_state, encode_music_state
+from services.audio.music_spectrum import render_spectrum_frame
 
 
 class _Process:

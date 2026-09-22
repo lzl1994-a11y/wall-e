@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.action_arbitration import ActionArbiter
+from services.action.action_arbitration import ActionArbiter
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -2,7 +2,7 @@
 
 import unittest
 
-from services.game_mode import GameMode, GameModeController
+from services.game.game_mode import GameMode, GameModeController
 
 
 class GameModeAudioPolicyTests(unittest.TestCase):

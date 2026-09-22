@@ -6,9 +6,9 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-from services.game_protocol import encode_game_frame
-from services.tft_preview_protocol import decode_preview_result
-from services.tft_preview_server import PreviewResult
+from services.game.game_protocol import encode_game_frame
+from services.display.tft_preview_protocol import decode_preview_result
+from services.display.tft_preview_server import PreviewResult
 
 
 class _String:

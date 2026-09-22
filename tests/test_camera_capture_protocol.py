@@ -1,6 +1,6 @@
 import unittest
 
-from services.camera_capture_protocol import (
+from services.vision.camera_capture_protocol import (
     CAMERA_FRAME_TOPIC,
     CAMERA_SOURCE_TOPIC,
     CameraLeaseBook,

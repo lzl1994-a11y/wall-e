@@ -52,7 +52,7 @@ def main() -> int:
             separators=(",", ":"),
         )
         if args.adapter:
-            from services.ros2_action_execution import (
+            from services.orchestration.ros2_action_execution import (
                 Ros2ActionPlanExecutor,
                 create_wali_task_action_client,
             )

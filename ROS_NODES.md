@@ -168,44 +168,44 @@ LLM 解析用户语音指令后，通过 `/action_request` 提交，仲裁后以
 
 | 文件 | 作用 |
 | --- | --- |
-| `services/llm_service.py` | 封装 OpenAI/Kimi 兼容接口，提供流式大模型回复和工具调用结果。 |
-| `services/llm_response_policy.py` | 与 ROS 无关的文本 LLM 响应策略：长文本预算、纠错元数据剥离、回答前缀与安全 TTS/视觉文本清洗。 |
-| `services/camera_frame.py` | 请求摄像头租约，支持单帧或限时帧流，完成后立即释放；不会直接打开摄像头。 |
-| `services/camera_capture_protocol.py` | 定义唯一摄像头源话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 启动命令。 |
-| `services/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
-| `services/tft_preview_client.py` | 对话节点使用的同步 ROS 客户端；向独立 TFT 节点请求预览并按 `request_id` 等待结果。 |
-| `services/tft_preview_protocol.py` | 定义 TFT 预览请求/结果话题及与 ROS 无关的 JSON 编解码。 |
-| `services/music_player.py` | 解析本地曲目、调用 FFmpeg 输出 PCM，并从同一音频块计算频谱。 |
-| `services/music_spectrum.py` | 把频段值渲染为 TFT 原始帧；TCP 传输仍由 TFT 节点负责。 |
-| `services/music_protocol.py` | 定义音乐 PCM、频谱和状态话题，避免播放与显示模块相互依赖。 |
-| `services/audio_mixer.py` | 在统一采样时钟上混合语音和音乐，并实现音乐 20% 闪避及平滑恢复。 |
-| `services/dialog_workflow.py` | 与 ROS 无关的对话工作流：相机检查、拍照保存、条件任务和动作序列；设备与模型访问均通过回调注入。 |
-| `services/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
-| `services/dialog_output.py` | 与 ROS 无关的语音输出守卫：协调唤醒应答、TTS 播放完成、陈旧回执和安全恢复录音的条件。 |
-| `services/llm_response_policy.py` | 与 ROS 无关的大模型纯文本清洗与长文本生成策略：负责 ASR 纠错元数据识别与剥离、回答前缀剥离、TTS 文本安全清洗以及视觉回答清洗。 |
-| `services/llm_stream_response.py` | 与 ROS 无关的流式模型事件累积与回复决策服务：负责文本分句、TTS 提前播报判定、尾句决策、工具调用与拒绝收集，以及最终回复决策。 |
-| `services/llm_conversation_history.py` | 与 ROS 无关的对话历史筛选、清洗与写回服务：负责请求历史截断、移除图片块、视觉历史文本提取，以及普通回复与工具动作回复的写回。 |
-| `services/llm_request_preparation.py` | 与 ROS 无关的用户请求分流与普通模型请求准备服务：严格按照优先级分流安全停止动作、条件任务、拍照与单步视觉查看，并为普通对话准备拼音参考、Prompt 模板与 Token 配置。 |
-| `services/llm_tool_proposal.py` | 与 ROS 无关的模型工具提案决策服务：负责参数解析、意图校验、条件任务原子性保护，以及普通动作、拍照、视觉查看和条件任务的纯路由决策。 |
-| `services/llm_conditional_planning.py` | 与 ROS 无关的条件任务规划决策服务：负责原生工具事件解析、参数 JSON 解码、显式动作规范化、条件意图校验，以及兼容降级（fallback）提示词构造与 JSON 计划提取。 |
-| `services/llm_visual_request.py` | 与 ROS 无关的视觉模型请求准备与流式文本结果累积服务：负责游戏画面评论、相机问答和条件视觉判断的纯请求准备、图片 Base64 编码及流式文本累积。 |
-| `services/llm_voice_turn.py` | 与 ROS 无关的普通 LLM 对话回合状态与完成决策服务：负责纠错文本状态管理、表情状态维护、动作提案记录、动作结果归一化和最终回复决策。 |
-| `services/llm_empty_answer_retry.py` | 与 ROS 无关的空回复重试服务：负责空回复单次重试的 Prompt、Token 边界、模型请求参数和回复文本解析。 |
-| `services/conditional_task.py` | 与 ROS 无关的单步条件任务服务：负责条件任务意图判定、计划校验、视觉决策解析、执行结果归一化与回复决策。 |
-| `services/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
-| `services/visual_search.py` | 视觉搜索计划、ROS 叶节点协议和执行工作流：校验完成动作、处理单次取帧/评估降级，并归一化行为树执行结果。 |
-| `services/native_plan_execution.py` | 与 ROS 无关的原生动作计划执行适配器：优先 ROS2 Action，Action 不可用时回退到关联话题执行，并转交状态消息。 |
-| `services/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机：维护模式切换、帧保留和间隔调度。 |
-| `services/sequence_execution.py` | 与 ROS 无关的动作命令生命周期、序列展开和舵机轨迹执行；负责取消/中断、目标限位、机械联动约束与 50 Hz 插值计算。 |
-| `services/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：目标连续性、人体跟随、人脸注视、脖子俯仰，以及目标丢失后的保持、搜索、停止和退出状态机。 |
+| `services/llm/llm_service.py` | 封装 OpenAI/Kimi 兼容接口，提供流式大模型回复和工具调用结果。 |
+| `services/llm/llm_response_policy.py` | 与 ROS 无关的文本 LLM 响应策略：长文本预算、纠错元数据剥离、回答前缀与安全 TTS/视觉文本清洗。 |
+| `services/vision/camera_frame.py` | 请求摄像头租约，支持单帧或限时帧流，完成后立即释放；不会直接打开摄像头。 |
+| `services/vision/camera_capture_protocol.py` | 定义唯一摄像头源话题、租约 JSON、JPEG 转换和 `hobot_usb_cam` 启动命令。 |
+| `services/display/tft_preview_server.py` | 后台监听 ESP32 TCP 连接，处理 WTFT 协议、心跳、240×240 JPEG 预览和断线重连。 |
+| `services/display/tft_preview_client.py` | 对话节点使用的同步 ROS 客户端；向独立 TFT 节点请求预览并按 `request_id` 等待结果。 |
+| `services/display/tft_preview_protocol.py` | 定义 TFT 预览请求/结果话题及与 ROS 无关的 JSON 编解码。 |
+| `services/audio/music_player.py` | 解析本地曲目、调用 FFmpeg 输出 PCM，并从同一音频块计算频谱。 |
+| `services/audio/music_spectrum.py` | 把频段值渲染为 TFT 原始帧；TCP 传输仍由 TFT 节点负责。 |
+| `services/audio/music_protocol.py` | 定义音乐 PCM、频谱和状态话题，避免播放与显示模块相互依赖。 |
+| `services/audio/audio_mixer.py` | 在统一采样时钟上混合语音和音乐，并实现音乐 20% 闪避及平滑恢复。 |
+| `services/dialog/dialog_workflow.py` | 与 ROS 无关的对话工作流：相机检查、拍照保存、条件任务和动作序列；设备与模型访问均通过回调注入。 |
+| `services/dialog/dialog_turn.py` | 与 ROS 无关的单轮语音回复状态：流式分句、纠错前缀剥离、TTS 尾段 flush、屏幕回复字段和回合关联 ID。 |
+| `services/dialog/dialog_output.py` | 与 ROS 无关的语音输出守卫：协调唤醒应答、TTS 播放完成、陈旧回执和安全恢复录音的条件。 |
+| `services/llm/llm_response_policy.py` | 与 ROS 无关的大模型纯文本清洗与长文本生成策略：负责 ASR 纠错元数据识别与剥离、回答前缀剥离、TTS 文本安全清洗以及视觉回答清洗。 |
+| `services/llm/llm_stream_response.py` | 与 ROS 无关的流式模型事件累积与回复决策服务：负责文本分句、TTS 提前播报判定、尾句决策、工具调用与拒绝收集，以及最终回复决策。 |
+| `services/llm/llm_conversation_history.py` | 与 ROS 无关的对话历史筛选、清洗与写回服务：负责请求历史截断、移除图片块、视觉历史文本提取，以及普通回复与工具动作回复的写回。 |
+| `services/llm/llm_request_preparation.py` | 与 ROS 无关的用户请求分流与普通模型请求准备服务：严格按照优先级分流安全停止动作、条件任务、拍照与单步视觉查看，并为普通对话准备拼音参考、Prompt 模板与 Token 配置。 |
+| `services/llm/llm_tool_proposal.py` | 与 ROS 无关的模型工具提案决策服务：负责参数解析、意图校验、条件任务原子性保护，以及普通动作、拍照、视觉查看和条件任务的纯路由决策。 |
+| `services/llm/llm_conditional_planning.py` | 与 ROS 无关的条件任务规划决策服务：负责原生工具事件解析、参数 JSON 解码、显式动作规范化、条件意图校验，以及兼容降级（fallback）提示词构造与 JSON 计划提取。 |
+| `services/llm/llm_visual_request.py` | 与 ROS 无关的视觉模型请求准备与流式文本结果累积服务：负责游戏画面评论、相机问答和条件视觉判断的纯请求准备、图片 Base64 编码及流式文本累积。 |
+| `services/llm/llm_voice_turn.py` | 与 ROS 无关的普通 LLM 对话回合状态与完成决策服务：负责纠错文本状态管理、表情状态维护、动作提案记录、动作结果归一化和最终回复决策。 |
+| `services/llm/llm_empty_answer_retry.py` | 与 ROS 无关的空回复重试服务：负责空回复单次重试的 Prompt、Token 边界、模型请求参数和回复文本解析。 |
+| `services/orchestration/conditional_task.py` | 与 ROS 无关的单步条件任务服务：负责条件任务意图判定、计划校验、视觉决策解析、执行结果归一化与回复决策。 |
+| `services/dialog/dialog_tool_router.py` | 与 ROS 无关的语音工具路由：分派相机检查、条件任务、视觉搜索和普通动作，并在普通动作执行前校验参数。 |
+| `services/vision/visual_search.py` | 视觉搜索计划、ROS 叶节点协议和执行工作流：校验完成动作、处理单次取帧/评估降级，并归一化行为树执行结果。 |
+| `services/orchestration/native_plan_execution.py` | 与 ROS 无关的原生动作计划执行适配器：优先 ROS2 Action，Action 不可用时回退到关联话题执行，并转交状态消息。 |
+| `services/game/game_commentary.py` | 与 ROS 无关的游戏画面解说状态机：维护模式切换、帧保留和间隔调度。 |
+| `services/motion/sequence_execution.py` | 与 ROS 无关的动作命令生命周期、序列展开和舵机轨迹执行；负责取消/中断、目标限位、机械联动约束与 50 Hz 插值计算。 |
+| `services/motion/tracking_control.py` | 与 ROS 无关的视觉跟踪决策：目标连续性、人体跟随、人脸注视、脖子俯仰，以及目标丢失后的保持、搜索、停止和退出状态机。 |
 | `core/action_skills.json` | 动作技能注册表；统一定义执行节点、计划/仲裁资源、超时、重试和可取消能力。 |
-| `services/action_cancel.py` | `/action_cancel` 定向取消协议的编解码与校验。 |
-| `services/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
+| `services/action/action_cancel.py` | `/action_cancel` 定向取消协议的编解码与校验。 |
+| `services/llm/mcp_service.py` | 以 FastMCP 2.x `get_tools()` 枚举 OpenAI function-calling 工具；枚举失败会明确报错，不会静默退化为无工具对话。 |
 | `nodes/wali_mcp_server.py` | 可选的外部 Agent 网关；提供带鉴权的 Streamable HTTP MCP，将白名单工具转换为带回执的 `/action_request`。默认关闭。 |
-| `services/mcp_gateway.py` | 外部 MCP 的配置、安全启动检查和工具白名单；不暴露任意 ROS Topic、Service 或 Shell。 |
-| `services/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
-| `services/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |
-| `services/serial_broker.py` | 串口设备挂载/管理相关逻辑。 |
+| `services/integrations/mcp_gateway.py` | 外部 MCP 的配置、安全启动检查和工具白名单；不暴露任意 ROS Topic、Service 或 Shell。 |
+| `services/speech/stt_service.py` | 底层语音识别服务，被 `walle_ear_node` 调用。 |
+| `services/hardware/serial_bridge.py` | 底层串口扫描和发送服务，被 `walle_serial_node` 调用。 |
+| `services/hardware/serial_broker.py` | 串口设备挂载/管理相关逻辑。 |
 
 ## 常用调试命令
 

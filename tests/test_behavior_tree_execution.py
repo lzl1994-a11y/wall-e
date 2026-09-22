@@ -1,9 +1,9 @@
 import threading
 import unittest
 
-from services.action_plan import compile_action_plan
-from services.behavior_tree_execution import CorrelatedPlanExecutor
-from services.behavior_tree_protocol import (
+from services.orchestration.action_plan import compile_action_plan
+from services.orchestration.behavior_tree_execution import CorrelatedPlanExecutor
+from services.orchestration.behavior_tree_protocol import (
     BEHAVIOR_TREE_CANCEL_TOPIC,
     BEHAVIOR_TREE_EXECUTE_TOPIC,
     BEHAVIOR_TREE_STATUS_TOPIC,
@@ -11,7 +11,7 @@ from services.behavior_tree_protocol import (
     encode_plan_request,
     parse_plan_status,
 )
-from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
+from services.orchestration.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 
 
 def make_plan():

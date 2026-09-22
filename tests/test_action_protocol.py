@@ -1,8 +1,8 @@
 import json
 import unittest
 
-from services.action_command import build_action_cmd, parse_action_cmd, parse_action_request
-from services.action_status import build_action_status, parse_action_status
+from services.action.action_command import build_action_cmd, parse_action_cmd, parse_action_request
+from services.action.action_status import build_action_status, parse_action_status
 
 
 class ActionEnvelopeTests(unittest.TestCase):

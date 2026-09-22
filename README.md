@@ -173,7 +173,7 @@ flowchart LR
 启动配置服务：
 
 ```bash
-python3 services/web_server.py
+python3 services/integrations/web_server.py
 ```
 
 浏览器打开 `http://<旭日派IP>:8080`，进入“对话模式 → ASR 语音识别”，选择“云端服务”或“本地离线模型”。页面只展示当前引擎需要的字段，并在保存前检查参数类型、模型文件和模型目录是否存在。
@@ -297,7 +297,7 @@ asr:
 项目内置了一个零额外依赖的 `config.yaml` 配置网页。默认只监听本机：
 
 ```bash
-python services/web_server.py
+python services/integrations/web_server.py
 ```
 
 浏览器访问 `http://<旭日派IP>:8080`（本机调试也可用 `http://127.0.0.1:8080`）。默认监听所有网络接口，默认访问令牌为 `123456`。页面右上角提供“修改令牌”按钮，修改后立即生效并写入 `config.yaml`，重启后仍然有效。页面将 ASR、LLM、唤醒词、TTS 和系统提示词归在“对话模式”中，可选择 `ASR → LLM → TTS` 或多模态 LLM；ASR 的引擎、参数和模型文件要求见上方“ASR 云端 / 本地引擎配置”。每张配置卡片独立保存。服务端只合并提交的模块，保存前仍会校验完整配置，再原子替换 `core/config.yaml`。已有 API Key 不会回传到网页，密钥输入框留空会保留原值。ASR 配置在重启主脑后生效。
@@ -328,14 +328,14 @@ usb_devices:
 python launch_nodes.py --real-stt
 ```
 
-`launch_nodes.py` 会把同一个配置服务作为受管子进程启动，页面地址为 `http://<旭日派IP>:8080`，主程序退出时网页服务也会一起停止。传入 `--no-web` 可以禁用。独立调试和主程序运行不要同时占用同一个端口；需要并行运行时，可给独立服务指定其他端口，例如 `python services/web_server.py --host 127.0.0.1 --port 8765`。
+`launch_nodes.py` 会把同一个配置服务作为受管子进程启动，页面地址为 `http://<旭日派IP>:8080`，主程序退出时网页服务也会一起停止。传入 `--no-web` 可以禁用。独立调试和主程序运行不要同时占用同一个端口；需要并行运行时，可给独立服务指定其他端口，例如 `python services/integrations/web_server.py --host 127.0.0.1 --port 8765`。
 
 默认局域网访问令牌为 `123456`。页面右上角可修改本次访问使用的令牌，并会在当前浏览器会话中记住。如果要修改服务端实际接受的令牌，在启动前覆盖环境变量：
 
 ```bash
 export WALI_CONFIG_HOST=0.0.0.0
 export WALI_CONFIG_TOKEN="换成你自己的ASCII令牌"
-python services/web_server.py
+python services/integrations/web_server.py
 ```
 
 让配置服务随主程序启动并开放到局域网（默认已经如此）：
@@ -494,6 +494,10 @@ tft_preview:
 - `ubuntu_i2c`：由旭日派 Ubuntu 通过板载 I²C 直接控制 PCA9685。该模式需要启用对应 I²C 总线，并安装 `smbus2` 与 `adafruit-circuitpython-pca9685`。
 
 ## 🧠 核心架构说明
+
+### Service 功能目录
+
+`services/` 保留原有文件名，并按职责分为 12 个包：`action`（动作契约与仲裁）、`orchestration`（计划和行为树编排）、`motion`（运动规则）、`hardware`（设备与底层协议）、`audio`（采集与播放）、`speech`（ASR/TTS）、`llm`（模型、多模态与工具分发）、`dialog`（对话策略）、`vision`（图像与视觉流程）、`game`（模拟器与游戏策略）、`display`（TFT/虚拟显示）和 `integrations`（Web/MCP 外部入口）。每个包的 `__init__.py` 均用中英双语说明边界；节点通过完整包路径引用服务，设备驱动不再与业务服务混放在同一平面目录。
 
 ### 视觉双模式系统 (`wali_tracking_node.py`)
 

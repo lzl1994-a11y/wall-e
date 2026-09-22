@@ -1,4 +1,4 @@
-from services.llm_response_policy import LLMResponsePolicy
+from services.llm.llm_response_policy import LLMResponsePolicy
 
 
 def test_policy_identifies_long_form_and_uses_configured_token_floor():

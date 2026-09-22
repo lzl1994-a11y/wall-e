@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from services.vision_runtime import VisionArtifactError, require_nv12_padder
+from services.vision.vision_runtime import VisionArtifactError, require_nv12_padder
 
 try:
     import yaml
@@ -179,7 +179,11 @@ def build_node_list(args):
             ROOT / "nodes" / "native_behavior_tree_ros2_bridge_launcher.py",
         ))
     if not args.no_web:
-        nodes.append(NodeEntry("config_web", ROOT / "services" / "web_server.py"))
+        # English: executable service entry points follow the functional package layout.
+        # 中文：可执行服务入口跟随功能包目录，避免启动器继续依赖旧的扁平路径。
+        nodes.append(NodeEntry(
+            "config_web", ROOT / "services" / "integrations" / "web_server.py"
+        ))
 
     nodes.append(NodeEntry(
         "llm",

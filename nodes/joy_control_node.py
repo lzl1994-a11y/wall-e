@@ -10,29 +10,29 @@ import threading
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from services.action_command import ACTION_REQUEST_TOPIC
+from services.action.action_command import ACTION_REQUEST_TOPIC
 import evdev
 from evdev import ecodes
 
-from services.joystick_axis import normalize_axis_value
-from services.joystick_servo_targets import (
+from services.motion.joystick_axis import normalize_axis_value
+from services.motion.joystick_servo_targets import (
     AXIS_L2,
     AXIS_R2,
     AXIS_RX,
     AXIS_RY,
     compute_joystick_servo_targets,
 )
-from services.motor_control import mix_differential_drive
-from services.motion_arbiter import MOTOR_JOYSTICK_TOPIC, STOP_COMMAND
-from services.remote_control_config import RemoteControlConfigWatcher
-from services.servo_motion_config import load_neck_kinematics
-from services.game_protocol import (
+from services.motion.motor_control import mix_differential_drive
+from services.motion.motion_arbiter import MOTOR_JOYSTICK_TOPIC, STOP_COMMAND
+from services.motion.remote_control_config import RemoteControlConfigWatcher
+from services.motion.servo_motion_config import load_neck_kinematics
+from services.game.game_protocol import (
     GAME_MODE_REQUEST_TOPIC,
     GAME_MODE_STATE_TOPIC,
     encode_game_request,
     game_is_active,
 )
-from services.joystick_button_policy import (
+from services.motion.joystick_button_policy import (
     BTN_A,
     BTN_B,
     BTN_L1,

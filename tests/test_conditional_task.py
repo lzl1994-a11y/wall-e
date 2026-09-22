@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from services.conditional_task import (
+from services.orchestration.conditional_task import (
     ConditionalTaskOutcome,
     build_conditional_task_failure_outcome,
     build_conditional_task_outcome,
@@ -256,9 +256,9 @@ class ConditionalTaskTests(unittest.TestCase):
             outcome.actions = []  # type: ignore[misc]
 
     def test_service_is_pure_and_does_not_import_rclpy(self):
-        """17. services/conditional_task.py 不导入 rclpy、不发布消息、不执行动作。"""
+        """17. services/orchestration/conditional_task.py 不导入 rclpy、不发布消息、不执行动作。"""
         import inspect
-        import services.conditional_task as mod
+        import services.orchestration.conditional_task as mod
 
         self.assertNotIn("rclpy", mod.__dict__)
         source = inspect.getsource(mod)

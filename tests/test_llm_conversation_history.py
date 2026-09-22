@@ -1,7 +1,7 @@
 import json
 from collections import deque
 
-from services.llm_conversation_history import (
+from services.llm.llm_conversation_history import (
     LLMConversationHistory,
     DEFAULT_CHAT_HISTORY_MESSAGES,
     DEFAULT_VISUAL_HISTORY_MESSAGES,

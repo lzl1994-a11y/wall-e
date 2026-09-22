@@ -1,7 +1,7 @@
 import unittest
 
-from services.action_plan import PlanValidationError, compile_action_plan
-from services.behavior_tree_workflow import BehaviorTreeActionWorkflow
+from services.orchestration.action_plan import PlanValidationError, compile_action_plan
+from services.orchestration.behavior_tree_workflow import BehaviorTreeActionWorkflow
 
 
 class ActionPlanTests(unittest.TestCase):

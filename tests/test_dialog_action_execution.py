@@ -9,9 +9,9 @@ import unittest
 from collections import deque
 from unittest.mock import MagicMock, patch
 
-from services.action_execution import CorrelatedActionExecutor
-from services.action_status import build_action_status
-from services.voice_chat_service import VoiceChatService
+from services.action.action_execution import CorrelatedActionExecutor
+from services.action.action_status import build_action_status
+from services.llm.voice_chat_service import VoiceChatService
 
 
 class DialogActionExecutionTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from services.visual_search import (
+from services.vision.visual_search import (
     VISUAL_SEARCH_TOOL_NAME,
     VisualSearchWorkflow,
     VisualSearchViewWorkflow,

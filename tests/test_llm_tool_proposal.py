@@ -3,7 +3,7 @@
 import json
 import unittest
 
-from services.llm_tool_proposal import (
+from services.llm.llm_tool_proposal import (
     ROUTE_ACTION,
     ROUTE_CAMERA_INSPECTION,
     ROUTE_CAMERA_PHOTO,
@@ -192,7 +192,7 @@ class LLMToolProposalTests(unittest.TestCase):
 
     def test_10_service_has_zero_side_effects(self):
         # 1. Inspect module imports: no rclpy, no ROS messages
-        import services.llm_tool_proposal as module
+        import services.llm.llm_tool_proposal as module
         with open(module.__file__, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertNotIn("rclpy", content)

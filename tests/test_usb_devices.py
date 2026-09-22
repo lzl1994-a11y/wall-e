@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services import usb_devices
+from services.hardware import usb_devices
 
 
 class FakeSoundDevice:
@@ -36,7 +36,7 @@ class UsbDeviceSelectionTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    @patch("services.usb_devices.list_usb_devices")
+    @patch("services.hardware.usb_devices.list_usb_devices")
     def test_selected_serial_role_resolves_current_port(self, list_devices):
         selector = {"vendor_id": "303a", "product_id": "1001", "serial_number": "screen"}
         self.write_selector("screen_motion", selector)
@@ -52,14 +52,14 @@ class UsbDeviceSelectionTests(unittest.TestCase):
         self.assertTrue(configured)
         self.assertEqual(ports, ["/dev/ttyACM7"])
 
-    @patch("services.usb_devices.list_usb_devices", return_value=[])
+    @patch("services.hardware.usb_devices.list_usb_devices", return_value=[])
     def test_selected_device_can_be_offline(self, _list_devices):
         self.write_selector("camera", {"vendor_id": "1234", "product_id": "5678", "port_path": "1-3"})
         device, configured = usb_devices.find_selected_usb_device("camera", self.config_path)
         self.assertTrue(configured)
         self.assertIsNone(device)
 
-    @patch("services.usb_devices.list_usb_devices")
+    @patch("services.hardware.usb_devices.list_usb_devices")
     def test_audio_role_maps_usb_card_to_portaudio_device(self, list_devices):
         selector = {"vendor_id": "1234", "product_id": "5678", "serial_number": "voice"}
         self.write_selector("voice", selector)
@@ -127,7 +127,7 @@ class UsbDeviceSelectionTests(unittest.TestCase):
         self.assertTrue(resolution.available)
         self.assertIsNone(resolution.index)
 
-    @patch("services.usb_devices.list_usb_devices")
+    @patch("services.hardware.usb_devices.list_usb_devices")
     def test_native_alsa_capture_avoids_portaudio_enumeration(self, list_devices):
         selector = {"vendor_id": "1234", "product_id": "5678", "serial_number": "voice"}
         self.write_selector("voice", selector)

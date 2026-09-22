@@ -1,6 +1,6 @@
 import unittest
 
-from services.virtual_display import MjpegFrameSource, MjpegParser, VirtualDisplaySettings
+from services.display.virtual_display import MjpegFrameSource, MjpegParser, VirtualDisplaySettings
 
 
 class MjpegParserTests(unittest.TestCase):

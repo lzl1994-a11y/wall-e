@@ -24,34 +24,34 @@ from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.voice_chat_service import VoiceChatService
-from services.action_execution import CorrelatedActionExecutor
-from services.action_command import ACTION_REQUEST_TOPIC
-from services.action_intent_guard import validate_action_arguments
-from services.action_status import ACTION_STATUS_TOPIC
-from services.behavior_tree_execution import CorrelatedPlanExecutor
-from services.behavior_tree_workflow import NativeBehaviorTreeWorkflow
-from services.native_plan_execution import NativePlanExecutionAdapter
-from services.ros2_action_execution import (
+from services.llm.voice_chat_service import VoiceChatService
+from services.action.action_execution import CorrelatedActionExecutor
+from services.action.action_command import ACTION_REQUEST_TOPIC
+from services.action.action_intent_guard import validate_action_arguments
+from services.action.action_status import ACTION_STATUS_TOPIC
+from services.orchestration.behavior_tree_execution import CorrelatedPlanExecutor
+from services.orchestration.behavior_tree_workflow import NativeBehaviorTreeWorkflow
+from services.orchestration.native_plan_execution import NativePlanExecutionAdapter
+from services.orchestration.ros2_action_execution import (
     Ros2ActionPlanExecutor,
     create_wali_task_action_client,
 )
-from services.behavior_tree_protocol import (
+from services.orchestration.behavior_tree_protocol import (
     BEHAVIOR_TREE_CANCEL_TOPIC,
     BEHAVIOR_TREE_EXECUTE_TOPIC,
     BEHAVIOR_TREE_STATUS_TOPIC,
 )
-from services.camera_frame import save_camera_photo
-from services.dialog_workflow import (
+from services.vision.camera_frame import save_camera_photo
+from services.dialog.dialog_workflow import (
     CameraInspectionWorkflow,
     ConditionalTaskWorkflow,
     PhotoCaptureWorkflow,
 )
-from services.dialog_output import DialogOutputController
-from services.dialog_tool_router import DialogToolRouter
-from services.dialog_turn import DialogTurnController, TTS_CLEAN_RE
-from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
-from services.visual_search import (
+from services.dialog.dialog_output import DialogOutputController
+from services.dialog.dialog_tool_router import DialogToolRouter
+from services.dialog.dialog_turn import DialogTurnController, TTS_CLEAN_RE
+from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
+from services.vision.visual_search import (
     VISUAL_SEARCH_REQUEST_TOPIC,
     VISUAL_SEARCH_STATUS_TOPIC,
     VisualSearchWorkflow,
@@ -60,32 +60,32 @@ from services.visual_search import (
     encode_visual_search_status,
     parse_visual_search_request,
 )
-from services.game_protocol import (
+from services.game.game_protocol import (
     GAME_FRAME_TOPIC,
     GAME_MODE_STATE_TOPIC,
     decode_game_frame,
     game_mode_from_message,
 )
-from services.game_tft_stream import prepare_game_bgr
-from services.game_commentary import GameCommentaryController
-from services.audio_output import (
+from services.game.game_tft_stream import prepare_game_bgr
+from services.game.game_commentary import GameCommentaryController
+from services.audio.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
     OUTPUT_SAMPLE_WIDTH,
 )
-from services.tft_preview_client import TftPreviewClient
-from services.tft_preview_server import load_tft_preview_settings
-from services.tts_protocol import encode_turn_end
-from services.dialog_motion_protocol import (
+from services.display.tft_preview_client import TftPreviewClient
+from services.display.tft_preview_server import load_tft_preview_settings
+from services.speech.tts_protocol import encode_turn_end
+from services.dialog.dialog_motion_protocol import (
     DIALOG_MOTION_VAD_TOPIC,
     VAD_SPEECH_ENDED,
     VAD_SPEECH_STARTED,
 )
-from services.dialog_expression_protocol import (
+from services.dialog.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     encode_dialog_expression,
 )
-from services.wake_audio_protocol import (
+from services.audio.wake_audio_protocol import (
     WAKE_AUDIO_DONE_TOPIC,
     WAKE_AUDIO_TOPIC,
     encode_wake_audio,

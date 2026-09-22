@@ -1,4 +1,4 @@
-from services.game_commentary import GameCommentaryController
+from services.game.game_commentary import GameCommentaryController
 
 
 class _Clock:

@@ -1,14 +1,14 @@
 import copy
 import unittest
 
-from services.joystick_servo_targets import (
+from services.motion.joystick_servo_targets import (
     AXIS_L2,
     AXIS_R2,
     AXIS_RX,
     AXIS_RY,
     compute_joystick_servo_targets,
 )
-from services.servo_motion_config import NeckKinematics, ServoCalibration
+from services.motion.servo_motion_config import NeckKinematics, ServoCalibration
 
 
 def _make_kinematics():

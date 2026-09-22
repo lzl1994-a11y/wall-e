@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
-from services.esp32_netcfg import (
+from services.hardware.esp32_netcfg import (
     APPLY_FINAL_TIMEOUT_SECONDS,
     Esp32NetworkConfigurator,
     NetworkConfigError,
@@ -234,7 +234,7 @@ class Esp32NetworkRpcSafetyTests(unittest.TestCase):
             self.data = data
 
     def _bare_rpc(self):
-        from services.esp32_netcfg_rpc import Esp32NetworkRpcClient
+        from services.hardware.esp32_netcfg_rpc import Esp32NetworkRpcClient
 
         rpc = object.__new__(Esp32NetworkRpcClient)
         rpc._closed = threading.Event()
@@ -245,7 +245,7 @@ class Esp32NetworkRpcSafetyTests(unittest.TestCase):
         return rpc
 
     def test_ros_discovery_requires_both_request_subscriber_and_response_publisher(self):
-        from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
+        from services.hardware.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
 
         rpc = self._bare_rpc()
         rpc._node = self._GraphNode(subscribers=1, publishers=1)

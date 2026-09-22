@@ -2,7 +2,7 @@ import random
 import unittest
 from unittest.mock import Mock, patch
 
-from services.dialog_pose_sampler import DialogPoseSampler
+from services.dialog.dialog_pose_sampler import DialogPoseSampler
 
 
 def _sample_servos():
@@ -70,7 +70,7 @@ class DialogPoseSamplerTests(unittest.TestCase):
         mock_kinematics.targets.return_value = {"neck_top": 2100, "neck_bottom": 2600}
 
         with patch(
-            "services.dialog_pose_sampler.neck_kinematics_from_servos",
+            "services.dialog.dialog_pose_sampler.neck_kinematics_from_servos",
             return_value=mock_kinematics,
         ):
             sampler = DialogPoseSampler(servos, rng=random.Random(42))

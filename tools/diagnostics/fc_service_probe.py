@@ -11,13 +11,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from services.fc_input import FcControllerRelay
-from services.game_audio_adapter import GamePlaybackAdapter
-from services.game_frame_adapter import GameFrameAdapter
-from services.game_tft_stream import GameTftStreamServer
-from services.libretro_fc import LibretroFc
-from services.playback_service import PlaybackService
-from services.tft_preview_server import load_tft_preview_settings
+from services.game.fc_input import FcControllerRelay
+from services.game.game_audio_adapter import GamePlaybackAdapter
+from services.game.game_frame_adapter import GameFrameAdapter
+from services.game.game_tft_stream import GameTftStreamServer
+from services.game.libretro_fc import LibretroFc
+from services.audio.playback_service import PlaybackService
+from services.display.tft_preview_server import load_tft_preview_settings
 
 
 def main() -> int:

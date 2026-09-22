@@ -6,10 +6,10 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-from services.tts_protocol import decode_turn_end
-from services.wake_audio_protocol import decode_wake_audio, encode_wake_audio
-from services.dialog_turn import DialogTurnController
-from services.dialog_output import DialogOutputController
+from services.speech.tts_protocol import decode_turn_end
+from services.audio.wake_audio_protocol import decode_wake_audio, encode_wake_audio
+from services.dialog.dialog_turn import DialogTurnController
+from services.dialog.dialog_output import DialogOutputController
 
 
 class VoiceChatTurnEndTests(unittest.TestCase):
@@ -31,15 +31,15 @@ class VoiceChatTurnEndTests(unittest.TestCase):
         fake_std_msgs_msg.String = String
         fake_std_msgs_msg.UInt8MultiArray = UInt8MultiArray
 
-        fake_service = types.ModuleType("services.voice_chat_service")
+        fake_service = types.ModuleType("services.llm.voice_chat_service")
         fake_service.VoiceChatService = object
-        fake_audio_output = types.ModuleType("services.audio_output")
+        fake_audio_output = types.ModuleType("services.audio.audio_output")
         fake_audio_output.OUTPUT_CHANNELS = 1
         fake_audio_output.OUTPUT_SAMPLE_RATE = 48000
         fake_audio_output.OUTPUT_SAMPLE_WIDTH = 2
-        fake_tools = types.ModuleType("services.tool_dispatcher")
+        fake_tools = types.ModuleType("services.llm.tool_dispatcher")
         fake_tools.build_action_cmd = lambda name, arguments: ""
-        fake_usb = types.ModuleType("services.usb_devices")
+        fake_usb = types.ModuleType("services.hardware.usb_devices")
         fake_usb.resolve_audio_device = lambda *args, **kwargs: None
 
         modules = {
@@ -47,10 +47,10 @@ class VoiceChatTurnEndTests(unittest.TestCase):
             "rclpy.node": fake_rclpy_node,
             "std_msgs": fake_std_msgs,
             "std_msgs.msg": fake_std_msgs_msg,
-            "services.voice_chat_service": fake_service,
-            "services.audio_output": fake_audio_output,
-            "services.tool_dispatcher": fake_tools,
-            "services.usb_devices": fake_usb,
+            "services.llm.voice_chat_service": fake_service,
+            "services.audio.audio_output": fake_audio_output,
+            "services.llm.tool_dispatcher": fake_tools,
+            "services.hardware.usb_devices": fake_usb,
         }
         sys.modules.pop("nodes.voice_chat_ros_node", None)
         with patch.dict(sys.modules, modules):

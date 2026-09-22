@@ -21,16 +21,16 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from services.serial_bridge import SerialBridge
-from services.esp32_netcfg import (
+from services.hardware.serial_bridge import SerialBridge
+from services.hardware.esp32_netcfg import (
     Esp32NetworkConfigurator,
     NetworkConfigError,
     load_saved_network_settings,
     resolve_session_network_settings,
     validate_network_payload,
 )
-from services.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
-from services.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
+from services.hardware.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
+from services.audio.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
 
 
 class SerialNode(Node):

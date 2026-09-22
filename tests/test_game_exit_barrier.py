@@ -1,6 +1,6 @@
 import unittest
 
-from services.game_exit_barrier import GameExitBarrier
+from services.game.game_exit_barrier import GameExitBarrier
 
 
 class GameExitBarrierTests(unittest.TestCase):

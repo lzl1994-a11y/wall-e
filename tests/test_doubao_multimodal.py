@@ -1,6 +1,6 @@
 import unittest
 
-from services.multimodal.doubao_multimodal import DoubaoMultimodal
+from services.llm.multimodal.doubao_multimodal import DoubaoMultimodal
 
 
 class DoubaoMultimodalTests(unittest.TestCase):

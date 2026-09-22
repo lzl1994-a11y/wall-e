@@ -26,8 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.motor_control import apply_direction_inversion, motor_inversion_flags
-from services.usb_devices import serial_ports_for_role
+from services.motion.motor_control import apply_direction_inversion, motor_inversion_flags
+from services.hardware.usb_devices import serial_ports_for_role
 
 
 SERVO_CHANNELS = 9

@@ -5,14 +5,14 @@ import time
 import unittest
 from unittest.mock import patch
 
-from services.tft_preview_protocol import (
+from services.display.tft_preview_protocol import (
     decode_preview_request,
     decode_preview_result,
     encode_camera_preview_request,
     encode_preview_result,
 )
-from services.tft_preview_server import PreviewResult
-import services.tft_preview_client as client_module
+from services.display.tft_preview_server import PreviewResult
+import services.display.tft_preview_client as client_module
 
 
 class TftPreviewProtocolTests(unittest.TestCase):

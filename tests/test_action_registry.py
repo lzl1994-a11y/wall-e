@@ -1,9 +1,9 @@
 import json
 import unittest
 
-from services.action_cancel import build_action_cancel, parse_action_cancel
-from services.action_plan import compile_action_plan
-from services.action_registry import (
+from services.action.action_cancel import build_action_cancel, parse_action_cancel
+from services.orchestration.action_plan import compile_action_plan
+from services.action.action_registry import (
     ACTION_SKILL_REGISTRY_PATH,
     get_action_skill,
     load_action_skills,

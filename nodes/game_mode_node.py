@@ -10,10 +10,10 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, UInt8MultiArray
 
-from services.fc_game_session import FcGameSession
-from services.game_exit_barrier import GameExitBarrier
-from services.game_mode import GameModeController, InvalidGameTransition
-from services.game_protocol import (
+from services.game.fc_game_session import FcGameSession
+from services.game.game_exit_barrier import GameExitBarrier
+from services.game.game_mode import GameModeController, InvalidGameTransition
+from services.game.game_protocol import (
     GAME_FRAME_TOPIC,
     GAME_MODE_REQUEST_TOPIC,
     GAME_MODE_STATE_TOPIC,

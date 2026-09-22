@@ -3,8 +3,8 @@ from pathlib import Path
 
 import yaml
 
-from services.action_intent_guard import validate_action_call
-from services.servo_motion_config import resolve_servo_target
+from services.action.action_intent_guard import validate_action_call
+from services.motion.servo_motion_config import resolve_servo_target
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -1,6 +1,6 @@
 import unittest
 
-from services.llm_output_filter import VisibleAnswerFilter
+from services.llm.llm_output_filter import VisibleAnswerFilter
 
 
 class VisibleAnswerFilterTests(unittest.TestCase):

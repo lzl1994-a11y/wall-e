@@ -108,10 +108,10 @@ ModelProvider.stream(messages, tools, images, audio) -> LLMEvents
 
 ## 5. 当前代码事实
 
-- 实际外部 MCP 网关：`services/mcp_gateway.py` + `nodes/wali_mcp_server.py`。
+- 实际外部 MCP 网关：`services/integrations/mcp_gateway.py` + `nodes/wali_mcp_server.py`。
 - 目前仅公开 6 个工具：`move_chassis`、`play_sequence`、`express_emotion`、`set_tracking_mode`、`set_vision_gate`、`stop_all`。
 - `inspect_camera` 仅在内部 LLM 工具集，尚未对外公开。
-- 相机拍照由 `services/camera_frame.py` / `nodes/camera_capture_node.py` 管理；保存目录来自 `tft_preview.photo_directory`，当前默认 `~/.wali/photos`，文件名形如 `wali_TIMESTAMP_UUID.jpg`。
+- 相机拍照由 `services/vision/camera_frame.py` / `nodes/camera_capture_node.py` 管理；保存目录来自 `tft_preview.photo_directory`，当前默认 `~/.wali/photos`，文件名形如 `wali_TIMESTAMP_UUID.jpg`。
 - 当前 `raise_hand` 序列会在约 2 秒后放下手；要保持举手应调用 `arms_up`。
 - `nodes/wali_mcp_server.py` 已通过 `/action_cmd` 和 `/action_status` 等待终态回执。这是未来 Capability Facade 的可复用基础，但不应在其中加入具体跟随/PID等业务逻辑。
 - 只有单独启动 MCP Server 时，没有动作所有者会返回 `ros_action_owner_unavailable`；真机应运行完整的 `python3 launch_nodes.py --mcp`。

@@ -22,9 +22,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from services.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
-from services.llm_request_options import reasoning_request_options
-from services.tool_dispatcher import (
+from services.llm.llm_prompt import with_direct_speech_policy, with_structured_answer_policy
+from services.llm.llm_request_options import reasoning_request_options
+from services.llm.tool_dispatcher import (
     DIRECT_ANSWER_TOOL_NAME,
     MULTIMODAL_DIRECT_ANSWER_TOOL,
     ToolCallAccumulator,

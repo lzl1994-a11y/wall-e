@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.alsa_capture import ArecordInputStream
+from services.audio.alsa_capture import ArecordInputStream
 
 
 class FakeProcess:
@@ -35,7 +35,7 @@ class FakeProcess:
 
 
 class ArecordInputStreamTests(unittest.TestCase):
-    @patch("services.alsa_capture.subprocess.Popen")
+    @patch("services.audio.alsa_capture.subprocess.Popen")
     def test_reads_exact_pcm_blocks_without_portaudio(self, popen):
         source = np.arange(8, dtype=np.int16).reshape(4, 2)
         process = FakeProcess(source.tobytes())

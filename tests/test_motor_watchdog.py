@@ -1,6 +1,6 @@
 import unittest
 
-from services.motor_watchdog import MotorWatchdog
+from services.motion.motor_watchdog import MotorWatchdog
 
 
 class MotorWatchdogTests(unittest.TestCase):

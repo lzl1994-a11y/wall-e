@@ -1,6 +1,6 @@
 import unittest
 
-from services.action_acknowledgement import action_acknowledgement
+from services.action.action_acknowledgement import action_acknowledgement
 
 
 class ActionAcknowledgementTests(unittest.TestCase):

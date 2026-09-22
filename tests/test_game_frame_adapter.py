@@ -2,7 +2,7 @@ import threading
 import time
 import unittest
 
-from services.game_frame_adapter import GameFrameAdapter
+from services.game.game_frame_adapter import GameFrameAdapter
 
 
 class _Stream:

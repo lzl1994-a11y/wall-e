@@ -13,11 +13,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from services.fc_input import FcControllerRelay
-from services.libretro_audio import LibretroAudioPlayer
-from services.game_tft_stream import GameTftStreamServer
-from services.libretro_fc import LibretroFc
-from services.tft_preview_server import load_tft_preview_settings
+from services.game.fc_input import FcControllerRelay
+from services.game.libretro_audio import LibretroAudioPlayer
+from services.game.game_tft_stream import GameTftStreamServer
+from services.game.libretro_fc import LibretroFc
+from services.display.tft_preview_server import load_tft_preview_settings
 
 
 def main() -> int:

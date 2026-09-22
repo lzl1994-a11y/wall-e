@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from services.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
+from services.audio.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
 
 
 class TurnAudioTrimmerTests(unittest.TestCase):

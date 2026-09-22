@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from services.virtual_display import MjpegFrameSource, VirtualDisplay, VirtualDisplaySettings
+from services.display.virtual_display import MjpegFrameSource, VirtualDisplay, VirtualDisplaySettings
 
 
 def main() -> int:

@@ -33,87 +33,87 @@ from std_msgs.msg import String, UInt8MultiArray
 
 # Action, plan, and Behavior Tree protocol & execution services.
 # 动作、计划以及行为树协议与执行服务。
-from services.action_acknowledgement import action_acknowledgement
-from services.action_command import ACTION_REQUEST_TOPIC
-from services.action_execution import CorrelatedActionExecutor
-from services.behavior_tree_execution import CorrelatedPlanExecutor
-from services.native_plan_execution import NativePlanExecutionAdapter
-from services.ros2_action_execution import (
+from services.action.action_acknowledgement import action_acknowledgement
+from services.action.action_command import ACTION_REQUEST_TOPIC
+from services.action.action_execution import CorrelatedActionExecutor
+from services.orchestration.behavior_tree_execution import CorrelatedPlanExecutor
+from services.orchestration.native_plan_execution import NativePlanExecutionAdapter
+from services.orchestration.ros2_action_execution import (
     Ros2ActionPlanExecutor,
     create_wali_task_action_client,
 )
-from services.behavior_tree_protocol import (
+from services.orchestration.behavior_tree_protocol import (
     BEHAVIOR_TREE_CANCEL_TOPIC,
     BEHAVIOR_TREE_EXECUTE_TOPIC,
     BEHAVIOR_TREE_STATUS_TOPIC,
 )
-from services.action_intent_guard import (
+from services.action.action_intent_guard import (
     validate_action_arguments,
     validate_action_call,
 )
-from services.action_status import ACTION_STATUS_TOPIC
+from services.action.action_status import ACTION_STATUS_TOPIC
 
 # LLM core, policies, streaming, and conversation history services.
 # 大模型核心调用、策略清洗、流式响应与对话历史服务。
-from services.llm_service import LLMService
-from services.llm_response_policy import LLMResponsePolicy
-from services.llm_stream_response import StreamResponseAccumulator
-from services.llm_voice_turn import LLMVoiceTurnState
-from services.llm_conversation_history import LLMConversationHistory
-from services.llm_request_preparation import (
+from services.llm.llm_service import LLMService
+from services.llm.llm_response_policy import LLMResponsePolicy
+from services.llm.llm_stream_response import StreamResponseAccumulator
+from services.llm.llm_voice_turn import LLMVoiceTurnState
+from services.llm.llm_conversation_history import LLMConversationHistory
+from services.llm.llm_request_preparation import (
     ROUTE_CAMERA_INSPECTION,
     ROUTE_CAMERA_PHOTO,
     ROUTE_CONDITIONAL_TASK,
     ROUTE_SAFETY_ACTION,
     prepare_voice_request,
 )
-from services.llm_tool_proposal import evaluate_tool_proposal
-from services.llm_conditional_planning import (
+from services.llm.llm_tool_proposal import evaluate_tool_proposal
+from services.llm.llm_conditional_planning import (
     build_conditional_fallback_request,
     evaluate_conditional_plan,
     evaluate_native_conditional_event,
     parse_conditional_fallback_json,
 )
-from services.llm_visual_request import (
+from services.llm.llm_visual_request import (
     VisualResponseAccumulator,
     build_camera_qa_request,
     build_conditional_vision_request,
     build_game_vision_request,
 )
-from services.llm_empty_answer_retry import (
+from services.llm.llm_empty_answer_retry import (
     EmptyAnswerRetryAccumulator,
     build_empty_answer_retry_request,
 )
-from services.camera_frame import save_camera_photo
+from services.vision.camera_frame import save_camera_photo
 
 # Game protocol and streaming services.
 # 游戏协议与视频流服务。
-from services.game_protocol import (
+from services.game.game_protocol import (
     GAME_FRAME_TOPIC,
     GAME_MODE_STATE_TOPIC,
     decode_game_frame,
     game_mode_from_message,
 )
-from services.game_tft_stream import prepare_game_bgr
-from services.game_commentary import GameCommentaryController
+from services.game.game_tft_stream import prepare_game_bgr
+from services.game.game_commentary import GameCommentaryController
 
 # TFT preview, audio, expression, and workflow services.
 # TFT 屏幕预览、语音协议、微表情与业务工作流服务。
-from services.tft_preview_client import TftPreviewClient
-from services.tft_preview_server import load_tft_preview_settings
-from services.tts_protocol import encode_turn_end
-from services.dialog_expression_protocol import (
+from services.display.tft_preview_client import TftPreviewClient
+from services.display.tft_preview_server import load_tft_preview_settings
+from services.speech.tts_protocol import encode_turn_end
+from services.dialog.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TOPIC,
     encode_dialog_expression,
 )
-from services.conditional_task import (
+from services.orchestration.conditional_task import (
     CONDITIONAL_TASK_TOOL_NAME,
     build_conditional_task_failure_outcome,
     build_conditional_task_outcome,
 )
-from services.llm_action_plan import LLMActionPlanWorkflow
-from services.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
-from services.voice_debug import RollingVoiceDebugStore
+from services.llm.llm_action_plan import LLMActionPlanWorkflow
+from services.dialog.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
+from services.speech.voice_debug import RollingVoiceDebugStore
 
 
 class LLMBrainNode(Node):

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.voice_debug import RollingVoiceDebugStore, voice_debug_enabled
+from services.speech.voice_debug import RollingVoiceDebugStore, voice_debug_enabled
 
 
 class VoiceDebugTests(unittest.TestCase):

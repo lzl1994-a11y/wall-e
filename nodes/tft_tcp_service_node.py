@@ -9,9 +9,9 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String, UInt8MultiArray
 
-from services.camera_frame import CameraFrameProvider
-from services.game_frame_adapter import GameFrameAdapter
-from services.game_protocol import (
+from services.vision.camera_frame import CameraFrameProvider
+from services.game.game_frame_adapter import GameFrameAdapter
+from services.game.game_protocol import (
     GAME_FRAME_TOPIC,
     GAME_MODE_REQUEST_TOPIC,
     GAME_MODE_STATE_TOPIC,
@@ -20,24 +20,24 @@ from services.game_protocol import (
     encode_game_request,
     game_mode_from_message,
 )
-from services.game_tft_stream import GameTftStreamServer
-from services.music_protocol import (
+from services.game.game_tft_stream import GameTftStreamServer
+from services.audio.music_protocol import (
     MUSIC_SPECTRUM_TOPIC,
     MUSIC_SPECTRUM_FPS,
     MUSIC_STATE_TOPIC,
     decode_music_state,
 )
-from services.music_spectrum import render_spectrum_frame
-from services.tft_preview_protocol import (
+from services.audio.music_spectrum import render_spectrum_frame
+from services.display.tft_preview_protocol import (
     TFT_PREVIEW_READY_TOPIC,
     TFT_PREVIEW_REQUEST_TOPIC,
     TFT_PREVIEW_RESULT_TOPIC,
     decode_preview_request,
     encode_preview_result,
 )
-from services.tft_preview_server import PreviewResult, load_tft_preview_settings
-from services.tracking_tft_preview import TrackingTftPreview
-from services.vision_pipeline_protocol import (
+from services.display.tft_preview_server import PreviewResult, load_tft_preview_settings
+from services.vision.tracking_tft_preview import TrackingTftPreview
+from services.vision.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
     decode_vision_pipeline_command,
 )

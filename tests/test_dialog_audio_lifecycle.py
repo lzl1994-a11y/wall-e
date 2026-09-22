@@ -12,11 +12,11 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from services.playback_service import PlaybackService
-from services.stt_service import STTService
-from services.tts_protocol import decode_turn_end, encode_turn_end
-from services.action_execution import CorrelatedActionExecutor
-from services.action_status import build_action_status
+from services.audio.playback_service import PlaybackService
+from services.speech.stt_service import STTService
+from services.speech.tts_protocol import decode_turn_end, encode_turn_end
+from services.action.action_execution import CorrelatedActionExecutor
+from services.action.action_status import build_action_status
 
 
 class TTSProtocolTests(unittest.TestCase):
@@ -61,7 +61,7 @@ class PlaybackLifecycleTests(unittest.TestCase):
 
         with (
             patch.object(player, "_refresh_device", return_value=True),
-            patch("services.playback_service.sd.OutputStream", return_value=stream),
+            patch("services.audio.playback_service.sd.OutputStream", return_value=stream),
         ):
             player._play_item(samples)
             player._play_item(PlaybackService._TURN_END)
@@ -94,7 +94,7 @@ class PlaybackLifecycleTests(unittest.TestCase):
 
         with (
             patch.object(player, "_refresh_device", return_value=True),
-            patch("services.playback_service.sd.OutputStream", return_value=stream) as stream_class,
+            patch("services.audio.playback_service.sd.OutputStream", return_value=stream) as stream_class,
         ):
             player._play_item(np.array([1, 2], dtype=np.int16))
             player._play_item(np.array([3, 4], dtype=np.int16))
@@ -135,7 +135,7 @@ class STTTimerLifecycleTests(unittest.TestCase):
         old_timer.cancel.assert_called_once_with()
         self.assertIsNone(service._awake_timer)
 
-        with patch("services.stt_service.threading.Timer") as timer_class:
+        with patch("services.speech.stt_service.threading.Timer") as timer_class:
             new_timer = timer_class.return_value
             service.resume()
 
@@ -200,9 +200,9 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         fake_pypinyin.Style = types.SimpleNamespace(NORMAL="normal")
         fake_pypinyin.pinyin = lambda text, style=None: [[text]]
 
-        fake_llm_service = types.ModuleType("services.llm_service")
+        fake_llm_service = types.ModuleType("services.llm.llm_service")
         fake_llm_service.LLMService = object
-        fake_camera = types.ModuleType("services.camera_frame")
+        fake_camera = types.ModuleType("services.vision.camera_frame")
         fake_camera.CameraFrameProvider = object
         fake_camera.is_camera_inspection_request = lambda _text: False
         fake_camera.is_camera_photo_request = lambda _text: False
@@ -214,8 +214,8 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             "std_msgs": fake_std_msgs,
             "std_msgs.msg": fake_std_msgs_msg,
             "pypinyin": fake_pypinyin,
-            "services.llm_service": fake_llm_service,
-            "services.camera_frame": fake_camera,
+            "services.llm.llm_service": fake_llm_service,
+            "services.vision.camera_frame": fake_camera,
         }
         sys.modules.pop("nodes.llm_ros_node", None)
         with patch.dict(sys.modules, modules):
@@ -354,7 +354,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             photo_directory="/tmp/wali-photos",
         )
         node.tft_preview = MagicMock()
-        from services.tft_preview_server import PreviewResult
+        from services.display.tft_preview_server import PreviewResult
         node.tft_preview.send_camera_preview.return_value = PreviewResult(
             last_frame=b"\xff\xd8photo\xff\xd9"
         )
@@ -394,7 +394,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             photo_directory="/tmp/wali-photos",
         )
         node.tft_preview = MagicMock()
-        from services.tft_preview_server import PreviewResult
+        from services.display.tft_preview_server import PreviewResult
         node.tft_preview.send_camera_preview.return_value = PreviewResult(
             busy=True, last_frame=b"\xff\xd8photo\xff\xd9"
         )
@@ -430,7 +430,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             photo_directory="/tmp/wali-photos",
         )
         node.tft_preview = MagicMock()
-        from services.tft_preview_server import PreviewResult
+        from services.display.tft_preview_server import PreviewResult
         node.tft_preview.send_camera_preview.return_value = PreviewResult(
             busy=False, last_frame=None, error="device_disconnected"
         )
@@ -466,7 +466,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             photo_directory="/tmp/wali-photos",
         )
         node.tft_preview = MagicMock()
-        from services.tft_preview_server import PreviewResult
+        from services.display.tft_preview_server import PreviewResult
         node.tft_preview.send_camera_preview.return_value = PreviewResult(
             last_frame=b"\xff\xd8photo\xff\xd9"
         )
@@ -506,7 +506,7 @@ class LLMEmptyAnswerTests(unittest.TestCase):
             photo_directory="/tmp/wali-photos",
         )
         node.tft_preview = MagicMock()
-        from services.tft_preview_server import PreviewResult
+        from services.display.tft_preview_server import PreviewResult
         node.tft_preview.send_camera_preview.return_value = PreviewResult(
             last_frame=b"\xff\xd8vision\xff\xd9"
         )

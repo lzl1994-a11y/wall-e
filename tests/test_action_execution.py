@@ -2,8 +2,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from services.action_execution import CorrelatedActionExecutor
-from services.action_status import build_action_status
+from services.action.action_execution import CorrelatedActionExecutor
+from services.action.action_status import build_action_status
 
 
 class CorrelatedActionExecutorTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class CorrelatedActionExecutorTests(unittest.TestCase):
             ))
 
         with patch(
-            "services.action_execution.new_action_request_id",
+            "services.action.action_execution.new_action_request_id",
             return_value="workflow-request-1",
         ):
             result = executor.execute(

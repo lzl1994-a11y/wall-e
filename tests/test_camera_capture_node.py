@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from services.camera_capture_protocol import encode_camera_command
+from services.vision.camera_capture_protocol import encode_camera_command
 
 
 class _FakeString:

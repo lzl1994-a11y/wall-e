@@ -4,9 +4,9 @@ from pathlib import Path
 
 import yaml
 
-from services.llm_request_options import reasoning_request_options
-from services.multimodal import create_multimodal
-from services.multimodal.tencent_hunyuan_multimodal import (
+from services.llm.llm_request_options import reasoning_request_options
+from services.llm.multimodal import create_multimodal
+from services.llm.multimodal.tencent_hunyuan_multimodal import (
     TencentHunyuanMultimodal,
 )
 

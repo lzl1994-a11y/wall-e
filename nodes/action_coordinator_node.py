@@ -14,15 +14,15 @@ from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.action_arbitration import ActionArbiter
-from services.action_cancel import ACTION_CANCEL_TOPIC, build_action_cancel
-from services.action_command import (
+from services.action.action_arbitration import ActionArbiter
+from services.action.action_cancel import ACTION_CANCEL_TOPIC, build_action_cancel
+from services.action.action_command import (
     ACTION_COMMAND_TOPIC,
     ACTION_REQUEST_TOPIC,
     new_action_request_id,
     parse_action_request,
 )
-from services.action_status import (
+from services.action.action_status import (
     ACTION_STATUS_TOPIC,
     TERMINAL_ACTION_STATUSES,
     build_action_status,

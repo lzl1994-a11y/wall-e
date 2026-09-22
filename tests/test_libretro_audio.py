@@ -1,7 +1,7 @@
 import ctypes
 import unittest
 
-from services.libretro_audio import LibretroAudioPlayer
+from services.game.libretro_audio import LibretroAudioPlayer
 
 
 class _FakeStream:

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.remote_control_config import RemoteControlConfigWatcher, load_remote_control_config
+from services.motion.remote_control_config import RemoteControlConfigWatcher, load_remote_control_config
 
 
 class RemoteControlConfigTests(unittest.TestCase):

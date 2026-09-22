@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.audio_pipeline import AudioPipeline
+from services.audio.audio_pipeline import AudioPipeline
 
 
 class VadConfigTests(unittest.TestCase):

@@ -10,10 +10,10 @@ from pathlib import Path
 
 import numpy as np
 
-from services.audio_output import OUTPUT_SAMPLE_RATE
-from services.audio_silence import TurnAudioTrimmer
-from services.tts_pipeline import OrderedTTSPipeline
-from services.tts_service import TTSService
+from services.audio.audio_output import OUTPUT_SAMPLE_RATE
+from services.audio.audio_silence import TurnAudioTrimmer
+from services.speech.tts_pipeline import OrderedTTSPipeline
+from services.speech.tts_service import TTSService
 
 
 ROOT = Path(__file__).resolve().parent

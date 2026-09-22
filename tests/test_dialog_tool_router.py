@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import MagicMock
 
-from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
-from services.dialog_tool_router import DialogToolRouter
-from services.visual_search import VISUAL_SEARCH_TOOL_NAME
+from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
+from services.dialog.dialog_tool_router import DialogToolRouter
+from services.vision.visual_search import VISUAL_SEARCH_TOOL_NAME
 
 
 class DialogToolRouterTests(unittest.TestCase):

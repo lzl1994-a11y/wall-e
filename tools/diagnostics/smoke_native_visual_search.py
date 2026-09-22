@@ -17,14 +17,14 @@ if str(ROOT) not in sys.path:
 import rclpy
 from std_msgs.msg import String
 
-from services.behavior_tree_protocol import (
+from services.orchestration.behavior_tree_protocol import (
     BEHAVIOR_TREE_CANCEL_TOPIC,
     BEHAVIOR_TREE_EXECUTE_TOPIC,
     BEHAVIOR_TREE_STATUS_TOPIC,
     encode_plan_cancel,
     parse_plan_status,
 )
-from services.visual_search import compile_visual_search_plan
+from services.vision.visual_search import compile_visual_search_plan
 
 
 def parse_args() -> argparse.Namespace:

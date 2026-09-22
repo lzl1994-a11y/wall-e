@@ -3,8 +3,8 @@ import unittest
 from collections import defaultdict, deque
 from unittest.mock import Mock, patch
 
-from services.serial_bridge import SerialBridge
-from services.esp32_netcfg import (
+from services.hardware.serial_bridge import SerialBridge
+from services.hardware.esp32_netcfg import (
     network_settings_match_status,
     validate_network_payload,
 )
@@ -58,7 +58,7 @@ class SerialBridgeHotPathTests(unittest.TestCase):
             [True, False],
         )
 
-    @patch("services.serial_bridge.time.monotonic", side_effect=[100.0, 100.5, 101.0])
+    @patch("services.hardware.serial_bridge.time.monotonic", side_effect=[100.0, 100.5, 101.0])
     def test_failed_reconnect_uses_exponential_backoff(self, _monotonic):
         bridge = self.make_bridge()
         bridge.ser = None
@@ -77,7 +77,7 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         self.assertEqual(bridge._reconnect_delay_sec, 4.0)
         self.assertEqual(bridge._connect.call_count, 2)
 
-    @patch("services.serial_bridge.serial_ports_for_role")
+    @patch("services.hardware.serial_bridge.serial_ports_for_role")
     def test_unchanged_config_does_not_scan_usb_devices(self, resolve_ports):
         bridge = self.make_bridge()
         bridge._config_mtime_ns = Mock(return_value=10)
@@ -88,7 +88,7 @@ class SerialBridgeHotPathTests(unittest.TestCase):
         bridge.ser.close.assert_not_called()
 
     @patch(
-        "services.serial_bridge.serial_ports_for_role",
+        "services.hardware.serial_bridge.serial_ports_for_role",
         return_value=(["/dev/ttyACM1"], True),
     )
     def test_changed_selection_revalidates_open_port(self, resolve_ports):

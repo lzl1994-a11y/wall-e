@@ -17,10 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.audio_output import OUTPUT_SAMPLE_RATE
-from services.audio_pipeline import AudioPipeline
-from services.playback_service import PlaybackService
-from services.tts_service import TTSService
+from services.audio.audio_output import OUTPUT_SAMPLE_RATE
+from services.audio.audio_pipeline import AudioPipeline
+from services.audio.playback_service import PlaybackService
+from services.speech.tts_service import TTSService
 
 
 class AudioSampleRateContractTests(unittest.TestCase):
@@ -144,7 +144,7 @@ class AudioSampleRateContractTests(unittest.TestCase):
 
         self.assertEqual(b"".join(streamed), b"".join(frames))
 
-    @patch("services.playback_service.threading.Thread")
+    @patch("services.audio.playback_service.threading.Thread")
     @patch.object(PlaybackService, "_refresh_device", return_value=True)
     def test_playback_service_defaults_to_48khz(self, _refresh_device, thread_class):
         player = PlaybackService()
@@ -177,7 +177,7 @@ class AudioSampleRateContractTests(unittest.TestCase):
                 yield {"type": "audio", "data": b"mp3-data"}
 
         with (
-            patch("services.tts_service.edge_tts.Communicate", FakeCommunicate),
+            patch("services.speech.tts_service.edge_tts.Communicate", FakeCommunicate),
             patch("pydub.AudioSegment.from_mp3", return_value=source),
         ):
             samples = asyncio.run(service._download("你好"))
@@ -244,8 +244,8 @@ class AudioSampleRateContractTests(unittest.TestCase):
         process = FakeProcess()
         try:
             with (
-                patch("services.tts_service.edge_tts.Communicate", FakeCommunicate),
-                patch("services.tts_service.subprocess.Popen", return_value=process) as popen,
+                patch("services.speech.tts_service.edge_tts.Communicate", FakeCommunicate),
+                patch("services.speech.tts_service.subprocess.Popen", return_value=process) as popen,
             ):
                 chunks = list(service.synthesize_stream("你好", chunk_ms=100))
         finally:
@@ -314,8 +314,8 @@ class AudioSampleRateContractTests(unittest.TestCase):
         started = time.monotonic()
         try:
             with (
-                patch("services.tts_service.edge_tts.Communicate", HangingCommunicate),
-                patch("services.tts_service.subprocess.Popen", return_value=FakeProcess()),
+                patch("services.speech.tts_service.edge_tts.Communicate", HangingCommunicate),
+                patch("services.speech.tts_service.subprocess.Popen", return_value=FakeProcess()),
             ):
                 chunks = list(
                     service.synthesize_stream(
@@ -377,8 +377,8 @@ class AudioSampleRateContractTests(unittest.TestCase):
         started = time.monotonic()
         try:
             with (
-                patch("services.tts_service.edge_tts.Communicate", HangingCommunicate),
-                patch("services.tts_service.subprocess.Popen", return_value=FakeProcess()),
+                patch("services.speech.tts_service.edge_tts.Communicate", HangingCommunicate),
+                patch("services.speech.tts_service.subprocess.Popen", return_value=FakeProcess()),
             ):
                 with self.assertRaisesRegex(TimeoutError, "first audio exceeded"):
                     list(service.synthesize_stream(

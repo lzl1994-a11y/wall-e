@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.game_menu import GameMenu, _display_name, discover_roms
+from services.game.game_menu import GameMenu, _display_name, discover_roms
 
 
 class GameMenuTests(unittest.TestCase):

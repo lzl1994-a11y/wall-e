@@ -21,10 +21,10 @@ from rclpy.node import Node
 from std_msgs.msg import String
 import yaml
 
-from services.motor_control import apply_direction_inversion, motor_inversion_flags
-from services.motion_arbiter import normalize_motor_command
-from services.motor_watchdog import MotorWatchdog
-from services.pca9685_output_state import Pca9685OutputState
+from services.motion.motor_control import apply_direction_inversion, motor_inversion_flags
+from services.motion.motion_arbiter import normalize_motor_command
+from services.motion.motor_watchdog import MotorWatchdog
+from services.hardware.pca9685_output_state import Pca9685OutputState
 
 class HardwareBridgeNode(Node):
     _PUBLISH_INTERVAL_SECONDS = 0.02

@@ -1,6 +1,6 @@
 import unittest
 
-from services.tracking_control import (
+from services.motion.tracking_control import (
     HeadTarget,
     LossState,
     PID,

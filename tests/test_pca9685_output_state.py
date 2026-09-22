@@ -1,6 +1,6 @@
 import unittest
 
-from services.pca9685_output_state import Pca9685OutputState
+from services.hardware.pca9685_output_state import Pca9685OutputState
 
 
 class Pca9685OutputStateTests(unittest.TestCase):

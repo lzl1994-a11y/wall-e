@@ -1,6 +1,6 @@
 import unittest
 
-from services.joystick_axis import normalize_axis_value
+from services.motion.joystick_axis import normalize_axis_value
 
 
 class JoystickAxisNormalizationTests(unittest.TestCase):

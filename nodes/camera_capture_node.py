@@ -19,7 +19,7 @@ from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.camera_capture_protocol import (
+from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
     CAMERA_SOURCE_TOPIC,
@@ -31,7 +31,7 @@ from services.camera_capture_protocol import (
     evaluate_camera_watchdog,
     jpeg_from_ros_image,
 )
-from services.usb_devices import resolve_camera_device
+from services.hardware.usb_devices import resolve_camera_device
 
 
 class CameraCaptureNode(Node):

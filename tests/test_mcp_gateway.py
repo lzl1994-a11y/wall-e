@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from services.mcp_gateway import (
+from services.integrations.mcp_gateway import (
     MCP_TOKEN_ENV,
     McpGatewaySettings,
     create_mcp_gateway,
@@ -45,7 +45,7 @@ class McpGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             missing_config = Path(directory) / "missing-config.yaml"
             with patch(
-                "services.mcp_gateway.DEFAULT_CONFIG_PATH", missing_config
+                "services.integrations.mcp_gateway.DEFAULT_CONFIG_PATH", missing_config
             ), patch.dict(
                 os.environ, {MCP_TOKEN_ENV: "  token-value  "}, clear=False
             ):
@@ -55,7 +55,7 @@ class McpGatewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
             path.write_text("mcp:\n  token: " + "c" * 32 + "\n", encoding="utf-8")
-            with patch("services.mcp_gateway.DEFAULT_CONFIG_PATH", path), patch.dict(
+            with patch("services.integrations.mcp_gateway.DEFAULT_CONFIG_PATH", path), patch.dict(
                 os.environ, {MCP_TOKEN_ENV: "e" * 32}, clear=False
             ):
                 self.assertEqual(token_from_environment(), "c" * 32)

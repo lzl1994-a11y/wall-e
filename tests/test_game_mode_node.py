@@ -7,8 +7,8 @@ from unittest.mock import Mock, patch
 
 import numpy
 
-from services.game_exit_barrier import GameExitBarrier
-from services.game_mode import GameModeController
+from services.game.game_exit_barrier import GameExitBarrier
+from services.game.game_mode import GameModeController
 
 
 class _FakeMsg:

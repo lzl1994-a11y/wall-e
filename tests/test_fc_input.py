@@ -1,6 +1,6 @@
 import unittest
 
-from services.fc_input import (
+from services.game.fc_input import (
     ABS_HAT0X,
     BTN_EAST,
     BTN_NORTH,

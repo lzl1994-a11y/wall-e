@@ -9,11 +9,11 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String, UInt8MultiArray
 
-from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
-from services.action_status import ACTION_STATUS_TOPIC, build_action_status
-from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
-from services.music_player import DEFAULT_MUSIC_DIRECTORY, MusicPlayer
-from services.music_protocol import (
+from services.action.action_command import ACTION_COMMAND_TOPIC, parse_action_request
+from services.action.action_status import ACTION_STATUS_TOPIC, build_action_status
+from services.game.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
+from services.audio.music_player import DEFAULT_MUSIC_DIRECTORY, MusicPlayer
+from services.audio.music_protocol import (
     MUSIC_AUDIO_TOPIC,
     MUSIC_SPECTRUM_FPS,
     MUSIC_SPECTRUM_TOPIC,

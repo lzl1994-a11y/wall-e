@@ -3,8 +3,8 @@ import time
 import unittest
 from unittest.mock import Mock
 
-from services.virtual_display import VirtualDisplaySettings
-from services.virtual_display_bridge import VirtualDisplayTftBridge
+from services.display.virtual_display import VirtualDisplaySettings
+from services.display.virtual_display_bridge import VirtualDisplayTftBridge
 
 
 class _FakeDisplay:

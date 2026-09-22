@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from services.motion_arbiter import MotionArbiter, STOP_COMMAND
+from services.motion.motion_arbiter import MotionArbiter, STOP_COMMAND
 
 
 class _String:

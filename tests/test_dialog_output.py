@@ -1,6 +1,6 @@
 import unittest
 
-from services.dialog_output import DialogOutputController
+from services.dialog.dialog_output import DialogOutputController
 
 
 class DialogOutputControllerTests(unittest.TestCase):

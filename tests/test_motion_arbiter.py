@@ -1,6 +1,6 @@
 import unittest
 
-from services.motion_arbiter import MotionArbiter, STOP_COMMAND
+from services.motion.motion_arbiter import MotionArbiter, STOP_COMMAND
 
 
 FORWARD = {

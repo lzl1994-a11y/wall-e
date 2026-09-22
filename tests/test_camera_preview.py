@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from services.camera_preview import CameraPreview
+from services.vision.camera_preview import CameraPreview
 
 
 class _FakeStdout:
@@ -90,7 +90,7 @@ class CameraPreviewTests(unittest.TestCase):
             },
         ])
         preview = CameraPreview("unused.yaml", frame_rate=20)
-        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+        with patch("services.vision.camera_preview.subprocess.Popen", return_value=process):
             starting = preview.start()
             self.assertEqual(starting["state"], "starting")
             running = _wait_for_state(preview, "running")
@@ -112,7 +112,7 @@ class CameraPreviewTests(unittest.TestCase):
             "error": "camera_capture_node 不可用",
         }])
         preview = CameraPreview("unused.yaml")
-        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+        with patch("services.vision.camera_preview.subprocess.Popen", return_value=process):
             preview.start()
             status = _wait_for_state(preview, "error")
 
@@ -127,7 +127,7 @@ class CameraPreviewTests(unittest.TestCase):
             "diagnostic": "hobot_usb_cam 已退出，退出码 1",
         }])
         preview = CameraPreview("unused.yaml", startup_timeout=0.2)
-        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+        with patch("services.vision.camera_preview.subprocess.Popen", return_value=process):
             preview.start()
             status = _wait_for_state(preview, "error", timeout=1.0)
 
@@ -152,7 +152,7 @@ class CameraPreviewTests(unittest.TestCase):
             request_timeout=0.35,
             startup_timeout=0.25,
         )
-        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+        with patch("services.vision.camera_preview.subprocess.Popen", return_value=process):
             preview.start()
             status = _wait_for_state(preview, "running", timeout=1.0)
 
@@ -169,7 +169,7 @@ class CameraPreviewTests(unittest.TestCase):
             (0.07, {"type": "status", "phase": "waiting_frame"}),
         ])
         preview = CameraPreview("unused.yaml", startup_timeout=0.12)
-        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+        with patch("services.vision.camera_preview.subprocess.Popen", return_value=process):
             preview.start()
             status = _wait_for_state(preview, "error", timeout=0.3)
 
@@ -183,7 +183,7 @@ class CameraPreviewTests(unittest.TestCase):
             request_timeout=0.2,
             startup_timeout=0.8,
         )
-        with patch("services.camera_preview.subprocess.Popen", return_value=process):
+        with patch("services.vision.camera_preview.subprocess.Popen", return_value=process):
             preview.start()
             status = _wait_for_state(preview, "error", timeout=0.6)
 

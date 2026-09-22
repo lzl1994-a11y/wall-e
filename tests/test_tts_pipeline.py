@@ -1,7 +1,7 @@
 import threading
 import unittest
 
-from services.tts_pipeline import OrderedTTSPipeline
+from services.speech.tts_pipeline import OrderedTTSPipeline
 
 
 class OrderedTTSPipelineTests(unittest.TestCase):

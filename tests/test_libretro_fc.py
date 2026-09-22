@@ -1,6 +1,6 @@
 import unittest
 
-from services.libretro_fc import (
+from services.game.libretro_fc import (
     LibretroJoypad,
     RETRO_DEVICE_ID_JOYPAD_A,
     RETRO_DEVICE_ID_JOYPAD_B,

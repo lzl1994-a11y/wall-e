@@ -4,7 +4,7 @@ This file records issues that were intentionally not fixed in this round.
 
 ## Deployment and configuration
 
-- RDK X3 path and serial configuration are still development-machine values. Examples remain in `nodes/stt_ros_node.py`, `services/stt_service.py`, `services/serial_broker.py`, and `core/config.yaml`.
+- RDK X3 path and serial configuration are still development-machine values. Examples remain in `nodes/stt_ros_node.py`, `services/speech/stt_service.py`, `services/hardware/serial_broker.py`, and `core/config.yaml`.
 - `core/config.yaml` still contains a plaintext API key. Move it to an environment variable or an untracked local config later.
 
 ## Protocol and behavior

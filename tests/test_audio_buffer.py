@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from services.audio_buffer import StreamingPCMPrebuffer
+from services.audio.audio_buffer import StreamingPCMPrebuffer
 
 
 class StreamingPCMPrebufferTests(unittest.TestCase):

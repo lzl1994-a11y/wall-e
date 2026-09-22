@@ -6,7 +6,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-from services.esp32_netcfg import validate_network_payload
+from services.hardware.esp32_netcfg import validate_network_payload
 
 
 class _String:

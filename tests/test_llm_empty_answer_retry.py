@@ -5,7 +5,7 @@ import inspect
 from types import MappingProxyType
 import pytest
 
-from services.llm_empty_answer_retry import (
+from services.llm.llm_empty_answer_retry import (
     EmptyAnswerRetryAccumulator,
     EmptyAnswerRetryRequest,
     build_empty_answer_retry_prompt,
@@ -214,7 +214,7 @@ def test_markdown_and_special_symbols_cleaned():
 
 def test_service_is_pure_and_does_not_import_rclpy():
     """16. Service is pure: does not import rclpy, call models, or publish messages."""
-    import services.llm_empty_answer_retry as retry_mod
+    import services.llm.llm_empty_answer_retry as retry_mod
 
     assert "rclpy" not in retry_mod.__dict__
     source = inspect.getsource(retry_mod)

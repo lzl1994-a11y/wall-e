@@ -1,6 +1,6 @@
 import unittest
 
-from services.game_hotkey import ButtonChordHold, ButtonHold, StartSelectHold
+from services.game.game_hotkey import ButtonChordHold, ButtonHold, StartSelectHold
 
 
 class StartSelectHoldTests(unittest.TestCase):

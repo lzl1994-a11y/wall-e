@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from services.audio_mixer import AudioMixer
-from services.mixing_playback_service import MixingPlaybackService
+from services.audio.audio_mixer import AudioMixer
+from services.audio.mixing_playback_service import MixingPlaybackService
 
 
 class AudioMixerTests(unittest.TestCase):
@@ -76,7 +76,7 @@ class AudioMixerTests(unittest.TestCase):
 
     def test_worker_uses_one_stream_and_distinct_wake_and_dialogue_acks(self):
         events = []
-        with patch("services.playback_service.threading.Thread"):
+        with patch("services.audio.playback_service.threading.Thread"):
             player = MixingPlaybackService(
                 sample_rate=1000,
                 on_turn_complete=lambda: events.append("dialogue"),
@@ -101,7 +101,7 @@ class AudioMixerTests(unittest.TestCase):
 
     def test_missing_speaker_still_acknowledges_turns_and_wake(self):
         events = []
-        with patch("services.playback_service.threading.Thread"):
+        with patch("services.audio.playback_service.threading.Thread"):
             player = MixingPlaybackService(
                 sample_rate=1000,
                 on_turn_complete=lambda: events.append("dialogue"),
@@ -117,7 +117,7 @@ class AudioMixerTests(unittest.TestCase):
 
     def test_system_prompt_uses_speech_lane_and_has_its_own_ack(self):
         events = []
-        with patch("services.playback_service.threading.Thread"):
+        with patch("services.audio.playback_service.threading.Thread"):
             player = MixingPlaybackService(
                 sample_rate=1000,
                 on_turn_complete=lambda: events.append("dialogue"),

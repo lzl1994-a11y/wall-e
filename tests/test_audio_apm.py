@@ -4,8 +4,8 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from services.audio_apm import WebRTCApm
-from services.audio_pipeline import AudioPipeline
+from services.audio.audio_apm import WebRTCApm
+from services.audio.audio_pipeline import AudioPipeline
 
 
 class WebRTCApmBackpressureTests(unittest.TestCase):

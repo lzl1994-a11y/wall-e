@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.servo_motion_config import load_neck_kinematics
+from services.motion.servo_motion_config import load_neck_kinematics
 
 
 class NeckKinematicsTests(unittest.TestCase):

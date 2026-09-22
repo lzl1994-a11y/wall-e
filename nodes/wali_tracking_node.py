@@ -15,23 +15,23 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String, Int32
-from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
-from services.action_status import ACTION_STATUS_TOPIC, build_action_status
-from services.motion_arbiter import MOTOR_TRACKING_TOPIC
-from services.servo_motion_config import load_neck_kinematics
-from services.tracking_control import (
+from services.action.action_command import ACTION_COMMAND_TOPIC, parse_action_request
+from services.action.action_status import ACTION_STATUS_TOPIC, build_action_status
+from services.motion.motion_arbiter import MOTOR_TRACKING_TOPIC
+from services.motion.servo_motion_config import load_neck_kinematics
+from services.motion.tracking_control import (
     LossState,
     TrackingController,
     TrackingExitReason,
 )
 
-from services.vision_pipeline_protocol import (
+from services.vision.vision_pipeline_protocol import (
     TRACKING_SERVO_TARGET_TOPIC,
     VISION_PIPELINE_COMMAND_TOPIC,
     VISION_PIPELINE_START,
     VISION_PIPELINE_STOP,
 )
-from services.camera_capture_protocol import (
+from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_STATUS_TOPIC,
     encode_camera_command,

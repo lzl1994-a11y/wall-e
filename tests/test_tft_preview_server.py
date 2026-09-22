@@ -8,8 +8,8 @@ from tempfile import TemporaryDirectory
 import cv2
 import numpy as np
 
-from services.camera_frame import save_camera_photo
-from services.tft_preview_server import (
+from services.vision.camera_frame import save_camera_photo
+from services.display.tft_preview_server import (
     EXPECTED_DEVICE_ID,
     HEADER,
     HELLO,
@@ -27,7 +27,7 @@ from services.tft_preview_server import (
     encode_message,
     prepare_tft_jpeg,
 )
-from services.web_server import _validate_tft_preview
+from services.integrations.web_server import _validate_tft_preview
 
 
 def _source_jpeg(width=640, height=480):

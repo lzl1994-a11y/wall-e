@@ -1,6 +1,6 @@
 import unittest
 
-from services.dialog_turn import DialogTurnController
+from services.dialog.dialog_turn import DialogTurnController
 
 
 class DialogTurnControllerTests(unittest.TestCase):

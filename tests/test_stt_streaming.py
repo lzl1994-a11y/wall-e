@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from services.audio_pipeline import _prefer_keyword_models
-from services.stt_service import STTService
+from services.audio.audio_pipeline import _prefer_keyword_models
+from services.speech.stt_service import STTService
 
 
 class STTStreamingTests(unittest.TestCase):
@@ -54,7 +54,7 @@ class STTStreamingTests(unittest.TestCase):
 
         service._on_speech_start(initial)
         service._on_speech_audio(following)
-        with patch("services.stt_service.os.path.expanduser", return_value=self.debug_path()):
+        with patch("services.speech.stt_service.os.path.expanduser", return_value=self.debug_path()):
             service._on_sentence(initial + following)
 
         adapter.start_stream.assert_called_once_with(16000)
@@ -73,7 +73,7 @@ class STTStreamingTests(unittest.TestCase):
         pcm = b"\x01\x00" * 4800
 
         service._on_speech_start(pcm)
-        with patch("services.stt_service.os.path.expanduser", return_value=self.debug_path()):
+        with patch("services.speech.stt_service.os.path.expanduser", return_value=self.debug_path()):
             service._on_sentence(pcm)
 
         adapter.finish_stream.assert_called_once_with()

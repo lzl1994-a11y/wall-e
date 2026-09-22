@@ -2,7 +2,7 @@
 
 import unittest
 
-from services.game_mode import GameMode, GameModeController, InvalidGameTransition
+from services.game.game_mode import GameMode, GameModeController, InvalidGameTransition
 
 
 class GameModeControllerTests(unittest.TestCase):

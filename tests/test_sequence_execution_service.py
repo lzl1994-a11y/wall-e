@@ -1,6 +1,6 @@
 import unittest
 
-from services.sequence_execution import (
+from services.motion.sequence_execution import (
     SequenceCommandController,
     SequenceLibrary,
     SequenceRuntime,

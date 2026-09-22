@@ -5,8 +5,8 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-from services import mcp_service
-from services.tool_dispatcher import parse_action_cmd
+from services.llm import mcp_service
+from services.llm.tool_dispatcher import parse_action_cmd
 
 
 class FastMcpToolTests(unittest.TestCase):
@@ -14,13 +14,13 @@ class FastMcpToolTests(unittest.TestCase):
         real_import = builtins.__import__
 
         def block_optional_llm_dependencies(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == "services.mcp_service" or name.startswith("fastmcp"):
+            if name == "services.llm.mcp_service" or name.startswith("fastmcp"):
                 raise ImportError(f"blocked optional dependency: {name}")
             return real_import(name, globals, locals, fromlist, level)
 
-        sys.modules.pop("services.action_command", None)
+        sys.modules.pop("services.action.action_command", None)
         with patch("builtins.__import__", side_effect=block_optional_llm_dependencies):
-            action_command = importlib.import_module("services.action_command")
+            action_command = importlib.import_module("services.action.action_command")
             parsed = action_command.parse_action_cmd(
                 '{"name":"play_sequence","arguments":"{\\"sequence_name\\":\\"turn_head_left\\"}"}'
             )
@@ -102,7 +102,7 @@ class FastMcpToolTests(unittest.TestCase):
                 mcp_service.get_chat_tools()
 
     def test_dispatcher_separates_structured_answer_from_real_action_tools(self):
-        from services import tool_dispatcher
+        from services.llm import tool_dispatcher
 
         action = {
             "type": "function",
@@ -125,7 +125,7 @@ class FastMcpToolTests(unittest.TestCase):
         )
 
     def test_multimodal_direct_answer_requires_transcript_and_response(self):
-        from services import tool_dispatcher
+        from services.llm import tool_dispatcher
 
         with patch.object(tool_dispatcher.mcp, "get_chat_tools", return_value=[]):
             tools = tool_dispatcher.get_multimodal_tools()
@@ -140,7 +140,7 @@ class FastMcpToolTests(unittest.TestCase):
         )
 
     def test_multimodal_actions_keep_native_schema_without_text_grounding(self):
-        from services import tool_dispatcher
+        from services.llm import tool_dispatcher
 
         action = {
             "type": "function",
@@ -213,7 +213,7 @@ class ToolCallAccumulatorTests(unittest.TestCase):
         )
 
     def test_malformed_arguments_are_discarded_instead_of_becoming_empty_object(self):
-        from services.tool_dispatcher import ToolCallAccumulator
+        from services.llm.tool_dispatcher import ToolCallAccumulator
 
         accumulator = ToolCallAccumulator()
         accumulator.feed(self._delta([
@@ -222,7 +222,7 @@ class ToolCallAccumulatorTests(unittest.TestCase):
         self.assertEqual(accumulator.flush(), [])
 
     def test_provider_call_order_is_preserved(self):
-        from services.tool_dispatcher import ToolCallAccumulator
+        from services.llm.tool_dispatcher import ToolCallAccumulator
 
         accumulator = ToolCallAccumulator()
         accumulator.feed(self._delta([
@@ -237,7 +237,7 @@ class ToolCallAccumulatorTests(unittest.TestCase):
 
 class LlmToolAvailabilityTests(unittest.TestCase):
     def _service(self):
-        from services.llm_service import LLMService
+        from services.llm.llm_service import LLMService
 
         service = object.__new__(LLMService)
         service.settings = {"temperature": 0.2, "max_tokens": 128}
@@ -248,10 +248,10 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         return service
 
     def test_empty_tools_raise_before_request_instead_of_silent_text_fallback(self):
-        from services.llm_service import ToolCallingUnavailableError
+        from services.llm.llm_service import ToolCallingUnavailableError
 
         service = self._service()
-        with patch("services.llm_service.get_action_tools", return_value=[]):
+        with patch("services.llm.llm_service.get_action_tools", return_value=[]):
             with self.assertRaisesRegex(ToolCallingUnavailableError, "动作工具为空"):
                 list(service.chat_stream("转个头", tools_enabled=True))
         service.client.chat.completions.create.assert_not_called()
@@ -268,7 +268,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = DialogResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -296,7 +296,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         service = self._service()
         service.settings["provider"] = "baidu_qianfan"
         service.client.chat.completions.create.return_value = PlainResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -326,7 +326,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
                 "parameters": {"type": "object"},
             },
         }]
-        with patch("services.llm_service.get_action_tools", return_value=action_schema):
+        with patch("services.llm.llm_service.get_action_tools", return_value=action_schema):
             events = list(service.chat_stream("举起手来。", tools_enabled=True))
 
         self.assertFalse(any(event["type"] == "tool_call" for event in events))
@@ -354,7 +354,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
     def test_tool_branch_discards_mixed_content_and_emits_action(self):
         service = self._service()
         service.client.chat.completions.create.return_value = _ToolCallResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -397,7 +397,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
                 "parameters": {"type": "object"},
             },
         } for name in ("play_sequence", "run_conditional_task")]
-        with patch("services.llm_service.get_action_tools", return_value=schemas):
+        with patch("services.llm.llm_service.get_action_tools", return_value=schemas):
             events = list(service.chat_stream(
                 "如果有人挥手你就点头",
                 tools_enabled=True,
@@ -432,7 +432,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = ActionOnlyResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -472,7 +472,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = CameraResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {
                 "name": "inspect_camera",
@@ -501,7 +501,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = PlainResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -541,7 +541,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         response = DeferredResponse()
         service = self._service()
         service.client.chat.completions.create.return_value = response
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {
                 "name": "play_sequence",
@@ -602,7 +602,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = ToolThenTextResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {
                 "name": "play_sequence",
@@ -641,7 +641,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = HiddenReasoningThenToolResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {
                 "name": "play_sequence",
@@ -679,7 +679,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = TextThenToolResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -714,7 +714,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
 
         service = self._service()
         service.client.chat.completions.create.return_value = MultiTextThenToolResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -743,13 +743,13 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]
-        with patch("services.llm_service.get_action_tools", return_value=action_schema):
+        with patch("services.llm.llm_service.get_action_tools", return_value=action_schema):
             list(service.chat_stream("转个头", tools_enabled=True))
         second_request = service.client.chat.completions.create.call_args_list[1].kwargs
         self.assertEqual(second_request["tools"], action_schema)
 
     def test_structured_answer_still_rejects_plain_content(self):
-        from services.llm_service import StructuredAnswerUnavailableError
+        from services.llm.llm_service import StructuredAnswerUnavailableError
 
         class PlainResponse:
             def __iter__(self):
@@ -781,7 +781,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]
-        with patch("services.llm_service.get_action_tools", return_value=tool_schema):
+        with patch("services.llm.llm_service.get_action_tools", return_value=tool_schema):
             list(service.chat_stream("转个头", tools_enabled=True))
         self.assertEqual(
             service.client.chat.completions.create.call_args.kwargs["model"],
@@ -799,7 +799,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         service = self._service()
         service.settings["tool_model"] = "glm-4-flash-250414"
         service.client.chat.completions.create.return_value = _ToolCallResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -828,7 +828,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         service = self._service()
         service.settings.update({"provider": "zhipu", "tool_model": "glm-4.7", "reasoning_effort": "fast"})
         service.client.chat.completions.create.return_value = _ToolCallResponse()
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -838,14 +838,14 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         self.assertEqual(request["extra_body"], {"thinking": {"type": "disabled"}})
 
     def test_model_tool_rejection_has_explicit_diagnostic(self):
-        from services.llm_service import ToolCallingUnavailableError
+        from services.llm.llm_service import ToolCallingUnavailableError
 
         class ApiToolRejection(RuntimeError):
             status_code = 400
 
         service = self._service()
         service.client.chat.completions.create.side_effect = ApiToolRejection("unsupported tools parameter")
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):
@@ -855,7 +855,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
     def test_network_or_auth_error_is_not_misreported_as_tool_incompatibility(self):
         service = self._service()
         service.client.chat.completions.create.side_effect = RuntimeError("network timeout")
-        with patch("services.llm_service.get_action_tools", return_value=[{
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {"name": "play_sequence", "description": "x", "parameters": {"type": "object"}},
         }]):

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.vision_runtime import VisionArtifactError, require_nv12_padder
+from services.vision.vision_runtime import VisionArtifactError, require_nv12_padder
 
 
 class VisionRuntimeArtifactTests(unittest.TestCase):

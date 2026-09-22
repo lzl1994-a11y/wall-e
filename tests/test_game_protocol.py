@@ -1,6 +1,6 @@
 import unittest
 
-from services.game_protocol import (
+from services.game.game_protocol import (
     decode_game_frame,
     encode_game_frame,
     encode_game_request,

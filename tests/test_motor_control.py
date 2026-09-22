@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.motor_control import (
+from services.motion.motor_control import (
     apply_direction_inversion,
     mix_differential_drive,
     motor_inversion_flags,

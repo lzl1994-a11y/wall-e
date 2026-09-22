@@ -44,7 +44,7 @@
 
 ### 3.1 MCP Server 与工具白名单
 
-新增 `services/mcp_gateway.py`：
+新增 `services/integrations/mcp_gateway.py`：
 
 - 加载并校验 MCP 配置。
 - 非回环地址监听时强制要求 `mcp.token`（兼容读取 `WALI_MCP_TOKEN`）。
@@ -78,14 +78,14 @@
 
 ### 3.3 动作请求与状态协议
 
-修改 `services/action_command.py`：
+修改 `services/action/action_command.py`：
 
 - `build_action_cmd()` 新增可选 `request_id` 和 `source`。
 - 新增 `new_action_request_id()`。
 - 新增 `parse_action_request()`，保留关联元数据。
 - 原 `parse_action_cmd()` 保持兼容，旧调用方无需修改。
 
-新增 `services/action_status.py`：
+新增 `services/action/action_status.py`：
 
 - 状态 Topic：`/action_status`。
 - 支持状态：
@@ -117,7 +117,7 @@
 
 ### 3.5 参数验证
 
-修改 `services/action_intent_guard.py`：
+修改 `services/action/action_intent_guard.py`：
 
 - 新增 `validate_action_arguments()`，供已授权的 MCP 结构化调用使用。
 - 外部 MCP 不信任客户端伪造的自然语言 `user_text`。
@@ -143,7 +143,7 @@ mcp:
   command_timeout_sec: 12.0
 ```
 
-修改 `services/web_server.py`，增加 MCP 配置字段校验。
+修改 `services/integrations/web_server.py`，增加 MCP 配置字段校验。
 
 更新文档：
 
@@ -346,11 +346,11 @@ launch_nodes.py
 nodes/sequence_ros_node.py
 nodes/wali_tracking_node.py
 nodes/wali_mcp_server.py
-services/action_command.py
-services/action_intent_guard.py
-services/action_status.py
-services/mcp_gateway.py
-services/web_server.py
+services/action/action_command.py
+services/action/action_intent_guard.py
+services/action/action_status.py
+services/integrations/mcp_gateway.py
+services/integrations/web_server.py
 tests/test_action_protocol.py
 tests/test_launch_nodes.py
 tests/test_mcp_gateway.py

@@ -21,13 +21,13 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from services.vision_pipeline_protocol import (
+from services.vision.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
     VISION_PIPELINE_START,
     decode_vision_pipeline_command,
 )
-from services.vision_runtime import VisionArtifactError, require_nv12_padder
-from services.camera_capture_protocol import CAMERA_FRAME_TOPIC
+from services.vision.vision_runtime import VisionArtifactError, require_nv12_padder
+from services.vision.camera_capture_protocol import CAMERA_FRAME_TOPIC
 
 
 class VisionPipelineControl(Node):

@@ -15,11 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.asr.baidu_asr import BaiduASR
-from services.asr import create_asr
-from services.asr.faster_whisper_asr import FasterWhisperASR
-from services.asr.sherpa_onnx_asr import SherpaParaformerASR
-from services.asr.zhipu_asr import ZhipuASR
+from services.speech.asr.baidu_asr import BaiduASR
+from services.speech.asr import create_asr
+from services.speech.asr.faster_whisper_asr import FasterWhisperASR
+from services.speech.asr.sherpa_onnx_asr import SherpaParaformerASR
+from services.speech.asr.zhipu_asr import ZhipuASR
 
 
 class BaiduASRTests(unittest.TestCase):
@@ -54,7 +54,7 @@ class BaiduASRTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail("Baidu standby connection was not prepared")
 
-    @patch("services.asr.baidu_asr.time.sleep", return_value=None)
+    @patch("services.speech.asr.baidu_asr.time.sleep", return_value=None)
     @patch("websocket.create_connection")
     def test_sends_baidu_protocol_and_returns_final_text(self, create_connection, _sleep):
         connection = MagicMock()
@@ -89,7 +89,7 @@ class BaiduASRTests(unittest.TestCase):
         self.assertEqual(json.loads(connection.send.call_args_list[-1].args[0]), {"type": "FINISH"})
         connection.close.assert_called_once_with()
 
-    @patch("services.asr.baidu_asr.time.sleep", return_value=None)
+    @patch("services.speech.asr.baidu_asr.time.sleep", return_value=None)
     @patch("websocket.create_connection")
     def test_api_error_returns_empty_text(self, create_connection, _sleep):
         connection = MagicMock()
@@ -111,7 +111,7 @@ class BaiduASRTests(unittest.TestCase):
         self.assertEqual(self.adapter().recognize(str(bad_path)), "")
         create_connection.assert_not_called()
 
-    @patch("services.asr.baidu_asr.time.sleep")
+    @patch("services.speech.asr.baidu_asr.time.sleep")
     @patch("websocket.create_connection")
     def test_streaming_session_sends_captured_audio_without_replay_delay(
         self, create_connection, sleep
@@ -218,7 +218,7 @@ class BaiduASRTests(unittest.TestCase):
 
 
 class ZhipuASRTests(unittest.TestCase):
-    @patch("services.asr.zhipu_asr.requests.Session")
+    @patch("services.speech.asr.zhipu_asr.requests.Session")
     def test_recognize_reuses_one_http_session(self, session_class):
         session = session_class.return_value
         response = session.post.return_value
@@ -310,7 +310,7 @@ class LocalASRTests(unittest.TestCase):
         offline = SimpleNamespace(from_paraformer=MagicMock(return_value=recognizer))
         module = SimpleNamespace(OfflineRecognizer=offline)
 
-        with patch("services.asr.sherpa_onnx_asr._load_sherpa_onnx", return_value=module):
+        with patch("services.speech.asr.sherpa_onnx_asr._load_sherpa_onnx", return_value=module):
             adapter = SherpaParaformerASR(
                 model=str(self._file("model.onnx")),
                 tokens=str(self._file("tokens.txt")),
@@ -355,7 +355,7 @@ class LocalASRTests(unittest.TestCase):
         sentinel = object()
 
         with patch(
-            "services.asr.sherpa_onnx_asr.SherpaParaformerASR",
+            "services.speech.asr.sherpa_onnx_asr.SherpaParaformerASR",
             return_value=sentinel,
         ) as adapter_class:
             result = create_asr(str(config_path))

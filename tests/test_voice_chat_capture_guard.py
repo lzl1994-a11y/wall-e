@@ -2,7 +2,7 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from services.voice_chat_service import VoiceChatService, _State
+from services.llm.voice_chat_service import VoiceChatService, _State
 
 
 class VoiceChatCaptureGuardTests(unittest.TestCase):

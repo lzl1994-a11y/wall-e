@@ -14,7 +14,7 @@ from pathlib import Path
 import edge_tts
 import pydub  # pip install pydub
 
-from services.audio_output import (
+from services.audio.audio_output import (
     OUTPUT_CHANNELS,
     OUTPUT_SAMPLE_RATE,
     OUTPUT_SAMPLE_WIDTH,

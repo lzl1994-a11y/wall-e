@@ -1,7 +1,7 @@
 import ctypes
 import unittest
 
-from services.game_audio_adapter import GamePlaybackAdapter
+from services.game.game_audio_adapter import GamePlaybackAdapter
 
 
 class _Playback:

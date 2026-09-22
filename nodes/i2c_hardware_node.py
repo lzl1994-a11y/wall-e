@@ -7,9 +7,9 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from services.servo_control import ServoControl
-from services.motion_arbiter import normalize_motor_command
-from services.motor_watchdog import (
+from services.hardware.servo_control import ServoControl
+from services.motion.motion_arbiter import normalize_motor_command
+from services.motion.motor_watchdog import (
     MOTOR_WATCHDOG_CHECK_INTERVAL_SEC,
     MotorWatchdog,
 )

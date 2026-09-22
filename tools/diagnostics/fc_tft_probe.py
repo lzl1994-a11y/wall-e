@@ -10,11 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from services.fc_input import FcControllerRelay, XTestKeySink
-from services.game_tft_stream import GameTftStreamServer
-from services.tft_preview_server import load_tft_preview_settings
-from services.virtual_display import VirtualDisplaySettings
-from services.virtual_display_bridge import VirtualDisplayTftBridge
+from services.game.fc_input import FcControllerRelay, XTestKeySink
+from services.game.game_tft_stream import GameTftStreamServer
+from services.display.tft_preview_server import load_tft_preview_settings
+from services.display.virtual_display import VirtualDisplaySettings
+from services.display.virtual_display_bridge import VirtualDisplayTftBridge
 
 
 def main() -> int:

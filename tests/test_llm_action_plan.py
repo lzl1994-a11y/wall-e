@@ -1,4 +1,4 @@
-from services.llm_action_plan import LLMActionPlanWorkflow
+from services.llm.llm_action_plan import LLMActionPlanWorkflow
 
 
 def _workflow(*, native_available, execute_plan, execute_action):

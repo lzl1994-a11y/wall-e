@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from services.dialog_expression_pose import (
+from services.dialog.dialog_expression_pose import (
     DEFAULT_STEP_SIZE,
     DialogExpressionPose,
     resolve_dialog_expression_pose,

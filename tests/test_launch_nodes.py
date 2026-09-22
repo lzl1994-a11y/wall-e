@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import launch_nodes
-from services.vision_runtime import VisionArtifactError
+from services.vision.vision_runtime import VisionArtifactError
 
 
 def launcher_args(
@@ -165,7 +165,10 @@ class LaunchNodesTests(unittest.TestCase):
         web_entries = [entry for entry in entries if entry.name == "config_web"]
 
         self.assertEqual(len(web_entries), 1)
-        self.assertEqual(web_entries[0].script, launch_nodes.ROOT / "services" / "web_server.py")
+        self.assertEqual(
+            web_entries[0].script,
+            launch_nodes.ROOT / "services" / "integrations" / "web_server.py",
+        )
 
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_camera_capture_owner_always_starts_before_consumers(self, _load_config):

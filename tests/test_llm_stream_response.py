@@ -1,4 +1,4 @@
-from services.llm_stream_response import (
+from services.llm.llm_stream_response import (
     StreamResponseAccumulator,
     StreamEventDecision,
     ACTION_FAILURE_REPLY,

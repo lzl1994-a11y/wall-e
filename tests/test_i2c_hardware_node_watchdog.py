@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
-from services.motor_watchdog import MotorWatchdog
+from services.motion.motor_watchdog import MotorWatchdog
 
 
 class _String:

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services import fc_game_session as session_module
+from services.game import fc_game_session as session_module
 
 
 class _Sink:

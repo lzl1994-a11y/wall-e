@@ -1,4 +1,4 @@
-from services.native_plan_execution import NativePlanExecutionAdapter
+from services.orchestration.native_plan_execution import NativePlanExecutionAdapter
 
 
 class _Executor:

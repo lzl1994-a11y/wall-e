@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from services.action_intent_guard import (
+from services.action.action_intent_guard import (
     canonicalize_conditional_action,
     deterministic_safety_action,
     validate_action_call,
@@ -373,7 +373,7 @@ class ActionIntentGuardTests(unittest.TestCase):
             "invalid_arguments",
         )
         self.assertRejected("做个动作", "unknown_tool", {}, "unknown_tool")
-        with patch("services.action_intent_guard._SEQUENCE_NAMES", frozenset()):
+        with patch("services.action.action_intent_guard._SEQUENCE_NAMES", frozenset()):
             self.assertRejected(
                 "向左转头",
                 "play_sequence",
@@ -455,7 +455,7 @@ class ActionIntentGuardTests(unittest.TestCase):
         )
 
     def test_conditional_consequent_can_repair_model_action_mapping(self):
-        from services.action_intent_guard import canonicalize_conditional_action
+        from services.action.action_intent_guard import canonicalize_conditional_action
 
         wrong_plan = {
             "observation": "观察前方画面",
@@ -479,7 +479,7 @@ class ActionIntentGuardTests(unittest.TestCase):
         )
 
     def test_conditional_action_mapping_ignores_gesture_in_condition(self):
-        from services.action_intent_guard import canonicalize_conditional_action
+        from services.action.action_intent_guard import canonicalize_conditional_action
 
         plan = {
             "observation": "观察前方人物",
@@ -495,7 +495,7 @@ class ActionIntentGuardTests(unittest.TestCase):
         )
 
     def test_right_left_and_double_hand_actions_are_unambiguous(self):
-        from services.action_intent_guard import canonicalize_conditional_action
+        from services.action.action_intent_guard import canonicalize_conditional_action
 
         self.assertAllowed(
             "举起右手。",

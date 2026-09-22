@@ -54,7 +54,7 @@ class _FakeStructuredResponse:
 
 class LLMServiceVisionTests(unittest.TestCase):
     def test_prior_image_blocks_are_removed_from_history_context(self):
-        from services.llm_service import _text_only_chat_history
+        from services.llm.llm_service import _text_only_chat_history
 
         history = [{
             "role": "user",
@@ -73,7 +73,7 @@ class LLMServiceVisionTests(unittest.TestCase):
 
     def test_image_is_sent_as_openai_vision_content_without_answer_tool(self):
         fake_dispatcher = _complete_fake_dispatcher(
-            types.ModuleType("services.tool_dispatcher")
+            types.ModuleType("services.llm.tool_dispatcher")
         )
         fake_dispatcher.get_tools = lambda: []
 
@@ -92,9 +92,9 @@ class LLMServiceVisionTests(unittest.TestCase):
                 return self.calls
 
         fake_dispatcher.ToolCallAccumulator = FakeAccumulator
-        with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
-            sys.modules.pop("services.llm_service", None)
-            from services.llm_service import LLMService
+        with patch.dict(sys.modules, {"services.llm.tool_dispatcher": fake_dispatcher}):
+            sys.modules.pop("services.llm.llm_service", None)
+            from services.llm.llm_service import LLMService
 
         service = object.__new__(LLMService)
         service.settings = {
@@ -128,11 +128,11 @@ class LLMServiceVisionTests(unittest.TestCase):
         self.assertNotIn("extra_body", kwargs)
         self.assertEqual(result[0]["content"], "看起来是一只杯子。")
         self.assertEqual(result[-1], {"type": "done", "finish_reason": "stop"})
-        sys.modules.pop("services.llm_service", None)
+        sys.modules.pop("services.llm.llm_service", None)
 
     def test_aliyun_fast_mode_disables_thinking(self):
         fake_dispatcher = _complete_fake_dispatcher(
-            types.ModuleType("services.tool_dispatcher")
+            types.ModuleType("services.llm.tool_dispatcher")
         )
         fake_dispatcher.get_tools = lambda: []
 
@@ -144,9 +144,9 @@ class LLMServiceVisionTests(unittest.TestCase):
                 return []
 
         fake_dispatcher.ToolCallAccumulator = FakeAccumulator
-        with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
-            sys.modules.pop("services.llm_service", None)
-            from services.llm_service import LLMService
+        with patch.dict(sys.modules, {"services.llm.tool_dispatcher": fake_dispatcher}):
+            sys.modules.pop("services.llm.llm_service", None)
+            from services.llm.llm_service import LLMService
 
         service = object.__new__(LLMService)
         service.settings = {
@@ -165,11 +165,11 @@ class LLMServiceVisionTests(unittest.TestCase):
         kwargs = service.client.chat.completions.create.call_args.kwargs
         self.assertEqual(kwargs["max_tokens"], 256)
         self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
-        sys.modules.pop("services.llm_service", None)
+        sys.modules.pop("services.llm.llm_service", None)
 
     def test_zhipu_toggle_model_fast_mode_disables_thinking(self):
         fake_dispatcher = _complete_fake_dispatcher(
-            types.ModuleType("services.tool_dispatcher")
+            types.ModuleType("services.llm.tool_dispatcher")
         )
         fake_dispatcher.get_tools = lambda: []
 
@@ -181,9 +181,9 @@ class LLMServiceVisionTests(unittest.TestCase):
                 return []
 
         fake_dispatcher.ToolCallAccumulator = FakeAccumulator
-        with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
-            sys.modules.pop("services.llm_service", None)
-            from services.llm_service import LLMService
+        with patch.dict(sys.modules, {"services.llm.tool_dispatcher": fake_dispatcher}):
+            sys.modules.pop("services.llm.llm_service", None)
+            from services.llm.llm_service import LLMService
 
         service = object.__new__(LLMService)
         service.settings = {
@@ -205,10 +205,10 @@ class LLMServiceVisionTests(unittest.TestCase):
             kwargs["extra_body"],
             {"thinking": {"type": "disabled"}},
         )
-        sys.modules.pop("services.llm_service", None)
+        sys.modules.pop("services.llm.llm_service", None)
 
     def test_zhipu_glm_45_air_fast_mode_disables_thinking(self):
-        from services.llm_request_options import reasoning_request_options
+        from services.llm.llm_request_options import reasoning_request_options
 
         options = reasoning_request_options({
             "provider": "zhipu",
@@ -219,7 +219,7 @@ class LLMServiceVisionTests(unittest.TestCase):
         self.assertEqual(options, {"extra_body": {"thinking": {"type": "disabled"}}})
 
     def test_doubao_fast_mode_disables_thinking(self):
-        from services.llm_request_options import reasoning_request_options
+        from services.llm.llm_request_options import reasoning_request_options
 
         options = reasoning_request_options({
             "provider": "doubao",
@@ -230,7 +230,7 @@ class LLMServiceVisionTests(unittest.TestCase):
         self.assertEqual(options, {"extra_body": {"thinking": {"type": "disabled"}}})
 
     def test_doubao_default_mode_preserves_model_default(self):
-        from services.llm_request_options import reasoning_request_options
+        from services.llm.llm_request_options import reasoning_request_options
 
         options = reasoning_request_options({
             "provider": "doubao",
@@ -241,7 +241,7 @@ class LLMServiceVisionTests(unittest.TestCase):
         self.assertEqual(options, {})
 
     def test_zhipu_fixed_thinking_model_keeps_supported_request_shape(self):
-        from services.llm_request_options import reasoning_request_options
+        from services.llm.llm_request_options import reasoning_request_options
 
         options = reasoning_request_options({
             "provider": "zhipu",
@@ -252,7 +252,7 @@ class LLMServiceVisionTests(unittest.TestCase):
 
     def test_retry_can_raise_token_budget_without_changing_config(self):
         fake_dispatcher = _complete_fake_dispatcher(
-            types.ModuleType("services.tool_dispatcher")
+            types.ModuleType("services.llm.tool_dispatcher")
         )
         fake_dispatcher.get_tools = lambda: []
 
@@ -264,9 +264,9 @@ class LLMServiceVisionTests(unittest.TestCase):
                 return []
 
         fake_dispatcher.ToolCallAccumulator = FakeAccumulator
-        with patch.dict(sys.modules, {"services.tool_dispatcher": fake_dispatcher}):
-            sys.modules.pop("services.llm_service", None)
-            from services.llm_service import LLMService
+        with patch.dict(sys.modules, {"services.llm.tool_dispatcher": fake_dispatcher}):
+            sys.modules.pop("services.llm.llm_service", None)
+            from services.llm.llm_service import LLMService
 
         service = object.__new__(LLMService)
         service.settings = {"temperature": 0.2, "max_tokens": 256}
@@ -280,12 +280,12 @@ class LLMServiceVisionTests(unittest.TestCase):
         kwargs = service.client.chat.completions.create.call_args.kwargs
         self.assertEqual(kwargs["max_tokens"], 512)
         self.assertEqual(service.settings["max_tokens"], 256)
-        sys.modules.pop("services.llm_service", None)
+        sys.modules.pop("services.llm.llm_service", None)
 
 
 class CameraIntentTests(unittest.TestCase):
     def test_inspection_phrases_are_detected(self):
-        from services.camera_frame import (
+        from services.vision.camera_frame import (
             is_camera_inspection_request,
             is_camera_photo_request,
         )
@@ -311,7 +311,7 @@ class CameraIntentTests(unittest.TestCase):
 
 class CameraFrameProviderTests(unittest.TestCase):
     def _provider(self):
-        from services import camera_frame
+        from services.vision import camera_frame
 
         class FakeCompressedImage:
             encoding = "jpeg"

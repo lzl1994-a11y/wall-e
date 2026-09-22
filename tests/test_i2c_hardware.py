@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from services.servo_control import ServoControl
+from services.hardware.servo_control import ServoControl
 
 
 class FakeChannel:

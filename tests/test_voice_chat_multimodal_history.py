@@ -4,7 +4,7 @@ import unittest
 from collections import deque
 from unittest.mock import MagicMock
 
-from services.voice_chat_service import VoiceChatService
+from services.llm.voice_chat_service import VoiceChatService
 
 
 class VoiceChatMultimodalHistoryTests(unittest.TestCase):

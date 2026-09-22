@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from services.tracking_tft_preview import TrackingTftPreview
+from services.vision.tracking_tft_preview import TrackingTftPreview
 
 
 class _Stream:
@@ -51,7 +51,7 @@ class _Provider:
 
 
 class TrackingTftPreviewTests(unittest.TestCase):
-    @patch("services.tracking_tft_preview.prepare_tft_jpeg", side_effect=lambda frame, **_: frame)
+    @patch("services.vision.tracking_tft_preview.prepare_tft_jpeg", side_effect=lambda frame, **_: frame)
     def test_tracking_uses_one_persistent_stream_until_stop(self, _prepare):
         server = _Server()
         provider = _Provider()
@@ -72,7 +72,7 @@ class TrackingTftPreviewTests(unittest.TestCase):
         self.assertTrue(server.streams[0].stopped.wait(timeout=1.0))
         self.assertFalse(preview.enabled)
 
-    @patch("services.tracking_tft_preview.prepare_tft_jpeg", side_effect=lambda frame, **_: frame)
+    @patch("services.vision.tracking_tft_preview.prepare_tft_jpeg", side_effect=lambda frame, **_: frame)
     def test_pause_then_resume_opens_a_new_persistent_session(self, _prepare):
         server = _Server()
         preview = TrackingTftPreview(server, _Provider(), fps=10)

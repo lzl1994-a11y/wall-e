@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-from services.music_protocol import encode_music_state
+from services.audio.music_protocol import encode_music_state
 
 
 class _String:

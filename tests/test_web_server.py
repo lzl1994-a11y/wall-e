@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.web_server import DEFAULT_STATIC_DIR, create_server
+from services.integrations.web_server import DEFAULT_STATIC_DIR, create_server
 
 
 class FakeNetworkConfigurator:
@@ -144,7 +144,7 @@ class ConfigWebServerTests(unittest.TestCase):
     def test_port_collision_preserves_original_bind_error(self):
         bind_error = OSError(98, "Address already in use")
         with patch(
-            "services.web_server.ConfigWebServer.server_bind",
+            "services.integrations.web_server.ConfigWebServer.server_bind",
             side_effect=bind_error,
         ):
             with self.assertRaises(OSError) as raised:
@@ -863,7 +863,7 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 400)
         self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
 
-    @patch("services.web_server.list_usb_devices")
+    @patch("services.integrations.web_server.list_usb_devices")
     def test_usb_scan_returns_current_physical_devices(self, list_devices):
         list_devices.return_value = [
             {

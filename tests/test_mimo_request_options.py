@@ -4,9 +4,9 @@ from pathlib import Path
 
 import yaml
 
-from services.llm_request_options import normalize_tool_choice, reasoning_request_options
-from services.multimodal import create_multimodal
-from services.multimodal.xiaomi_mimo_multimodal import XiaomiMiMoMultimodal
+from services.llm.llm_request_options import normalize_tool_choice, reasoning_request_options
+from services.llm.multimodal import create_multimodal
+from services.llm.multimodal.xiaomi_mimo_multimodal import XiaomiMiMoMultimodal
 
 
 class MiMoRequestOptionsTests(unittest.TestCase):

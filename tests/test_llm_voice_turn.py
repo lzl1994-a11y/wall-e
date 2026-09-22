@@ -1,4 +1,4 @@
-"""Unit tests for services.llm_voice_turn."""
+"""Unit tests for services.llm.llm_voice_turn."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import sys
 import pytest
 
-from services.llm_voice_turn import (
+from services.llm.llm_voice_turn import (
     FALLBACK_EMPTY_REPLY,
     LLMVoiceTurnState,
     VoiceTurnFinalDecision,
@@ -251,9 +251,9 @@ def test_tail_after_record_spoken_prevents_duplicate_final_tts() -> None:
 
 
 def test_service_does_not_import_rclpy_or_have_side_effects() -> None:
-    import services.llm_voice_turn as module
+    import services.llm.llm_voice_turn as module
 
     source = open(module.__file__, "r", encoding="utf-8").read()
     assert "import rclpy" not in source
     assert "from rclpy" not in source
-    assert "rclpy" not in sys.modules or "services.llm_voice_turn" not in sys.modules.get("rclpy", {}).__name__
+    assert "rclpy" not in sys.modules or "services.llm.llm_voice_turn" not in sys.modules.get("rclpy", {}).__name__

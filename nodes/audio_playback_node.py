@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """音频播放节点：统一混合对话、系统提示和音乐，再输出到 USB/I2S。
 
-只负责 ROS I/O。播放与降音逻辑在 services/mixing_playback_service.py。
+只负责 ROS I/O。播放与降音逻辑在 services/audio/mixing_playback_service.py。
 """
 
 import sys
@@ -14,19 +14,19 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from services.audio_output import OUTPUT_SAMPLE_RATE
-from services.music_protocol import MUSIC_AUDIO_TOPIC
-from services.mixing_playback_service import MixingPlaybackService
-from services.esp32_network_prompt import (
+from services.audio.audio_output import OUTPUT_SAMPLE_RATE
+from services.audio.music_protocol import MUSIC_AUDIO_TOPIC
+from services.audio.mixing_playback_service import MixingPlaybackService
+from services.audio.esp32_network_prompt import (
     ESP32_NETCFG_STATUS_TOPIC,
     Esp32NetworkPromptSelector,
 )
-from services.system_audio_protocol import (
+from services.audio.system_audio_protocol import (
     SYSTEM_AUDIO_DONE_TOPIC,
     SYSTEM_AUDIO_TOPIC,
     decode_system_audio,
 )
-from services.wake_audio_protocol import (
+from services.audio.wake_audio_protocol import (
     WAKE_AUDIO_DONE_TOPIC,
     WAKE_AUDIO_TOPIC,
     decode_wake_audio,

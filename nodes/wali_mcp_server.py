@@ -12,20 +12,20 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from services.action_command import ACTION_REQUEST_TOPIC, build_action_cmd, new_action_request_id
-from services.action_plan import PlanValidationError, compile_action_plan
-from services.action_status import (
+from services.action.action_command import ACTION_REQUEST_TOPIC, build_action_cmd, new_action_request_id
+from services.orchestration.action_plan import PlanValidationError, compile_action_plan
+from services.action.action_status import (
     ACTION_STATUS_TOPIC,
     TERMINAL_ACTION_STATUSES,
     parse_action_status,
 )
-from services.mcp_gateway import (
+from services.integrations.mcp_gateway import (
     create_mcp_gateway,
     load_mcp_gateway_settings,
     require_safe_transport,
     token_from_environment,
 )
-from services.ros2_action_execution import (
+from services.orchestration.ros2_action_execution import (
     Ros2ActionPlanExecutor,
     create_wali_task_action_client,
 )

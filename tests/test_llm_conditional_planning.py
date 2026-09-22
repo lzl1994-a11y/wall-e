@@ -1,4 +1,4 @@
-"""Unit tests for services.llm_conditional_planning."""
+"""Unit tests for services.llm.llm_conditional_planning."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import json
 import sys
 import pytest
 
-from services.conditional_task import CONDITIONAL_TASK_TOOL_NAME
-from services.llm_conditional_planning import (
+from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
+from services.llm.llm_conditional_planning import (
     ConditionalFallbackRequest,
     ConditionalPlanDecision,
     LLMConditionalPlanning,
@@ -291,8 +291,8 @@ def test_top_level_not_object_raises_conditional_json_plan_not_object() -> None:
 
 def test_service_does_not_import_rclpy_or_have_side_effects() -> None:
     # Verify rclpy is not imported by the pure service
-    assert "rclpy" not in sys.modules or "services.llm_conditional_planning" not in sys.modules.get("rclpy", {}).__name__
-    import services.llm_conditional_planning as module
+    assert "rclpy" not in sys.modules or "services.llm.llm_conditional_planning" not in sys.modules.get("rclpy", {}).__name__
+    import services.llm.llm_conditional_planning as module
     source_code = open(module.__file__, "r", encoding="utf-8").read()
     assert "import rclpy" not in source_code
     assert "from rclpy" not in source_code

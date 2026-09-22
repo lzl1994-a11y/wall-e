@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-from services.llm_request_preparation import (
+from services.llm.llm_request_preparation import (
     ROUTE_CAMERA_INSPECTION,
     ROUTE_CAMERA_PHOTO,
     ROUTE_CONDITIONAL_TASK,

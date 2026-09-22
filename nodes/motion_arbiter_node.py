@@ -11,13 +11,13 @@ from rclpy.node import Node
 from rclpy.qos_event import PublisherEventCallbacks, SubscriptionEventCallbacks
 from std_msgs.msg import String
 
-from services.motion_arbiter import (
+from services.motion.motion_arbiter import (
     MOTOR_OUTPUT_TOPIC,
     SOURCE_TOPICS,
     MotionArbiter,
     STOP_COMMAND,
 )
-from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
+from services.game.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 
 
 # Some deployed Humble/FastDDS combinations return from the executor wait set

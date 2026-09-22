@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from services.motor_watchdog import MotorWatchdog
-from services.pca9685_output_state import Pca9685OutputState
+from services.motion.motor_watchdog import MotorWatchdog
+from services.hardware.pca9685_output_state import Pca9685OutputState
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -5,8 +5,8 @@ import time
 import unittest
 import wave
 
-from services.esp32_network_prompt import Esp32NetworkPromptSelector
-from services.system_audio_protocol import decode_system_audio, encode_system_audio
+from services.audio.esp32_network_prompt import Esp32NetworkPromptSelector
+from services.audio.system_audio_protocol import decode_system_audio, encode_system_audio
 
 
 def _write_prompt(path: Path, value: int) -> None:

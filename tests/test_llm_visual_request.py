@@ -1,4 +1,4 @@
-"""Unit tests for services.llm_visual_request."""
+"""Unit tests for services.llm.llm_visual_request."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import dataclasses
 import sys
 import pytest
 
-from services.llm_visual_request import (
+from services.llm.llm_visual_request import (
     GAME_VISION_MAX_TOKENS,
     GAME_VISION_PROMPT,
     GAME_VISION_SYSTEM_PROMPT,
@@ -187,12 +187,12 @@ def test_empty_event_stream_returns_empty_strings() -> None:
 
 
 def test_service_does_not_import_rclpy_or_have_side_effects() -> None:
-    import services.llm_visual_request as module
+    import services.llm.llm_visual_request as module
 
     source = open(module.__file__, "r", encoding="utf-8").read()
     assert "import rclpy" not in source
     assert "from rclpy" not in source
-    assert "rclpy" not in sys.modules or "services.llm_visual_request" not in sys.modules.get("rclpy", {}).__name__
+    assert "rclpy" not in sys.modules or "services.llm.llm_visual_request" not in sys.modules.get("rclpy", {}).__name__
 
 
 def test_frozen_request_object_is_immutable() -> None:

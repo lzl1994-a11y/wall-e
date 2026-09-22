@@ -17,17 +17,17 @@ import yaml
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from services.dialog_expression_pose import (
+from services.dialog.dialog_expression_pose import (
     resolve_dialog_expression_pose,
     resolve_pose_targets,
 )
-from services.dialog_expression_protocol import (
+from services.dialog.dialog_expression_protocol import (
     DIALOG_EXPRESSION_TARGET_TOPIC,
     DIALOG_EXPRESSION_TOPIC,
     decode_dialog_expression,
 )
-from services.dialog_pose_sampler import DialogPoseSampler
-from services.tts_protocol import decode_turn_end
+from services.dialog.dialog_pose_sampler import DialogPoseSampler
+from services.speech.tts_protocol import decode_turn_end
 
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "core" / "config.yaml"

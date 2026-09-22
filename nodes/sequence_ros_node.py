@@ -3,17 +3,17 @@
 # 统一轨迹控制器：接收仲裁后的 /action_cmd，支持单一动作与成组动作 (Timeline)
 import time
 import json
-from services.action_cancel import ACTION_CANCEL_TOPIC, parse_action_cancel
-from services.action_command import ACTION_COMMAND_TOPIC, parse_action_request
-from services.action_status import ACTION_STATUS_TOPIC, build_action_status
+from services.action.action_cancel import ACTION_CANCEL_TOPIC, parse_action_cancel
+from services.action.action_command import ACTION_COMMAND_TOPIC, parse_action_request
+from services.action.action_status import ACTION_STATUS_TOPIC, build_action_status
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from services.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
-from services.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
-from services.dialog_expression_protocol import DIALOG_EXPRESSION_TARGET_TOPIC
-from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
-from services.sequence_execution import (
+from services.motion.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
+from services.vision.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
+from services.dialog.dialog_expression_protocol import DIALOG_EXPRESSION_TARGET_TOPIC
+from services.game.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
+from services.motion.sequence_execution import (
     DEFAULT_MOTION_TO_MOTOR,
     SequenceCommandController,
     SequenceLibrary,

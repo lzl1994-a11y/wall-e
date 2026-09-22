@@ -4,8 +4,8 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from services.game_tft_stream import GameTftStreamServer, prepare_game_bgr, prepare_game_jpeg
-from services.tft_preview_server import (
+from services.game.game_tft_stream import GameTftStreamServer, prepare_game_bgr, prepare_game_jpeg
+from services.display.tft_preview_server import (
     JPEG_FRAME,
     STREAM_END,
     STREAM_START,

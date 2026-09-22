@@ -4,7 +4,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from services import camera_preview_worker
+from services.vision import camera_preview_worker
 
 
 class _FakeRosImage:

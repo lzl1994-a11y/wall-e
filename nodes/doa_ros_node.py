@@ -6,9 +6,9 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32
-from services.serial_broker import SerialBroker
-from services.doa_listener import DOAListener
-from services.usb_devices import serial_ports_for_role
+from services.hardware.serial_broker import SerialBroker
+from services.hardware.doa_listener import DOAListener
+from services.hardware.usb_devices import serial_ports_for_role
 
 
 class DoaRosNode(Node):

@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from services.dialog_workflow import (
+from services.dialog.dialog_workflow import (
     ActionSequenceWorkflow,
     CameraInspectionWorkflow,
     ConditionalTaskWorkflow,

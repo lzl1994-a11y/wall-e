@@ -4,9 +4,9 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 # 引入底层的听觉血肉引擎
-from services.stt_service import STTService
-from services.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
-from services.dialog_motion_protocol import (
+from services.speech.stt_service import STTService
+from services.game.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
+from services.dialog.dialog_motion_protocol import (
     DIALOG_MOTION_VAD_TOPIC,
     VAD_SPEECH_ENDED,
     VAD_SPEECH_STARTED,

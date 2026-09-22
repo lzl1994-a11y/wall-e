@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from services.paced_pcm_output import PacedPCMOutput
+from services.audio.paced_pcm_output import PacedPCMOutput
 
 
 class PacedPCMOutputTests(unittest.TestCase):

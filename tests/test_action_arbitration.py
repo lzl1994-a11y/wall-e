@@ -1,6 +1,6 @@
 import unittest
 
-from services.action_arbitration import ActionArbiter, source_priority
+from services.action.action_arbitration import ActionArbiter, source_priority
 
 
 class ActionArbiterTests(unittest.TestCase):
