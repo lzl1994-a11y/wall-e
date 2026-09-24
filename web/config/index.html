@@ -48,6 +48,7 @@
       <button class="tab active" data-tab="runtime" type="button">运行</button>
       <button class="tab" data-tab="conversation" type="button">对话</button>
       <button class="tab" data-tab="hardware" type="button">硬件</button>
+      <button class="tab" data-tab="choreography" type="button">动作编排</button>
       <button class="tab" data-tab="servos" type="button">舵机</button>
       <button class="tab" data-tab="motors" type="button">电机</button>
     </nav>
@@ -412,6 +413,81 @@
             </div>
           </article>
         </div>
+      </section>
+
+      <section class="panel" data-panel="choreography">
+        <div class="section-heading choreography-heading">
+          <div><p class="eyebrow">MOTION TIMELINE</p><h2>动作编排</h2></div>
+          <p>动作段表示“在这段时间内改变多少”。编辑器从中性姿势推导绝对 PWM；本版本只保存与校验，不会驱动真机。</p>
+        </div>
+
+        <div class="choreography-toolbar card">
+          <label class="field choreography-select"><span>已保存动作</span><select id="choreography-select"><option value="">新动作</option></select></label>
+          <label class="field choreography-name"><span>名称</span><input id="choreography-name" type="text" maxlength="80" value="未命名动作"></label>
+          <label class="field choreography-id"><span>动作 ID</span><input id="choreography-id" type="text" maxlength="64" value="untitled_action"></label>
+          <label class="field choreography-duration"><span>时间轴（秒）</span><input id="choreography-duration" type="number" min="1" max="600" step="1" value="8"></label>
+          <div class="choreography-toolbar-actions">
+            <button id="choreography-new" class="button secondary small" type="button">新建</button>
+            <button id="choreography-validate" class="button secondary small" type="button">校验</button>
+            <button id="choreography-save" class="button primary small" type="button">保存</button>
+            <button id="choreography-delete" class="button danger small" type="button">删除</button>
+          </div>
+        </div>
+
+        <div class="choreography-workspace">
+          <aside class="choreography-palette card">
+            <div class="palette-section">
+              <p class="eyebrow">HOW TO</p>
+              <h3>添加运动段</h3>
+              <p>点击任意机构轨道的空白位置添加。拖动色块移动，拖动右侧把手修改持续时间。</p>
+            </div>
+            <div class="palette-section">
+              <div class="palette-title"><h3>音乐</h3><small>最大 64MB</small></div>
+              <input id="choreography-audio-input" type="file" accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/aac,audio/flac,.mp3,.wav,.ogg,.m4a,.aac,.flac" hidden>
+              <button id="choreography-audio-upload" class="button secondary small full-button" type="button">上传音乐</button>
+              <select id="choreography-audio-select" class="palette-select"><option value="">不使用音乐</option></select>
+              <p id="choreography-audio-hint" class="audio-hint">音乐会显示在时间轴，并作为网页预览的播放时钟。</p>
+            </div>
+            <div class="palette-section">
+              <div class="palette-title"><h3>已有动作</h3><small>拖到最上方动作轨</small></div>
+              <div id="choreography-action-palette" class="action-palette-list"><p class="empty-copy">正在读取…</p></div>
+            </div>
+            <div class="palette-section choreography-legend">
+              <h3>规则</h3>
+              <p><span class="legend-dot positive"></span>正向位移</p>
+              <p><span class="legend-dot negative"></span>反向位移</p>
+              <p><span class="legend-dot invalid"></span>重叠或越界</p>
+            </div>
+          </aside>
+
+          <section class="choreography-editor card">
+            <div class="timeline-toolbar">
+              <div><strong id="choreography-status">尚未校验</strong><small id="choreography-summary">从中性姿势开始</small></div>
+              <div class="audio-transport">
+                <button id="choreography-audio-play" class="button secondary small" type="button" disabled>播放</button>
+                <button id="choreography-audio-stop" class="button secondary small" type="button" disabled>停止</button>
+                <output id="choreography-time-display">0:00.00</output>
+              </div>
+              <label>吸附<select id="choreography-snap"><option value="0.1">0.1s</option><option value="0.25" selected>0.25s</option><option value="0.5">0.5s</option><option value="1">1s</option></select></label>
+              <label>缩放<input id="choreography-zoom" type="range" min="60" max="160" value="100"></label>
+            </div>
+            <div id="choreography-timeline-scroll" class="timeline-scroll">
+              <div id="choreography-timeline" class="timeline"></div>
+            </div>
+            <div id="choreography-errors" class="choreography-errors" hidden></div>
+            <audio id="choreography-audio" preload="metadata"></audio>
+          </section>
+        </div>
+
+        <section id="choreography-inspector" class="choreography-inspector card" hidden>
+          <div class="inspector-heading"><div><p class="eyebrow">SELECTED SEGMENT</p><h3 id="segment-channel-label">运动段</h3></div><button id="segment-remove" class="button danger small" type="button">删除运动段</button></div>
+          <div class="form-grid three">
+            <label class="field"><span>开始时间（秒）</span><input id="segment-start" type="number" min="0" step="0.05"></label>
+            <label class="field"><span>命令持续时间（秒）</span><input id="segment-duration" type="number" min="0.05" max="30" step="0.05"></label>
+            <label class="field"><span>总位移（%）</span><input id="segment-delta" type="range" min="-100" max="100" step="1"><output id="segment-delta-output">20%</output></label>
+          </div>
+          <p class="card-help">正值向该舵机配置的高限位移动，负值向低限位移动。脖子轨道会自动换算成两个舵机的机械联动目标。</p>
+        </section>
       </section>
 
       <section class="panel" data-panel="servos">

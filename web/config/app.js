@@ -20,6 +20,20 @@ const state = {
     phaseStartedAt: 0,
     lastOperationalPhase: "launching",
   },
+  choreography: {
+    items: [],
+    catalog: { channels: [], actions: [] },
+    document: null,
+    selected: null,
+    pixelsPerSecond: 100,
+    dirty: false,
+    drag: null,
+    loaded: false,
+    audioObjectUrl: null,
+    audioAssetId: null,
+    audioPeaks: [],
+    audioFrame: null,
+  },
 };
 
 const CAMERA_PREVIEW_POLL_MS = 180;
@@ -142,6 +156,15 @@ const MCP_DEFAULTS = Object.freeze({
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function getToken() {
   return $("#access-token").value.trim();
@@ -1189,10 +1212,713 @@ async function queryEsp32Network() {
   }
 }
 
+function choreographyUid(prefix = "segment") {
+  const random = globalThis.crypto?.randomUUID?.().replaceAll("-", "") || `${Date.now()}${Math.random()}`.replace(".", "");
+  return `${prefix}-${random.slice(0, 10)}`;
+}
+
+function choreographySnap(value) {
+  const step = Number($("#choreography-snap")?.value || 0.25);
+  return Math.max(0, Math.round(Number(value) / step) * step);
+}
+
+function newChoreographyDocument() {
+  return {
+    schema_version: 1,
+    id: "untitled_action",
+    name: "未命名动作",
+    start_pose: "neutral",
+    timeline_seconds: 8,
+    tracks: state.choreography.catalog.channels.map((channel) => ({ channel: channel.id, segments: [] })),
+    actions: [],
+    audio: null,
+  };
+}
+
+function normalizeChoreographyDocument(document) {
+  const copy = deepClone(document || newChoreographyDocument());
+  copy.tracks = Array.isArray(copy.tracks) ? copy.tracks : [];
+  copy.actions = Array.isArray(copy.actions) ? copy.actions : [];
+  copy.audio = copy.audio && typeof copy.audio === "object" ? copy.audio : null;
+  state.choreography.catalog.channels.forEach((channel) => {
+    if (!copy.tracks.some((track) => track.channel === channel.id)) {
+      copy.tracks.push({ channel: channel.id, segments: [] });
+    }
+  });
+  return copy;
+}
+
+function choreographyTrack(channel) {
+  return state.choreography.document?.tracks.find((track) => track.channel === channel);
+}
+
+function choreographyActionDefinition(name) {
+  return state.choreography.catalog.actions.find((action) => action.id === name);
+}
+
+function choreographySegment(channel, id) {
+  return choreographyTrack(channel)?.segments.find((segment) => segment.id === id);
+}
+
+function choreographySyncMetadata() {
+  const document = state.choreography.document;
+  if (!document) return;
+  document.name = $("#choreography-name").value.trim();
+  document.id = $("#choreography-id").value.trim();
+  document.timeline_seconds = Number($("#choreography-duration").value);
+}
+
+function markChoreographyDirty() {
+  state.choreography.dirty = true;
+  const status = $("#choreography-status");
+  if (status) status.textContent = "有未保存修改";
+  const summary = $("#choreography-summary");
+  if (summary) summary.textContent = "保存前会重新校验范围与重叠";
+  $("#choreography-errors")?.setAttribute("hidden", "");
+}
+
+function renderChoreographySelect() {
+  const select = $("#choreography-select");
+  select.innerHTML = '<option value="">新动作</option>';
+  state.choreography.items.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = `${item.name} · ${item.id}`;
+    select.append(option);
+  });
+  const currentId = state.choreography.document?.id;
+  if (state.choreography.items.some((item) => item.id === currentId)) select.value = currentId;
+}
+
+function renderChoreographyPalette() {
+  const root = $("#choreography-action-palette");
+  root.innerHTML = "";
+  renderChoreographyAudioSelect();
+  if (!state.choreography.catalog.actions.length) {
+    root.innerHTML = '<p class="empty-copy">暂无 sequences.yaml 动作</p>';
+    return;
+  }
+  state.choreography.catalog.actions.forEach((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "action-palette-item";
+    button.draggable = true;
+    button.dataset.sequenceName = action.id;
+    button.innerHTML = `<strong>${escapeHtml(action.label)}</strong><small>${action.duration.toFixed(2)}s · ${escapeHtml(action.channels.join(" / ") || "事件")}</small>`;
+    button.addEventListener("dragstart", (event) => {
+      event.dataTransfer.effectAllowed = "copy";
+      event.dataTransfer.setData("application/x-wali-sequence", action.id);
+    });
+    root.append(button);
+  });
+}
+
+function renderChoreographyAudioSelect() {
+  const select = $("#choreography-audio-select");
+  select.innerHTML = '<option value="">不使用音乐</option>';
+  (state.choreography.catalog.audio || []).forEach((asset) => {
+    const option = document.createElement("option");
+    option.value = asset.id;
+    option.textContent = `${asset.name} · ${(Number(asset.size || 0) / 1024 / 1024).toFixed(1)}MB`;
+    select.append(option);
+  });
+  select.value = state.choreography.document?.audio?.asset_id || "";
+}
+
+function formatChoreographyTime(seconds) {
+  const safe = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safe / 60);
+  return `${minutes}:${(safe % 60).toFixed(2).padStart(5, "0")}`;
+}
+
+function clearChoreographyAudioSource() {
+  const audio = $("#choreography-audio");
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+  if (state.choreography.audioObjectUrl) URL.revokeObjectURL(state.choreography.audioObjectUrl);
+  state.choreography.audioObjectUrl = null;
+  state.choreography.audioAssetId = null;
+  state.choreography.audioPeaks = [];
+  cancelAnimationFrame(state.choreography.audioFrame);
+  state.choreography.audioFrame = null;
+  $("#choreography-audio-play").disabled = true;
+  $("#choreography-audio-stop").disabled = true;
+  $("#choreography-audio-play").textContent = "播放";
+  $("#choreography-time-display").textContent = "0:00.00";
+  $("#choreography-audio-hint").textContent = "支持 MP3、WAV、OGG、M4A、AAC、FLAC，最大 64MB";
+}
+
+async function decodeChoreographyWaveform(blob) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return [];
+    const context = new AudioContextClass();
+    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+    const channel = buffer.getChannelData(0);
+    const bins = Math.min(1600, Math.max(200, Math.ceil(buffer.duration * 12)));
+    const block = Math.max(1, Math.floor(channel.length / bins));
+    const peaks = [];
+    for (let index = 0; index < bins; index += 1) {
+      let peak = 0;
+      const start = index * block;
+      const end = Math.min(channel.length, start + block);
+      for (let sample = start; sample < end; sample += 1) peak = Math.max(peak, Math.abs(channel[sample]));
+      peaks.push(peak);
+    }
+    await context.close();
+    return peaks;
+  } catch (_) {
+    return [];
+  }
+}
+
+async function loadChoreographyAudio(assetId, { updateDocument = false } = {}) {
+  if (!assetId) {
+    clearChoreographyAudioSource();
+    if (updateDocument && state.choreography.document) {
+      state.choreography.document.audio = null;
+      markChoreographyDirty();
+      renderChoreographyTimeline();
+    }
+    return;
+  }
+  if (state.choreography.audioAssetId === assetId && state.choreography.audioObjectUrl) return;
+  clearChoreographyAudioSource();
+  const asset = (state.choreography.catalog.audio || []).find((item) => item.id === assetId);
+  if (!asset) throw new Error("音乐资源不存在，请重新上传");
+  const response = await fetch(`/api/choreography-audio/${encodeURIComponent(assetId)}`, {
+    cache: "no-store",
+    headers: apiHeaders(false),
+  });
+  if (!response.ok) throw new Error(`读取音乐失败 (${response.status})`);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const audio = $("#choreography-audio");
+  state.choreography.audioObjectUrl = objectUrl;
+  state.choreography.audioAssetId = assetId;
+  audio.src = objectUrl;
+  const metadataReady = new Promise((resolve, reject) => {
+    audio.addEventListener("loadedmetadata", resolve, { once: true });
+    audio.addEventListener("error", () => reject(new Error("浏览器无法解码该音乐格式")), { once: true });
+  });
+  audio.load();
+  await metadataReady;
+  state.choreography.audioPeaks = await decodeChoreographyWaveform(blob);
+  if (updateDocument || !state.choreography.document.audio) {
+    state.choreography.document.audio = {
+      asset_id: assetId,
+      name: asset.name,
+      duration: Number(audio.duration.toFixed(3)),
+    };
+    const requiredTimeline = Math.ceil(audio.duration);
+    if (requiredTimeline > Number(state.choreography.document.timeline_seconds)) {
+      state.choreography.document.timeline_seconds = Math.min(600, requiredTimeline);
+      $("#choreography-duration").value = state.choreography.document.timeline_seconds;
+    }
+    markChoreographyDirty();
+  } else {
+    state.choreography.document.audio.duration = Number(audio.duration.toFixed(3));
+  }
+  $("#choreography-audio-play").disabled = false;
+  $("#choreography-audio-stop").disabled = false;
+  $("#choreography-audio-hint").textContent = `${asset.name} · ${formatChoreographyTime(audio.duration)}`;
+  renderChoreographyTimeline();
+}
+
+async function uploadChoreographyAudio(file) {
+  if (!file) return;
+  if (file.size > 64 * 1024 * 1024) {
+    showToast("音乐文件不能超过 64MB", "error");
+    return;
+  }
+  const button = $("#choreography-audio-upload");
+  button.disabled = true;
+  button.textContent = "上传中…";
+  try {
+    const payload = await api("/api/choreography-audio", {
+      method: "POST",
+      body: file,
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Wali-Filename": encodeURIComponent(file.name),
+      },
+    });
+    state.choreography.catalog.audio = [
+      ...(state.choreography.catalog.audio || []).filter((item) => item.id !== payload.asset.id),
+      payload.asset,
+    ];
+    renderChoreographyAudioSelect();
+    $("#choreography-audio-select").value = payload.asset.id;
+    await loadChoreographyAudio(payload.asset.id, { updateDocument: true });
+    showToast(payload.message);
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "上传音乐";
+    $("#choreography-audio-input").value = "";
+  }
+}
+
+function drawChoreographyWaveform(canvas) {
+  const peaks = state.choreography.audioPeaks;
+  if (!canvas || !peaks.length) return;
+  canvas.width = Math.min(2000, Math.max(300, peaks.length));
+  canvas.height = 44;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#67529b";
+  const middle = canvas.height / 2;
+  peaks.forEach((peak, index) => {
+    const x = index / peaks.length * canvas.width;
+    const height = Math.max(1, peak * middle * 0.9);
+    context.fillRect(x, middle - height, 1, height * 2);
+  });
+}
+
+function updateChoreographyPlayhead() {
+  const audio = $("#choreography-audio");
+  const playhead = $("#choreography-playhead");
+  if (playhead) playhead.style.left = `${audio.currentTime * state.choreography.pixelsPerSecond}px`;
+  $("#choreography-time-display").textContent = formatChoreographyTime(audio.currentTime);
+  if (!audio.paused && !audio.ended) {
+    state.choreography.audioFrame = requestAnimationFrame(updateChoreographyPlayhead);
+  } else {
+    $("#choreography-audio-play").textContent = "播放";
+    state.choreography.audioFrame = null;
+  }
+}
+
+async function toggleChoreographyAudio() {
+  const audio = $("#choreography-audio");
+  if (!audio.src) return;
+  if (audio.paused) {
+    try {
+      await audio.play();
+      $("#choreography-audio-play").textContent = "暂停";
+      cancelAnimationFrame(state.choreography.audioFrame);
+      updateChoreographyPlayhead();
+    } catch (error) {
+      showToast(`音乐播放失败：${error.message}`, "error");
+    }
+  } else {
+    audio.pause();
+    $("#choreography-audio-play").textContent = "播放";
+  }
+}
+
+function stopChoreographyAudio() {
+  const audio = $("#choreography-audio");
+  audio.pause();
+  audio.currentTime = 0;
+  updateChoreographyPlayhead();
+}
+
+function choreographyClientErrors() {
+  const errors = [];
+  const timeline = Number(state.choreography.document?.timeline_seconds || 0);
+  state.choreography.document?.tracks.forEach((track) => {
+    let previousEnd = 0;
+    let position = 0;
+    [...track.segments].sort((a, b) => a.start - b.start).forEach((segment) => {
+      const end = Number(segment.start) + Number(segment.duration);
+      if (Number(segment.start) < previousEnd - 0.0001) errors.push({ channel: track.channel, id: segment.id, message: "动作段重叠" });
+      if (end > timeline + 0.0001) errors.push({ channel: track.channel, id: segment.id, message: "超出时间轴" });
+      previousEnd = Math.max(previousEnd, end);
+      position += Number(segment.delta);
+      if (position < -100 || position > 100) errors.push({ channel: track.channel, id: segment.id, message: `累计位置 ${position}% 越界` });
+    });
+  });
+  return errors;
+}
+
+function renderChoreographyInspector() {
+  const selected = state.choreography.selected;
+  const inspector = $("#choreography-inspector");
+  if (!selected) {
+    inspector.hidden = true;
+    return;
+  }
+  const segment = choreographySegment(selected.channel, selected.id);
+  if (!segment) {
+    state.choreography.selected = null;
+    inspector.hidden = true;
+    return;
+  }
+  const channel = state.choreography.catalog.channels.find((item) => item.id === selected.channel);
+  $("#segment-channel-label").textContent = channel?.label || selected.channel;
+  $("#segment-start").value = segment.start;
+  $("#segment-duration").value = segment.duration;
+  $("#segment-delta").value = segment.delta;
+  $("#segment-delta-output").textContent = `${segment.delta > 0 ? "+" : ""}${segment.delta}%`;
+  inspector.hidden = false;
+}
+
+function addChoreographySegment(channel, start) {
+  const track = choreographyTrack(channel);
+  if (!track) return;
+  const timeline = Number(state.choreography.document.timeline_seconds);
+  const duration = Math.max(0.05, Math.min(1, timeline - start));
+  if (duration <= 0.05 && start >= timeline) return;
+  const segment = { id: choreographyUid(), start: choreographySnap(start), duration: choreographySnap(duration) || 0.25, delta: 20 };
+  if (segment.start + segment.duration > timeline) segment.duration = Math.max(0.05, timeline - segment.start);
+  track.segments.push(segment);
+  state.choreography.selected = { channel, id: segment.id };
+  markChoreographyDirty();
+  renderChoreographyTimeline();
+}
+
+function renderChoreographyTimeline() {
+  const root = $("#choreography-timeline");
+  const documentModel = state.choreography.document;
+  if (!root || !documentModel) return;
+  const px = state.choreography.pixelsPerSecond;
+  const timeline = Number(documentModel.timeline_seconds || 8);
+  const contentWidth = Math.max(640, timeline * px);
+  const errors = choreographyClientErrors();
+  const invalid = new Set(errors.map((item) => `${item.channel}:${item.id}`));
+  root.innerHTML = "";
+
+  const ruler = document.createElement("div");
+  ruler.className = "timeline-ruler";
+  ruler.innerHTML = '<div class="timeline-corner">TRACK / TIME</div>';
+  const scale = document.createElement("div");
+  scale.className = "timeline-scale";
+  scale.style.width = `${contentWidth}px`;
+  scale.style.backgroundSize = `${px}px 100%`;
+  scale.addEventListener("click", (event) => {
+    const audio = $("#choreography-audio");
+    if (!audio.src) return;
+    audio.currentTime = Math.min(audio.duration || timeline, Math.max(0, (event.clientX - scale.getBoundingClientRect().left) / px));
+    updateChoreographyPlayhead();
+  });
+  for (let second = 0; second <= timeline; second += 1) {
+    const tick = document.createElement("span");
+    tick.className = "timeline-tick";
+    tick.style.left = `${second * px}px`;
+    tick.textContent = `${second}s`;
+    scale.append(tick);
+  }
+  ruler.append(scale);
+  root.append(ruler);
+
+  const audioRow = document.createElement("div");
+  audioRow.className = "timeline-row audio-row";
+  audioRow.innerHTML = '<div class="timeline-label">音乐<small>播放时钟</small></div>';
+  const audioLane = document.createElement("div");
+  audioLane.className = "timeline-lane";
+  audioLane.style.width = `${contentWidth}px`;
+  audioLane.style.backgroundSize = `${px}px 100%`;
+  audioLane.addEventListener("click", (event) => {
+    const audio = $("#choreography-audio");
+    if (!audio.src) return;
+    audio.currentTime = Math.min(audio.duration || timeline, Math.max(0, (event.clientX - audioLane.getBoundingClientRect().left) / px));
+    updateChoreographyPlayhead();
+  });
+  if (documentModel.audio) {
+    const clip = document.createElement("div");
+    clip.className = "audio-clip";
+    clip.style.width = `${Math.max(24, Number(documentModel.audio.duration) * px)}px`;
+    const waveform = document.createElement("canvas");
+    const label = document.createElement("span");
+    label.className = "audio-clip-label";
+    label.textContent = `${documentModel.audio.name} · ${formatChoreographyTime(documentModel.audio.duration)}`;
+    clip.append(waveform, label);
+    audioLane.append(clip);
+    drawChoreographyWaveform(waveform);
+  }
+  audioRow.append(audioLane);
+  root.append(audioRow);
+
+  const actionRow = document.createElement("div");
+  actionRow.className = "timeline-row action-row";
+  actionRow.innerHTML = '<div class="timeline-label">已有动作<small>拖入</small></div>';
+  const actionLane = document.createElement("div");
+  actionLane.className = "timeline-lane";
+  actionLane.style.width = `${contentWidth}px`;
+  actionLane.style.backgroundSize = `${px}px 100%`;
+  actionLane.addEventListener("dragover", (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
+  actionLane.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const sequenceName = event.dataTransfer.getData("application/x-wali-sequence");
+    const definition = choreographyActionDefinition(sequenceName);
+    if (!definition) return;
+    const start = choreographySnap((event.clientX - actionLane.getBoundingClientRect().left) / px);
+    if (start + definition.duration > Number(documentModel.timeline_seconds)) {
+      showToast("已有动作会超出时间轴，请延长时间轴或向前放置", "error");
+      return;
+    }
+    documentModel.actions.push({ id: choreographyUid("action"), sequence_name: sequenceName, start });
+    markChoreographyDirty();
+    renderChoreographyTimeline();
+  });
+  documentModel.actions.forEach((action) => {
+    const definition = choreographyActionDefinition(action.sequence_name);
+    if (!definition) return;
+    const clip = document.createElement("div");
+    clip.className = "action-clip";
+    clip.style.left = `${Number(action.start) * px}px`;
+    clip.style.width = `${Math.max(28, definition.duration * px)}px`;
+    clip.dataset.actionId = action.id;
+    clip.innerHTML = `<span>${escapeHtml(definition.label)}</span><button type="button" title="删除">×</button>`;
+    clip.querySelector("button").addEventListener("click", (event) => {
+      event.stopPropagation();
+      documentModel.actions = documentModel.actions.filter((item) => item.id !== action.id);
+      markChoreographyDirty();
+      renderChoreographyTimeline();
+    });
+    clip.addEventListener("pointerdown", (event) => startChoreographyDrag(event, { type: "action", id: action.id, originalStart: Number(action.start) }));
+    actionLane.append(clip);
+  });
+  actionRow.append(actionLane);
+  root.append(actionRow);
+
+  state.choreography.catalog.channels.forEach((channel) => {
+    const row = document.createElement("div");
+    row.className = "timeline-row";
+    row.innerHTML = `<div class="timeline-label">${escapeHtml(channel.label)}<small>${escapeHtml(channel.id)}</small></div>`;
+    const lane = document.createElement("div");
+    lane.className = "timeline-lane";
+    lane.dataset.channel = channel.id;
+    lane.style.width = `${contentWidth}px`;
+    lane.style.backgroundSize = `${px}px 100%`;
+    lane.addEventListener("click", (event) => {
+      if (event.target !== lane) return;
+      addChoreographySegment(channel.id, (event.clientX - lane.getBoundingClientRect().left) / px);
+    });
+    const track = choreographyTrack(channel.id);
+    track?.segments.forEach((segment) => {
+      const block = document.createElement("div");
+      const isSelected = state.choreography.selected?.channel === channel.id && state.choreography.selected?.id === segment.id;
+      block.className = `motion-segment ${segment.delta < 0 ? "negative" : "positive"}${invalid.has(`${channel.id}:${segment.id}`) ? " invalid" : ""}${isSelected ? " selected" : ""}`;
+      block.style.left = `${Number(segment.start) * px}px`;
+      block.style.width = `${Math.max(18, Number(segment.duration) * px)}px`;
+      block.dataset.segmentId = segment.id;
+      block.innerHTML = `<span>${segment.delta > 0 ? "+" : ""}${segment.delta}% · ${Number(segment.duration).toFixed(2)}s</span><i class="segment-resize"></i>`;
+      block.addEventListener("click", (event) => {
+        event.stopPropagation();
+        state.choreography.selected = { channel: channel.id, id: segment.id };
+        renderChoreographyTimeline();
+      });
+      block.addEventListener("pointerdown", (event) => startChoreographyDrag(event, {
+        type: event.target.classList.contains("segment-resize") ? "resize" : "move",
+        channel: channel.id,
+        id: segment.id,
+        originalStart: Number(segment.start),
+        originalDuration: Number(segment.duration),
+      }));
+      lane.append(block);
+    });
+    row.append(lane);
+    root.append(row);
+  });
+  const playhead = document.createElement("div");
+  playhead.id = "choreography-playhead";
+  playhead.className = "timeline-playhead";
+  playhead.style.left = `${$("#choreography-audio").currentTime * px}px`;
+  root.append(playhead);
+  renderChoreographyInspector();
+}
+
+function startChoreographyDrag(event, drag) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.choreography.drag = { ...drag, startX: event.clientX };
+}
+
+function moveChoreographyDrag(event) {
+  const drag = state.choreography.drag;
+  if (!drag) return;
+  const deltaSeconds = (event.clientX - drag.startX) / state.choreography.pixelsPerSecond;
+  const timeline = Number(state.choreography.document.timeline_seconds);
+  if (drag.type === "action") {
+    const action = state.choreography.document.actions.find((item) => item.id === drag.id);
+    const definition = action && choreographyActionDefinition(action.sequence_name);
+    if (!action || !definition) return;
+    action.start = Math.min(Math.max(0, choreographySnap(drag.originalStart + deltaSeconds)), Math.max(0, timeline - definition.duration));
+  } else {
+    const segment = choreographySegment(drag.channel, drag.id);
+    if (!segment) return;
+    if (drag.type === "move") {
+      segment.start = Math.min(Math.max(0, choreographySnap(drag.originalStart + deltaSeconds)), Math.max(0, timeline - segment.duration));
+    } else {
+      segment.duration = Math.max(0.05, Math.min(30, choreographySnap(drag.originalDuration + deltaSeconds) || 0.05, timeline - segment.start));
+    }
+    state.choreography.selected = { channel: drag.channel, id: drag.id };
+  }
+  markChoreographyDirty();
+  renderChoreographyTimeline();
+}
+
+function endChoreographyDrag() {
+  state.choreography.drag = null;
+}
+
+function showChoreographyErrors(error) {
+  const box = $("#choreography-errors");
+  const details = error?.details?.length ? error.details : [error?.message || "动作编排无效"];
+  box.innerHTML = `<strong>需要修改</strong><ul>${details.map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul>`;
+  box.hidden = false;
+  $("#choreography-status").textContent = "校验未通过";
+  $("#choreography-summary").textContent = `${details.length} 个问题`;
+}
+
+async function validateChoreography({ quiet = false } = {}) {
+  choreographySyncMetadata();
+  try {
+    const payload = await api("/api/choreographies/validate", {
+      method: "POST",
+      body: JSON.stringify({ document: state.choreography.document }),
+    });
+    state.choreography.document = normalizeChoreographyDocument(payload.document);
+    $("#choreography-errors").hidden = true;
+    $("#choreography-status").textContent = "校验通过";
+    $("#choreography-summary").textContent = `${payload.compiled.transitions.length} 段运动 · ${payload.compiled.actions.length} 个已有动作${payload.compiled.audio ? " · 1 条音乐" : ""}`;
+    renderChoreographyTimeline();
+    if (!quiet) showToast("动作编排校验通过");
+    return payload;
+  } catch (error) {
+    showChoreographyErrors(error);
+    if (!quiet) showToast(error.message, "error");
+    throw error;
+  }
+}
+
+async function saveChoreography() {
+  choreographySyncMetadata();
+  const button = $("#choreography-save");
+  button.disabled = true;
+  button.textContent = "保存中…";
+  try {
+    const payload = await api("/api/choreographies", {
+      method: "POST",
+      body: JSON.stringify({ document: state.choreography.document }),
+    });
+    state.choreography.document = normalizeChoreographyDocument(payload.document);
+    state.choreography.dirty = false;
+    const listing = await api("/api/choreographies");
+    state.choreography.items = listing.items || [];
+    state.choreography.catalog = listing.catalog || state.choreography.catalog;
+    renderChoreographySelect();
+    renderChoreographyTimeline();
+    $("#choreography-status").textContent = "已保存";
+    $("#choreography-summary").textContent = `${payload.compiled.transitions.length} 段运动 · ${payload.compiled.actions.length} 个已有动作${payload.compiled.audio ? " · 1 条音乐" : ""}`;
+    $("#choreography-errors").hidden = true;
+    showToast(payload.message);
+  } catch (error) {
+    showChoreographyErrors(error);
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "保存";
+  }
+}
+
+function confirmDiscardChoreography() {
+  return !state.choreography.dirty || window.confirm("放弃尚未保存的动作编排修改吗？");
+}
+
+function resetChoreographyEditor() {
+  if (!confirmDiscardChoreography()) return;
+  state.choreography.document = newChoreographyDocument();
+  state.choreography.selected = null;
+  state.choreography.dirty = false;
+  clearChoreographyAudioSource();
+  $("#choreography-select").value = "";
+  renderChoreographyDocument();
+}
+
+function renderChoreographyDocument() {
+  const documentModel = state.choreography.document;
+  if (!documentModel) return;
+  $("#choreography-name").value = documentModel.name || "未命名动作";
+  $("#choreography-id").value = documentModel.id || "untitled_action";
+  $("#choreography-duration").value = documentModel.timeline_seconds || 8;
+  $("#choreography-errors").hidden = true;
+  $("#choreography-status").textContent = state.choreography.dirty ? "有未保存修改" : "尚未校验";
+  $("#choreography-summary").textContent = "从中性姿势开始";
+  renderChoreographySelect();
+  renderChoreographyAudioSelect();
+  renderChoreographyTimeline();
+  if (documentModel.audio?.asset_id) {
+    loadChoreographyAudio(documentModel.audio.asset_id).catch((error) => {
+      showToast(error.message, "error");
+    });
+  } else {
+    clearChoreographyAudioSource();
+  }
+}
+
+async function loadChoreography(choreographyId) {
+  if (!choreographyId) {
+    resetChoreographyEditor();
+    return;
+  }
+  if (!confirmDiscardChoreography()) {
+    renderChoreographySelect();
+    return;
+  }
+  try {
+    const payload = await api(`/api/choreographies/${encodeURIComponent(choreographyId)}`);
+    state.choreography.document = normalizeChoreographyDocument(payload.document);
+    state.choreography.selected = null;
+    state.choreography.dirty = false;
+    renderChoreographyDocument();
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function deleteChoreography() {
+  const id = state.choreography.document?.id;
+  if (!state.choreography.items.some((item) => item.id === id)) {
+    showToast("当前动作尚未保存", "error");
+    return;
+  }
+  if (!window.confirm(`确定删除动作“${state.choreography.document.name}”吗？`)) return;
+  try {
+    const payload = await api(`/api/choreographies/${encodeURIComponent(id)}`, { method: "DELETE" });
+    state.choreography.items = state.choreography.items.filter((item) => item.id !== id);
+    state.choreography.dirty = false;
+    state.choreography.document = newChoreographyDocument();
+    renderChoreographyDocument();
+    showToast(payload.message);
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function loadChoreographyWorkspace() {
+  try {
+    const payload = await api("/api/choreographies");
+    state.choreography.items = payload.items || [];
+    state.choreography.catalog = payload.catalog || { channels: [], actions: [] };
+    state.choreography.loaded = true;
+    state.choreography.document = normalizeChoreographyDocument(state.choreography.document || newChoreographyDocument());
+    renderChoreographyPalette();
+    renderChoreographyDocument();
+  } catch (error) {
+    $("#choreography-status").textContent = "无法读取动作编排";
+    $("#choreography-summary").textContent = error.message;
+  }
+}
+
+function updateSelectedSegment(field, value) {
+  const selected = state.choreography.selected;
+  const segment = selected && choreographySegment(selected.channel, selected.id);
+  if (!segment) return;
+  segment[field] = Number(value);
+  markChoreographyDirty();
+  renderChoreographyTimeline();
+}
+
 function bindEvents() {
   $$(".tab").forEach((tab) => tab.addEventListener("click", () => {
     $$(".tab").forEach((item) => item.classList.toggle("active", item === tab));
     $$(".panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === tab.dataset.tab));
+    if (tab.dataset.tab === "choreography" && !state.choreography.loaded) loadChoreographyWorkspace();
   }));
   $$('[data-path]').forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
     markDirty(input.closest("[data-module]")?.dataset.module);
@@ -1246,6 +1972,50 @@ function bindEvents() {
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);
   $("#generate-mcp-token-button")?.addEventListener("click", generateMcpToken);
+  $("#choreography-select").addEventListener("change", (event) => loadChoreography(event.target.value));
+  $("#choreography-new").addEventListener("click", resetChoreographyEditor);
+  $("#choreography-validate").addEventListener("click", () => validateChoreography());
+  $("#choreography-save").addEventListener("click", saveChoreography);
+  $("#choreography-delete").addEventListener("click", deleteChoreography);
+  $("#choreography-audio-upload").addEventListener("click", () => $("#choreography-audio-input").click());
+  $("#choreography-audio-input").addEventListener("change", (event) => uploadChoreographyAudio(event.target.files?.[0]));
+  $("#choreography-audio-select").addEventListener("change", (event) => {
+    loadChoreographyAudio(event.target.value, { updateDocument: true }).catch((error) => {
+      showToast(error.message, "error");
+    });
+  });
+  $("#choreography-audio-play").addEventListener("click", toggleChoreographyAudio);
+  $("#choreography-audio-stop").addEventListener("click", stopChoreographyAudio);
+  $("#choreography-audio").addEventListener("ended", updateChoreographyPlayhead);
+  ["#choreography-name", "#choreography-id"].forEach((selector) => {
+    $(selector).addEventListener("input", () => {
+      choreographySyncMetadata();
+      markChoreographyDirty();
+    });
+  });
+  $("#choreography-duration").addEventListener("change", () => {
+    choreographySyncMetadata();
+    markChoreographyDirty();
+    renderChoreographyTimeline();
+  });
+  $("#choreography-zoom").addEventListener("input", (event) => {
+    state.choreography.pixelsPerSecond = Number(event.target.value);
+    renderChoreographyTimeline();
+  });
+  $("#segment-start").addEventListener("change", (event) => updateSelectedSegment("start", event.target.value));
+  $("#segment-duration").addEventListener("change", (event) => updateSelectedSegment("duration", event.target.value));
+  $("#segment-delta").addEventListener("input", (event) => updateSelectedSegment("delta", event.target.value));
+  $("#segment-remove").addEventListener("click", () => {
+    const selected = state.choreography.selected;
+    const track = selected && choreographyTrack(selected.channel);
+    if (!track) return;
+    track.segments = track.segments.filter((segment) => segment.id !== selected.id);
+    state.choreography.selected = null;
+    markChoreographyDirty();
+    renderChoreographyTimeline();
+  });
+  window.addEventListener("pointermove", moveChoreographyDrag);
+  window.addEventListener("pointerup", endChoreographyDrag);
   $("#access-token").addEventListener("input", () => {
     sessionStorage.setItem("waliConfigToken", getToken());
   });
@@ -1274,7 +2044,7 @@ function bindEvents() {
   });
   $("#close-error").addEventListener("click", () => { $("#error-box").hidden = true; });
   window.addEventListener("beforeunload", (event) => {
-    if (!state.dirtyModules.size) return;
+    if (!state.dirtyModules.size && !state.choreography.dirty) return;
     event.preventDefault();
     event.returnValue = "";
   });
@@ -1290,4 +2060,5 @@ document.addEventListener("DOMContentLoaded", () => {
   setConfigControlsEnabled(false);
   bindEvents();
   loadConfig();
+  loadChoreographyWorkspace();
 });

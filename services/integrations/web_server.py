@@ -22,7 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import yaml
 
@@ -40,6 +40,11 @@ from services.hardware.esp32_netcfg import (
     validate_network_payload,
 )
 from services.hardware.esp32_netcfg_rpc import Esp32NetworkRpcClient
+from services.motion.choreography import (
+    MAX_AUDIO_BYTES,
+    ChoreographyError,
+    ChoreographyStore,
+)
 
 
 DEFAULT_CONFIG_PATH = ROOT / "core" / "config.yaml"
@@ -787,10 +792,15 @@ class ConfigWebServer(ThreadingHTTPServer):
         static_dir: Path,
         token: str | None,
         network_configurator: Any | None = None,
+        choreography_dir: Path | str | None = None,
     ):
         self.store = store
         self.static_dir = static_dir.resolve()
         self.access_token = token or ""
+        self.choreographies = ChoreographyStore(
+            self.store.path,
+            directory=choreography_dir,
+        )
         self.camera_preview = None
         # Created on first NETCFG call so the ordinary config page can still run
         # in a non-ROS test or standalone maintenance environment.
@@ -886,7 +896,9 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; base-uri 'none'; frame-ancestors 'none'")
+        # The timeline editor positions user-authored blocks with CSSOM inline
+        # coordinates; scripts remain restricted to same-origin files.
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -909,6 +921,52 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
                 return
             self._send_json(HTTPStatus.OK, {"ok": True, **snapshot})
+            return
+        if route == "/api/choreographies":
+            if not self._require_api_auth():
+                return
+            try:
+                items = self.server.choreographies.list()
+                catalog = self.server.choreographies.catalog()
+            except ChoreographyError as exc:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": str(exc), "details": exc.details},
+                )
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "items": items, "catalog": catalog},
+            )
+            return
+        if route.startswith("/api/choreographies/"):
+            if not self._require_api_auth():
+                return
+            choreography_id = route.removeprefix("/api/choreographies/")
+            if not choreography_id or "/" in choreography_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                document = self.server.choreographies.get(choreography_id)
+            except ChoreographyError as exc:
+                status = HTTPStatus.NOT_FOUND if str(exc) == "动作编排不存在" else HTTPStatus.BAD_REQUEST
+                self._send_json(status, {"ok": False, "error": str(exc), "details": exc.details})
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, "document": document})
+            return
+        if route.startswith("/api/choreography-audio/"):
+            if not self._require_api_auth():
+                return
+            asset_id = route.removeprefix("/api/choreography-audio/")
+            if not asset_id or "/" in asset_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                body, content_type = self.server.choreographies.get_audio(asset_id)
+            except ChoreographyError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": str(exc)})
+                return
+            self._send_bytes(HTTPStatus.OK, body, content_type)
             return
         if route == "/api/mcp-token/status":
             if not self._require_api_auth():
@@ -977,10 +1035,43 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             "/api/camera-preview/stop",
             "/api/esp32-network/save-and-apply",
             "/api/esp32-network/query",
+            "/api/choreographies",
+            "/api/choreographies/validate",
+            "/api/choreography-audio",
         }:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if not self._require_api_auth():
+            return
+
+        if route == "/api/choreography-audio":
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                content_length = 0
+            if content_length <= 0 or content_length > MAX_AUDIO_BYTES:
+                self._send_json(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    {"ok": False, "error": "音乐文件不能为空或超过 64MB"},
+                )
+                return
+            filename = unquote(self.headers.get("X-Wali-Filename", ""))
+            try:
+                asset = self.server.choreographies.upload_audio(
+                    filename,
+                    self.rfile.read(content_length),
+                    content_type=self.headers.get("Content-Type", "application/octet-stream"),
+                )
+            except ChoreographyError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(exc), "details": exc.details},
+                )
+                return
+            self._send_json(
+                HTTPStatus.CREATED,
+                {"ok": True, "message": "音乐已上传", "asset": asset},
+            )
             return
 
         content_type = self.headers.get("Content-Type", "")
@@ -999,6 +1090,28 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "JSON 格式错误"})
+            return
+
+        if route in {"/api/choreographies", "/api/choreographies/validate"}:
+            document = payload.get("document") if isinstance(payload, dict) else None
+            try:
+                if route.endswith("/validate"):
+                    normalized, compiled = self.server.choreographies.validate(document)
+                    result = {"document": normalized, "compiled": compiled}
+                    message = "动作编排校验通过"
+                else:
+                    result = self.server.choreographies.save(document)
+                    message = "动作编排已保存"
+            except ChoreographyError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(exc), "details": exc.details},
+                )
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "message": message, **result},
+            )
             return
 
         if route == "/api/camera-preview/start":
@@ -1115,6 +1228,26 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        route = urlsplit(self.path).path
+        prefix = "/api/choreographies/"
+        if not route.startswith(prefix):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not self._require_api_auth():
+            return
+        choreography_id = route.removeprefix(prefix)
+        if not choreography_id or "/" in choreography_id:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        try:
+            self.server.choreographies.delete(choreography_id)
+        except ChoreographyError as exc:
+            status = HTTPStatus.NOT_FOUND if str(exc) == "动作编排不存在" else HTTPStatus.BAD_REQUEST
+            self._send_json(status, {"ok": False, "error": str(exc), "details": exc.details})
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True, "message": "动作编排已删除"})
+
 
 def _is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
@@ -1138,6 +1271,7 @@ def create_server(
     static_dir: Path | str = DEFAULT_STATIC_DIR,
     token: str | None | object = _TOKEN_UNSET,
     network_configurator: Any | None = None,
+    choreography_dir: Path | str | None = None,
 ) -> ConfigWebServer:
     if token is _TOKEN_UNSET:
         token = _config_access_token(config_path) or DEFAULT_ACCESS_TOKEN
@@ -1159,6 +1293,7 @@ def create_server(
         static_dir=static_path,
         token=token,
         network_configurator=network_configurator,
+        choreography_dir=choreography_dir,
     )
 
 

@@ -181,6 +181,108 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"WALI", body)
 
+    def test_choreography_editor_is_exposed_in_static_page(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('data-tab="choreography"', html)
+        self.assertIn('id="choreography-timeline"', html)
+        self.assertIn('id="choreography-audio-upload"', html)
+        self.assertIn('id="choreography-audio-play"', html)
+        self.assertIn("本版本只保存与校验，不会驱动真机", html)
+
+    def test_choreography_audio_can_be_uploaded_and_streamed(self):
+        audio_bytes = b"RIFF" + b"\x00" * 40
+        upload = urllib.request.Request(
+            self.base_url + "/api/choreography-audio",
+            data=audio_bytes,
+            method="POST",
+            headers={
+                "X-Wali-Token": "test-token",
+                "X-Wali-Filename": "theme.wav",
+                "Content-Type": "audio/wav",
+            },
+        )
+        with urllib.request.urlopen(upload, timeout=3) as response:
+            self.assertEqual(response.status, 201)
+            asset = json.loads(response.read())["asset"]
+
+        status, listing = self.request("/api/choreographies")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["catalog"]["audio"][0]["name"], "theme.wav")
+
+        download = urllib.request.Request(
+            self.base_url + f"/api/choreography-audio/{asset['id']}",
+            headers={"X-Wali-Token": "test-token"},
+        )
+        with urllib.request.urlopen(download, timeout=3) as response:
+            self.assertEqual(response.headers.get_content_type(), "audio/wav")
+            self.assertEqual(response.read(), audio_bytes)
+
+    def test_choreography_api_validates_saves_loads_and_deletes(self):
+        document = {
+            "schema_version": 1,
+            "id": "eye_demo",
+            "name": "右眼演示",
+            "timeline_seconds": 3,
+            "start_pose": "neutral",
+            "tracks": [{
+                "channel": "eye_r",
+                "segments": [
+                    {"id": "raise", "start": 0.5, "duration": 1, "delta": 50},
+                    {"id": "lower", "start": 1.5, "duration": 1, "delta": -50},
+                ],
+            }],
+            "actions": [],
+        }
+
+        status, result = self.request(
+            "/api/choreographies/validate",
+            method="POST",
+            payload={"document": document},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["compiled"]["transitions"][0]["to_targets"], {"eye_r": 3650})
+
+        status, result = self.request(
+            "/api/choreographies", method="POST", payload={"document": document}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["document"]["id"], "eye_demo")
+
+        _, listing = self.request("/api/choreographies")
+        self.assertEqual(listing["items"][0]["id"], "eye_demo")
+        self.assertEqual(listing["catalog"]["channels"][0]["id"], "eye_r")
+
+        _, loaded = self.request("/api/choreographies/eye_demo")
+        self.assertEqual(loaded["document"]["name"], "右眼演示")
+
+        status, deleted = self.request("/api/choreographies/eye_demo", method="DELETE")
+        self.assertEqual(status, 200)
+        self.assertTrue(deleted["ok"])
+
+    def test_choreography_api_rejects_overlapping_segments(self):
+        document = {
+            "schema_version": 1,
+            "id": "bad_demo",
+            "name": "冲突动作",
+            "timeline_seconds": 3,
+            "tracks": [{
+                "channel": "eye_r",
+                "segments": [
+                    {"start": 0, "duration": 1, "delta": 20},
+                    {"start": 0.5, "duration": 1, "delta": -20},
+                ],
+            }],
+            "actions": [],
+        }
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/choreographies/validate",
+                method="POST",
+                payload={"document": document},
+            )
+        self.assertEqual(context.exception.code, 400)
+
     def test_llm_provider_selector_includes_baidu_qianfan(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")
