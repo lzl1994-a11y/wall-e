@@ -1361,7 +1361,7 @@ async function decodeChoreographyWaveform(blob) {
       { length: buffer.numberOfChannels },
       (_, index) => buffer.getChannelData(index),
     );
-    const bins = Math.min(8000, Math.max(400, Math.ceil(buffer.duration * 40)));
+    const bins = Math.min(12000, Math.max(600, Math.ceil(buffer.duration * 48)));
     const block = Math.max(1, Math.floor(buffer.length / bins));
     const peaks = [];
     for (let index = 0; index < bins; index += 1) {
@@ -1510,58 +1510,74 @@ async function uploadChoreographyAudio(file) {
   }
 }
 
-function drawChoreographyWaveform(canvas, displayWidth, displayHeight = 86) {
+function createChoreographyWaveform(displayWidth, displayHeight = 108) {
   const peaks = state.choreography.audioPeaks;
-  if (!canvas || !peaks.length) return;
-  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.min(4096, Math.max(300, Math.round(displayWidth * pixelRatio)));
-  canvas.height = Math.round(displayHeight * pixelRatio);
-  const context = canvas.getContext("2d");
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  const middle = canvas.height / 2;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("audio-waveform");
+  svg.setAttribute("viewBox", `0 0 ${displayWidth} ${displayHeight}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  if (!peaks.length) return svg;
+
+  const middle = displayHeight / 2;
   const amplitudes = peaks
     .map(([minimum, maximum]) => Math.max(Math.abs(minimum), Math.abs(maximum)))
     .sort((a, b) => a - b);
   const reference = amplitudes[Math.floor(amplitudes.length * 0.97)] || 1;
-  const gain = middle * 0.78 / Math.max(0.04, reference);
+  const gain = middle * 0.82 / Math.max(0.04, reference);
   const envelope = [];
-  for (let x = 0; x < canvas.width; x += 1) {
-    const start = Math.floor(x / canvas.width * peaks.length);
-    const end = Math.max(start + 1, Math.ceil((x + 1) / canvas.width * peaks.length));
-    let minimum = 0;
-    let maximum = 0;
-    for (let index = start; index < Math.min(end, peaks.length); index += 1) {
-      minimum = Math.min(minimum, peaks[index][0]);
-      maximum = Math.max(maximum, peaks[index][1]);
-    }
+  peaks.forEach(([minimum, maximum]) => {
     envelope.push(Math.max(
-      3 * pixelRatio,
+      3,
       Math.min(middle * 0.9, Math.max(maximum, Math.abs(minimum)) * gain),
     ));
-  }
+  });
   const smoothed = envelope.map((height, index) => (
     (envelope[index - 1] || height) * 0.2
     + height * 0.6
     + (envelope[index + 1] || height) * 0.2
   ));
-  context.beginPath();
-  smoothed.forEach((height, x) => {
-    const y = middle - height;
-    if (x === 0) context.moveTo(x, y);
-    else context.lineTo(x, y);
+  const xAt = (index) => displayWidth * index / Math.max(1, smoothed.length - 1);
+  const top = smoothed.map((height, index) => `${xAt(index).toFixed(2)},${(middle - height).toFixed(2)}`);
+  const bottom = smoothed
+    .map((height, index) => `${xAt(index).toFixed(2)},${(middle + height).toFixed(2)}`)
+    .reverse();
+  const gradientId = `choreography-wave-${choreographyUid("gradient")}`;
+  const defs = document.createElementNS(svg.namespaceURI, "defs");
+  const gradient = document.createElementNS(svg.namespaceURI, "linearGradient");
+  gradient.setAttribute("id", gradientId);
+  gradient.setAttribute("x1", "0");
+  gradient.setAttribute("x2", "1");
+  gradient.setAttribute("y1", "0");
+  gradient.setAttribute("y2", "0");
+  [["0%", "#52e0ff"], ["48%", "#9b7cff"], ["100%", "#f67bd5"]].forEach(([offset, color]) => {
+    const stop = document.createElementNS(svg.namespaceURI, "stop");
+    stop.setAttribute("offset", offset);
+    stop.setAttribute("stop-color", color);
+    gradient.append(stop);
   });
-  for (let x = smoothed.length - 1; x >= 0; x -= 1) {
-    context.lineTo(x, middle + smoothed[x]);
-  }
-  context.closePath();
-  context.fillStyle = "rgba(91, 83, 153, .76)";
-  context.fill();
-  context.beginPath();
-  context.moveTo(0, middle + 0.5);
-  context.lineTo(canvas.width, middle + 0.5);
-  context.strokeStyle = "rgba(70, 93, 125, .28)";
-  context.lineWidth = pixelRatio;
-  context.stroke();
+  defs.append(gradient);
+  svg.append(defs);
+
+  const center = document.createElementNS(svg.namespaceURI, "line");
+  center.setAttribute("x1", "0");
+  center.setAttribute("x2", String(displayWidth));
+  center.setAttribute("y1", String(middle));
+  center.setAttribute("y2", String(middle));
+  center.setAttribute("class", "audio-waveform-center");
+  svg.append(center);
+
+  const area = document.createElementNS(svg.namespaceURI, "path");
+  area.setAttribute("d", `M ${top.join(" L ")} L ${bottom.join(" L ")} Z`);
+  area.setAttribute("class", "audio-waveform-area");
+  area.setAttribute("fill", `url(#${gradientId})`);
+  svg.append(area);
+
+  const contour = document.createElementNS(svg.namespaceURI, "path");
+  contour.setAttribute("d", `M ${top.join(" L ")}`);
+  contour.setAttribute("class", "audio-waveform-contour");
+  svg.append(contour);
+  return svg;
 }
 
 function updateChoreographyPlayhead() {
@@ -1696,7 +1712,7 @@ function renderChoreographyTimeline() {
   const audioLane = document.createElement("div");
   audioLane.className = "timeline-lane";
   audioLane.style.width = `${contentWidth}px`;
-  audioLane.style.backgroundSize = `${px}px 100%`;
+  audioLane.style.backgroundSize = `${px}px 100%, 100% 22px`;
   audioLane.addEventListener("click", (event) => {
     const audio = $("#choreography-audio");
     if (!audio.src) return;
@@ -1708,13 +1724,12 @@ function renderChoreographyTimeline() {
     clip.className = "audio-clip";
     const clipWidth = Math.max(24, Number(documentModel.audio.duration) * px);
     clip.style.width = `${clipWidth}px`;
-    const waveform = document.createElement("canvas");
+    const waveform = createChoreographyWaveform(clipWidth);
     const label = document.createElement("span");
     label.className = "audio-clip-label";
     label.textContent = `${documentModel.audio.name} · ${formatChoreographyTime(documentModel.audio.duration)}`;
     clip.append(waveform, label);
     audioLane.append(clip);
-    drawChoreographyWaveform(waveform, clipWidth);
   } else {
     const empty = document.createElement("div");
     empty.className = "audio-empty";
