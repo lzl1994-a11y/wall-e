@@ -1348,7 +1348,7 @@ function clearChoreographyAudioSource() {
   $("#choreography-audio-stop").disabled = true;
   $("#choreography-audio-play").textContent = "播放";
   $("#choreography-time-display").textContent = "0:00.00";
-  $("#choreography-audio-hint").textContent = "支持 MP3、WAV、OGG、M4A、AAC、FLAC，最大 64MB";
+  $("#choreography-audio-hint").textContent = "添加音乐后，波形和播放头会成为整套动作的时间参照；不添加音乐也可以正常编排。";
 }
 
 async function decodeChoreographyWaveform(blob) {
@@ -1357,16 +1357,26 @@ async function decodeChoreographyWaveform(blob) {
     if (!AudioContextClass) return [];
     const context = new AudioContextClass();
     const buffer = await context.decodeAudioData(await blob.arrayBuffer());
-    const channel = buffer.getChannelData(0);
-    const bins = Math.min(1600, Math.max(200, Math.ceil(buffer.duration * 12)));
-    const block = Math.max(1, Math.floor(channel.length / bins));
+    const channels = Array.from(
+      { length: buffer.numberOfChannels },
+      (_, index) => buffer.getChannelData(index),
+    );
+    const bins = Math.min(8000, Math.max(400, Math.ceil(buffer.duration * 40)));
+    const block = Math.max(1, Math.floor(buffer.length / bins));
     const peaks = [];
     for (let index = 0; index < bins; index += 1) {
-      let peak = 0;
+      let minimum = 1;
+      let maximum = -1;
       const start = index * block;
-      const end = Math.min(channel.length, start + block);
-      for (let sample = start; sample < end; sample += 1) peak = Math.max(peak, Math.abs(channel[sample]));
-      peaks.push(peak);
+      const end = Math.min(buffer.length, start + block);
+      const stride = Math.max(1, Math.floor((end - start) / 96));
+      for (let sample = start; sample < end; sample += stride) {
+        channels.forEach((channel) => {
+          minimum = Math.min(minimum, channel[sample]);
+          maximum = Math.max(maximum, channel[sample]);
+        });
+      }
+      peaks.push([minimum, maximum]);
     }
     await context.close();
     return peaks;
@@ -1500,20 +1510,58 @@ async function uploadChoreographyAudio(file) {
   }
 }
 
-function drawChoreographyWaveform(canvas) {
+function drawChoreographyWaveform(canvas, displayWidth, displayHeight = 86) {
   const peaks = state.choreography.audioPeaks;
   if (!canvas || !peaks.length) return;
-  canvas.width = Math.min(2000, Math.max(300, peaks.length));
-  canvas.height = 44;
+  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.min(4096, Math.max(300, Math.round(displayWidth * pixelRatio)));
+  canvas.height = Math.round(displayHeight * pixelRatio);
   const context = canvas.getContext("2d");
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "#67529b";
   const middle = canvas.height / 2;
-  peaks.forEach((peak, index) => {
-    const x = index / peaks.length * canvas.width;
-    const height = Math.max(1, peak * middle * 0.9);
-    context.fillRect(x, middle - height, 1, height * 2);
+  const amplitudes = peaks
+    .map(([minimum, maximum]) => Math.max(Math.abs(minimum), Math.abs(maximum)))
+    .sort((a, b) => a - b);
+  const reference = amplitudes[Math.floor(amplitudes.length * 0.97)] || 1;
+  const gain = middle * 0.78 / Math.max(0.04, reference);
+  const envelope = [];
+  for (let x = 0; x < canvas.width; x += 1) {
+    const start = Math.floor(x / canvas.width * peaks.length);
+    const end = Math.max(start + 1, Math.ceil((x + 1) / canvas.width * peaks.length));
+    let minimum = 0;
+    let maximum = 0;
+    for (let index = start; index < Math.min(end, peaks.length); index += 1) {
+      minimum = Math.min(minimum, peaks[index][0]);
+      maximum = Math.max(maximum, peaks[index][1]);
+    }
+    envelope.push(Math.max(
+      3 * pixelRatio,
+      Math.min(middle * 0.9, Math.max(maximum, Math.abs(minimum)) * gain),
+    ));
+  }
+  const smoothed = envelope.map((height, index) => (
+    (envelope[index - 1] || height) * 0.2
+    + height * 0.6
+    + (envelope[index + 1] || height) * 0.2
+  ));
+  context.beginPath();
+  smoothed.forEach((height, x) => {
+    const y = middle - height;
+    if (x === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
   });
+  for (let x = smoothed.length - 1; x >= 0; x -= 1) {
+    context.lineTo(x, middle + smoothed[x]);
+  }
+  context.closePath();
+  context.fillStyle = "rgba(91, 83, 153, .76)";
+  context.fill();
+  context.beginPath();
+  context.moveTo(0, middle + 0.5);
+  context.lineTo(canvas.width, middle + 0.5);
+  context.strokeStyle = "rgba(70, 93, 125, .28)";
+  context.lineWidth = pixelRatio;
+  context.stroke();
 }
 
 function updateChoreographyPlayhead() {
@@ -1658,14 +1706,20 @@ function renderChoreographyTimeline() {
   if (documentModel.audio) {
     const clip = document.createElement("div");
     clip.className = "audio-clip";
-    clip.style.width = `${Math.max(24, Number(documentModel.audio.duration) * px)}px`;
+    const clipWidth = Math.max(24, Number(documentModel.audio.duration) * px);
+    clip.style.width = `${clipWidth}px`;
     const waveform = document.createElement("canvas");
     const label = document.createElement("span");
     label.className = "audio-clip-label";
     label.textContent = `${documentModel.audio.name} · ${formatChoreographyTime(documentModel.audio.duration)}`;
     clip.append(waveform, label);
     audioLane.append(clip);
-    drawChoreographyWaveform(waveform);
+    drawChoreographyWaveform(waveform, clipWidth);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "audio-empty";
+    empty.textContent = "未添加音乐 · 时间轴仍可独立使用";
+    audioLane.append(empty);
   }
   audioRow.append(audioLane);
   root.append(audioRow);

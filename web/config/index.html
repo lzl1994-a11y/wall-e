@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>WALI 控制台 · 配置中心</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260924-choreography-waveform">
 </head>
 <body>
   <div class="shell">
@@ -442,13 +442,6 @@
               <p>点击任意机构轨道的空白位置添加。拖动色块移动，拖动右侧把手修改持续时间。</p>
             </div>
             <div class="palette-section">
-              <div class="palette-title"><h3>音乐</h3><small>最大 64MB</small></div>
-              <input id="choreography-audio-input" type="file" accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/aac,audio/flac,.mp3,.wav,.ogg,.m4a,.aac,.flac" hidden>
-              <button id="choreography-audio-upload" class="button secondary small full-button" type="button">上传音乐</button>
-              <select id="choreography-audio-select" class="palette-select"><option value="">不使用音乐</option></select>
-              <p id="choreography-audio-hint" class="audio-hint">音乐会显示在时间轴，并作为网页预览的播放时钟。</p>
-            </div>
-            <div class="palette-section">
               <div class="palette-title"><h3>已有动作</h3><small>拖到最上方动作轨</small></div>
               <div id="choreography-action-palette" class="action-palette-list"><p class="empty-copy">正在读取…</p></div>
             </div>
@@ -461,13 +454,24 @@
           </aside>
 
           <section class="choreography-editor card">
+            <div class="audio-master-panel">
+              <div class="audio-master-copy">
+                <div><p class="eyebrow">OPTIONAL MASTER CLOCK</p><h3>音乐主轴 <span>可选</span></h3></div>
+                <p id="choreography-audio-hint">添加音乐后，波形和播放头会成为整套动作的时间参照；不添加音乐也可以正常编排。</p>
+              </div>
+              <div class="audio-master-controls">
+                <input id="choreography-audio-input" type="file" accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/aac,audio/flac,.mp3,.wav,.ogg,.m4a,.aac,.flac" hidden>
+                <label class="field audio-source"><span>当前音乐</span><select id="choreography-audio-select"><option value="">不使用音乐</option></select></label>
+                <button id="choreography-audio-upload" class="button secondary small" type="button">上传音乐</button>
+                <div class="audio-transport">
+                  <button id="choreography-audio-play" class="button secondary small" type="button" disabled>播放</button>
+                  <button id="choreography-audio-stop" class="button secondary small" type="button" disabled>停止</button>
+                  <output id="choreography-time-display">0:00.00</output>
+                </div>
+              </div>
+            </div>
             <div class="timeline-toolbar">
               <div><strong id="choreography-status">尚未校验</strong><small id="choreography-summary">从中性姿势开始</small></div>
-              <div class="audio-transport">
-                <button id="choreography-audio-play" class="button secondary small" type="button" disabled>播放</button>
-                <button id="choreography-audio-stop" class="button secondary small" type="button" disabled>停止</button>
-                <output id="choreography-time-display">0:00.00</output>
-              </div>
               <label>吸附<select id="choreography-snap"><option value="0.1">0.1s</option><option value="0.25" selected>0.25s</option><option value="0.5">0.5s</option><option value="1">1s</option></select></label>
               <label>缩放<input id="choreography-zoom" type="range" min="60" max="160" value="100"></label>
             </div>
@@ -528,6 +532,6 @@
     <div><strong>配置未保存</strong><button id="close-error" type="button" aria-label="关闭">×</button></div>
     <ul id="error-list"></ul>
   </div>
-  <script src="/app.js" defer></script>
+  <script src="/app.js?v=20260924-choreography-waveform" defer></script>
 </body>
 </html>
