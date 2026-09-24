@@ -33,6 +33,7 @@ const state = {
     audioAssetId: null,
     audioPeaks: [],
     audioFrame: null,
+    audioLoadToken: 0,
   },
 };
 
@@ -1332,6 +1333,7 @@ function formatChoreographyTime(seconds) {
 }
 
 function clearChoreographyAudioSource() {
+  state.choreography.audioLoadToken += 1;
   const audio = $("#choreography-audio");
   audio.pause();
   audio.removeAttribute("src");
@@ -1385,6 +1387,7 @@ async function loadChoreographyAudio(assetId, { updateDocument = false } = {}) {
   }
   if (state.choreography.audioAssetId === assetId && state.choreography.audioObjectUrl) return;
   clearChoreographyAudioSource();
+  const loadToken = state.choreography.audioLoadToken;
   const asset = (state.choreography.catalog.audio || []).find((item) => item.id === assetId);
   if (!asset) throw new Error("音乐资源不存在，请重新上传");
   const response = await fetch(`/api/choreography-audio/${encodeURIComponent(assetId)}`, {
@@ -1393,6 +1396,7 @@ async function loadChoreographyAudio(assetId, { updateDocument = false } = {}) {
   });
   if (!response.ok) throw new Error(`读取音乐失败 (${response.status})`);
   const blob = await response.blob();
+  if (loadToken !== state.choreography.audioLoadToken) return;
   const objectUrl = URL.createObjectURL(blob);
   const audio = $("#choreography-audio");
   state.choreography.audioObjectUrl = objectUrl;
@@ -1403,8 +1407,16 @@ async function loadChoreographyAudio(assetId, { updateDocument = false } = {}) {
     audio.addEventListener("error", () => reject(new Error("浏览器无法解码该音乐格式")), { once: true });
   });
   audio.load();
-  await metadataReady;
-  state.choreography.audioPeaks = await decodeChoreographyWaveform(blob);
+  try {
+    await metadataReady;
+  } catch (error) {
+    if (loadToken !== state.choreography.audioLoadToken) return;
+    throw error;
+  }
+  if (loadToken !== state.choreography.audioLoadToken) return;
+  const peaks = await decodeChoreographyWaveform(blob);
+  if (loadToken !== state.choreography.audioLoadToken) return;
+  state.choreography.audioPeaks = peaks;
   if (updateDocument || !state.choreography.document.audio) {
     state.choreography.document.audio = {
       asset_id: assetId,
@@ -1426,22 +1438,45 @@ async function loadChoreographyAudio(assetId, { updateDocument = false } = {}) {
   renderChoreographyTimeline();
 }
 
+async function inspectChoreographyAudioFile(file) {
+  const objectUrl = URL.createObjectURL(file);
+  const audio = document.createElement("audio");
+  audio.preload = "metadata";
+  try {
+    const duration = await new Promise((resolve, reject) => {
+      audio.addEventListener("loadedmetadata", () => resolve(audio.duration), { once: true });
+      audio.addEventListener("error", () => reject(new Error("浏览器无法解码该音乐格式")), { once: true });
+      audio.src = objectUrl;
+    });
+    if (!Number.isFinite(duration) || duration < 0.1) throw new Error("无法读取音乐时长");
+    if (duration > 600) throw new Error("音乐不能超过 10 分钟");
+    return Number(duration.toFixed(3));
+  } finally {
+    audio.removeAttribute("src");
+    audio.load();
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 async function uploadChoreographyAudio(file) {
   if (!file) return;
   if (file.size > 64 * 1024 * 1024) {
     showToast("音乐文件不能超过 64MB", "error");
     return;
   }
+  const targetDocument = state.choreography.document;
   const button = $("#choreography-audio-upload");
   button.disabled = true;
   button.textContent = "上传中…";
   try {
+    const duration = await inspectChoreographyAudioFile(file);
     const payload = await api("/api/choreography-audio", {
       method: "POST",
       body: file,
       headers: {
         "Content-Type": file.type || "application/octet-stream",
         "X-Wali-Filename": encodeURIComponent(file.name),
+        "X-Wali-Audio-Duration": String(duration),
       },
     });
     state.choreography.catalog.audio = [
@@ -1449,6 +1484,10 @@ async function uploadChoreographyAudio(file) {
       payload.asset,
     ];
     renderChoreographyAudioSelect();
+    if (state.choreography.document !== targetDocument) {
+      showToast("音乐已上传，可在当前编排中选择");
+      return;
+    }
     $("#choreography-audio-select").value = payload.asset.id;
     await loadChoreographyAudio(payload.asset.id, { updateDocument: true });
     showToast(payload.message);

@@ -199,6 +199,7 @@ class ConfigWebServerTests(unittest.TestCase):
             headers={
                 "X-Wali-Token": "test-token",
                 "X-Wali-Filename": "theme.wav",
+                "X-Wali-Audio-Duration": "1.25",
                 "Content-Type": "audio/wav",
             },
         )

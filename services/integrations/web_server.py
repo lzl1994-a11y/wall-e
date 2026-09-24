@@ -1057,10 +1057,15 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 return
             filename = unquote(self.headers.get("X-Wali-Filename", ""))
             try:
+                audio_duration = float(self.headers.get("X-Wali-Audio-Duration", ""))
+            except ValueError:
+                audio_duration = None
+            try:
                 asset = self.server.choreographies.upload_audio(
                     filename,
                     self.rfile.read(content_length),
                     content_type=self.headers.get("Content-Type", "application/octet-stream"),
+                    duration=audio_duration,
                 )
             except ChoreographyError as exc:
                 self._send_json(

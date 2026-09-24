@@ -208,6 +208,7 @@ class ChoreographyStore:
         body: bytes,
         *,
         content_type: str = "application/octet-stream",
+        duration: float | None = None,
     ) -> dict[str, Any]:
         if not isinstance(filename, str) or not filename.strip() or len(filename) > 200:
             raise ChoreographyError("音乐文件名无效")
@@ -218,6 +219,10 @@ class ChoreographyStore:
             raise ChoreographyError("只支持 MP3、WAV、OGG、M4A、AAC 和 FLAC 音频")
         if not body or len(body) > MAX_AUDIO_BYTES:
             raise ChoreographyError("音乐文件不能为空或超过 64MB")
+        if not _finite_number(duration) or not 0.1 <= float(duration) <= MAX_TIMELINE_SECONDS:
+            raise ChoreographyError(
+                f"音乐时长必须为 0.1–{int(MAX_TIMELINE_SECONDS)} 秒"
+            )
         asset_id = f"{uuid.uuid4().hex[:16]}{suffix}"
         resolved_type = (
             content_type.split(";", 1)[0].strip()
@@ -229,6 +234,7 @@ class ChoreographyStore:
             "name": filename,
             "content_type": resolved_type,
             "size": len(body),
+            "duration": _round_time(float(duration)),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         with self._lock:
@@ -357,6 +363,7 @@ class ChoreographyStore:
         seen_tracks: set[str] = set()
         normalized_tracks = []
         compiled_transitions = []
+        resource_intervals: list[dict[str, Any]] = []
         segment_count = 0
         servos = self._servo_config()
 
@@ -441,6 +448,14 @@ class ChoreographyStore:
                         str(channel), end_position, servos
                     )
                 compiled_transitions.append(transition)
+                for resource in catalog[channel]["members"]:
+                    resource_intervals.append({
+                        "resource": resource,
+                        "start": segment["start"],
+                        "end": segment["start"] + segment["duration"],
+                        "kind": "segment",
+                        "label": f"{catalog[channel]['label']}动作段",
+                    })
                 planned_position = end_position
             normalized_tracks.append({"channel": channel, "segments": parsed_segments})
 
@@ -471,6 +486,33 @@ class ChoreographyStore:
                 "sequence_name": action_name,
                 "start": start,
             })
+            for resource in action_catalog[action_name]["channels"]:
+                resource_intervals.append({
+                    "resource": resource,
+                    "start": start,
+                    "end": start + action_catalog[action_name]["duration"],
+                    "kind": "action",
+                    "label": f"已有动作 {action_name}",
+                })
+
+        conflict_messages: set[str] = set()
+        intervals_by_resource: dict[str, list[dict[str, Any]]] = {}
+        for interval in resource_intervals:
+            intervals_by_resource.setdefault(interval["resource"], []).append(interval)
+        for resource, intervals in intervals_by_resource.items():
+            intervals.sort(key=lambda item: (item["start"], item["end"]))
+            for index, current in enumerate(intervals):
+                for other in intervals[index + 1:]:
+                    if other["start"] >= current["end"] - 1e-6:
+                        break
+                    if current["kind"] == other["kind"] == "segment":
+                        continue
+                    overlap_start = max(current["start"], other["start"])
+                    conflict_messages.add(
+                        f"机构 {resource} 在 {overlap_start:g}s 同时被"
+                        f"{current['label']}和{other['label']}控制"
+                    )
+        errors.extend(sorted(conflict_messages))
 
         raw_audio = document.get("audio")
         normalized_audio = None
@@ -486,15 +528,18 @@ class ChoreographyStore:
                 )
                 if metadata is None:
                     errors.append("选择的音乐资源不存在，请重新上传")
-                if not _finite_number(duration) or not 0.1 <= float(duration) <= 3600:
-                    errors.append("音乐时长必须为 0.1–3600 秒")
-                elif float(duration) > timeline + 0.05:
+                stored_duration = metadata.get("duration") if metadata is not None else duration
+                if not _finite_number(stored_duration) or not 0.1 <= float(stored_duration) <= MAX_TIMELINE_SECONDS:
+                    errors.append(
+                        f"音乐时长必须为 0.1–{int(MAX_TIMELINE_SECONDS)} 秒"
+                    )
+                elif float(stored_duration) > timeline + 0.05:
                     errors.append("音乐长度超过时间轴，请先延长时间轴")
-                if metadata is not None and _finite_number(duration):
+                if metadata is not None and _finite_number(stored_duration):
                     normalized_audio = {
                         "asset_id": asset_id,
                         "name": str(metadata.get("name") or asset_id),
-                        "duration": _round_time(float(duration)),
+                        "duration": _round_time(float(stored_duration)),
                     }
 
         if errors:

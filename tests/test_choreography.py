@@ -126,7 +126,9 @@ def test_audio_can_be_uploaded_listed_read_and_used_by_choreography(tmp_path: Pa
     store = _store(tmp_path)
     audio_bytes = b"RIFF" + b"\x00" * 40
 
-    asset = store.upload_audio("robot-theme.wav", audio_bytes, content_type="audio/wav")
+    asset = store.upload_audio(
+        "robot-theme.wav", audio_bytes, content_type="audio/wav", duration=4.5
+    )
 
     assert asset["name"] == "robot-theme.wav"
     assert store.list_audio() == [asset]
@@ -146,6 +148,45 @@ def test_audio_can_be_uploaded_listed_read_and_used_by_choreography(tmp_path: Pa
         "duration": 4.5,
     }
     assert compiled["audio"] == normalized["audio"]
+
+
+def test_audio_upload_rejects_music_longer_than_timeline_limit(tmp_path: Path):
+    store = _store(tmp_path)
+
+    with pytest.raises(ChoreographyError, match="音乐时长"):
+        store.upload_audio("too-long.wav", b"RIFF", duration=600.1)
+
+
+def test_existing_action_cannot_overlap_manual_motion_on_same_mechanism(tmp_path: Path):
+    store = _store(tmp_path)
+    document = _document()
+    document["tracks"] = [{
+        "channel": "arm_r",
+        "segments": [{"id": "manual", "start": 2.8, "duration": 1, "delta": -20}],
+    }]
+
+    with pytest.raises(ChoreographyError) as raised:
+        store.validate(document)
+
+    assert any(
+        "机构 arm_r" in detail and "已有动作 wave" in detail
+        for detail in raised.value.details
+    )
+
+
+def test_existing_actions_cannot_overlap_on_same_mechanism(tmp_path: Path):
+    store = _store(tmp_path)
+    document = _document()
+    document["tracks"] = []
+    document["actions"] = [
+        {"id": "wave-1", "sequence_name": "wave", "start": 1},
+        {"id": "wave-2", "sequence_name": "wave", "start": 1.25},
+    ]
+
+    with pytest.raises(ChoreographyError) as raised:
+        store.validate(document)
+
+    assert any("机构 arm_r" in detail for detail in raised.value.details)
 
 
 def test_audio_must_exist_and_fit_inside_timeline(tmp_path: Path):

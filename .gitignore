@@ -20,3 +20,6 @@ env/
 core/config.yaml
 core/config_old_backup.yaml
 core/config.yaml.tmp
+
+# User-uploaded choreography media
+/core/choreographies/media/
