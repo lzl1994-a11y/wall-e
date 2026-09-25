@@ -30,6 +30,9 @@ MAX_AUDIO_BYTES = 64 * 1024 * 1024
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 AUDIO_ID_PATTERN = re.compile(r"^[a-f0-9]{16}\.(?:mp3|wav|ogg|m4a|aac|flac)$")
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
+MOTOR_DEFINITIONS = (
+    ("chassis", "履带", ("forward", "backward", "left", "right", "spin")),
+)
 
 CHANNEL_DEFINITIONS = (
     ("head_yaw", "头部左右", ("head_yaw",)),
@@ -126,14 +129,41 @@ class ChoreographyStore:
                 })
         return result
 
-    def _sequence_catalog_data(self) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _sequence_catalog_data(
+        self,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         payload = self._load_yaml_mapping(self.sequences_path)
         sequences = payload.get("sequences", {})
         poses = payload.get("poses", {})
+        metadata = payload.get("action_metadata", {})
         return (
             sequences if isinstance(sequences, dict) else {},
             poses if isinstance(poses, dict) else {},
+            metadata if isinstance(metadata, dict) else {},
         )
+
+    @staticmethod
+    def _action_metadata(metadata: Mapping[str, Any], name: str) -> dict[str, str]:
+        value = metadata.get(name, {})
+        if not isinstance(value, Mapping):
+            value = {}
+        label = value.get("label")
+        remark = value.get("remark")
+        return {
+            "label": str(label).strip() if isinstance(label, str) and label.strip() else name.replace("_", " "),
+            "remark": str(remark).strip() if isinstance(remark, str) else "",
+        }
+
+    @staticmethod
+    def _motor_catalog() -> list[dict[str, Any]]:
+        return [
+            {
+                "id": motor,
+                "label": label,
+                "directions": list(directions),
+            }
+            for motor, label, directions in MOTOR_DEFINITIONS
+        ]
 
     @staticmethod
     def _channels_for_frames(
@@ -156,7 +186,7 @@ class ChoreographyStore:
         return sorted(channels)
 
     def action_catalog(self) -> list[dict[str, Any]]:
-        sequences, poses = self._sequence_catalog_data()
+        sequences, poses, metadata = self._sequence_catalog_data()
         library = SequenceLibrary(sequences, poses)
         catalog = []
         for name in sorted(set(sequences) | set(poses)):
@@ -170,17 +200,19 @@ class ChoreographyStore:
                 for action in frame.get("actions", []):
                     if action.get("type") == "motor" and _finite_number(action.get("duration")):
                         duration = max(duration, timestamp + float(action["duration"]))
-            catalog.append({
+            item = {
                 "id": name,
-                "label": name.replace("_", " "),
                 "duration": _round_time(duration),
                 "channels": self._channels_for_frames(frames, poses),
-            })
+            }
+            item.update(self._action_metadata(metadata, name))
+            catalog.append(item)
         return catalog
 
     def catalog(self) -> dict[str, Any]:
         return {
             "channels": self.channel_catalog(),
+            "motors": self._motor_catalog(),
             "actions": self.action_catalog(),
             "audio": self.list_audio(),
         }
@@ -349,6 +381,11 @@ class ChoreographyStore:
         name = document.get("name")
         if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
             errors.append("动作名称必须为 1–80 个字符")
+        remark = document.get("remark", "")
+        if not isinstance(remark, str) or len(remark.strip()) > 200:
+            errors.append("动作备注不能超过 200 个字符")
+            remark = ""
+        remark = remark.strip() if isinstance(remark, str) else ""
         timeline = document.get("timeline_seconds")
         if not _finite_number(timeline) or not 1 <= float(timeline) <= MAX_TIMELINE_SECONDS:
             errors.append(f"时间轴长度必须为 1–{int(MAX_TIMELINE_SECONDS)} 秒")
@@ -360,6 +397,22 @@ class ChoreographyStore:
         if not isinstance(raw_tracks, list):
             errors.append("tracks 必须是数组")
             raw_tracks = []
+        # Accept the compact legacy/editor form that stores the chassis row in
+        # ``tracks``.  New documents use the clearer ``motor_tracks`` field,
+        # but accepting both keeps hand-authored YAML easy to migrate.
+        chassis_tracks = [
+            {
+                "motor": "chassis",
+                "segments": raw_track.get("segments", []),
+            }
+            for raw_track in raw_tracks
+            if isinstance(raw_track, Mapping) and raw_track.get("channel") == "chassis"
+        ]
+        raw_tracks = [
+            raw_track
+            for raw_track in raw_tracks
+            if not (isinstance(raw_track, Mapping) and raw_track.get("channel") == "chassis")
+        ]
         seen_tracks: set[str] = set()
         normalized_tracks = []
         compiled_transitions = []
@@ -459,6 +512,81 @@ class ChoreographyStore:
                 planned_position = end_position
             normalized_tracks.append({"channel": channel, "segments": parsed_segments})
 
+        motor_catalog = {
+            item["id"]: item for item in self._motor_catalog()
+        }
+        raw_motor_tracks = document.get("motor_tracks", [])
+        if not isinstance(raw_motor_tracks, list):
+            errors.append("motor_tracks 必须是数组")
+            raw_motor_tracks = []
+        raw_motor_tracks = chassis_tracks + raw_motor_tracks
+        seen_motors: set[str] = set()
+        normalized_motor_tracks = []
+        for track_index, raw_track in enumerate(raw_motor_tracks):
+            if not isinstance(raw_track, Mapping):
+                errors.append(f"履带轨道 {track_index + 1} 格式无效")
+                continue
+            motor = raw_track.get("motor")
+            definition = motor_catalog.get(motor)
+            if definition is None:
+                errors.append(f"未知电机轨道: {motor}")
+                continue
+            if motor in seen_motors:
+                errors.append(f"电机 {motor} 存在重复轨道")
+                continue
+            seen_motors.add(str(motor))
+            segments = raw_track.get("segments", [])
+            if not isinstance(segments, list):
+                errors.append(f"{definition['label']} 的动作段必须是数组")
+                continue
+            parsed_segments = []
+            for segment_index, raw_segment in enumerate(segments):
+                segment_count += 1
+                if segment_count > MAX_SEGMENTS:
+                    errors.append(f"动作段不能超过 {MAX_SEGMENTS} 个")
+                    break
+                prefix = f"{definition['label']} 第 {segment_index + 1} 段"
+                if not isinstance(raw_segment, Mapping):
+                    errors.append(f"{prefix}格式无效")
+                    continue
+                start = raw_segment.get("start")
+                duration = raw_segment.get("duration")
+                direction = raw_segment.get("direction")
+                if not _finite_number(start) or float(start) < 0:
+                    errors.append(f"{prefix}开始时间必须大于等于 0")
+                    continue
+                if not _finite_number(duration) or not 0.05 <= float(duration) <= 30:
+                    errors.append(f"{prefix}持续时间必须为 0.05–30 秒")
+                    continue
+                if direction not in definition["directions"]:
+                    errors.append(f"{prefix}方向无效")
+                    continue
+                start = _round_time(float(start))
+                duration = _round_time(float(duration))
+                if start + duration > timeline + 1e-6:
+                    errors.append(f"{prefix}超出时间轴范围")
+                    continue
+                parsed_segments.append({
+                    "id": str(raw_segment.get("id") or uuid.uuid4().hex[:10]),
+                    "start": start,
+                    "duration": duration,
+                    "direction": direction,
+                })
+            parsed_segments.sort(key=lambda item: (item["start"], item["id"]))
+            previous_end = 0.0
+            for segment in parsed_segments:
+                if segment["start"] < previous_end - 1e-6:
+                    errors.append(f"{definition['label']} 的动作段发生时间重叠")
+                previous_end = max(previous_end, segment["start"] + segment["duration"])
+                resource_intervals.append({
+                    "resource": str(motor),
+                    "start": segment["start"],
+                    "end": segment["start"] + segment["duration"],
+                    "kind": "motor_segment",
+                    "label": f"{definition['label']}动作段",
+                })
+            normalized_motor_tracks.append({"motor": motor, "segments": parsed_segments})
+
         raw_actions = document.get("actions", [])
         if not isinstance(raw_actions, list):
             errors.append("actions 必须是数组")
@@ -485,6 +613,7 @@ class ChoreographyStore:
                 "id": str(raw_action.get("id") or uuid.uuid4().hex[:10]),
                 "sequence_name": action_name,
                 "start": start,
+                "remark": str(raw_action.get("remark") or "").strip(),
             })
             for resource in action_catalog[action_name]["channels"]:
                 resource_intervals.append({
@@ -545,13 +674,54 @@ class ChoreographyStore:
         if errors:
             raise ChoreographyError("动作编排校验失败", errors)
 
+        # Build the compact timeline consumed by the motion node.  Motor
+        # tracks remain in the saved document, but are intentionally omitted
+        # from this preview payload so a Web preview can never drive the
+        # treads.
+        preview_by_time: dict[float, list[dict[str, Any]]] = {}
+        for transition in compiled_transitions:
+            from_targets = transition.get("from_targets")
+            to_targets = transition.get("to_targets")
+            if not isinstance(from_targets, Mapping) or not isinstance(to_targets, Mapping):
+                continue
+            duration = max(0.05, float(transition["duration"]))
+            max_delta = max(
+                (abs(float(to_targets[name]) - float(from_targets.get(name, to_targets[name])))
+                 for name in to_targets),
+                default=0.0,
+            )
+            step_size = max(1.0, min(1000.0, max_delta / (duration * 50.0)))
+            preview_by_time.setdefault(float(transition["start"]), []).append({
+                "type": "manual_servo",
+                "targets": dict(to_targets),
+                "step_size": round(step_size, 2),
+            })
+        sequences, poses, _ = self._sequence_catalog_data()
+        library = SequenceLibrary(sequences, poses)
+        for action in normalized_actions:
+            for frame in library.flatten(action["sequence_name"], offset_time=action["start"]):
+                safe_actions = [
+                    item for item in frame.get("actions", [])
+                    if isinstance(item, Mapping) and item.get("type") != "motor"
+                ]
+                if safe_actions:
+                    preview_by_time.setdefault(float(frame["time"]), []).extend(
+                        deepcopy(safe_actions)
+                    )
+        preview_frames = [
+            {"time": _round_time(timestamp), "actions": actions}
+            for timestamp, actions in sorted(preview_by_time.items())
+        ]
+
         normalized = {
             "schema_version": SCHEMA_VERSION,
             "id": choreography_id,
             "name": name.strip(),
+            "remark": remark,
             "start_pose": "neutral",
             "timeline_seconds": _round_time(timeline),
             "tracks": normalized_tracks,
+            "motor_tracks": normalized_motor_tracks,
             "actions": sorted(normalized_actions, key=lambda item: item["start"]),
             "audio": normalized_audio,
         }
@@ -559,13 +729,19 @@ class ChoreographyStore:
             "schema_version": SCHEMA_VERSION,
             "id": choreography_id,
             "name": name.strip(),
+            "remark": remark,
             "start_pose": "neutral",
             "duration": _round_time(timeline),
             "transitions": sorted(
                 compiled_transitions, key=lambda item: (item["start"], item["channel"])
             ),
+            "motor_tracks": deepcopy(normalized["motor_tracks"]),
             "actions": deepcopy(normalized["actions"]),
             "audio": deepcopy(normalized_audio),
+            "preview": {
+                "duration": _round_time(timeline),
+                "frames": preview_frames,
+            },
         }
         return normalized, compiled
 

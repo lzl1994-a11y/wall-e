@@ -167,6 +167,107 @@ poses:
       head_yaw: 4700
       neck_top: {toward: max, fraction: 0.45}
       neck_bottom: {toward: min, fraction: 0.40}
+action_metadata:
+  right_hand_up:
+    label: 抬右手
+    remark: 右臂抬起，左臂保持当前姿态
+  left_hand_up:
+    label: 抬左手
+    remark: 左臂抬起，右臂保持当前姿态
+  arms_up:
+    label: 双臂抬起
+    remark: 两侧手臂一起抬起
+  arms_down:
+    label: 双臂放下
+    remark: 两侧手臂回到放下位置
+  look_left_up:
+    label: 向左上看
+    remark: 头部向左并抬头
+  look_center:
+    label: 回正
+    remark: 头部和脖子回到中性位置
+  tilt_right:
+    label: 眼睛右倾
+    remark: 双眼向右倾斜
+  tilt_left:
+    label: 眼睛左倾
+    remark: 双眼向左倾斜
+  sad_eyes:
+    label: 悲伤眼神
+    remark: 眼睛下垂，配合悲伤表情
+  head_down:
+    label: 低头
+    remark: 脖子向下收
+  turn_head_left:
+    label: 头转左
+    remark: 头部水平转向左侧
+  turn_head_right:
+    label: 头转右
+    remark: 头部水平转向右侧
+  tilt_head_left:
+    label: 头向左倾
+    remark: 头部和眼睛向左倾斜
+  tilt_head_right:
+    label: 头向右倾
+    remark: 头部和眼睛向右倾斜
+  eyebrows_open:
+    label: 眉毛张开
+    remark: 两侧眉毛抬起
+  eyebrows_close:
+    label: 眉毛收拢
+    remark: 两侧眉毛压低
+  expression_neutral:
+    label: 中性表情
+    remark: 回到默认面部表情
+  expression_listening:
+    label: 倾听表情
+    remark: 轻微抬头并睁眼倾听
+  expression_thinking:
+    label: 思考表情
+    remark: 眼神偏移，轻微抬头
+  expression_happy:
+    label: 开心表情
+    remark: 抬眉并露出开心神态
+  expression_sad:
+    label: 悲伤表情
+    remark: 眉眼下垂
+  expression_surprised:
+    label: 惊讶表情
+    remark: 眉毛和脖子同时抬起
+  expression_confused:
+    label: 疑惑表情
+    remark: 眼神偏移并抬眉
+  expression_concerned:
+    label: 担忧表情
+    remark: 眉眼收紧
+  happy_dance:
+    label: 开心舞步
+    remark: 手臂摆动并包含履带旋转；网页预览会跳过履带
+  wave_hello:
+    label: 挥手问好
+    remark: 抬头并挥动右手
+  basic_nod:
+    label: 点头
+    remark: 头部上下点动
+  basic_shake_head:
+    label: 摇头
+    remark: 头部左右摆动
+  basic_wave:
+    label: 基础挥手
+    remark: 右臂往复摆动
+  complex_greet:
+    label: 完整问候
+    remark: 表情、抬手和点头组成的问候动作
+  sad_react:
+    label: 悲伤反应
+    remark: 切换到悲伤表情并低头
+  scared:
+    label: 害怕反应
+    remark: 切换到惊讶或收缩姿态
+  raise_hand:
+    label: 举手
+    remark: 抬起一侧手臂
+
 sequences:
   happy_dance:
   - time: 0.0

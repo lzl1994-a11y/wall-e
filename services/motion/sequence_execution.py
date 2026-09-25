@@ -303,20 +303,59 @@ class SequenceRuntime:
         self.active_motor_command: Any = None
         self.motor_stop_at = 0.0
         self.explicit_motion_active = False
+        self.preview_mode = False
 
     def start_sequence(self, name: str, *, now: float) -> int:
         frames = self.library.flatten(name, offset_time=0.0)
-        if not frames:
+        return self.start_timeline(frames, now=now, preview=False)
+
+    def start_preview(self, frames: Any, *, now: float) -> int:
+        """Start a precompiled choreography while ignoring motor actions."""
+        return self.start_timeline(frames, now=now, preview=True)
+
+    def start_timeline(
+        self,
+        frames: Any,
+        *,
+        now: float,
+        preview: bool = False,
+    ) -> int:
+        if not isinstance(frames, list):
+            self.preview_mode = False
             self.explicit_motion_active = False
             return 0
-        frames.sort(key=lambda item: item["time"])
-        self.timeline = frames
+        normalized = []
+        for frame in frames:
+            if not isinstance(frame, Mapping):
+                continue
+            try:
+                timestamp = max(0.0, float(frame.get("time", 0.0)))
+            except (TypeError, ValueError):
+                continue
+            actions = frame.get("actions", [])
+            if not isinstance(actions, list):
+                continue
+            safe_actions = [
+                action for action in actions
+                if isinstance(action, Mapping)
+                and (not preview or action.get("type") != "motor")
+            ]
+            if safe_actions:
+                normalized.append({"time": timestamp, "actions": safe_actions})
+        normalized.sort(key=lambda item: item["time"])
+        if not normalized:
+            self.preview_mode = False
+            self.explicit_motion_active = False
+            return 0
+        self.preview_mode = bool(preview)
+        self.timeline = normalized
         self.sequence_started_at = now
         self.explicit_motion_active = True
-        return len(frames)
+        return len(normalized)
 
     def clear_sequence(self, *, clear_explicit_motion: bool = False) -> None:
         self.timeline = []
+        self.preview_mode = False
         if clear_explicit_motion:
             self.explicit_motion_active = False
 
@@ -362,6 +401,8 @@ class SequenceRuntime:
             return ()
 
         if action_type == "motor":
+            if self.preview_mode:
+                return ()
             direction = action.get("direction", "forward")
             duration = max(0.0, min(float(action.get("duration", 1.0)), 10.0))
             command = self.motion_to_motor.get(direction)
@@ -431,6 +472,7 @@ class SequenceCommandController:
         "move_chassis",
         "manual_servo",
         "play_sequence",
+        "preview_choreography",
         "stop_all",
     })
 
@@ -528,6 +570,20 @@ class SequenceCommandController:
                 self._append_status(
                     effects, request, "rejected", "unknown_or_empty_sequence"
                 )
+        elif name == "preview_choreography":
+            frame_count = self.runtime.start_preview(
+                arguments.get("frames", []),
+                now=wall_now,
+            )
+            if frame_count:
+                self.sequence_request = request if request.get("request_id") else None
+                self._append_status(effects, request, "accepted")
+                effects.append(SequenceEffect(
+                    "log_info",
+                    f"[Choreography] Previewing {frame_count} timeline frames (treads skipped)",
+                ))
+            else:
+                self._append_status(effects, request, "rejected", "empty_preview")
         elif name == "stop_all":
             effects.extend(self._stop_motor(
                 status="interrupted",

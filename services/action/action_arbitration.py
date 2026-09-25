@@ -60,6 +60,7 @@ class ActionArbiter:
         source: str,
         *,
         now: float | None = None,
+        lease_seconds: float | None = None,
     ) -> ArbitrationDecision:
         timestamp = time.monotonic() if now is None else float(now)
         self.expire(now=timestamp)
@@ -89,6 +90,12 @@ class ActionArbiter:
         preempted = tuple(conflicts)
         for lease in preempted:
             self._leases.pop(lease.request_id, None)
+        lease_duration = self._lease_timeout
+        if lease_seconds is not None:
+            try:
+                lease_duration = max(lease_duration, min(float(lease_seconds), 600.0))
+            except (TypeError, ValueError):
+                pass
         self._leases[request_id] = ActionLease(
             request_id=request_id,
             name=name,
@@ -97,7 +104,7 @@ class ActionArbiter:
             resources=resources,
             owner=skill.owner,
             supports_cancel=skill.supports_cancel,
-            expires_at=timestamp + self._lease_timeout,
+            expires_at=timestamp + lease_duration,
         )
         return ArbitrationDecision(True, preempted=preempted)
 

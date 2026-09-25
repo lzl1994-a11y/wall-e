@@ -228,7 +228,7 @@ tr:last-child td { border-bottom: 0; }
 
 /* Motion choreography editor */
 .choreography-heading { margin-bottom: 16px; }
-.choreography-toolbar { display: grid; grid-template-columns: 1.2fr 1.4fr 1.1fr .7fr auto; gap: 12px; align-items: end; margin-bottom: 16px; padding: 16px 18px; }
+.choreography-toolbar { display: grid; grid-template-columns: 1.1fr 1.2fr 1fr 1.5fr .7fr auto; gap: 12px; align-items: end; margin-bottom: 16px; padding: 16px 18px; }
 .choreography-toolbar-actions { display: flex; gap: 7px; align-items: center; padding-bottom: 1px; }
 .choreography-workspace { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 16px; align-items: start; }
 .choreography-palette { position: sticky; top: 12px; padding: 18px; }
@@ -309,6 +309,14 @@ tr:last-child td { border-bottom: 0; }
 .segment-resize { position: absolute; top: 5px; right: 3px; width: 7px; height: 28px; border-radius: 4px; background: rgba(255,255,255,.75); cursor: ew-resize; }
 .action-clip { display: flex; align-items: center; padding: 0 10px; overflow: hidden; color: #5c487c; background: #e7deff; border-color: #b8a3f6; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .action-clip button { margin-left: auto; border: 0; color: #705d91; background: transparent; cursor: pointer; font-size: 16px; }
+.motor-row .timeline-lane { background-color: #102437; }
+.motor-row .timeline-label { color: #ffc97b; }
+.motor-segment { position: absolute; top: 9px; display: flex; align-items: center; height: 40px; min-width: 22px; padding: 0 14px 0 9px; overflow: hidden; color: #ffe7b5; background: linear-gradient(105deg, #6b3e1e, #a65a27); border: 1px solid rgba(255, 188, 88, .75); border-radius: 8px; cursor: grab; box-shadow: 0 4px 13px rgba(255, 152, 55, .2); }
+.motor-segment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 800; pointer-events: none; }
+.motor-segment.invalid { color: #fff; background: linear-gradient(105deg, #a73460, #d84871); border-color: rgba(255, 162, 186, .8); }
+.motor-segment.selected { outline: 3px solid rgba(255, 203, 110, .75); outline-offset: 2px; }
+.action-palette-item em { display: block; color: var(--muted); font-size: 10px; font-style: normal; }
+.motor-palette-item strong { color: #ffc97b; }
 .choreography-errors { padding: 12px 16px; border-top: 1px solid #efb1c2; color: #a64260; background: #fff2f5; font-size: 12px; }
 .choreography-errors ul { margin: 5px 0 0; padding-left: 18px; }
 .choreography-inspector { margin-top: 16px; }
@@ -484,6 +492,11 @@ tbody tr:hover td { background: rgba(47, 93, 132, .16); }
 .segment-resize { background: rgba(225, 252, 255, .85); }
 .action-clip { color: #efe7ff; border-color: rgba(178, 139, 255, .68); background: linear-gradient(105deg, #483478, #6c4ca7); box-shadow: 0 4px 13px rgba(156, 115, 255, .18); }
 .action-clip button { color: #e9dbff; }
+.motor-row .timeline-lane { background-color: #0f2030; }
+.motor-row .timeline-label { color: #ffc97b; background: #10253a; }
+.motor-segment { color: #ffe7b5; border-color: rgba(255, 188, 88, .72); background: linear-gradient(105deg, #6b3e1e, #a65a27); box-shadow: 0 4px 13px rgba(255, 152, 55, .2); }
+.motor-segment.selected { outline-color: rgba(255, 203, 110, .85); }
+.action-palette-item em { color: #8eacca; }
 .choreography-errors { border-color: rgba(255, 111, 158, .54); color: #ffc0d5; background: rgba(89, 22, 50, .78); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }

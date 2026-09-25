@@ -45,6 +45,13 @@ from services.motion.choreography import (
     ChoreographyError,
     ChoreographyStore,
 )
+from services.action.action_cancel import build_action_cancel
+from services.action.action_command import (
+    ACTION_REQUEST_TOPIC,
+    build_action_cmd,
+    new_action_request_id,
+)
+from services.action.action_status import ACTION_STATUS_TOPIC, parse_action_status
 
 
 DEFAULT_CONFIG_PATH = ROOT / "core" / "config.yaml"
@@ -802,6 +809,7 @@ class ConfigWebServer(ThreadingHTTPServer):
             directory=choreography_dir,
         )
         self.camera_preview = None
+        self.choreography_preview = ChoreographyPreviewBridge()
         # Created on first NETCFG call so the ordinary config page can still run
         # in a non-ROS test or standalone maintenance environment.
         self.network_configurator = network_configurator
@@ -823,10 +831,147 @@ class ConfigWebServer(ThreadingHTTPServer):
         preview = getattr(self, "camera_preview", None)
         if preview is not None:
             preview.close()
+        choreography_preview = getattr(self, "choreography_preview", None)
+        if choreography_preview is not None:
+            choreography_preview.close()
         configurator = getattr(self, "network_configurator", None)
         if configurator is not None and hasattr(configurator, "close"):
             configurator.close()
         super().server_close()
+
+
+class ChoreographyPreviewBridge:
+    """Small lazy ROS bridge for one choreography preview at a time.
+
+    The Web process does not publish servo PWM directly.  It sends one normal
+    action request to the coordinator; the sequence node owns interpolation
+    and the preview payload has already removed all chassis actions.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._rclpy = None
+        self._node = None
+        self._publisher = None
+        self._cancel_publisher = None
+        self._status_subscriber = None
+        self._thread: threading.Thread | None = None
+        self._owns_context = False
+        self._active: dict[str, Any] | None = None
+
+    def _ensure_ros(self) -> None:
+        if self._node is not None:
+            return
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from std_msgs.msg import String
+        except Exception as exc:  # pragma: no cover - deployment dependency
+            raise RuntimeError(f"ROS 2 不可用，无法演示动作: {exc}") from exc
+        if not rclpy.ok():
+            rclpy.init(args=None)
+            self._owns_context = True
+        node = Node("wali_choreography_web_preview")
+        self._rclpy = rclpy
+        self._node = node
+        self._publisher = node.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
+        self._cancel_publisher = node.create_publisher(String, "/action_cancel", 10)
+        self._status_subscriber = node.create_subscription(
+            String,
+            ACTION_STATUS_TOPIC,
+            self._on_status,
+            20,
+        )
+        self._thread = threading.Thread(
+            target=rclpy.spin,
+            args=(node,),
+            name="choreography-preview-ros",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _on_status(self, message: Any) -> None:
+        status = parse_action_status(getattr(message, "data", ""))
+        if status is None:
+            return
+        with self._lock:
+            active = self._active
+            if not active or active.get("request_id") != status["request_id"]:
+                return
+            active["state"] = status["status"]
+            active["detail"] = status.get("detail", "")
+            if status["status"] in {"completed", "rejected", "failed", "interrupted"}:
+                active["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    def start(self, frames: list[dict[str, Any]], duration: float) -> dict[str, Any]:
+        if not frames:
+            raise ValueError("动作编排没有可演示的舵机动作")
+        with self._lock:
+            self._ensure_ros()
+            if self._active and self._active.get("state") in {"accepted", "running"}:
+                self._stop_locked("replaced_by_new_preview")
+            request_id = new_action_request_id()
+            payload = build_action_cmd(
+                "preview_choreography",
+                {"frames": frames, "duration": float(duration)},
+                request_id=request_id,
+                source="web_choreography",
+            )
+            self._active = {
+                "request_id": request_id,
+                "state": "accepted",
+                "duration": float(duration),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "detail": "履带轨道仅保存，演示时已跳过",
+            }
+            from std_msgs.msg import String
+            try:
+                self._publisher.publish(String(data=payload))
+            except Exception:
+                self._active["state"] = "failed"
+                self._active["detail"] = "publish_failed"
+                raise
+            return dict(self._active)
+
+    def _stop_locked(self, reason: str) -> None:
+        active = self._active
+        if not active or active.get("state") not in {"accepted", "running"}:
+            return
+        from std_msgs.msg import String
+        self._cancel_publisher.publish(String(data=build_action_cancel(
+            active["request_id"],
+            "preview_choreography",
+            reason=reason,
+        )))
+        active["state"] = "interrupted"
+        active["detail"] = reason
+
+    def stop(self) -> dict[str, Any]:
+        with self._lock:
+            self._stop_locked("stopped_from_web")
+            return dict(self._active or {"state": "stopped"})
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._active or {"state": "stopped"})
+
+    def close(self) -> None:
+        with self._lock:
+            self._stop_locked("web_server_closed")
+            node = self._node
+            rclpy = self._rclpy
+            self._node = None
+            self._publisher = None
+            self._cancel_publisher = None
+            self._status_subscriber = None
+            self._rclpy = None
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+        if rclpy is not None and self._owns_context and rclpy.ok():
+            rclpy.shutdown()
 
 
 class ConfigRequestHandler(BaseHTTPRequestHandler):
@@ -939,6 +1084,14 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 {"ok": True, "items": items, "catalog": catalog},
             )
             return
+        if route == "/api/choreographies/preview/status":
+            if not self._require_api_auth():
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, **self.server.choreography_preview.status()},
+            )
+            return
         if route.startswith("/api/choreographies/"):
             if not self._require_api_auth():
                 return
@@ -1037,6 +1190,8 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             "/api/esp32-network/query",
             "/api/choreographies",
             "/api/choreographies/validate",
+            "/api/choreographies/preview",
+            "/api/choreographies/preview/stop",
             "/api/choreography-audio",
         }:
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -1116,6 +1271,35 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 {"ok": True, "message": message, **result},
+            )
+            return
+
+        if route == "/api/choreographies/preview":
+            document = payload.get("document") if isinstance(payload, dict) else None
+            try:
+                _, compiled = self.server.choreographies.validate(document)
+                preview = compiled.get("preview") or {}
+                status = self.server.choreography_preview.start(
+                    preview.get("frames", []),
+                    float(preview.get("duration", 0)),
+                )
+            except (ChoreographyError, ValueError, RuntimeError) as exc:
+                details = exc.details if isinstance(exc, ChoreographyError) else []
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(exc), "details": details},
+                )
+                return
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                {"ok": True, "message": "动作演示已发送，履带轨道已跳过", **status},
+            )
+            return
+
+        if route == "/api/choreographies/preview/stop":
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "message": "动作演示已停止", **self.server.choreography_preview.stop()},
             )
             return
 

@@ -22,7 +22,7 @@ const state = {
   },
   choreography: {
     items: [],
-    catalog: { channels: [], actions: [] },
+    catalog: { channels: [], motors: [], actions: [] },
     document: null,
     selected: null,
     pixelsPerSecond: 100,
@@ -34,6 +34,8 @@ const state = {
     audioPeaks: [],
     audioFrame: null,
     audioLoadToken: 0,
+    previewTimer: null,
+    previewActive: false,
   },
 };
 
@@ -1228,9 +1230,11 @@ function newChoreographyDocument() {
     schema_version: 1,
     id: "untitled_action",
     name: "未命名动作",
+    remark: "",
     start_pose: "neutral",
     timeline_seconds: 8,
     tracks: state.choreography.catalog.channels.map((channel) => ({ channel: channel.id, segments: [] })),
+    motor_tracks: (state.choreography.catalog.motors || []).map((motor) => ({ motor: motor.id, segments: [] })),
     actions: [],
     audio: null,
   };
@@ -1239,6 +1243,7 @@ function newChoreographyDocument() {
 function normalizeChoreographyDocument(document) {
   const copy = deepClone(document || newChoreographyDocument());
   copy.tracks = Array.isArray(copy.tracks) ? copy.tracks : [];
+  copy.motor_tracks = Array.isArray(copy.motor_tracks) ? copy.motor_tracks : [];
   copy.actions = Array.isArray(copy.actions) ? copy.actions : [];
   copy.audio = copy.audio && typeof copy.audio === "object" ? copy.audio : null;
   state.choreography.catalog.channels.forEach((channel) => {
@@ -1246,11 +1251,20 @@ function normalizeChoreographyDocument(document) {
       copy.tracks.push({ channel: channel.id, segments: [] });
     }
   });
+  (state.choreography.catalog.motors || []).forEach((motor) => {
+    if (!copy.motor_tracks.some((track) => track.motor === motor.id)) {
+      copy.motor_tracks.push({ motor: motor.id, segments: [] });
+    }
+  });
   return copy;
 }
 
 function choreographyTrack(channel) {
   return state.choreography.document?.tracks.find((track) => track.channel === channel);
+}
+
+function choreographyMotorTrack(motor) {
+  return state.choreography.document?.motor_tracks.find((track) => track.motor === motor);
 }
 
 function choreographyActionDefinition(name) {
@@ -1261,11 +1275,16 @@ function choreographySegment(channel, id) {
   return choreographyTrack(channel)?.segments.find((segment) => segment.id === id);
 }
 
+function choreographyMotorSegment(motor, id) {
+  return choreographyMotorTrack(motor)?.segments.find((segment) => segment.id === id);
+}
+
 function choreographySyncMetadata() {
   const document = state.choreography.document;
   if (!document) return;
   document.name = $("#choreography-name").value.trim();
   document.id = $("#choreography-id").value.trim();
+  document.remark = $("#choreography-remark").value.trim();
   document.timeline_seconds = Number($("#choreography-duration").value);
 }
 
@@ -1305,12 +1324,33 @@ function renderChoreographyPalette() {
     button.className = "action-palette-item";
     button.draggable = true;
     button.dataset.sequenceName = action.id;
-    button.innerHTML = `<strong>${escapeHtml(action.label)}</strong><small>${action.duration.toFixed(2)}s · ${escapeHtml(action.channels.join(" / ") || "事件")}</small>`;
+    button.title = action.remark || action.id;
+    button.innerHTML = `<strong>${escapeHtml(action.label)}</strong><small>${escapeHtml(action.remark || action.id)}</small><em>${action.duration.toFixed(2)}s · ${escapeHtml(action.channels.join(" / ") || "事件")}</em>`;
     button.addEventListener("dragstart", (event) => {
       event.dataTransfer.effectAllowed = "copy";
       event.dataTransfer.setData("application/x-wali-sequence", action.id);
     });
     root.append(button);
+  });
+  const motorRoot = $("#choreography-motor-palette");
+  if (!motorRoot) return;
+  motorRoot.innerHTML = "";
+  const directionLabels = { forward: "前进", backward: "后退", left: "左转", right: "右转", spin: "原地旋转" };
+  (state.choreography.catalog.motors || []).forEach((motor) => {
+    (motor.directions || []).forEach((direction) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "action-palette-item motor-palette-item";
+      button.draggable = true;
+      button.dataset.motor = motor.id;
+      button.dataset.direction = direction;
+      button.innerHTML = `<strong>${escapeHtml(motor.label)} · ${directionLabels[direction] || direction}</strong><small>拖到履带轨道</small>`;
+      button.addEventListener("dragstart", (event) => {
+        event.dataTransfer.effectAllowed = "copy";
+        event.dataTransfer.setData("application/x-wali-motor", JSON.stringify({ motor: motor.id, direction }));
+      });
+      motorRoot.append(button);
+    });
   });
 }
 
@@ -1618,6 +1658,78 @@ function stopChoreographyAudio() {
   updateChoreographyPlayhead();
 }
 
+function updateChoreographyPreviewUi(status) {
+  const stateName = status?.state || "stopped";
+  const active = stateName === "accepted" || stateName === "running";
+  const wasActive = state.choreography.previewActive;
+  state.choreography.previewActive = active;
+  $("#choreography-preview-start").disabled = active;
+  $("#choreography-preview-stop").disabled = !active;
+  $("#choreography-status").dataset.previewState = stateName;
+  if (active) {
+    $("#choreography-summary").textContent = "实时演示中 · 履带轨道已跳过";
+  } else if (wasActive && ["completed", "interrupted", "failed"].includes(stateName)) {
+    stopChoreographyAudio();
+    $("#choreography-summary").textContent = stateName === "completed"
+      ? "演示完成 · 履带轨道已跳过"
+      : `演示${stateName === "interrupted" ? "已停止" : "失败"}`;
+  }
+}
+
+function pollChoreographyPreview() {
+  clearTimeout(state.choreography.previewTimer);
+  state.choreography.previewTimer = setTimeout(async () => {
+    try {
+      const status = await api("/api/choreographies/preview/status");
+      updateChoreographyPreviewUi(status);
+      if (state.choreography.previewActive) pollChoreographyPreview();
+    } catch (_) {
+      if (state.choreography.previewActive) pollChoreographyPreview();
+    }
+  }, 700);
+}
+
+async function startChoreographyPreview() {
+  choreographySyncMetadata();
+  const button = $("#choreography-preview-start");
+  button.disabled = true;
+  try {
+    const payload = await api("/api/choreographies/preview", {
+      method: "POST",
+      body: JSON.stringify({ document: state.choreography.document }),
+    });
+    const audio = $("#choreography-audio");
+    if (audio.src) {
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+      $("#choreography-audio-play").textContent = "暂停";
+      updateChoreographyPlayhead();
+    }
+    updateChoreographyPreviewUi(payload);
+    pollChoreographyPreview();
+    showToast(payload.message || "实时演示已开始");
+  } catch (error) {
+    button.disabled = false;
+    showChoreographyErrors(error);
+    showToast(error.message, "error");
+  }
+}
+
+async function stopChoreographyPreview() {
+  try {
+    const payload = await api("/api/choreographies/preview/stop", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    clearTimeout(state.choreography.previewTimer);
+    stopChoreographyAudio();
+    updateChoreographyPreviewUi(payload);
+    showToast(payload.message || "实时演示已停止");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 function choreographyClientErrors() {
   const errors = [];
   const timeline = Number(state.choreography.document?.timeline_seconds || 0);
@@ -1633,6 +1745,15 @@ function choreographyClientErrors() {
       if (position < -100 || position > 100) errors.push({ channel: track.channel, id: segment.id, message: `累计位置 ${position}% 越界` });
     });
   });
+  state.choreography.document?.motor_tracks?.forEach((track) => {
+    let previousEnd = 0;
+    [...track.segments].sort((a, b) => a.start - b.start).forEach((segment) => {
+      const end = Number(segment.start) + Number(segment.duration);
+      if (Number(segment.start) < previousEnd - 0.0001) errors.push({ channel: `motor:${track.motor}`, id: segment.id, message: "履带动作段重叠" });
+      if (end > timeline + 0.0001) errors.push({ channel: `motor:${track.motor}`, id: segment.id, message: "超出时间轴" });
+      previousEnd = Math.max(previousEnd, end);
+    });
+  });
   return errors;
 }
 
@@ -1643,18 +1764,31 @@ function renderChoreographyInspector() {
     inspector.hidden = true;
     return;
   }
-  const segment = choreographySegment(selected.channel, selected.id);
+  const motorSelected = selected.type === "motor";
+  const segment = motorSelected
+    ? choreographyMotorSegment(selected.motor, selected.id)
+    : choreographySegment(selected.channel, selected.id);
   if (!segment) {
     state.choreography.selected = null;
     inspector.hidden = true;
     return;
   }
   const channel = state.choreography.catalog.channels.find((item) => item.id === selected.channel);
-  $("#segment-channel-label").textContent = channel?.label || selected.channel;
+  const motor = (state.choreography.catalog.motors || []).find((item) => item.id === selected.motor);
+  $("#segment-channel-label").textContent = motorSelected ? motor?.label || selected.motor : channel?.label || selected.channel;
   $("#segment-start").value = segment.start;
   $("#segment-duration").value = segment.duration;
-  $("#segment-delta").value = segment.delta;
-  $("#segment-delta-output").textContent = `${segment.delta > 0 ? "+" : ""}${segment.delta}%`;
+  $("#segment-direction-field").hidden = !motorSelected;
+  $("#segment-delta-field").hidden = motorSelected;
+  $("#segment-help").textContent = motorSelected
+    ? "履带动作会随时间轴保存；实时演示只执行舵机，履带不会启动。"
+    : "正值向该舵机配置的高限位移动，负值向低限位移动。脖子轨道会自动换算成两个舵机的机械联动目标。";
+  if (motorSelected) {
+    $("#segment-direction").value = segment.direction || "forward";
+  } else {
+    $("#segment-delta").value = segment.delta;
+    $("#segment-delta-output").textContent = `${segment.delta > 0 ? "+" : ""}${segment.delta}%`;
+  }
   inspector.hidden = false;
 }
 
@@ -1668,6 +1802,24 @@ function addChoreographySegment(channel, start) {
   if (segment.start + segment.duration > timeline) segment.duration = Math.max(0.05, timeline - segment.start);
   track.segments.push(segment);
   state.choreography.selected = { channel, id: segment.id };
+  markChoreographyDirty();
+  renderChoreographyTimeline();
+}
+
+function addChoreographyMotorSegment(motor, direction, start) {
+  const track = choreographyMotorTrack(motor);
+  if (!track) return;
+  const timeline = Number(state.choreography.document.timeline_seconds);
+  const segment = {
+    id: choreographyUid("motor"),
+    start: choreographySnap(start),
+    duration: Math.max(0.05, Math.min(1, timeline - start)),
+    direction: direction || "forward",
+  };
+  if (segment.start >= timeline) return;
+  if (segment.start + segment.duration > timeline) segment.duration = Math.max(0.05, timeline - segment.start);
+  track.segments.push(segment);
+  state.choreography.selected = { type: "motor", motor, id: segment.id };
   markChoreographyDirty();
   renderChoreographyTimeline();
 }
@@ -1769,6 +1921,7 @@ function renderChoreographyTimeline() {
     clip.style.left = `${Number(action.start) * px}px`;
     clip.style.width = `${Math.max(28, definition.duration * px)}px`;
     clip.dataset.actionId = action.id;
+    clip.title = definition.remark || definition.id;
     clip.innerHTML = `<span>${escapeHtml(definition.label)}</span><button type="button" title="删除">×</button>`;
     clip.querySelector("button").addEventListener("click", (event) => {
       event.stopPropagation();
@@ -1781,6 +1934,56 @@ function renderChoreographyTimeline() {
   });
   actionRow.append(actionLane);
   root.append(actionRow);
+
+  (state.choreography.catalog.motors || []).forEach((motor) => {
+    const row = document.createElement("div");
+    row.className = "timeline-row motor-row";
+    row.innerHTML = `<div class="timeline-label">${escapeHtml(motor.label)}<small>编排保存 · 演示跳过</small></div>`;
+    const lane = document.createElement("div");
+    lane.className = "timeline-lane motor-lane";
+    lane.dataset.motor = motor.id;
+    lane.style.width = `${contentWidth}px`;
+    lane.style.backgroundSize = `${px}px 100%`;
+    lane.addEventListener("dragover", (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
+    lane.addEventListener("drop", (event) => {
+      event.preventDefault();
+      let payload;
+      try { payload = JSON.parse(event.dataTransfer.getData("application/x-wali-motor")); } catch (_) { return; }
+      if (payload.motor !== motor.id) return;
+      addChoreographyMotorSegment(motor.id, payload.direction, (event.clientX - lane.getBoundingClientRect().left) / px);
+    });
+    lane.addEventListener("click", (event) => {
+      if (event.target !== lane) return;
+      addChoreographyMotorSegment(motor.id, "forward", (event.clientX - lane.getBoundingClientRect().left) / px);
+    });
+    const directionLabels = { forward: "前进", backward: "后退", left: "左转", right: "右转", spin: "旋转" };
+    const track = choreographyMotorTrack(motor.id);
+    track?.segments.forEach((segment) => {
+      const block = document.createElement("div");
+      const key = `motor:${motor.id}:${segment.id}`;
+      const isSelected = state.choreography.selected?.type === "motor" && state.choreography.selected.motor === motor.id && state.choreography.selected.id === segment.id;
+      block.className = `motor-segment${invalid.has(key) ? " invalid" : ""}${isSelected ? " selected" : ""}`;
+      block.style.left = `${Number(segment.start) * px}px`;
+      block.style.width = `${Math.max(22, Number(segment.duration) * px)}px`;
+      block.dataset.segmentId = segment.id;
+      block.innerHTML = `<span>${escapeHtml(directionLabels[segment.direction] || segment.direction)} · ${Number(segment.duration).toFixed(2)}s</span><i class="segment-resize"></i>`;
+      block.addEventListener("click", (event) => {
+        event.stopPropagation();
+        state.choreography.selected = { type: "motor", motor: motor.id, id: segment.id };
+        renderChoreographyTimeline();
+      });
+      block.addEventListener("pointerdown", (event) => startChoreographyDrag(event, {
+        type: event.target.classList.contains("segment-resize") ? "motor-resize" : "motor",
+        motor: motor.id,
+        id: segment.id,
+        originalStart: Number(segment.start),
+        originalDuration: Number(segment.duration),
+      }));
+      lane.append(block);
+    });
+    row.append(lane);
+    root.append(row);
+  });
 
   state.choreography.catalog.channels.forEach((channel) => {
     const row = document.createElement("div");
@@ -1846,6 +2049,15 @@ function moveChoreographyDrag(event) {
     const definition = action && choreographyActionDefinition(action.sequence_name);
     if (!action || !definition) return;
     action.start = Math.min(Math.max(0, choreographySnap(drag.originalStart + deltaSeconds)), Math.max(0, timeline - definition.duration));
+  } else if (drag.type === "motor" || drag.type === "motor-resize") {
+    const segment = choreographyMotorSegment(drag.motor, drag.id);
+    if (!segment) return;
+    if (drag.type === "motor") {
+      segment.start = Math.min(Math.max(0, choreographySnap(drag.originalStart + deltaSeconds)), Math.max(0, timeline - segment.duration));
+    } else {
+      segment.duration = Math.max(0.05, Math.min(30, choreographySnap(drag.originalDuration + deltaSeconds) || 0.05, timeline - segment.start));
+    }
+    state.choreography.selected = { type: "motor", motor: drag.motor, id: drag.id };
   } else {
     const segment = choreographySegment(drag.channel, drag.id);
     if (!segment) return;
@@ -1883,7 +2095,7 @@ async function validateChoreography({ quiet = false } = {}) {
     state.choreography.document = normalizeChoreographyDocument(payload.document);
     $("#choreography-errors").hidden = true;
     $("#choreography-status").textContent = "校验通过";
-    $("#choreography-summary").textContent = `${payload.compiled.transitions.length} 段运动 · ${payload.compiled.actions.length} 个已有动作${payload.compiled.audio ? " · 1 条音乐" : ""}`;
+    $("#choreography-summary").textContent = `${payload.compiled.transitions.length} 段舵机 · ${(payload.compiled.motor_tracks || []).reduce((count, track) => count + track.segments.length, 0)} 段履带 · ${payload.compiled.actions.length} 个已有动作${payload.compiled.audio ? " · 1 条音乐" : ""}`;
     renderChoreographyTimeline();
     if (!quiet) showToast("动作编排校验通过");
     return payload;
@@ -1912,7 +2124,7 @@ async function saveChoreography() {
     renderChoreographySelect();
     renderChoreographyTimeline();
     $("#choreography-status").textContent = "已保存";
-    $("#choreography-summary").textContent = `${payload.compiled.transitions.length} 段运动 · ${payload.compiled.actions.length} 个已有动作${payload.compiled.audio ? " · 1 条音乐" : ""}`;
+    $("#choreography-summary").textContent = `${payload.compiled.transitions.length} 段舵机 · ${(payload.compiled.motor_tracks || []).reduce((count, track) => count + track.segments.length, 0)} 段履带 · ${payload.compiled.actions.length} 个已有动作${payload.compiled.audio ? " · 1 条音乐" : ""}`;
     $("#choreography-errors").hidden = true;
     showToast(payload.message);
   } catch (error) {
@@ -1943,6 +2155,7 @@ function renderChoreographyDocument() {
   if (!documentModel) return;
   $("#choreography-name").value = documentModel.name || "未命名动作";
   $("#choreography-id").value = documentModel.id || "untitled_action";
+  $("#choreography-remark").value = documentModel.remark || "";
   $("#choreography-duration").value = documentModel.timeline_seconds || 8;
   $("#choreography-errors").hidden = true;
   $("#choreography-status").textContent = state.choreography.dirty ? "有未保存修改" : "尚未校验";
@@ -2002,7 +2215,7 @@ async function loadChoreographyWorkspace() {
   try {
     const payload = await api("/api/choreographies");
     state.choreography.items = payload.items || [];
-    state.choreography.catalog = payload.catalog || { channels: [], actions: [] };
+    state.choreography.catalog = payload.catalog || { channels: [], motors: [], actions: [] };
     state.choreography.loaded = true;
     state.choreography.document = normalizeChoreographyDocument(state.choreography.document || newChoreographyDocument());
     renderChoreographyPalette();
@@ -2015,9 +2228,11 @@ async function loadChoreographyWorkspace() {
 
 function updateSelectedSegment(field, value) {
   const selected = state.choreography.selected;
-  const segment = selected && choreographySegment(selected.channel, selected.id);
+  const segment = selected?.type === "motor"
+    ? choreographyMotorSegment(selected.motor, selected.id)
+    : selected && choreographySegment(selected.channel, selected.id);
   if (!segment) return;
-  segment[field] = Number(value);
+  segment[field] = field === "direction" ? value : Number(value);
   markChoreographyDirty();
   renderChoreographyTimeline();
 }
@@ -2094,8 +2309,10 @@ function bindEvents() {
   });
   $("#choreography-audio-play").addEventListener("click", toggleChoreographyAudio);
   $("#choreography-audio-stop").addEventListener("click", stopChoreographyAudio);
+  $("#choreography-preview-start").addEventListener("click", startChoreographyPreview);
+  $("#choreography-preview-stop").addEventListener("click", stopChoreographyPreview);
   $("#choreography-audio").addEventListener("ended", updateChoreographyPlayhead);
-  ["#choreography-name", "#choreography-id"].forEach((selector) => {
+  ["#choreography-name", "#choreography-id", "#choreography-remark"].forEach((selector) => {
     $(selector).addEventListener("input", () => {
       choreographySyncMetadata();
       markChoreographyDirty();
@@ -2113,9 +2330,12 @@ function bindEvents() {
   $("#segment-start").addEventListener("change", (event) => updateSelectedSegment("start", event.target.value));
   $("#segment-duration").addEventListener("change", (event) => updateSelectedSegment("duration", event.target.value));
   $("#segment-delta").addEventListener("input", (event) => updateSelectedSegment("delta", event.target.value));
+  $("#segment-direction").addEventListener("change", (event) => updateSelectedSegment("direction", event.target.value));
   $("#segment-remove").addEventListener("click", () => {
     const selected = state.choreography.selected;
-    const track = selected && choreographyTrack(selected.channel);
+    const track = selected?.type === "motor"
+      ? choreographyMotorTrack(selected.motor)
+      : selected && choreographyTrack(selected.channel);
     if (!track) return;
     track.segments = track.segments.filter((segment) => segment.id !== selected.id);
     state.choreography.selected = null;

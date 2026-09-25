@@ -57,10 +57,20 @@ class ActionCoordinatorNode(Node):
             self._arbiter.expire(),
             reason="action_lease_expired",
         )
+        lease_seconds = None
+        if request["name"] == "preview_choreography":
+            try:
+                # A choreography may legitimately be longer than the normal
+                # short action lease.  Keep this extension local to preview;
+                # all other actions retain the coordinator default.
+                lease_seconds = float(request["arguments"].get("duration", 0)) + 5.0
+            except (TypeError, ValueError):
+                lease_seconds = None
         decision = self._arbiter.submit(
             request_id,
             request["name"],
             source,
+            lease_seconds=lease_seconds,
         )
         if not decision.accepted:
             self._status_pub.publish(String(data=build_action_status(
