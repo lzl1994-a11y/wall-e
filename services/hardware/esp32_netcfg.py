@@ -252,11 +252,67 @@ def detect_routable_ipv4(*, socket_factory: Callable[..., Any] = socket.socket) 
                 pass
 
 
+def detect_active_wifi_ipv4(
+    *, command_runner: Callable[..., Any] = subprocess.run
+) -> str | None:
+    """Return the IPv4 assigned to the active Wi-Fi interface.
+
+    The ESP32 must connect back through the same LAN as the configured Wi-Fi.
+    Looking at the host's default route is not sufficient because a VPN/TUN
+    interface (for example Mihomo) may own that route and expose an address the
+    ESP32 cannot reach.
+    """
+    try:
+        devices = command_runner(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if devices.returncode != 0:
+        return None
+
+    for line in (devices.stdout or "").splitlines():
+        fields = line.strip().split(":", 2)
+        if len(fields) != 3 or fields[1:] != ["wifi", "connected"]:
+            continue
+        device = fields[0].replace("\\:", ":").replace("\\\\", "\\").strip()
+        if not device:
+            continue
+        try:
+            addresses = command_runner(
+                ["nmcli", "-g", "IP4.ADDRESS", "device", "show", device],
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            continue
+        if addresses.returncode != 0:
+            continue
+        for value in (addresses.stdout or "").splitlines():
+            try:
+                address = ipaddress.ip_interface(value.strip()).ip
+            except ValueError:
+                continue
+            if (
+                address.version == 4
+                and not address.is_unspecified
+                and not address.is_loopback
+            ):
+                return str(address)
+    return None
+
+
 def resolve_session_network_settings(
     saved: NetworkSettings,
     *,
     ssid_detector: Callable[[], str | None] = detect_active_wifi_ssid,
-    host_detector: Callable[[], str | None] = detect_routable_ipv4,
+    host_detector: Callable[[], str | None] = detect_active_wifi_ipv4,
 ) -> tuple[NetworkSettings, dict[str, str]]:
     """Build a RAM-only boot session from live networking and safe fallbacks.
 

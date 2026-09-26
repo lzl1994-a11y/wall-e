@@ -3,6 +3,7 @@ import threading
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import yaml
 
@@ -10,6 +11,7 @@ from services.hardware.esp32_netcfg import (
     APPLY_FINAL_TIMEOUT_SECONDS,
     Esp32NetworkConfigurator,
     NetworkConfigError,
+    detect_active_wifi_ipv4,
     decode_urlsafe_base64,
     encode_urlsafe_base64,
     load_saved_network_settings,
@@ -162,6 +164,31 @@ class Esp32NetworkProtocolTests(unittest.TestCase):
             on_phase=phases.append,
         )
         self.assertEqual(phases, ["configuring", "connected"])
+
+    def test_active_wifi_ipv4_ignores_tun_owned_default_route(self):
+        calls = []
+
+        def run(command, **_kwargs):
+            calls.append(command)
+            if command[:4] == ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=(
+                        "wlan0:wifi:connected\n"
+                        "Meta:tun:connected (externally)\n"
+                    ),
+                )
+            if command == [
+                "nmcli", "-g", "IP4.ADDRESS", "device", "show", "wlan0"
+            ]:
+                return SimpleNamespace(returncode=0, stdout="192.168.0.5/24\n")
+            self.fail(f"unexpected command: {command}")
+
+        self.assertEqual(
+            detect_active_wifi_ipv4(command_runner=run),
+            "192.168.0.5",
+        )
+        self.assertEqual(len(calls), 2)
 
     def test_session_resolution_promotes_live_ssid_and_live_host(self):
         saved = validate_network_payload(
