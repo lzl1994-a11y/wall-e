@@ -443,7 +443,7 @@
               <p>点击任意机构轨道的空白位置添加。拖动色块移动，拖动右侧把手修改持续时间。</p>
             </div>
             <div class="palette-section">
-              <div class="palette-title"><h3>已有动作</h3><small>拖到最上方动作轨</small></div>
+              <div class="palette-title"><h3>已有动作</h3><small>拖到对应动作轨</small></div>
               <div id="choreography-action-palette" class="action-palette-list"><p class="empty-copy">正在读取…</p></div>
             </div>
             <div class="palette-section">
@@ -479,6 +479,7 @@
             </div>
             <div class="timeline-toolbar">
               <div><strong id="choreography-status">尚未校验</strong><small id="choreography-summary">从中性姿势开始</small></div>
+              <button id="choreography-add-action-track" class="button secondary small" type="button">＋ 添加已有动作轨</button>
               <label>吸附<select id="choreography-snap"><option value="0.1">0.1s</option><option value="0.25" selected>0.25s</option><option value="0.5">0.5s</option><option value="1">1s</option></select></label>
               <label>缩放<input id="choreography-zoom" type="range" min="60" max="160" value="100"></label>
             </div>
@@ -495,7 +496,7 @@
           <div class="form-grid three">
             <label class="field"><span>开始时间（秒）</span><input id="segment-start" type="number" min="0" step="0.05"></label>
             <label class="field"><span>命令持续时间（秒）</span><input id="segment-duration" type="number" min="0.05" max="30" step="0.05"></label>
-            <label id="segment-delta-field" class="field"><span>总位移（%）</span><input id="segment-delta" type="range" min="-100" max="100" step="1"><output id="segment-delta-output">20%</output></label>
+            <label id="segment-delta-field" class="field"><span>目标位置（%）</span><input id="segment-delta" type="range" min="-100" max="100" step="1"><output id="segment-delta-output">+20%</output></label>
             <label id="segment-direction-field" class="field" hidden><span>履带方向</span><select id="segment-direction"><option value="forward">前进</option><option value="backward">后退</option><option value="left">左转</option><option value="right">右转</option><option value="spin">原地旋转</option></select></label>
             <label id="segment-left-throttle-field" class="field" hidden><span>左履带油门</span><input id="segment-left-throttle" type="range" min="0" max="100" step="1"><output id="segment-left-throttle-output">55%</output></label>
             <label id="segment-right-throttle-field" class="field" hidden><span>右履带油门</span><input id="segment-right-throttle" type="range" min="0" max="100" step="1"><output id="segment-right-throttle-output">55%</output></label>

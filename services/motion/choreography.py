@@ -460,19 +460,28 @@ class ChoreographyStore:
                     continue
                 start = raw_segment.get("start")
                 duration = raw_segment.get("duration")
-                delta = raw_segment.get("delta")
+                is_legacy_delta = "position" not in raw_segment
+                position = raw_segment.get("position")
+                legacy_delta = raw_segment.get("delta")
                 if not _finite_number(start) or float(start) < 0:
                     errors.append(f"{prefix}开始时间必须大于等于 0")
                     continue
                 if not _finite_number(duration) or not 0.05 <= float(duration) <= 30:
                     errors.append(f"{prefix}持续时间必须为 0.05–30 秒")
                     continue
-                if not _finite_number(delta) or not -100 <= float(delta) <= 100 or float(delta) == 0:
-                    errors.append(f"{prefix}位移必须为 -100% 到 100%，且不能为 0")
+                if is_legacy_delta:
+                    if (
+                        not _finite_number(legacy_delta)
+                        or not -100 <= float(legacy_delta) <= 100
+                        or float(legacy_delta) == 0
+                    ):
+                        errors.append(f"{prefix}旧格式位移必须为 -100% 到 100%，且不能为 0")
+                        continue
+                elif not _finite_number(position) or not -100 <= float(position) <= 100:
+                    errors.append(f"{prefix}目标位置必须为 -100% 到 100%")
                     continue
                 start = _round_time(float(start))
                 duration = _round_time(float(duration))
-                delta = round(float(delta), 2)
                 if start + duration > timeline + 1e-6:
                     errors.append(f"{prefix}超出时间轴范围")
                     continue
@@ -480,7 +489,12 @@ class ChoreographyStore:
                     "id": str(raw_segment.get("id") or uuid.uuid4().hex[:10]),
                     "start": start,
                     "duration": duration,
-                    "delta": delta,
+                    "position": (
+                        None if is_legacy_delta else round(float(position), 2)
+                    ),
+                    "legacy_delta": (
+                        round(float(legacy_delta), 2) if is_legacy_delta else None
+                    ),
                 })
 
             parsed_segments.sort(key=lambda item: (item["start"], item["id"]))
@@ -490,7 +504,11 @@ class ChoreographyStore:
                 if segment["start"] < previous_end - 1e-6:
                     errors.append(f"{catalog[channel]['label']} 的动作段发生时间重叠")
                 previous_end = max(previous_end, segment["start"] + segment["duration"])
-                end_position = planned_position + segment["delta"]
+                end_position = (
+                    planned_position + segment["legacy_delta"]
+                    if segment["position"] is None
+                    else segment["position"]
+                )
                 if not -100 <= end_position <= 100:
                     errors.append(
                         f"{catalog[channel]['label']} 在 {segment['start']:g}s 后将达到 "
@@ -502,7 +520,7 @@ class ChoreographyStore:
                     "duration": segment["duration"],
                     "from_percent": round(planned_position, 2),
                     "to_percent": round(end_position, 2),
-                    "delta_percent": segment["delta"],
+                    "delta_percent": round(end_position - planned_position, 2),
                 }
                 if -100 <= planned_position <= 100 and -100 <= end_position <= 100:
                     transition["from_targets"] = self._targets_for(
@@ -512,6 +530,14 @@ class ChoreographyStore:
                         str(channel), end_position, servos
                     )
                 compiled_transitions.append(transition)
+                normalized_segment = {
+                    "id": segment["id"],
+                    "start": segment["start"],
+                    "duration": segment["duration"],
+                    "position": round(end_position, 2),
+                }
+                segment.clear()
+                segment.update(normalized_segment)
                 for resource in catalog[channel]["members"]:
                     resource_intervals.append({
                         "resource": resource,
@@ -620,42 +646,66 @@ class ChoreographyStore:
                 })
             normalized_motor_tracks.append({"motor": motor, "segments": parsed_segments})
 
-        raw_actions = document.get("actions", [])
-        if not isinstance(raw_actions, list):
-            errors.append("actions 必须是数组")
-            raw_actions = []
+        raw_action_tracks = document.get("action_tracks")
+        if raw_action_tracks is None:
+            raw_actions = document.get("actions", [])
+            if not isinstance(raw_actions, list):
+                errors.append("actions 必须是数组")
+                raw_actions = []
+            raw_action_tracks = [{"id": "action-track-1", "name": "已有动作轨 1", "actions": raw_actions}]
+        elif not isinstance(raw_action_tracks, list):
+            errors.append("action_tracks 必须是数组")
+            raw_action_tracks = []
         action_catalog = {item["id"]: item for item in self.action_catalog()}
         normalized_actions = []
-        for index, raw_action in enumerate(raw_actions):
-            if not isinstance(raw_action, Mapping):
-                errors.append(f"已有动作 {index + 1} 格式无效")
+        normalized_action_tracks = []
+        for track_index, raw_track in enumerate(raw_action_tracks):
+            if not isinstance(raw_track, Mapping):
+                errors.append(f"已有动作轨 {track_index + 1} 格式无效")
                 continue
-            action_name = raw_action.get("sequence_name")
-            start = raw_action.get("start")
-            if action_name not in action_catalog:
-                errors.append(f"已有动作不存在: {action_name}")
-                continue
-            if not _finite_number(start) or float(start) < 0:
-                errors.append(f"已有动作 {action_name} 的开始时间无效")
-                continue
-            start = _round_time(float(start))
-            if start + action_catalog[action_name]["duration"] > timeline + 1e-6:
-                errors.append(f"已有动作 {action_name} 超出时间轴范围")
-                continue
-            normalized_actions.append({
-                "id": str(raw_action.get("id") or uuid.uuid4().hex[:10]),
-                "sequence_name": action_name,
-                "start": start,
-                "remark": str(raw_action.get("remark") or "").strip(),
-            })
-            for resource in action_catalog[action_name]["channels"]:
-                resource_intervals.append({
-                    "resource": resource,
+            raw_track_actions = raw_track.get("actions", [])
+            if not isinstance(raw_track_actions, list):
+                errors.append(f"已有动作轨 {track_index + 1} 的动作必须是数组")
+                raw_track_actions = []
+            track_actions = []
+            track_name = str(raw_track.get("name") or f"已有动作轨 {track_index + 1}").strip()
+            for action_index, raw_action in enumerate(raw_track_actions):
+                if not isinstance(raw_action, Mapping):
+                    errors.append(f"{track_name} 的第 {action_index + 1} 个动作格式无效")
+                    continue
+                action_name = raw_action.get("sequence_name")
+                start = raw_action.get("start")
+                if action_name not in action_catalog:
+                    errors.append(f"已有动作不存在: {action_name}")
+                    continue
+                if not _finite_number(start) or float(start) < 0:
+                    errors.append(f"已有动作 {action_name} 的开始时间无效")
+                    continue
+                start = _round_time(float(start))
+                if start + action_catalog[action_name]["duration"] > timeline + 1e-6:
+                    errors.append(f"已有动作 {action_name} 超出时间轴范围")
+                    continue
+                normalized_action = {
+                    "id": str(raw_action.get("id") or uuid.uuid4().hex[:10]),
+                    "sequence_name": action_name,
                     "start": start,
-                    "end": start + action_catalog[action_name]["duration"],
-                    "kind": "action",
-                    "label": f"已有动作 {action_name}",
-                })
+                    "remark": str(raw_action.get("remark") or "").strip(),
+                }
+                track_actions.append(normalized_action)
+                normalized_actions.append(normalized_action)
+                for resource in action_catalog[action_name]["channels"]:
+                    resource_intervals.append({
+                        "resource": resource,
+                        "start": start,
+                        "end": start + action_catalog[action_name]["duration"],
+                        "kind": "action",
+                        "label": f"已有动作 {action_name}",
+                    })
+            normalized_action_tracks.append({
+                "id": str(raw_track.get("id") or f"action-track-{track_index + 1}"),
+                "name": track_name,
+                "actions": sorted(track_actions, key=lambda item: item["start"]),
+            })
 
         conflict_messages: set[str] = set()
         intervals_by_resource: dict[str, list[dict[str, Any]]] = {}
@@ -755,6 +805,7 @@ class ChoreographyStore:
             "timeline_seconds": _round_time(timeline),
             "tracks": normalized_tracks,
             "motor_tracks": normalized_motor_tracks,
+            "action_tracks": normalized_action_tracks,
             "actions": sorted(normalized_actions, key=lambda item: item["start"]),
             "audio": normalized_audio,
         }

@@ -1235,6 +1235,7 @@ function newChoreographyDocument() {
     timeline_seconds: 8,
     tracks: state.choreography.catalog.channels.map((channel) => ({ channel: channel.id, segments: [] })),
     motor_tracks: (state.choreography.catalog.motors || []).map((motor) => ({ motor: motor.id, segments: [] })),
+    action_tracks: [{ id: choreographyUid("action-track"), name: "已有动作轨 1", actions: [] }],
     actions: [],
     audio: null,
   };
@@ -1245,7 +1246,34 @@ function normalizeChoreographyDocument(document) {
   copy.tracks = Array.isArray(copy.tracks) ? copy.tracks : [];
   copy.motor_tracks = Array.isArray(copy.motor_tracks) ? copy.motor_tracks : [];
   copy.actions = Array.isArray(copy.actions) ? copy.actions : [];
+  if (!Array.isArray(copy.action_tracks) || !copy.action_tracks.length) {
+    copy.action_tracks = copy.actions.length
+      ? [{ id: choreographyUid("action-track"), name: "已有动作轨 1", actions: copy.actions }]
+      : [{ id: choreographyUid("action-track"), name: "已有动作轨 1", actions: [] }];
+  }
+  copy.action_tracks.forEach((track, index) => {
+    track.id = track.id || choreographyUid("action-track");
+    track.name = track.name || `已有动作轨 ${index + 1}`;
+    track.actions = Array.isArray(track.actions) ? track.actions : [];
+  });
+  copy.actions = copy.action_tracks.flatMap((track) => track.actions);
   copy.audio = copy.audio && typeof copy.audio === "object" ? copy.audio : null;
+  copy.tracks.forEach((track) => {
+    if (!Array.isArray(track.segments)) track.segments = [];
+    let position = 0;
+    [...track.segments]
+      .sort((a, b) => Number(a.start) - Number(b.start))
+      .forEach((segment) => {
+        if (Number.isFinite(Number(segment.position))) {
+          position = Number(segment.position);
+        } else if (Number.isFinite(Number(segment.delta))) {
+          position += Number(segment.delta);
+          segment.position = position;
+          delete segment.delta;
+          position = segment.position;
+        }
+      });
+  });
   state.choreography.catalog.channels.forEach((channel) => {
     if (!copy.tracks.some((track) => track.channel === channel.id)) {
       copy.tracks.push({ channel: channel.id, segments: [] });
@@ -1756,14 +1784,15 @@ function choreographyClientErrors() {
   const timeline = Number(state.choreography.document?.timeline_seconds || 0);
   state.choreography.document?.tracks.forEach((track) => {
     let previousEnd = 0;
-    let position = 0;
     [...track.segments].sort((a, b) => a.start - b.start).forEach((segment) => {
       const end = Number(segment.start) + Number(segment.duration);
       if (Number(segment.start) < previousEnd - 0.0001) errors.push({ channel: track.channel, id: segment.id, message: "动作段重叠" });
       if (end > timeline + 0.0001) errors.push({ channel: track.channel, id: segment.id, message: "超出时间轴" });
       previousEnd = Math.max(previousEnd, end);
-      position += Number(segment.delta);
-      if (position < -100 || position > 100) errors.push({ channel: track.channel, id: segment.id, message: `累计位置 ${position}% 越界` });
+      const position = Number(segment.position);
+      if (!Number.isFinite(position) || position < -100 || position > 100) {
+        errors.push({ channel: track.channel, id: segment.id, message: "目标位置必须为 -100% 到 100%" });
+      }
     });
   });
   state.choreography.document?.motor_tracks?.forEach((track) => {
@@ -1810,7 +1839,7 @@ function renderChoreographyInspector() {
   $("#segment-delta-field").hidden = motorSelected;
   $("#segment-help").textContent = motorSelected
     ? "履带动作会随时间轴保存；实时演示只执行舵机，履带不会启动。"
-    : "正值向该舵机配置的高限位移动，负值向低限位移动。脖子轨道会自动换算成两个舵机的机械联动目标。";
+    : "设置舵机目标位置：0% 为中位，负值偏向低限位，正值偏向高限位。脖子轨道会自动换算成两个舵机的机械联动目标。";
   if (motorSelected) {
     const direction = segment.direction || "forward";
     const defaults = choreographyMotorDefaultThrottles(direction, selected.motor);
@@ -1824,8 +1853,8 @@ function renderChoreographyInspector() {
     $("#segment-left-throttle-output").textContent = `${leftThrottle}%`;
     $("#segment-right-throttle-output").textContent = `${rightThrottle}%`;
   } else {
-    $("#segment-delta").value = segment.delta;
-    $("#segment-delta-output").textContent = `${segment.delta > 0 ? "+" : ""}${segment.delta}%`;
+    $("#segment-delta").value = segment.position;
+    $("#segment-delta-output").textContent = `${segment.position > 0 ? "+" : ""}${segment.position}%`;
   }
   inspector.hidden = false;
 }
@@ -1836,7 +1865,7 @@ function addChoreographySegment(channel, start) {
   const timeline = Number(state.choreography.document.timeline_seconds);
   const duration = Math.max(0.05, Math.min(1, timeline - start));
   if (duration <= 0.05 && start >= timeline) return;
-  const segment = { id: choreographyUid(), start: choreographySnap(start), duration: choreographySnap(duration) || 0.25, delta: 20 };
+  const segment = { id: choreographyUid(), start: choreographySnap(start), duration: choreographySnap(duration) || 0.25, position: 20 };
   if (segment.start + segment.duration > timeline) segment.duration = Math.max(0.05, timeline - segment.start);
   track.segments.push(segment);
   state.choreography.selected = { channel, id: segment.id };
@@ -1932,49 +1961,69 @@ function renderChoreographyTimeline() {
   audioRow.append(audioLane);
   root.append(audioRow);
 
-  const actionRow = document.createElement("div");
-  actionRow.className = "timeline-row action-row";
-  actionRow.innerHTML = '<div class="timeline-label">已有动作<small>拖入</small></div>';
-  const actionLane = document.createElement("div");
-  actionLane.className = "timeline-lane";
-  actionLane.style.width = `${contentWidth}px`;
-  actionLane.style.backgroundSize = `${px}px 100%`;
-  actionLane.addEventListener("dragover", (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
-  actionLane.addEventListener("drop", (event) => {
-    event.preventDefault();
-    const sequenceName = event.dataTransfer.getData("application/x-wali-sequence");
-    const definition = choreographyActionDefinition(sequenceName);
-    if (!definition) return;
-    const start = choreographySnap((event.clientX - actionLane.getBoundingClientRect().left) / px);
-    if (start + definition.duration > Number(documentModel.timeline_seconds)) {
-      showToast("已有动作会超出时间轴，请延长时间轴或向前放置", "error");
-      return;
-    }
-    documentModel.actions.push({ id: choreographyUid("action"), sequence_name: sequenceName, start });
-    markChoreographyDirty();
-    renderChoreographyTimeline();
-  });
-  documentModel.actions.forEach((action) => {
-    const definition = choreographyActionDefinition(action.sequence_name);
-    if (!definition) return;
-    const clip = document.createElement("div");
-    clip.className = "action-clip";
-    clip.style.left = `${Number(action.start) * px}px`;
-    clip.style.width = `${Math.max(28, definition.duration * px)}px`;
-    clip.dataset.actionId = action.id;
-    clip.title = definition.remark || definition.id;
-    clip.innerHTML = `<span>${escapeHtml(definition.label)}</span><button type="button" title="删除">×</button>`;
-    clip.querySelector("button").addEventListener("click", (event) => {
-      event.stopPropagation();
-      documentModel.actions = documentModel.actions.filter((item) => item.id !== action.id);
+  documentModel.action_tracks.forEach((actionTrack, trackIndex) => {
+    const actionRow = document.createElement("div");
+    actionRow.className = "timeline-row action-row";
+    const trackLabel = document.createElement("div");
+    trackLabel.className = "timeline-label action-track-label";
+    trackLabel.innerHTML = `<span>${escapeHtml(actionTrack.name || `已有动作轨 ${trackIndex + 1}`)}</span><button type="button" title="删除此轨道及其中的动作">×</button>`;
+    trackLabel.querySelector("button").addEventListener("click", () => {
+      if (documentModel.action_tracks.length <= 1) {
+        showToast("至少保留一条已有动作轨", "error");
+        return;
+      }
+      if (actionTrack.actions.length && !window.confirm(`删除“${actionTrack.name}”及其中 ${actionTrack.actions.length} 个动作？`)) return;
+      documentModel.action_tracks = documentModel.action_tracks.filter((item) => item.id !== actionTrack.id);
+      documentModel.actions = documentModel.action_tracks.flatMap((item) => item.actions);
       markChoreographyDirty();
       renderChoreographyTimeline();
     });
-    clip.addEventListener("pointerdown", (event) => startChoreographyDrag(event, { type: "action", id: action.id, originalStart: Number(action.start) }));
-    actionLane.append(clip);
+    actionRow.append(trackLabel);
+    const actionLane = document.createElement("div");
+    actionLane.className = "timeline-lane";
+    actionLane.style.width = `${contentWidth}px`;
+    actionLane.style.backgroundSize = `${px}px 100%`;
+    actionLane.addEventListener("dragover", (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
+    actionLane.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const sequenceName = event.dataTransfer.getData("application/x-wali-sequence");
+      const definition = choreographyActionDefinition(sequenceName);
+      if (!definition) return;
+      const start = choreographySnap((event.clientX - actionLane.getBoundingClientRect().left) / px);
+      if (start + definition.duration > Number(documentModel.timeline_seconds)) {
+        showToast("已有动作会超出时间轴，请延长时间轴或向前放置", "error");
+        return;
+      }
+      actionTrack.actions.push({ id: choreographyUid("action"), sequence_name: sequenceName, start });
+      documentModel.actions = documentModel.action_tracks.flatMap((item) => item.actions);
+      markChoreographyDirty();
+      renderChoreographyTimeline();
+    });
+    actionTrack.actions.forEach((action) => {
+      const definition = choreographyActionDefinition(action.sequence_name);
+      if (!definition) return;
+      const clip = document.createElement("div");
+      clip.className = "action-clip";
+      clip.style.left = `${Number(action.start) * px}px`;
+      clip.style.width = `${Math.max(28, definition.duration * px)}px`;
+      clip.dataset.actionId = action.id;
+      clip.title = definition.remark || definition.id;
+      clip.innerHTML = `<span>${escapeHtml(definition.label)}</span><button type="button" title="删除">×</button>`;
+      clip.querySelector("button").addEventListener("click", (event) => {
+        event.stopPropagation();
+        actionTrack.actions = actionTrack.actions.filter((item) => item.id !== action.id);
+        documentModel.actions = documentModel.action_tracks.flatMap((item) => item.actions);
+        markChoreographyDirty();
+        renderChoreographyTimeline();
+      });
+      clip.addEventListener("pointerdown", (event) => startChoreographyDrag(event, {
+        type: "action", id: action.id, trackId: actionTrack.id, originalStart: Number(action.start),
+      }));
+      actionLane.append(clip);
+    });
+    actionRow.append(actionLane);
+    root.append(actionRow);
   });
-  actionRow.append(actionLane);
-  root.append(actionRow);
 
   (state.choreography.catalog.motors || []).forEach((motor) => {
     const row = document.createElement("div");
@@ -2046,11 +2095,11 @@ function renderChoreographyTimeline() {
     track?.segments.forEach((segment) => {
       const block = document.createElement("div");
       const isSelected = state.choreography.selected?.channel === channel.id && state.choreography.selected?.id === segment.id;
-      block.className = `motion-segment ${segment.delta < 0 ? "negative" : "positive"}${invalid.has(`${channel.id}:${segment.id}`) ? " invalid" : ""}${isSelected ? " selected" : ""}`;
+      block.className = `motion-segment ${segment.position < 0 ? "negative" : "positive"}${invalid.has(`${channel.id}:${segment.id}`) ? " invalid" : ""}${isSelected ? " selected" : ""}`;
       block.style.left = `${Number(segment.start) * px}px`;
       block.style.width = `${Math.max(18, Number(segment.duration) * px)}px`;
       block.dataset.segmentId = segment.id;
-      block.innerHTML = `<span>${segment.delta > 0 ? "+" : ""}${segment.delta}% · ${Number(segment.duration).toFixed(2)}s</span><i class="segment-resize"></i>`;
+      block.innerHTML = `<span>${segment.position > 0 ? "+" : ""}${segment.position}% · ${Number(segment.duration).toFixed(2)}s</span><i class="segment-resize"></i>`;
       block.addEventListener("click", (event) => {
         event.stopPropagation();
         state.choreography.selected = { channel: channel.id, id: segment.id };
@@ -2089,7 +2138,8 @@ function moveChoreographyDrag(event) {
   const deltaSeconds = (event.clientX - drag.startX) / state.choreography.pixelsPerSecond;
   const timeline = Number(state.choreography.document.timeline_seconds);
   if (drag.type === "action") {
-    const action = state.choreography.document.actions.find((item) => item.id === drag.id);
+    const actionTrack = state.choreography.document.action_tracks.find((item) => item.id === drag.trackId);
+    const action = actionTrack?.actions.find((item) => item.id === drag.id);
     const definition = action && choreographyActionDefinition(action.sequence_name);
     if (!action || !definition) return;
     action.start = Math.min(Math.max(0, choreographySnap(drag.originalStart + deltaSeconds)), Math.max(0, timeline - definition.duration));
@@ -2341,6 +2391,15 @@ function bindEvents() {
   $("#generate-mcp-token-button")?.addEventListener("click", generateMcpToken);
   $("#choreography-select").addEventListener("change", (event) => loadChoreography(event.target.value));
   $("#choreography-new").addEventListener("click", resetChoreographyEditor);
+  $("#choreography-add-action-track").addEventListener("click", () => {
+    const documentModel = state.choreography.document;
+    if (!documentModel) return;
+    const index = documentModel.action_tracks.length + 1;
+    documentModel.action_tracks.push({ id: choreographyUid("action-track"), name: `已有动作轨 ${index}`, actions: [] });
+    documentModel.actions = documentModel.action_tracks.flatMap((track) => track.actions);
+    markChoreographyDirty();
+    renderChoreographyTimeline();
+  });
   $("#choreography-validate").addEventListener("click", () => validateChoreography());
   $("#choreography-save").addEventListener("click", saveChoreography);
   $("#choreography-delete").addEventListener("click", deleteChoreography);
@@ -2373,7 +2432,7 @@ function bindEvents() {
   });
   $("#segment-start").addEventListener("change", (event) => updateSelectedSegment("start", event.target.value));
   $("#segment-duration").addEventListener("change", (event) => updateSelectedSegment("duration", event.target.value));
-  $("#segment-delta").addEventListener("input", (event) => updateSelectedSegment("delta", event.target.value));
+  $("#segment-delta").addEventListener("input", (event) => updateSelectedSegment("position", event.target.value));
   $("#segment-direction").addEventListener("change", (event) => updateSelectedSegment("direction", event.target.value));
   $("#segment-left-throttle").addEventListener("input", (event) => updateSelectedSegment("left_throttle", event.target.value));
   $("#segment-right-throttle").addEventListener("input", (event) => updateSelectedSegment("right_throttle", event.target.value));

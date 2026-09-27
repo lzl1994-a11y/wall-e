@@ -285,6 +285,9 @@ tr:last-child td { border-bottom: 0; }
 .timeline-row { min-height: 58px; border-bottom: 1px solid #eee6ec; }
 .timeline-label { color: var(--text); font-size: 12px; font-weight: 750; }
 .timeline-label small { display: block; margin-left: auto; color: var(--muted); font-size: 9px; font-weight: 600; }
+.action-track-label { justify-content: space-between; gap: 6px; }
+.action-track-label span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-track-label button { flex: 0 0 auto; padding: 0 4px; border: 0; color: #8eacca; background: transparent; cursor: pointer; font-size: 16px; }
 .timeline-lane { position: relative; min-height: 58px; background-color: #fff; background-image: linear-gradient(to right, rgba(234,221,229,.75) 1px, transparent 1px); cursor: crosshair; }
 .timeline-row.action-row .timeline-lane { background-color: #fbf9ff; }
 .timeline-row.audio-row, .timeline-row.audio-row .timeline-lane { min-height: 132px; }
@@ -492,6 +495,7 @@ tbody tr:hover td { background: rgba(47, 93, 132, .16); }
 .segment-resize { background: rgba(225, 252, 255, .85); }
 .action-clip { color: #efe7ff; border-color: rgba(178, 139, 255, .68); background: linear-gradient(105deg, #483478, #6c4ca7); box-shadow: 0 4px 13px rgba(156, 115, 255, .18); }
 .action-clip button { color: #e9dbff; }
+.action-track-label button { color: #a9c3df; }
 .motor-row .timeline-lane { background-color: #0f2030; }
 .motor-row .timeline-label { color: #ffc97b; background: #10253a; }
 .motor-segment { color: #ffe7b5; border-color: rgba(255, 188, 88, .72); background: linear-gradient(105deg, #6b3e1e, #a65a27); box-shadow: 0 4px 13px rgba(255, 152, 55, .2); }
