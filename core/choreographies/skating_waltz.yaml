@@ -149,41 +149,41 @@ tracks:
 motor_tracks:
 - motor: chassis
   segments:
-  - {id: glide_01, start: 1.2, duration: 2.7, direction: forward, left_throttle: 58, right_throttle: 32}
-  - {id: glide_02, start: 4.62, duration: 2.7, direction: forward, left_throttle: 32, right_throttle: 58}
-  - {id: glide_03, start: 8.04, duration: 2.7, direction: forward, left_throttle: 60, right_throttle: 34}
-  - {id: glide_04, start: 11.46, duration: 2.7, direction: forward, left_throttle: 34, right_throttle: 60}
-  - {id: glide_05, start: 14.88, duration: 2.5, direction: forward, left_throttle: 58, right_throttle: 32}
-  - {id: glide_06, start: 17.58, duration: 1.8, direction: forward, left_throttle: 32, right_throttle: 54}
-  - {id: glide_07, start: 21.82, duration: 2.4, direction: forward, left_throttle: 48, right_throttle: 30}
-  - {id: glide_08, start: 26.95, duration: 2.4, direction: forward, left_throttle: 30, right_throttle: 48}
-  - {id: glide_09, start: 33.79, duration: 2.6, direction: forward, left_throttle: 62, right_throttle: 34}
-  - {id: glide_10, start: 37.21, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 62}
-  - {id: glide_11, start: 40.63, duration: 2.6, direction: forward, left_throttle: 64, right_throttle: 34}
-  - {id: glide_12, start: 44.05, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 64}
-  - {id: spin_01, start: 47.17, duration: 2.1, direction: spin, left_throttle: 45, right_throttle: 45}
-  - {id: glide_13, start: 49.75, duration: 2.6, direction: forward, left_throttle: 56, right_throttle: 34}
-  - {id: glide_14, start: 53.17, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 56}
-  - {id: glide_15, start: 56.59, duration: 2.6, direction: forward, left_throttle: 60, right_throttle: 34}
-  - {id: glide_16, start: 60.01, duration: 2.3, direction: forward, left_throttle: 34, right_throttle: 60}
-  - {id: glide_17, start: 64.0, duration: 3.0, direction: forward, left_throttle: 54, right_throttle: 32}
-  - {id: glide_18, start: 68.56, duration: 3.0, direction: forward, left_throttle: 32, right_throttle: 54}
-  - {id: glide_19, start: 73.12, duration: 3.0, direction: forward, left_throttle: 56, right_throttle: 32}
-  - {id: glide_20, start: 77.68, duration: 1.7, direction: forward, left_throttle: 32, right_throttle: 56}
-  - {id: glide_21, start: 80.43, duration: 1.7, direction: forward, left_throttle: 64, right_throttle: 34}
-  - {id: glide_22, start: 82.71, duration: 1.7, direction: forward, left_throttle: 34, right_throttle: 64}
-  - {id: glide_23, start: 84.99, duration: 1.7, direction: forward, left_throttle: 66, right_throttle: 34}
-  - {id: spin_02, start: 87.07, duration: 2.5, direction: spin, left_throttle: 48, right_throttle: 48}
-  - {id: glide_24, start: 90.45, duration: 1.7, direction: forward, left_throttle: 34, right_throttle: 66}
-  - {id: glide_25, start: 92.73, duration: 1.7, direction: forward, left_throttle: 66, right_throttle: 34}
-  - {id: glide_26, start: 95.11, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 58}
-  - {id: glide_27, start: 98.53, duration: 2.6, direction: forward, left_throttle: 58, right_throttle: 34}
-  - {id: glide_28, start: 101.95, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 60}
-  - {id: glide_29, start: 105.37, duration: 2.6, direction: forward, left_throttle: 60, right_throttle: 34}
-  - {id: spin_03, start: 109.0, duration: 2.2, direction: spin, left_throttle: 42, right_throttle: 42}
-  - {id: spin_04, start: 111.4, duration: 2.2, direction: left, left_throttle: 42, right_throttle: 42}
-  - {id: glide_30, start: 114.39, duration: 1.8, direction: forward, left_throttle: 62, right_throttle: 32}
-  - {id: glide_31, start: 116.67, duration: 1.8, direction: forward, left_throttle: 32, right_throttle: 62}
+  - {id: glide_01, start: 1.0, duration: 3.62, direction: forward, left_throttle: 58, right_throttle: 32}
+  - {id: glide_02, start: 4.62, duration: 3.42, direction: forward, left_throttle: 32, right_throttle: 58}
+  - {id: glide_03, start: 8.04, duration: 3.42, direction: forward, left_throttle: 60, right_throttle: 34}
+  - {id: glide_04, start: 11.46, duration: 3.42, direction: forward, left_throttle: 34, right_throttle: 60}
+  - {id: glide_05, start: 14.88, duration: 2.7, direction: forward, left_throttle: 58, right_throttle: 32}
+  - {id: glide_06, start: 17.58, duration: 4.24, direction: forward, left_throttle: 32, right_throttle: 54}
+  - {id: glide_07, start: 21.82, duration: 5.13, direction: forward, left_throttle: 48, right_throttle: 30}
+  - {id: glide_08, start: 26.95, duration: 6.84, direction: forward, left_throttle: 30, right_throttle: 48}
+  - {id: glide_09, start: 33.79, duration: 3.42, direction: forward, left_throttle: 62, right_throttle: 34}
+  - {id: glide_10, start: 37.21, duration: 3.42, direction: forward, left_throttle: 34, right_throttle: 62}
+  - {id: glide_11, start: 40.63, duration: 3.42, direction: forward, left_throttle: 64, right_throttle: 34}
+  - {id: glide_12, start: 44.05, duration: 3.12, direction: forward, left_throttle: 34, right_throttle: 64}
+  - {id: spin_01, start: 47.17, duration: 2.58, direction: spin, left_throttle: 45, right_throttle: 45}
+  - {id: glide_13, start: 49.75, duration: 3.42, direction: forward, left_throttle: 56, right_throttle: 34}
+  - {id: glide_14, start: 53.17, duration: 3.42, direction: forward, left_throttle: 34, right_throttle: 56}
+  - {id: glide_15, start: 56.59, duration: 3.42, direction: forward, left_throttle: 60, right_throttle: 34}
+  - {id: glide_16, start: 60.01, duration: 3.99, direction: forward, left_throttle: 34, right_throttle: 60}
+  - {id: glide_17, start: 64.0, duration: 4.56, direction: forward, left_throttle: 54, right_throttle: 32}
+  - {id: glide_18, start: 68.56, duration: 4.56, direction: forward, left_throttle: 32, right_throttle: 54}
+  - {id: glide_19, start: 73.12, duration: 4.56, direction: forward, left_throttle: 56, right_throttle: 32}
+  - {id: glide_20, start: 77.68, duration: 2.75, direction: forward, left_throttle: 32, right_throttle: 56}
+  - {id: glide_21, start: 80.43, duration: 2.28, direction: forward, left_throttle: 64, right_throttle: 34}
+  - {id: glide_22, start: 82.71, duration: 2.28, direction: forward, left_throttle: 34, right_throttle: 64}
+  - {id: glide_23, start: 84.99, duration: 2.08, direction: forward, left_throttle: 66, right_throttle: 34}
+  - {id: spin_02, start: 87.07, duration: 3.38, direction: spin, left_throttle: 48, right_throttle: 48}
+  - {id: glide_24, start: 90.45, duration: 2.28, direction: forward, left_throttle: 34, right_throttle: 66}
+  - {id: glide_25, start: 92.73, duration: 2.38, direction: forward, left_throttle: 66, right_throttle: 34}
+  - {id: glide_26, start: 95.11, duration: 3.42, direction: forward, left_throttle: 34, right_throttle: 58}
+  - {id: glide_27, start: 98.53, duration: 3.42, direction: forward, left_throttle: 58, right_throttle: 34}
+  - {id: glide_28, start: 101.95, duration: 3.42, direction: forward, left_throttle: 34, right_throttle: 60}
+  - {id: glide_29, start: 105.37, duration: 3.63, direction: forward, left_throttle: 60, right_throttle: 34}
+  - {id: spin_03, start: 109.0, duration: 2.4, direction: spin, left_throttle: 42, right_throttle: 42}
+  - {id: spin_04, start: 111.4, duration: 2.99, direction: left, left_throttle: 42, right_throttle: 42}
+  - {id: glide_30, start: 114.39, duration: 2.28, direction: forward, left_throttle: 62, right_throttle: 32}
+  - {id: glide_31, start: 116.67, duration: 4.23, direction: forward, left_throttle: 32, right_throttle: 62}
 action_tracks:
 - id: action-track-1
   name: 已有动作轨 1
