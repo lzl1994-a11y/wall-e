@@ -526,6 +526,7 @@ class SequenceCommandController:
         *,
         wall_now: float,
         monotonic_now: float,
+        defer_choreography: bool = False,
     ) -> tuple[SequenceEffect, ...]:
         if self.game_active or request.get("name") not in self.SUPPORTED_ACTIONS:
             return ()
@@ -635,19 +636,35 @@ class SequenceCommandController:
                 )
                 return tuple(effects)
             frames = playback.get("frames", []) if isinstance(playback, Mapping) else []
-            frame_count = self.runtime.start_timeline(
-                frames,
-                now=wall_now,
-                preview=False,
-                motor_duration_limit=30.0,
-            )
+            if defer_choreography:
+                frame_count = len(frames)
+            else:
+                frame_count = self.runtime.start_timeline(
+                    frames,
+                    now=wall_now,
+                    preview=False,
+                    motor_duration_limit=30.0,
+                )
             if frame_count:
                 self._append_status(effects, request, "accepted")
+                if defer_choreography:
+                    effects.append(SequenceEffect(
+                        "queue_choreography",
+                        {
+                            "frames": frames,
+                            "choreography_id": choreography_id,
+                            "has_audio": bool(playback.get("has_audio")),
+                            "playback_id": request.get("request_id") or choreography_id,
+                            "request": request,
+                        },
+                    ))
                 effects.append(SequenceEffect(
                     "log_info",
-                    f"[Choreography] Playing {choreography_id} ({frame_count} frames, treads enabled)",
+                    f"[Choreography] {'Queued' if defer_choreography else 'Playing'} "
+                    f"{choreography_id} ({frame_count} frames, treads enabled)",
                 ))
-                self._append_status(effects, request, "completed", "playback_started")
+                if not defer_choreography:
+                    self._append_status(effects, request, "completed", "playback_started")
             else:
                 self._append_status(effects, request, "rejected", "empty_choreography")
         elif name == "stop_all":

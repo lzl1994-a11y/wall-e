@@ -5,6 +5,10 @@ import types
 import unittest
 from unittest.mock import patch
 
+from services.action.action_command import build_action_cmd
+from services.action.action_status import parse_action_status
+from services.audio.music_protocol import encode_choreography_music_sync
+
 
 class _String:
     def __init__(self, data=""):
@@ -74,6 +78,58 @@ def _load_module():
 
 
 class SequenceMotorHeartbeatTests(unittest.TestCase):
+    def test_choreography_starts_only_for_its_first_music_pcm(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        node._controller.choreography_loader = lambda _id: {
+            "frames": [{"time": 0.0, "actions": [{"type": "express_emotion", "emotion": "happy"}]}],
+            "has_audio": True,
+        }
+        request = build_action_cmd(
+            "play_choreography", {"choreography_id": "dance"}, request_id="dance-1"
+        )
+        node._on_action_cmd(_String(request))
+        statuses = [
+            parse_action_status(message.data)["status"]
+            for message in node.action_status_pub.messages
+        ]
+        self.assertEqual(statuses, ["accepted"])
+        self.assertEqual(node._runtime.timeline, [])
+
+        node._on_music_sync(_String(encode_choreography_music_sync("other", True)))
+        self.assertEqual(node._runtime.timeline, [])
+        node._on_music_sync(_String(encode_choreography_music_sync("dance-1", True)))
+        self.assertEqual(len(node._runtime.timeline), 1)
+        statuses = [
+            parse_action_status(message.data)["status"]
+            for message in node.action_status_pub.messages
+        ]
+        self.assertEqual(statuses, ["accepted", "completed"])
+
+    def test_music_sync_arriving_before_action_and_music_failure(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+        node._controller.choreography_loader = lambda _id: {
+            "frames": [{"time": 0.0, "actions": [{"type": "express_emotion", "emotion": "happy"}]}],
+            "has_audio": True,
+        }
+        node._on_music_sync(_String(encode_choreography_music_sync("dance-2", True)))
+        node._on_action_cmd(_String(build_action_cmd(
+            "play_choreography", {"choreography_id": "dance"}, request_id="dance-2"
+        )))
+        self.assertEqual(len(node._runtime.timeline), 1)
+
+        node._on_action_cmd(_String(build_action_cmd(
+            "play_choreography", {"choreography_id": "dance"}, request_id="dance-3"
+        )))
+        node._on_music_sync(_String(encode_choreography_music_sync("dance-3", False)))
+        self.assertIsNone(node._pending_choreography)
+        self.assertEqual(node._runtime.timeline, [])
+        self.assertEqual(
+            parse_action_status(node.action_status_pub.messages[-1].data)["status"],
+            "failed",
+        )
+
     def test_sequence_cancel_stops_embedded_motor_and_reset_timer(self):
         module = _load_module()
         node = module.SequenceRosNode()

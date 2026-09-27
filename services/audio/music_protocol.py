@@ -8,6 +8,7 @@ import json
 MUSIC_AUDIO_TOPIC = "/music_audio"
 MUSIC_SPECTRUM_TOPIC = "/music_spectrum"
 MUSIC_STATE_TOPIC = "/music_state"
+CHOREOGRAPHY_MUSIC_SYNC_TOPIC = "/choreography_music_sync"
 MUSIC_SPECTRUM_FPS = 10
 
 
@@ -34,8 +35,33 @@ def decode_music_state(raw: str) -> dict[str, str] | None:
     }
 
 
+def encode_choreography_music_sync(playback_id: str, ready: bool) -> str:
+    return json.dumps(
+        {"playback_id": playback_id, "ready": ready},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def decode_choreography_music_sync(raw: str) -> dict[str, str | bool] | None:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("playback_id"), str)
+        or not payload["playback_id"]
+        or not isinstance(payload.get("ready"), bool)
+    ):
+        return None
+    return {"playback_id": payload["playback_id"], "ready": payload["ready"]}
+
+
 __all__ = [
     "MUSIC_AUDIO_TOPIC", "MUSIC_SPECTRUM_TOPIC", "MUSIC_STATE_TOPIC",
+    "CHOREOGRAPHY_MUSIC_SYNC_TOPIC",
     "MUSIC_SPECTRUM_FPS",
     "decode_music_state", "encode_music_state",
+    "decode_choreography_music_sync", "encode_choreography_music_sync",
 ]

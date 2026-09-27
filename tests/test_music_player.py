@@ -8,7 +8,12 @@ from unittest.mock import patch
 import numpy as np
 
 from services.audio.music_player import MusicPlayer, SpectrumAnalyzer, resolve_track
-from services.audio.music_protocol import decode_music_state, encode_music_state
+from services.audio.music_protocol import (
+    decode_choreography_music_sync,
+    decode_music_state,
+    encode_choreography_music_sync,
+    encode_music_state,
+)
 from services.audio.music_spectrum import render_spectrum_frame
 
 
@@ -90,6 +95,35 @@ class MusicPlayerTests(unittest.TestCase):
         self.assertEqual([state[0] for state in states], ["loading", "playing", "stopped"])
         self.assertEqual(ends, [True])
 
+    def test_choreography_ready_follows_first_pcm_and_reports_empty_track(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "dance.mp3"
+            track.touch()
+            events = []
+            samples = np.ones(4800, dtype=np.int16)
+            player = MusicPlayer(
+                directory=directory,
+                on_audio=lambda _samples: events.append("pcm"),
+                on_audio_end=lambda: None,
+                on_spectrum=lambda _levels: None,
+                on_state=lambda *_values: None,
+                on_playback_ready=lambda playback_id, ready: events.append((playback_id, ready)),
+                popen_factory=lambda *_args, **_kwargs: _Process(samples.tobytes()),
+            )
+            player.play_file(track, playback_id="dance-1")
+            deadline = time.monotonic() + 1.0
+            while player._thread is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(events, ["pcm", ("dance-1", True)])
+
+            events.clear()
+            player._popen = lambda *_args, **_kwargs: _Process(b"")
+            player.play_file(track, playback_id="dance-2")
+            deadline = time.monotonic() + 1.0
+            while player._thread is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(events, [("dance-2", False)])
+
     def test_silence_decays_to_zero_and_renderer_matches_tft_frame_contract(self):
         levels = SpectrumAnalyzer().analyze(np.zeros(2400, dtype=np.int16))
         raw, width, height, pitch = render_spectrum_frame(
@@ -145,6 +179,12 @@ class MusicPlayerTests(unittest.TestCase):
             "tone",
         )
         self.assertIsNone(decode_music_state('{"state":"paused"}'))
+        self.assertEqual(
+            decode_choreography_music_sync(
+                encode_choreography_music_sync("dance-1", True)
+            ),
+            {"playback_id": "dance-1", "ready": True},
+        )
 
 
 if __name__ == "__main__":

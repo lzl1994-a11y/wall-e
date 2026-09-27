@@ -22,6 +22,10 @@ from services.motion.sequence_execution import (
     load_yaml_mapping,
 )
 from services.motion.choreography import ChoreographyStore
+from services.audio.music_protocol import (
+    CHOREOGRAPHY_MUSIC_SYNC_TOPIC,
+    decode_choreography_music_sync,
+)
 
 class SequenceRosNode(Node):
     # 所有动作预设由 SequenceLibrary 从 sequences.yaml 解析。
@@ -66,6 +70,8 @@ class SequenceRosNode(Node):
         )
 
         self._auto_reset_timer = None
+        self._pending_choreography = None
+        self._early_music_sync = {}
 
         # 3. ROS 接口
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
@@ -80,6 +86,9 @@ class SequenceRosNode(Node):
         self.create_subscription(String, ACTION_COMMAND_TOPIC, self._on_action_cmd, 10)
         self.create_subscription(String, ACTION_CANCEL_TOPIC, self._on_action_cancel, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
+        self.create_subscription(
+            String, CHOREOGRAPHY_MUSIC_SYNC_TOPIC, self._on_music_sync, 10
+        )
         # Tracking produces targets at detector frame rate. Depth 1 makes this
         # a latest-value stream and avoids replaying stale head positions.
         self.create_subscription(
@@ -180,16 +189,69 @@ class SequenceRosNode(Node):
     def _load_choreography_playback(self, choreography_id):
         document = self._choreography_store.get(choreography_id)
         _, compiled = self._choreography_store.validate(document)
-        return compiled.get("playback", {})
+        return {
+            **compiled.get("playback", {}),
+            "has_audio": bool((compiled.get("audio") or {}).get("asset_id")),
+        }
+
+    def _on_music_sync(self, message):
+        event = decode_choreography_music_sync(message.data)
+        if event is None:
+            return
+        pending = self._pending_choreography
+        if pending is not None and event["playback_id"] == pending["playback_id"]:
+            self._apply_music_sync(event["ready"])
+        else:
+            self._early_music_sync[event["playback_id"]] = (event["ready"], time.monotonic())
+
+    def _apply_music_sync(self, ready):
+        if ready:
+            self._start_pending_choreography()
+        else:
+            self.get_logger().error("编排音乐未能输出音频，已取消动作")
+            self._publish_request_status(
+                self._pending_choreography["request"], "failed", "music_start_failed"
+            )
+            self._pending_choreography = None
+
+    def _clear_pending_choreography(self, detail, *, report_status=True):
+        pending = self._pending_choreography
+        self._pending_choreography = None
+        if pending is not None and report_status:
+            self._publish_request_status(pending["request"], "interrupted", detail)
+
+    def _start_pending_choreography(self):
+        pending = self._pending_choreography
+        if pending is None:
+            return
+        self._pending_choreography = None
+        frame_count = self._runtime.start_timeline(
+            pending["frames"],
+            now=time.time(),
+            preview=False,
+            motor_duration_limit=30.0,
+        )
+        self.get_logger().info(
+            f"[Choreography] Timeline started "
+            f"({pending['choreography_id']}, {frame_count} frames)"
+        )
+        self._publish_request_status(
+            pending["request"],
+            "completed" if frame_count else "failed",
+            "playback_started" if frame_count else "empty_choreography",
+        )
 
     def _on_action_cmd(self, msg):
         request = parse_action_request(msg.data)
         if request is None:
             return
+        if request.get("name") in self._controller.SUPPORTED_ACTIONS:
+            self._clear_pending_choreography("superseded_by_new_command")
         effects = self._controller.handle_action(
             request,
             wall_now=time.time(),
             monotonic_now=time.monotonic(),
+            defer_choreography=request.get("name") == "play_choreography",
         )
         self._publish_runtime_effects(effects)
 
@@ -235,6 +297,9 @@ class SequenceRosNode(Node):
         cancellation = parse_action_cancel(message.data)
         if cancellation is None:
             return
+        pending = self._pending_choreography
+        if pending is not None and pending["request"].get("request_id") == cancellation.get("request_id"):
+            self._clear_pending_choreography("cancelled", report_status=False)
         self._publish_runtime_effects(self._controller.cancel(cancellation))
 
     def _reset_servos_to_init(self):
@@ -276,6 +341,19 @@ class SequenceRosNode(Node):
                 self.get_logger().info(effect.payload)
             elif effect.kind == "log_warning":
                 self.get_logger().warn(effect.payload)
+            elif effect.kind == "queue_choreography":
+                self._pending_choreography = effect.payload
+                cutoff = time.monotonic() - 5.0
+                self._early_music_sync = {
+                    key: event for key, event in self._early_music_sync.items()
+                    if event[1] >= cutoff
+                }
+                if not effect.payload["has_audio"]:
+                    self._start_pending_choreography()
+                else:
+                    early = self._early_music_sync.pop(effect.payload["playback_id"], None)
+                    if early is not None:
+                        self._apply_music_sync(early[0])
 
     def _stop_motors(self, status="completed", detail=""):
         msg = String()
@@ -303,6 +381,9 @@ class SequenceRosNode(Node):
 
     def _on_game_state(self, message):
         active = game_is_active(message.data)
+        if active:
+            self._clear_pending_choreography("game_mode_active")
+            self._early_music_sync.clear()
         self._publish_runtime_effects(self._controller.set_game_active(active))
 
 def main(args=None):

@@ -98,6 +98,7 @@ class MusicPlayer:
         on_audio_end: Callable[[], None],
         on_spectrum: Callable[[list[float]], None],
         on_state: Callable[[str, str, str], None],
+        on_playback_ready: Callable[[str, bool], None] | None = None,
         sample_rate: int = OUTPUT_SAMPLE_RATE,
         chunk_ms: int = 100,
         spectrum_hz: float = 10.0,
@@ -108,6 +109,7 @@ class MusicPlayer:
         self.on_audio_end = on_audio_end
         self.on_spectrum = on_spectrum
         self.on_state = on_state
+        self.on_playback_ready = on_playback_ready
         self.sample_rate = int(sample_rate)
         self.chunk_samples = self.sample_rate * max(20, int(chunk_ms)) // 1000
         self._spectrum_every_chunks = max(
@@ -124,7 +126,7 @@ class MusicPlayer:
         track = resolve_track(self.directory, query)
         return self.play_file(track)
 
-    def play_file(self, track: str | Path) -> Path:
+    def play_file(self, track: str | Path, *, playback_id: str = "") -> Path:
         """Play a trusted local audio file resolved by an owning service."""
         track = Path(track).expanduser().resolve()
         if not track.is_file() or track.suffix.lower() not in SUPPORTED_SUFFIXES:
@@ -133,7 +135,10 @@ class MusicPlayer:
         with self._lock:
             self._stop = threading.Event()
             self._thread = threading.Thread(
-                target=self._run, args=(track, self._stop), name="music-player", daemon=True
+                target=self._run,
+                args=(track, self._stop, playback_id),
+                name="music-player",
+                daemon=True,
             )
             self._thread.start()
         return track
@@ -149,10 +154,11 @@ class MusicPlayer:
             thread.join(timeout=2.0)
         return active
 
-    def _run(self, track: Path, stop: threading.Event) -> None:
+    def _run(self, track: Path, stop: threading.Event, playback_id: str) -> None:
         title = track.stem
         process = None
         failed = False
+        ready_sent = False
         self.on_state("loading", title, "")
         try:
             process = self._popen(
@@ -188,6 +194,9 @@ class MusicPlayer:
                     continue
                 samples = np.frombuffer(data[:usable], dtype=np.int16).copy()
                 self.on_audio(samples)
+                if playback_id and not ready_sent and self.on_playback_ready:
+                    ready_sent = True
+                    self.on_playback_ready(playback_id, True)
                 if spectrum_chunk % self._spectrum_every_chunks == 0:
                     self.on_spectrum(analyzer.analyze(samples))
                 spectrum_chunk += 1
@@ -204,6 +213,8 @@ class MusicPlayer:
                 failed = True
                 self.on_state("error", title, str(exc))
         finally:
+            if playback_id and not ready_sent and self.on_playback_ready:
+                self.on_playback_ready(playback_id, False)
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:
