@@ -218,6 +218,18 @@ def _valid_arguments(name, arguments):
             and isinstance(sequence_name, str)
             and sequence_name in _SEQUENCE_NAMES
         )
+    elif name == "play_choreography":
+        choreography_id = arguments.get("choreography_id")
+        choreo_dir = Path(__file__).resolve().parents[2] / "core" / "choreographies"
+        valid_ids = {
+            path.stem for path in choreo_dir.glob("*.yaml")
+            if re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", path.stem)
+        }
+        valid = (
+            keys == {"choreography_id"}
+            and isinstance(choreography_id, str)
+            and choreography_id in valid_ids
+        )
     elif name == "move_chassis":
         duration = arguments.get("duration", 1)
         valid = (

@@ -28,7 +28,7 @@ class FastMcpToolTests(unittest.TestCase):
 
     def test_fastmcp_2x_enumerates_openai_tools_with_schemas(self):
         tools = mcp_service.get_chat_tools()
-        self.assertEqual(len(tools), 9)
+        self.assertEqual(len(tools), 10)
         self.assertEqual(
             {item["function"]["name"] for item in tools},
             {
@@ -36,6 +36,7 @@ class FastMcpToolTests(unittest.TestCase):
                 "express_emotion",
                 "move_chassis",
                 "play_sequence",
+                "play_choreography",
                 "set_tracking_mode",
                 "set_vision_gate",
                 "inspect_camera",

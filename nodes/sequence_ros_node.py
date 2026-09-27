@@ -21,6 +21,7 @@ from services.motion.sequence_execution import (
     ServoTrajectory,
     load_yaml_mapping,
 )
+from services.motion.choreography import ChoreographyStore
 
 class SequenceRosNode(Node):
     # 所有动作预设由 SequenceLibrary 从 sequences.yaml 解析。
@@ -58,7 +59,11 @@ class SequenceRosNode(Node):
             self._trajectory,
             motion_to_motor=self.MOTION_TO_MOTOR,
         )
-        self._controller = SequenceCommandController(self._runtime)
+        self._choreography_store = ChoreographyStore('core/config.yaml')
+        self._controller = SequenceCommandController(
+            self._runtime,
+            choreography_loader=self._load_choreography_playback,
+        )
 
         self._auto_reset_timer = None
 
@@ -171,6 +176,11 @@ class SequenceRosNode(Node):
         
     def _load_yaml(self, path):
         return load_yaml_mapping(path, on_error=self.get_logger().error)
+
+    def _load_choreography_playback(self, choreography_id):
+        document = self._choreography_store.get(choreography_id)
+        _, compiled = self._choreography_store.validate(document)
+        return compiled.get("playback", {})
 
     def _on_action_cmd(self, msg):
         request = parse_action_request(msg.data)

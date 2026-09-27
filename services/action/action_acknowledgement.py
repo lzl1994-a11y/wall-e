@@ -54,6 +54,8 @@ def action_acknowledgement(actions):
     arguments = _arguments(action)
     if name == "play_sequence":
         return _SEQUENCE_ACKS.get(arguments.get("sequence_name"), "好的。")
+    if name == "play_choreography":
+        return "好的，开始表演。"
     if name == "move_chassis":
         return _MOVE_ACKS.get(arguments.get("direction"), "好的。")
     if name == "set_tracking_mode":

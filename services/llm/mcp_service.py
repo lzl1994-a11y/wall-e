@@ -86,8 +86,9 @@ _semantic_mappings = {
 def _build_sequence_prompt():
     base_prompt = (
         f"{_ACTION_TOOL_BOUNDARY}\n"
-        "控制瓦力的头、手臂或身体做一次预设表演动作。只在明确动作命令中，根据语义"
-        "选择最接近的预设；向左/右看属于转头，不是移动底盘。\n\n"
+        "控制瓦力做一个短的预设姿势或单次表情动作。若用户要求跳完整舞蹈、表演一段"
+        "舞蹈或点名已保存的编排，必须使用 play_choreography，不要用 play_sequence；"
+        "向左/右看属于转头，不是移动底盘。\n\n"
         "sequence_name 必须是以下预设动作之一：\n"
     )
     
@@ -98,7 +99,6 @@ def _build_sequence_prompt():
             
         seqs = list(seq_data.get('sequences', {}).keys())
         poses = list(seq_data.get('poses', {}).keys())
-        
         # 加上中文语义后缀
         seqs_with_semantics = [f"{s}({_semantic_mappings[s]})" if s in _semantic_mappings else s for s in seqs]
         poses_with_semantics = [f"{p}({_semantic_mappings[p]})" if p in _semantic_mappings else p for p in poses]
@@ -108,7 +108,6 @@ def _build_sequence_prompt():
             menu.append("【成组复杂剧本 (Sequences)】: " + ", ".join(seqs_with_semantics))
         if poses:
             menu.append("【基础单点动作 (Poses)】: " + ", ".join(poses_with_semantics))
-            
         return base_prompt + "\n".join(menu)
     except Exception as e:
         print(f"[MCP] 读取 sequences.yaml 失败: {e}")
@@ -142,6 +141,15 @@ def express_emotion(emotion: str) -> str:
 
 @mcp.tool(description=_play_sequence_doc)
 def play_sequence(sequence_name: str) -> str:
+    return "ok"
+
+
+@mcp.tool(description=(
+    "仅当用户明确要求现在表演、跳舞或播放已编排动作时调用。"
+    "从已保存的动作编排中选择对应项目，开始后会同时执行其中的舵机和履带轨道；"
+    "如果用户只问功能或没有可匹配的编排，不要调用。"
+))
+def play_choreography(choreography_id: str) -> str:
     return "ok"
 
 
@@ -305,6 +313,13 @@ def _tighten_tool_schema(name, parameters):
         sequence_names = _configured_sequence_names()
         if sequence_names:
             properties['sequence_name']['enum'] = sequence_names
+    elif name == 'play_choreography' and 'choreography_id' in properties:
+        choreographies = _configured_choreographies()
+        if choreographies:
+            properties['choreography_id']['enum'] = [item['id'] for item in choreographies]
+            properties['choreography_id']['description'] = '已保存编排：' + '；'.join(
+                f"{item['id']}（{item['name']}）" for item in choreographies
+            ) + '。用户说跳舞/表演时，优先选择名称最匹配的编排。'
     elif name == 'move_chassis':
         if 'direction' in properties:
             properties['direction']['enum'] = [
@@ -333,6 +348,17 @@ def _tighten_tool_schema(name, parameters):
         if 'max_views' in properties:
             properties['max_views'].update({'minimum': 2, 'maximum': 4})
     return schema
+
+
+def _configured_choreographies():
+    directory = os.path.join(os.path.dirname(__file__), '../../core/choreographies')
+    try:
+        from services.motion.choreography import ChoreographyStore
+
+        return ChoreographyStore('core/config.yaml', directory=directory).list()
+    except Exception:
+        LOGGER.exception('读取已保存动作编排失败')
+        return []
 
 def get_chat_tools():
     """Return FastMCP 2.x tools as OpenAI function-calling declarations.

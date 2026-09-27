@@ -305,6 +305,7 @@ class SequenceRuntime:
         self.motor_stop_at = 0.0
         self.explicit_motion_active = False
         self.preview_mode = False
+        self.motor_duration_limit = 10.0
 
     def start_sequence(self, name: str, *, now: float) -> int:
         frames = self.library.flatten(name, offset_time=0.0)
@@ -320,6 +321,7 @@ class SequenceRuntime:
         *,
         now: float,
         preview: bool = False,
+        motor_duration_limit: float = 10.0,
     ) -> int:
         if not isinstance(frames, list):
             self.preview_mode = False
@@ -349,6 +351,7 @@ class SequenceRuntime:
             self.explicit_motion_active = False
             return 0
         self.preview_mode = bool(preview)
+        self.motor_duration_limit = max(0.1, float(motor_duration_limit))
         self.timeline = normalized
         self.sequence_started_at = now
         self.explicit_motion_active = True
@@ -405,7 +408,10 @@ class SequenceRuntime:
             if self.preview_mode:
                 return ()
             direction = action.get("direction", "forward")
-            duration = max(0.0, min(float(action.get("duration", 1.0)), 10.0))
+            duration = max(
+                0.0,
+                min(float(action.get("duration", 1.0)), self.motor_duration_limit),
+            )
             template = self.motion_to_motor.get(direction)
             if template is None:
                 return ()
@@ -447,10 +453,19 @@ class SequenceRuntime:
 
     def tick(self, *, wall_now: float, monotonic_now: float) -> SequenceTick:
         effects: list[SequenceEffect] = []
+        due_motor_frame = bool(
+            self.timeline
+            and wall_now - self.sequence_started_at >= self.timeline[0].get("time", 0)
+            and any(
+                isinstance(action, Mapping) and action.get("type") == "motor"
+                for action in self.timeline[0].get("actions", [])
+            )
+        )
         if self.active_motor_command is not None:
             if monotonic_now >= self.motor_stop_at:
-                self.stop_motor()
-                effects.append(SequenceEffect("motor_stop"))
+                if not due_motor_frame:
+                    self.stop_motor()
+                    effects.append(SequenceEffect("motor_stop"))
             else:
                 effects.append(SequenceEffect("motor", self.active_motor_command))
 
@@ -492,12 +507,14 @@ class SequenceCommandController:
         "move_chassis",
         "manual_servo",
         "play_sequence",
+        "play_choreography",
         "preview_choreography",
         "stop_all",
     })
 
-    def __init__(self, runtime: SequenceRuntime) -> None:
+    def __init__(self, runtime: SequenceRuntime, *, choreography_loader=None) -> None:
         self.runtime = runtime
+        self.choreography_loader = choreography_loader
         self.motor_request: dict[str, Any] | None = None
         self.sequence_request: dict[str, Any] | None = None
         self.pending_dialog_expression: tuple[Any, Any] | None = None
@@ -531,6 +548,7 @@ class SequenceCommandController:
                 report_status=False,
             ))
         self.runtime.clear_sequence()
+        self.runtime.motor_duration_limit = 10.0
         self.runtime.halt_interpolation()
         effects.append(SequenceEffect("cancel_auto_reset_timer"))
         effects.append(SequenceEffect("log_info", f"[Interrupt] Cleared state for tool: {name}"))
@@ -604,6 +622,34 @@ class SequenceCommandController:
                 ))
             else:
                 self._append_status(effects, request, "rejected", "empty_preview")
+        elif name == "play_choreography":
+            choreography_id = arguments.get("choreography_id", "")
+            try:
+                playback = (
+                    self.choreography_loader(choreography_id)
+                    if self.choreography_loader is not None else None
+                )
+            except Exception as exc:
+                self._append_status(
+                    effects, request, "rejected", f"invalid_choreography:{exc}"
+                )
+                return tuple(effects)
+            frames = playback.get("frames", []) if isinstance(playback, Mapping) else []
+            frame_count = self.runtime.start_timeline(
+                frames,
+                now=wall_now,
+                preview=False,
+                motor_duration_limit=30.0,
+            )
+            if frame_count:
+                self._append_status(effects, request, "accepted")
+                effects.append(SequenceEffect(
+                    "log_info",
+                    f"[Choreography] Playing {choreography_id} ({frame_count} frames, treads enabled)",
+                ))
+                self._append_status(effects, request, "completed", "playback_started")
+            else:
+                self._append_status(effects, request, "rejected", "empty_choreography")
         elif name == "stop_all":
             effects.extend(self._stop_motor(
                 status="interrupted",

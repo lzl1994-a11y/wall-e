@@ -46,6 +46,15 @@
       "max_attempts": 1,
       "supports_cancel": true
     },
+    "play_choreography": {
+      "owner": "sequence_ros_node",
+      "plan_resources": ["servo_motion", "chassis"],
+      "arbitration_resources": ["motion_owner"],
+      "action_bus": true,
+      "timeout_ms": 20000,
+      "max_attempts": 1,
+      "supports_cancel": false
+    },
     "control_music": {
       "owner": "music_player_node",
       "plan_resources": ["audio_music", "display"],

@@ -796,6 +796,34 @@ class ChoreographyStore:
             for timestamp, actions in sorted(preview_by_time.items())
         ]
 
+        # Playback uses the same compiled servo/actions timeline as preview,
+        # but deliberately includes chassis segments. Keep the two payloads
+        # separate so the Web preview path remains incapable of moving treads.
+        playback_by_time: dict[float, list[dict[str, Any]]] = deepcopy(preview_by_time)
+        for action in normalized_actions:
+            for frame in library.flatten(action["sequence_name"], offset_time=action["start"]):
+                motor_actions = [
+                    item for item in frame.get("actions", [])
+                    if isinstance(item, Mapping) and item.get("type") == "motor"
+                ]
+                if motor_actions:
+                    playback_by_time.setdefault(float(frame["time"]), []).extend(
+                        deepcopy(motor_actions)
+                    )
+        for track in normalized_motor_tracks:
+            for segment in track["segments"]:
+                playback_by_time.setdefault(float(segment["start"]), []).append({
+                    "type": "motor",
+                    "direction": segment["direction"],
+                    "duration": segment["duration"],
+                    "left_throttle": segment["left_throttle"],
+                    "right_throttle": segment["right_throttle"],
+                })
+        playback_frames = [
+            {"time": _round_time(timestamp), "actions": actions}
+            for timestamp, actions in sorted(playback_by_time.items())
+        ]
+
         normalized = {
             "schema_version": SCHEMA_VERSION,
             "id": choreography_id,
@@ -825,6 +853,10 @@ class ChoreographyStore:
             "preview": {
                 "duration": _round_time(timeline),
                 "frames": preview_frames,
+            },
+            "playback": {
+                "duration": _round_time(timeline),
+                "frames": playback_frames,
             },
         }
         return normalized, compiled
