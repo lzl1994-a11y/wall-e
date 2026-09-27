@@ -3,187 +3,187 @@ id: skating_waltz
 name: 溜冰圆舞曲
 remark: 根据《溜冰圆舞曲》旋律编排；左右镜像滑冰舞姿、弧线滑行与高潮旋转。
 start_pose: neutral
-timeline_seconds: 121.0
+timeline_seconds: 122.0
 tracks:
 - channel: head_yaw
   segments:
-  - {id: head_01, start: 0.0, duration: 1.2, position: -45}
-  - {id: head_02, start: 3.42, duration: 1.2, position: 45}
-  - {id: head_03, start: 6.84, duration: 1.2, position: -55}
-  - {id: head_04, start: 10.26, duration: 1.2, position: 55}
-  - {id: head_05, start: 13.68, duration: 1.2, position: -45}
-  - {id: head_06, start: 17.1, duration: 1.4, position: 0}
-  - {id: head_07, start: 20.52, duration: 1.5, position: -30}
-  - {id: head_08, start: 25.65, duration: 1.5, position: 30}
-  - {id: head_09, start: 30.78, duration: 1.3, position: 0}
-  - {id: head_10, start: 32.49, duration: 1.15, position: -55}
-  - {id: head_11, start: 35.91, duration: 1.15, position: 55}
-  - {id: head_12, start: 39.33, duration: 1.1, position: -60}
-  - {id: head_13, start: 42.75, duration: 1.1, position: 60}
-  - {id: head_14, start: 46.17, duration: 1.0, position: 0}
-  - {id: head_15, start: 48.45, duration: 1.3, position: -35}
-  - {id: head_16, start: 51.87, duration: 1.3, position: 35}
-  - {id: head_17, start: 55.29, duration: 1.2, position: -50}
-  - {id: head_18, start: 58.71, duration: 1.2, position: 50}
-  - {id: head_19, start: 61.56, duration: 1.0, position: 0}
-  - {id: head_20, start: 62.7, duration: 1.4, position: -40}
-  - {id: head_21, start: 67.26, duration: 1.4, position: 40}
-  - {id: head_22, start: 71.82, duration: 1.3, position: -45}
-  - {id: head_23, start: 76.38, duration: 1.3, position: 45}
-  - {id: head_24, start: 79.23, duration: 0.9, position: -60}
-  - {id: head_25, start: 81.51, duration: 0.9, position: 60}
-  - {id: head_26, start: 83.79, duration: 0.85, position: -65}
-  - {id: head_27, start: 86.07, duration: 0.8, position: 0}
-  - {id: head_28, start: 89.25, duration: 0.85, position: 65}
-  - {id: head_29, start: 91.53, duration: 0.85, position: -65}
-  - {id: head_30, start: 93.81, duration: 1.1, position: 50}
-  - {id: head_31, start: 97.23, duration: 1.1, position: -50}
-  - {id: head_32, start: 100.65, duration: 1.1, position: 55}
-  - {id: head_33, start: 104.07, duration: 1.1, position: -55}
-  - {id: head_34, start: 107.49, duration: 0.9, position: 0}
-  - {id: head_35, start: 108.63, duration: 0.9, position: -70}
-  - {id: head_36, start: 110.91, duration: 0.9, position: 70}
-  - {id: head_37, start: 113.19, duration: 0.85, position: -55}
-  - {id: head_38, start: 115.47, duration: 0.85, position: 55}
-  - {id: head_39, start: 117.75, duration: 1.0, position: 0}
+  - {id: head_01, start: 1.0, duration: 1.2, position: -45}
+  - {id: head_02, start: 4.42, duration: 1.2, position: 45}
+  - {id: head_03, start: 7.84, duration: 1.2, position: -55}
+  - {id: head_04, start: 11.26, duration: 1.2, position: 55}
+  - {id: head_05, start: 14.68, duration: 1.2, position: -45}
+  - {id: head_06, start: 18.1, duration: 1.4, position: 0}
+  - {id: head_07, start: 21.52, duration: 1.5, position: -30}
+  - {id: head_08, start: 26.65, duration: 1.5, position: 30}
+  - {id: head_09, start: 31.78, duration: 1.3, position: 0}
+  - {id: head_10, start: 33.49, duration: 1.15, position: -55}
+  - {id: head_11, start: 36.91, duration: 1.15, position: 55}
+  - {id: head_12, start: 40.33, duration: 1.1, position: -60}
+  - {id: head_13, start: 43.75, duration: 1.1, position: 60}
+  - {id: head_14, start: 47.17, duration: 1.0, position: 0}
+  - {id: head_15, start: 49.45, duration: 1.3, position: -35}
+  - {id: head_16, start: 52.87, duration: 1.3, position: 35}
+  - {id: head_17, start: 56.29, duration: 1.2, position: -50}
+  - {id: head_18, start: 59.71, duration: 1.2, position: 50}
+  - {id: head_19, start: 62.56, duration: 1.0, position: 0}
+  - {id: head_20, start: 63.7, duration: 1.4, position: -40}
+  - {id: head_21, start: 68.26, duration: 1.4, position: 40}
+  - {id: head_22, start: 72.82, duration: 1.3, position: -45}
+  - {id: head_23, start: 77.38, duration: 1.3, position: 45}
+  - {id: head_24, start: 80.23, duration: 0.9, position: -60}
+  - {id: head_25, start: 82.51, duration: 0.9, position: 60}
+  - {id: head_26, start: 84.79, duration: 0.85, position: -65}
+  - {id: head_27, start: 87.07, duration: 0.8, position: 0}
+  - {id: head_28, start: 90.25, duration: 0.85, position: 65}
+  - {id: head_29, start: 92.53, duration: 0.85, position: -65}
+  - {id: head_30, start: 94.81, duration: 1.1, position: 50}
+  - {id: head_31, start: 98.23, duration: 1.1, position: -50}
+  - {id: head_32, start: 101.65, duration: 1.1, position: 55}
+  - {id: head_33, start: 105.07, duration: 1.1, position: -55}
+  - {id: head_34, start: 108.49, duration: 0.9, position: 0}
+  - {id: head_35, start: 109.63, duration: 0.9, position: -70}
+  - {id: head_36, start: 111.91, duration: 0.9, position: 70}
+  - {id: head_37, start: 114.19, duration: 0.85, position: -55}
+  - {id: head_38, start: 116.47, duration: 0.85, position: 55}
+  - {id: head_39, start: 118.75, duration: 1.0, position: 0}
 - channel: neck_pitch
   segments:
-  - {id: neck_01, start: 0.0, duration: 1.2, position: -35}
-  - {id: neck_02, start: 17.1, duration: 1.4, position: 0}
-  - {id: neck_03, start: 20.52, duration: 1.5, position: -20}
-  - {id: neck_04, start: 30.78, duration: 1.3, position: 0}
-  - {id: neck_05, start: 32.49, duration: 1.2, position: -35}
-  - {id: neck_06, start: 46.17, duration: 1.0, position: 15}
-  - {id: neck_07, start: 48.45, duration: 1.3, position: 20}
-  - {id: neck_08, start: 55.29, duration: 1.2, position: -15}
-  - {id: neck_09, start: 61.56, duration: 1.0, position: 0}
-  - {id: neck_10, start: 62.7, duration: 1.4, position: -25}
-  - {id: neck_11, start: 71.82, duration: 1.3, position: -30}
-  - {id: neck_12, start: 78.66, duration: 0.5, position: 0}
-  - {id: neck_13, start: 79.23, duration: 0.9, position: -35}
-  - {id: neck_14, start: 86.07, duration: 0.8, position: 20}
-  - {id: neck_15, start: 89.25, duration: 0.85, position: -35}
-  - {id: neck_16, start: 93.81, duration: 1.1, position: 0}
-  - {id: neck_17, start: 100.65, duration: 1.1, position: -25}
-  - {id: neck_18, start: 107.49, duration: 0.9, position: 25}
-  - {id: neck_19, start: 113.19, duration: 0.85, position: -35}
-  - {id: neck_20, start: 117.75, duration: 1.0, position: 20}
-  - {id: neck_21, start: 119.25, duration: 1.3, position: 0}
+  - {id: neck_01, start: 1.0, duration: 1.2, position: -35}
+  - {id: neck_02, start: 18.1, duration: 1.4, position: 0}
+  - {id: neck_03, start: 21.52, duration: 1.5, position: -20}
+  - {id: neck_04, start: 31.78, duration: 1.3, position: 0}
+  - {id: neck_05, start: 33.49, duration: 1.2, position: -35}
+  - {id: neck_06, start: 47.17, duration: 1.0, position: 15}
+  - {id: neck_07, start: 49.45, duration: 1.3, position: 20}
+  - {id: neck_08, start: 56.29, duration: 1.2, position: -15}
+  - {id: neck_09, start: 62.56, duration: 1.0, position: 0}
+  - {id: neck_10, start: 63.7, duration: 1.4, position: -25}
+  - {id: neck_11, start: 72.82, duration: 1.3, position: -30}
+  - {id: neck_12, start: 79.66, duration: 0.5, position: 0}
+  - {id: neck_13, start: 80.23, duration: 0.9, position: -35}
+  - {id: neck_14, start: 87.07, duration: 0.8, position: 20}
+  - {id: neck_15, start: 90.25, duration: 0.85, position: -35}
+  - {id: neck_16, start: 94.81, duration: 1.1, position: 0}
+  - {id: neck_17, start: 101.65, duration: 1.1, position: -25}
+  - {id: neck_18, start: 108.49, duration: 0.9, position: 25}
+  - {id: neck_19, start: 114.19, duration: 0.85, position: -35}
+  - {id: neck_20, start: 118.75, duration: 1.0, position: 20}
+  - {id: neck_21, start: 120.25, duration: 1.3, position: 0}
 - channel: arm_l
   segments:
-  - {id: left_arm_01, start: 0.0, duration: 1.2, position: 85}
-  - {id: left_arm_02, start: 3.42, duration: 1.2, position: 0}
-  - {id: left_arm_03, start: 6.84, duration: 1.2, position: 90}
-  - {id: left_arm_04, start: 10.26, duration: 1.2, position: 0}
-  - {id: left_arm_05, start: 13.68, duration: 1.2, position: 85}
-  - {id: left_arm_06, start: 17.1, duration: 1.4, position: 0}
-  - {id: left_arm_07, start: 20.52, duration: 1.5, position: 55}
-  - {id: left_arm_08, start: 25.65, duration: 1.5, position: 0}
-  - {id: left_arm_09, start: 32.49, duration: 1.15, position: 90}
-  - {id: left_arm_10, start: 35.91, duration: 1.15, position: 0}
-  - {id: left_arm_11, start: 39.33, duration: 1.1, position: 95}
-  - {id: left_arm_12, start: 42.75, duration: 1.1, position: 0}
-  - {id: left_arm_13, start: 46.17, duration: 1.0, position: 80}
-  - {id: left_arm_14, start: 48.45, duration: 1.3, position: 75}
-  - {id: left_arm_15, start: 51.87, duration: 1.3, position: 0}
-  - {id: left_arm_16, start: 55.29, duration: 1.2, position: 85}
-  - {id: left_arm_17, start: 58.71, duration: 1.2, position: 0}
-  - {id: left_arm_18, start: 62.7, duration: 1.4, position: 70}
-  - {id: left_arm_19, start: 67.26, duration: 1.4, position: 0}
-  - {id: left_arm_20, start: 71.82, duration: 1.3, position: 75}
-  - {id: left_arm_21, start: 76.38, duration: 1.3, position: 0}
-  - {id: left_arm_22, start: 79.23, duration: 0.9, position: 95}
-  - {id: left_arm_23, start: 81.51, duration: 0.9, position: 0}
-  - {id: left_arm_24, start: 83.79, duration: 0.85, position: 95}
-  - {id: left_arm_25, start: 86.07, duration: 0.8, position: 90}
-  - {id: left_arm_26, start: 89.25, duration: 0.85, position: 0}
-  - {id: left_arm_27, start: 91.53, duration: 0.85, position: 95}
-  - {id: left_arm_28, start: 93.81, duration: 1.1, position: 0}
-  - {id: left_arm_29, start: 97.23, duration: 1.1, position: 80}
-  - {id: left_arm_30, start: 100.65, duration: 1.1, position: 0}
-  - {id: left_arm_31, start: 104.07, duration: 1.1, position: 85}
-  - {id: left_arm_32, start: 107.49, duration: 0.9, position: 90}
-  - {id: left_arm_33, start: 113.19, duration: 0.85, position: 90}
-  - {id: left_arm_34, start: 115.47, duration: 0.85, position: 0}
-  - {id: left_arm_35, start: 117.75, duration: 1.0, position: 100}
-  - {id: left_arm_36, start: 119.25, duration: 1.3, position: 0}
+  - {id: left_arm_01, start: 1.0, duration: 1.2, position: 0}
+  - {id: left_arm_02, start: 4.42, duration: 1.2, position: 85}
+  - {id: left_arm_03, start: 7.84, duration: 1.2, position: 0}
+  - {id: left_arm_04, start: 11.26, duration: 1.2, position: 90}
+  - {id: left_arm_05, start: 14.68, duration: 1.2, position: 0}
+  - {id: left_arm_06, start: 18.1, duration: 1.4, position: 0}
+  - {id: left_arm_07, start: 26.65, duration: 1.5, position: 55}
+  - {id: left_arm_08, start: 31.78, duration: 1.3, position: 0}
+  - {id: left_arm_09, start: 33.49, duration: 1.15, position: 0}
+  - {id: left_arm_10, start: 36.91, duration: 1.15, position: 90}
+  - {id: left_arm_11, start: 40.33, duration: 1.1, position: 0}
+  - {id: left_arm_12, start: 43.75, duration: 1.1, position: 95}
+  - {id: left_arm_13, start: 47.17, duration: 1.0, position: 80}
+  - {id: left_arm_14, start: 49.45, duration: 1.3, position: 75}
+  - {id: left_arm_15, start: 52.87, duration: 1.3, position: 85}
+  - {id: left_arm_16, start: 56.29, duration: 1.2, position: 0}
+  - {id: left_arm_17, start: 59.71, duration: 1.2, position: 85}
+  - {id: left_arm_18, start: 62.56, duration: 1.0, position: 0}
+  - {id: left_arm_19, start: 63.7, duration: 1.4, position: 0}
+  - {id: left_arm_20, start: 68.26, duration: 1.4, position: 70}
+  - {id: left_arm_21, start: 72.82, duration: 1.3, position: 0}
+  - {id: left_arm_22, start: 77.38, duration: 1.3, position: 75}
+  - {id: left_arm_23, start: 80.23, duration: 0.9, position: 0}
+  - {id: left_arm_24, start: 82.51, duration: 0.9, position: 95}
+  - {id: left_arm_25, start: 84.79, duration: 0.85, position: 0}
+  - {id: left_arm_26, start: 87.07, duration: 0.8, position: 90}
+  - {id: left_arm_27, start: 90.25, duration: 0.85, position: 95}
+  - {id: left_arm_28, start: 92.53, duration: 0.85, position: 0}
+  - {id: left_arm_29, start: 94.81, duration: 1.1, position: 80}
+  - {id: left_arm_30, start: 98.23, duration: 1.1, position: 0}
+  - {id: left_arm_31, start: 101.65, duration: 1.1, position: 85}
+  - {id: left_arm_32, start: 105.07, duration: 1.1, position: 0}
+  - {id: left_arm_33, start: 108.49, duration: 0.9, position: 90}
+  - {id: left_arm_34, start: 114.19, duration: 0.85, position: 0}
+  - {id: left_arm_35, start: 116.47, duration: 0.85, position: 90}
+  - {id: left_arm_36, start: 118.75, duration: 1.0, position: 100}
+  - {id: left_arm_37, start: 120.25, duration: 1.3, position: 0}
 - channel: arm_r
   segments:
-  - {id: right_arm_01, start: 0.0, duration: 1.2, position: 0}
-  - {id: right_arm_02, start: 3.42, duration: 1.2, position: -85}
-  - {id: right_arm_03, start: 6.84, duration: 1.2, position: 0}
-  - {id: right_arm_04, start: 10.26, duration: 1.2, position: -90}
-  - {id: right_arm_05, start: 13.68, duration: 1.2, position: 0}
-  - {id: right_arm_06, start: 17.1, duration: 1.4, position: 0}
-  - {id: right_arm_07, start: 25.65, duration: 1.5, position: -55}
-  - {id: right_arm_08, start: 30.78, duration: 1.3, position: 0}
-  - {id: right_arm_09, start: 32.49, duration: 1.15, position: 0}
-  - {id: right_arm_10, start: 35.91, duration: 1.15, position: -90}
-  - {id: right_arm_11, start: 39.33, duration: 1.1, position: 0}
-  - {id: right_arm_12, start: 42.75, duration: 1.1, position: -95}
-  - {id: right_arm_13, start: 46.17, duration: 1.0, position: -80}
-  - {id: right_arm_14, start: 48.45, duration: 1.3, position: -75}
-  - {id: right_arm_15, start: 51.87, duration: 1.3, position: -85}
-  - {id: right_arm_16, start: 55.29, duration: 1.2, position: 0}
-  - {id: right_arm_17, start: 58.71, duration: 1.2, position: -85}
-  - {id: right_arm_18, start: 61.56, duration: 1.0, position: 0}
-  - {id: right_arm_19, start: 62.7, duration: 1.4, position: 0}
-  - {id: right_arm_20, start: 67.26, duration: 1.4, position: -70}
-  - {id: right_arm_21, start: 71.82, duration: 1.3, position: 0}
-  - {id: right_arm_22, start: 76.38, duration: 1.3, position: -75}
-  - {id: right_arm_23, start: 79.23, duration: 0.9, position: 0}
-  - {id: right_arm_24, start: 81.51, duration: 0.9, position: -95}
-  - {id: right_arm_25, start: 83.79, duration: 0.85, position: 0}
-  - {id: right_arm_26, start: 86.07, duration: 0.8, position: -90}
-  - {id: right_arm_27, start: 89.25, duration: 0.85, position: -95}
-  - {id: right_arm_28, start: 91.53, duration: 0.85, position: 0}
-  - {id: right_arm_29, start: 93.81, duration: 1.1, position: -80}
-  - {id: right_arm_30, start: 97.23, duration: 1.1, position: 0}
-  - {id: right_arm_31, start: 100.65, duration: 1.1, position: -85}
-  - {id: right_arm_32, start: 104.07, duration: 1.1, position: 0}
-  - {id: right_arm_33, start: 107.49, duration: 0.9, position: -90}
-  - {id: right_arm_34, start: 113.19, duration: 0.85, position: 0}
-  - {id: right_arm_35, start: 115.47, duration: 0.85, position: -90}
-  - {id: right_arm_36, start: 117.75, duration: 1.0, position: -100}
-  - {id: right_arm_37, start: 119.25, duration: 1.3, position: 0}
+  - {id: right_arm_01, start: 1.0, duration: 1.2, position: -85}
+  - {id: right_arm_02, start: 4.42, duration: 1.2, position: 0}
+  - {id: right_arm_03, start: 7.84, duration: 1.2, position: -90}
+  - {id: right_arm_04, start: 11.26, duration: 1.2, position: 0}
+  - {id: right_arm_05, start: 14.68, duration: 1.2, position: -85}
+  - {id: right_arm_06, start: 18.1, duration: 1.4, position: 0}
+  - {id: right_arm_07, start: 21.52, duration: 1.5, position: -55}
+  - {id: right_arm_08, start: 26.65, duration: 1.5, position: 0}
+  - {id: right_arm_09, start: 33.49, duration: 1.15, position: -90}
+  - {id: right_arm_10, start: 36.91, duration: 1.15, position: 0}
+  - {id: right_arm_11, start: 40.33, duration: 1.1, position: -95}
+  - {id: right_arm_12, start: 43.75, duration: 1.1, position: 0}
+  - {id: right_arm_13, start: 47.17, duration: 1.0, position: -80}
+  - {id: right_arm_14, start: 49.45, duration: 1.3, position: -75}
+  - {id: right_arm_15, start: 52.87, duration: 1.3, position: 0}
+  - {id: right_arm_16, start: 56.29, duration: 1.2, position: -85}
+  - {id: right_arm_17, start: 59.71, duration: 1.2, position: 0}
+  - {id: right_arm_18, start: 63.7, duration: 1.4, position: -70}
+  - {id: right_arm_19, start: 68.26, duration: 1.4, position: 0}
+  - {id: right_arm_20, start: 72.82, duration: 1.3, position: -75}
+  - {id: right_arm_21, start: 77.38, duration: 1.3, position: 0}
+  - {id: right_arm_22, start: 80.23, duration: 0.9, position: -95}
+  - {id: right_arm_23, start: 82.51, duration: 0.9, position: 0}
+  - {id: right_arm_24, start: 84.79, duration: 0.85, position: -95}
+  - {id: right_arm_25, start: 87.07, duration: 0.8, position: -90}
+  - {id: right_arm_26, start: 90.25, duration: 0.85, position: 0}
+  - {id: right_arm_27, start: 92.53, duration: 0.85, position: -95}
+  - {id: right_arm_28, start: 94.81, duration: 1.1, position: 0}
+  - {id: right_arm_29, start: 98.23, duration: 1.1, position: -80}
+  - {id: right_arm_30, start: 101.65, duration: 1.1, position: 0}
+  - {id: right_arm_31, start: 105.07, duration: 1.1, position: -85}
+  - {id: right_arm_32, start: 108.49, duration: 0.9, position: -90}
+  - {id: right_arm_33, start: 114.19, duration: 0.85, position: -90}
+  - {id: right_arm_34, start: 116.47, duration: 0.85, position: 0}
+  - {id: right_arm_35, start: 118.75, duration: 1.0, position: -100}
+  - {id: right_arm_36, start: 120.25, duration: 1.3, position: 0}
 motor_tracks:
 - motor: chassis
   segments:
-  - {id: glide_01, start: 0.2, duration: 2.7, direction: forward, left_throttle: 58, right_throttle: 32}
-  - {id: glide_02, start: 3.62, duration: 2.7, direction: forward, left_throttle: 32, right_throttle: 58}
-  - {id: glide_03, start: 7.04, duration: 2.7, direction: forward, left_throttle: 60, right_throttle: 34}
-  - {id: glide_04, start: 10.46, duration: 2.7, direction: forward, left_throttle: 34, right_throttle: 60}
-  - {id: glide_05, start: 13.88, duration: 2.5, direction: forward, left_throttle: 58, right_throttle: 32}
-  - {id: glide_06, start: 16.58, duration: 1.8, direction: forward, left_throttle: 32, right_throttle: 54}
-  - {id: glide_07, start: 20.82, duration: 2.4, direction: forward, left_throttle: 48, right_throttle: 30}
-  - {id: glide_08, start: 25.95, duration: 2.4, direction: forward, left_throttle: 30, right_throttle: 48}
-  - {id: glide_09, start: 32.79, duration: 2.6, direction: forward, left_throttle: 62, right_throttle: 34}
-  - {id: glide_10, start: 36.21, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 62}
-  - {id: glide_11, start: 39.63, duration: 2.6, direction: forward, left_throttle: 64, right_throttle: 34}
-  - {id: glide_12, start: 43.05, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 64}
-  - {id: spin_01, start: 46.17, duration: 2.1, direction: spin, left_throttle: 45, right_throttle: 45}
-  - {id: glide_13, start: 48.75, duration: 2.6, direction: forward, left_throttle: 56, right_throttle: 34}
-  - {id: glide_14, start: 52.17, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 56}
-  - {id: glide_15, start: 55.59, duration: 2.6, direction: forward, left_throttle: 60, right_throttle: 34}
-  - {id: glide_16, start: 59.01, duration: 2.3, direction: forward, left_throttle: 34, right_throttle: 60}
-  - {id: glide_17, start: 63.0, duration: 3.0, direction: forward, left_throttle: 54, right_throttle: 32}
-  - {id: glide_18, start: 67.56, duration: 3.0, direction: forward, left_throttle: 32, right_throttle: 54}
-  - {id: glide_19, start: 72.12, duration: 3.0, direction: forward, left_throttle: 56, right_throttle: 32}
-  - {id: glide_20, start: 76.68, duration: 1.7, direction: forward, left_throttle: 32, right_throttle: 56}
-  - {id: glide_21, start: 79.43, duration: 1.7, direction: forward, left_throttle: 64, right_throttle: 34}
-  - {id: glide_22, start: 81.71, duration: 1.7, direction: forward, left_throttle: 34, right_throttle: 64}
-  - {id: glide_23, start: 83.99, duration: 1.7, direction: forward, left_throttle: 66, right_throttle: 34}
-  - {id: spin_02, start: 86.07, duration: 2.5, direction: spin, left_throttle: 48, right_throttle: 48}
-  - {id: glide_24, start: 89.45, duration: 1.7, direction: forward, left_throttle: 34, right_throttle: 66}
-  - {id: glide_25, start: 91.73, duration: 1.7, direction: forward, left_throttle: 66, right_throttle: 34}
-  - {id: glide_26, start: 94.11, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 58}
-  - {id: glide_27, start: 97.53, duration: 2.6, direction: forward, left_throttle: 58, right_throttle: 34}
-  - {id: glide_28, start: 100.95, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 60}
-  - {id: glide_29, start: 104.37, duration: 2.6, direction: forward, left_throttle: 60, right_throttle: 34}
-  - {id: spin_03, start: 108.0, duration: 2.2, direction: spin, left_throttle: 42, right_throttle: 42}
-  - {id: spin_04, start: 110.4, duration: 2.2, direction: left, left_throttle: 42, right_throttle: 42}
-  - {id: glide_30, start: 113.39, duration: 1.8, direction: forward, left_throttle: 62, right_throttle: 32}
-  - {id: glide_31, start: 115.67, duration: 1.8, direction: forward, left_throttle: 32, right_throttle: 62}
+  - {id: glide_01, start: 1.2, duration: 2.7, direction: forward, left_throttle: 58, right_throttle: 32}
+  - {id: glide_02, start: 4.62, duration: 2.7, direction: forward, left_throttle: 32, right_throttle: 58}
+  - {id: glide_03, start: 8.04, duration: 2.7, direction: forward, left_throttle: 60, right_throttle: 34}
+  - {id: glide_04, start: 11.46, duration: 2.7, direction: forward, left_throttle: 34, right_throttle: 60}
+  - {id: glide_05, start: 14.88, duration: 2.5, direction: forward, left_throttle: 58, right_throttle: 32}
+  - {id: glide_06, start: 17.58, duration: 1.8, direction: forward, left_throttle: 32, right_throttle: 54}
+  - {id: glide_07, start: 21.82, duration: 2.4, direction: forward, left_throttle: 48, right_throttle: 30}
+  - {id: glide_08, start: 26.95, duration: 2.4, direction: forward, left_throttle: 30, right_throttle: 48}
+  - {id: glide_09, start: 33.79, duration: 2.6, direction: forward, left_throttle: 62, right_throttle: 34}
+  - {id: glide_10, start: 37.21, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 62}
+  - {id: glide_11, start: 40.63, duration: 2.6, direction: forward, left_throttle: 64, right_throttle: 34}
+  - {id: glide_12, start: 44.05, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 64}
+  - {id: spin_01, start: 47.17, duration: 2.1, direction: spin, left_throttle: 45, right_throttle: 45}
+  - {id: glide_13, start: 49.75, duration: 2.6, direction: forward, left_throttle: 56, right_throttle: 34}
+  - {id: glide_14, start: 53.17, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 56}
+  - {id: glide_15, start: 56.59, duration: 2.6, direction: forward, left_throttle: 60, right_throttle: 34}
+  - {id: glide_16, start: 60.01, duration: 2.3, direction: forward, left_throttle: 34, right_throttle: 60}
+  - {id: glide_17, start: 64.0, duration: 3.0, direction: forward, left_throttle: 54, right_throttle: 32}
+  - {id: glide_18, start: 68.56, duration: 3.0, direction: forward, left_throttle: 32, right_throttle: 54}
+  - {id: glide_19, start: 73.12, duration: 3.0, direction: forward, left_throttle: 56, right_throttle: 32}
+  - {id: glide_20, start: 77.68, duration: 1.7, direction: forward, left_throttle: 32, right_throttle: 56}
+  - {id: glide_21, start: 80.43, duration: 1.7, direction: forward, left_throttle: 64, right_throttle: 34}
+  - {id: glide_22, start: 82.71, duration: 1.7, direction: forward, left_throttle: 34, right_throttle: 64}
+  - {id: glide_23, start: 84.99, duration: 1.7, direction: forward, left_throttle: 66, right_throttle: 34}
+  - {id: spin_02, start: 87.07, duration: 2.5, direction: spin, left_throttle: 48, right_throttle: 48}
+  - {id: glide_24, start: 90.45, duration: 1.7, direction: forward, left_throttle: 34, right_throttle: 66}
+  - {id: glide_25, start: 92.73, duration: 1.7, direction: forward, left_throttle: 66, right_throttle: 34}
+  - {id: glide_26, start: 95.11, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 58}
+  - {id: glide_27, start: 98.53, duration: 2.6, direction: forward, left_throttle: 58, right_throttle: 34}
+  - {id: glide_28, start: 101.95, duration: 2.6, direction: forward, left_throttle: 34, right_throttle: 60}
+  - {id: glide_29, start: 105.37, duration: 2.6, direction: forward, left_throttle: 60, right_throttle: 34}
+  - {id: spin_03, start: 109.0, duration: 2.2, direction: spin, left_throttle: 42, right_throttle: 42}
+  - {id: spin_04, start: 111.4, duration: 2.2, direction: left, left_throttle: 42, right_throttle: 42}
+  - {id: glide_30, start: 114.39, duration: 1.8, direction: forward, left_throttle: 62, right_throttle: 32}
+  - {id: glide_31, start: 116.67, duration: 1.8, direction: forward, left_throttle: 32, right_throttle: 62}
 action_tracks:
 - id: action-track-1
   name: 已有动作轨 1
