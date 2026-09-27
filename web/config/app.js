@@ -1348,7 +1348,7 @@ function markChoreographyDirty() {
 
 function renderChoreographySelect() {
   const select = $("#choreography-select");
-  select.innerHTML = '<option value="">新动作</option>';
+  select.innerHTML = '<option value="">请选择要加载的编排</option>';
   state.choreography.items.forEach((item) => {
     const option = document.createElement("option");
     option.value = item.id;
@@ -1357,6 +1357,7 @@ function renderChoreographySelect() {
   });
   const currentId = state.choreography.document?.id;
   if (state.choreography.items.some((item) => item.id === currentId)) select.value = currentId;
+  $("#choreography-load").disabled = !select.value;
 }
 
 function renderChoreographyPalette() {
@@ -2389,8 +2390,14 @@ function bindEvents() {
   $$('[data-save-module]').forEach((button) => button.addEventListener("click", () => saveModule(button.dataset.saveModule)));
   $("#reload-button").addEventListener("click", loadConfig);
   $("#generate-mcp-token-button")?.addEventListener("click", generateMcpToken);
-  $("#choreography-select").addEventListener("change", (event) => loadChoreography(event.target.value));
+  $("#choreography-select").addEventListener("change", (event) => {
+    $("#choreography-load").disabled = !event.target.value;
+  });
   $("#choreography-new").addEventListener("click", resetChoreographyEditor);
+  $("#choreography-load").addEventListener("click", () => {
+    const choreographyId = $("#choreography-select").value;
+    if (choreographyId) loadChoreography(choreographyId);
+  });
   $("#choreography-add-action-track").addEventListener("click", () => {
     const documentModel = state.choreography.document;
     if (!documentModel) return;

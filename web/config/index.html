@@ -418,17 +418,18 @@
       <section class="panel" data-panel="choreography">
         <div class="section-heading choreography-heading">
           <div><p class="eyebrow">MOTION TIMELINE</p><h2>动作编排</h2></div>
-          <p>动作段表示“在这段时间内改变多少”。动作文件本版本只保存与校验，不会驱动真机；点击实时演示时只执行舵机，履带轨道仍会跳过。</p>
+          <p>动作段表示要到达的目标位置。已保存编排可以重新加载为时间块继续修改；点击实时演示时只执行舵机，履带轨道仍会跳过。</p>
         </div>
 
         <div class="choreography-toolbar card">
-          <label class="field choreography-select"><span>已保存动作</span><select id="choreography-select"><option value="">新动作</option></select></label>
+          <label class="field choreography-select"><span>已保存编排</span><select id="choreography-select"><option value="">请选择要加载的编排</option></select></label>
           <label class="field choreography-name"><span>名称</span><input id="choreography-name" type="text" maxlength="80" value="未命名动作"></label>
           <label class="field choreography-id"><span>动作 ID</span><input id="choreography-id" type="text" maxlength="64" value="untitled_action"></label>
           <label class="field choreography-remark"><span>备注</span><input id="choreography-remark" type="text" maxlength="200" placeholder="例如：配合音乐副歌抬手"></label>
           <label class="field choreography-duration"><span>时间轴（秒）</span><input id="choreography-duration" type="number" min="1" max="600" step="1" value="8"></label>
           <div class="choreography-toolbar-actions">
             <button id="choreography-new" class="button secondary small" type="button">新建</button>
+            <button id="choreography-load" class="button secondary small" type="button" disabled>加载编辑</button>
             <button id="choreography-validate" class="button secondary small" type="button">校验</button>
             <button id="choreography-save" class="button primary small" type="button">保存</button>
             <button id="choreography-delete" class="button danger small" type="button">删除</button>
