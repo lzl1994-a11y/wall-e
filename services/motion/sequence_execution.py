@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any
 
@@ -405,9 +406,28 @@ class SequenceRuntime:
                 return ()
             direction = action.get("direction", "forward")
             duration = max(0.0, min(float(action.get("duration", 1.0)), 10.0))
-            command = self.motion_to_motor.get(direction)
-            if command is None:
+            template = self.motion_to_motor.get(direction)
+            if template is None:
                 return ()
+            command = {
+                "left": dict(template["left"]),
+                "right": dict(template["right"]),
+            }
+            for side, field in (
+                ("left", "left_throttle"),
+                ("right", "right_throttle"),
+            ):
+                if field not in action:
+                    continue
+                try:
+                    throttle = float(action[field])
+                except (TypeError, ValueError):
+                    return ()
+                if not math.isfinite(throttle):
+                    return ()
+                command[side]["throttle"] = int(
+                    round(max(0.0, min(100.0, throttle)))
+                )
             if duration <= 0.0:
                 self.stop_motor()
                 return (SequenceEffect("motor_stop"),)

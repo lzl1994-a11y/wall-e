@@ -188,6 +188,8 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('id="choreography-timeline"', html)
         self.assertIn('id="choreography-audio-upload"', html)
         self.assertIn('id="choreography-audio-play"', html)
+        self.assertIn('id="segment-left-throttle"', html)
+        self.assertIn('id="segment-right-throttle"', html)
         self.assertIn("本版本只保存与校验，不会驱动真机", html)
 
     def test_choreography_audio_can_be_uploaded_and_streamed(self):

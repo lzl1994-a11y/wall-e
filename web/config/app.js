@@ -1256,6 +1256,14 @@ function normalizeChoreographyDocument(document) {
       copy.motor_tracks.push({ motor: motor.id, segments: [] });
     }
   });
+  copy.motor_tracks.forEach((track) => {
+    if (!Array.isArray(track.segments)) track.segments = [];
+    track.segments.forEach((segment) => {
+      const defaults = choreographyMotorDefaultThrottles(segment.direction || "forward", track.motor);
+      if (!Number.isFinite(Number(segment.left_throttle))) segment.left_throttle = defaults[0];
+      if (!Number.isFinite(Number(segment.right_throttle))) segment.right_throttle = defaults[1];
+    });
+  });
   return copy;
 }
 
@@ -1277,6 +1285,19 @@ function choreographySegment(channel, id) {
 
 function choreographyMotorSegment(motor, id) {
   return choreographyMotorTrack(motor)?.segments.find((segment) => segment.id === id);
+}
+
+function choreographyMotorDefaultThrottles(direction, motorId = "chassis") {
+  const motor = (state.choreography.catalog.motors || []).find((item) => item.id === motorId);
+  const configured = motor?.default_throttles?.[direction];
+  if (configured) return [Number(configured.left), Number(configured.right)];
+  return {
+    forward: [55, 55],
+    backward: [55, 55],
+    spin: [55, 55],
+    left: [45, 55],
+    right: [55, 45],
+  }[direction] || [55, 55];
 }
 
 function choreographySyncMetadata() {
@@ -1751,6 +1772,11 @@ function choreographyClientErrors() {
       const end = Number(segment.start) + Number(segment.duration);
       if (Number(segment.start) < previousEnd - 0.0001) errors.push({ channel: `motor:${track.motor}`, id: segment.id, message: "履带动作段重叠" });
       if (end > timeline + 0.0001) errors.push({ channel: `motor:${track.motor}`, id: segment.id, message: "超出时间轴" });
+      const leftThrottle = Number(segment.left_throttle);
+      const rightThrottle = Number(segment.right_throttle);
+      if (!Number.isFinite(leftThrottle) || leftThrottle < 0 || leftThrottle > 100) errors.push({ channel: `motor:${track.motor}`, id: segment.id, message: "左履带油门必须为 0–100" });
+      if (!Number.isFinite(rightThrottle) || rightThrottle < 0 || rightThrottle > 100) errors.push({ channel: `motor:${track.motor}`, id: segment.id, message: "右履带油门必须为 0–100" });
+      if (leftThrottle === 0 && rightThrottle === 0) errors.push({ channel: `motor:${track.motor}`, id: segment.id, message: "左右履带油门不能同时为 0" });
       previousEnd = Math.max(previousEnd, end);
     });
   });
@@ -1779,12 +1805,24 @@ function renderChoreographyInspector() {
   $("#segment-start").value = segment.start;
   $("#segment-duration").value = segment.duration;
   $("#segment-direction-field").hidden = !motorSelected;
+  $("#segment-left-throttle-field").hidden = !motorSelected;
+  $("#segment-right-throttle-field").hidden = !motorSelected;
   $("#segment-delta-field").hidden = motorSelected;
   $("#segment-help").textContent = motorSelected
     ? "履带动作会随时间轴保存；实时演示只执行舵机，履带不会启动。"
     : "正值向该舵机配置的高限位移动，负值向低限位移动。脖子轨道会自动换算成两个舵机的机械联动目标。";
   if (motorSelected) {
-    $("#segment-direction").value = segment.direction || "forward";
+    const direction = segment.direction || "forward";
+    const defaults = choreographyMotorDefaultThrottles(direction, selected.motor);
+    const leftThrottle = Number(segment.left_throttle ?? defaults[0]);
+    const rightThrottle = Number(segment.right_throttle ?? defaults[1]);
+    segment.left_throttle = leftThrottle;
+    segment.right_throttle = rightThrottle;
+    $("#segment-direction").value = direction;
+    $("#segment-left-throttle").value = leftThrottle;
+    $("#segment-right-throttle").value = rightThrottle;
+    $("#segment-left-throttle-output").textContent = `${leftThrottle}%`;
+    $("#segment-right-throttle-output").textContent = `${rightThrottle}%`;
   } else {
     $("#segment-delta").value = segment.delta;
     $("#segment-delta-output").textContent = `${segment.delta > 0 ? "+" : ""}${segment.delta}%`;
@@ -1810,11 +1848,14 @@ function addChoreographyMotorSegment(motor, direction, start) {
   const track = choreographyMotorTrack(motor);
   if (!track) return;
   const timeline = Number(state.choreography.document.timeline_seconds);
+  const throttles = choreographyMotorDefaultThrottles(direction || "forward", motor);
   const segment = {
     id: choreographyUid("motor"),
     start: choreographySnap(start),
     duration: Math.max(0.05, Math.min(1, timeline - start)),
     direction: direction || "forward",
+    left_throttle: throttles[0],
+    right_throttle: throttles[1],
   };
   if (segment.start >= timeline) return;
   if (segment.start + segment.duration > timeline) segment.duration = Math.max(0.05, timeline - segment.start);
@@ -1966,7 +2007,10 @@ function renderChoreographyTimeline() {
       block.style.left = `${Number(segment.start) * px}px`;
       block.style.width = `${Math.max(22, Number(segment.duration) * px)}px`;
       block.dataset.segmentId = segment.id;
-      block.innerHTML = `<span>${escapeHtml(directionLabels[segment.direction] || segment.direction)} · ${Number(segment.duration).toFixed(2)}s</span><i class="segment-resize"></i>`;
+      const defaults = choreographyMotorDefaultThrottles(segment.direction, motor.id);
+      const leftThrottle = Number(segment.left_throttle ?? defaults[0]);
+      const rightThrottle = Number(segment.right_throttle ?? defaults[1]);
+      block.innerHTML = `<span>${escapeHtml(directionLabels[segment.direction] || segment.direction)} · L${leftThrottle}/R${rightThrottle} · ${Number(segment.duration).toFixed(2)}s</span><i class="segment-resize"></i>`;
       block.addEventListener("click", (event) => {
         event.stopPropagation();
         state.choreography.selected = { type: "motor", motor: motor.id, id: segment.id };
@@ -2331,6 +2375,8 @@ function bindEvents() {
   $("#segment-duration").addEventListener("change", (event) => updateSelectedSegment("duration", event.target.value));
   $("#segment-delta").addEventListener("input", (event) => updateSelectedSegment("delta", event.target.value));
   $("#segment-direction").addEventListener("change", (event) => updateSelectedSegment("direction", event.target.value));
+  $("#segment-left-throttle").addEventListener("input", (event) => updateSelectedSegment("left_throttle", event.target.value));
+  $("#segment-right-throttle").addEventListener("input", (event) => updateSelectedSegment("right_throttle", event.target.value));
   $("#segment-remove").addEventListener("click", () => {
     const selected = state.choreography.selected;
     const track = selected?.type === "motor"

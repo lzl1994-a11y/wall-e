@@ -19,7 +19,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from services.motion.sequence_execution import SequenceLibrary
+from services.motion.sequence_execution import DEFAULT_MOTION_TO_MOTOR, SequenceLibrary
 from services.motion.servo_motion_config import neck_kinematics_from_servos
 
 
@@ -33,6 +33,10 @@ AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 MOTOR_DEFINITIONS = (
     ("chassis", "履带", ("forward", "backward", "left", "right", "spin")),
 )
+DEFAULT_MOTOR_THROTTLES = {
+    direction: (command["left"]["throttle"], command["right"]["throttle"])
+    for direction, command in DEFAULT_MOTION_TO_MOTOR.items()
+}
 
 CHANNEL_DEFINITIONS = (
     ("head_yaw", "头部左右", ("head_yaw",)),
@@ -161,6 +165,13 @@ class ChoreographyStore:
                 "id": motor,
                 "label": label,
                 "directions": list(directions),
+                "default_throttles": {
+                    direction: {
+                        "left": DEFAULT_MOTOR_THROTTLES[direction][0],
+                        "right": DEFAULT_MOTOR_THROTTLES[direction][1],
+                    }
+                    for direction in directions
+                },
             }
             for motor, label, directions in MOTOR_DEFINITIONS
         ]
@@ -561,6 +572,26 @@ class ChoreographyStore:
                 if direction not in definition["directions"]:
                     errors.append(f"{prefix}方向无效")
                     continue
+                default_left, default_right = DEFAULT_MOTOR_THROTTLES[direction]
+                left_throttle = raw_segment.get("left_throttle", default_left)
+                right_throttle = raw_segment.get("right_throttle", default_right)
+                if (
+                    not _finite_number(left_throttle)
+                    or not 0 <= float(left_throttle) <= 100
+                ):
+                    errors.append(f"{prefix}左履带油门必须为 0–100")
+                    continue
+                if (
+                    not _finite_number(right_throttle)
+                    or not 0 <= float(right_throttle) <= 100
+                ):
+                    errors.append(f"{prefix}右履带油门必须为 0–100")
+                    continue
+                left_throttle = int(round(float(left_throttle)))
+                right_throttle = int(round(float(right_throttle)))
+                if left_throttle == 0 and right_throttle == 0:
+                    errors.append(f"{prefix}左右履带油门不能同时为 0")
+                    continue
                 start = _round_time(float(start))
                 duration = _round_time(float(duration))
                 if start + duration > timeline + 1e-6:
@@ -571,6 +602,8 @@ class ChoreographyStore:
                     "start": start,
                     "duration": duration,
                     "direction": direction,
+                    "left_throttle": left_throttle,
+                    "right_throttle": right_throttle,
                 })
             parsed_segments.sort(key=lambda item: (item["start"], item["id"]))
             previous_end = 0.0

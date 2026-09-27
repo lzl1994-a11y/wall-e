@@ -75,9 +75,11 @@ def test_relative_segments_compile_to_absolute_pwm_targets(tmp_path: Path):
 def test_neck_pitch_is_exposed_as_one_logical_channel(tmp_path: Path):
     catalog = _store(tmp_path).catalog()
     neck = next(item for item in catalog["channels"] if item["id"] == "neck_pitch")
+    chassis = next(item for item in catalog["motors"] if item["id"] == "chassis")
 
     assert neck["members"] == ["neck_top", "neck_bottom"]
     assert next(item for item in catalog["actions"] if item["id"] == "wave")["channels"] == ["arm_r"]
+    assert chassis["default_throttles"]["left"] == {"left": 45, "right": 55}
 
 
 @pytest.mark.parametrize(
@@ -202,4 +204,81 @@ def test_audio_must_exist_and_fit_inside_timeline(tmp_path: Path):
 
     assert any("选择的音乐资源不存在" in detail for detail in raised.value.details)
     assert any("音乐长度超过时间轴" in detail for detail in raised.value.details)
+
+
+def test_motor_track_preserves_independent_left_and_right_throttle(tmp_path: Path):
+    store = _store(tmp_path)
+    document = _document()
+    document["motor_tracks"] = [{
+        "motor": "chassis",
+        "segments": [{
+            "id": "curve",
+            "start": 0.5,
+            "duration": 1.5,
+            "direction": "forward",
+            "left_throttle": 30,
+            "right_throttle": 75,
+        }],
+    }]
+
+    normalized, compiled = store.validate(document)
+
+    expected = {
+        "id": "curve",
+        "start": 0.5,
+        "duration": 1.5,
+        "direction": "forward",
+        "left_throttle": 30,
+        "right_throttle": 75,
+    }
+    assert normalized["motor_tracks"][0]["segments"] == [expected]
+    assert compiled["motor_tracks"][0]["segments"] == [expected]
+    assert all(
+        action.get("type") != "motor"
+        for frame in compiled["preview"]["frames"]
+        for action in frame["actions"]
+    )
+
+
+def test_legacy_motor_track_receives_direction_defaults(tmp_path: Path):
+    store = _store(tmp_path)
+    document = _document()
+    document["motor_tracks"] = [{
+        "motor": "chassis",
+        "segments": [{
+            "start": 0,
+            "duration": 1,
+            "direction": "left",
+        }],
+    }]
+
+    normalized, _compiled = store.validate(document)
+    segment = normalized["motor_tracks"][0]["segments"][0]
+
+    assert segment["left_throttle"] == 45
+    assert segment["right_throttle"] == 55
+
+
+@pytest.mark.parametrize(
+    "left, right, expected",
+    [(-1, 50, "左履带油门"), (50, 101, "右履带油门"), (0, 0, "不能同时为 0")],
+)
+def test_motor_track_rejects_invalid_throttle(tmp_path: Path, left, right, expected):
+    store = _store(tmp_path)
+    document = _document()
+    document["motor_tracks"] = [{
+        "motor": "chassis",
+        "segments": [{
+            "start": 0,
+            "duration": 1,
+            "direction": "forward",
+            "left_throttle": left,
+            "right_throttle": right,
+        }],
+    }]
+
+    with pytest.raises(ChoreographyError) as raised:
+        store.validate(document)
+
+    assert any(expected in detail for detail in raised.value.details)
 

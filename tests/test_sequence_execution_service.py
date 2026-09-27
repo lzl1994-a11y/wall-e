@@ -1,6 +1,7 @@
 import unittest
 
 from services.motion.sequence_execution import (
+    DEFAULT_MOTION_TO_MOTOR,
     SequenceCommandController,
     SequenceLibrary,
     SequenceRuntime,
@@ -123,6 +124,28 @@ class SequenceRuntimeTests(unittest.TestCase):
         self.assertEqual(active.effects[0].kind, "motor")
         self.assertEqual(stopped.effects[0].kind, "motor_stop")
         self.assertIsNone(runtime.active_motor_command)
+
+    def test_motor_action_overrides_each_track_throttle(self):
+        runtime = self._runtime()
+
+        effects = runtime.dispatch_action(
+            {
+                "type": "motor",
+                "direction": "forward",
+                "duration": 1.0,
+                "left_throttle": 30,
+                "right_throttle": 75,
+            },
+            monotonic_now=5.0,
+        )
+
+        self.assertEqual(effects[0].payload, {
+            "left": {"action": 1, "throttle": 30},
+            "right": {"action": 1, "throttle": 75},
+        })
+        self.assertEqual(
+            DEFAULT_MOTION_TO_MOTOR["forward"]["left"]["throttle"], 55
+        )
 
     def test_pose_dispatch_uses_runtime_servo_calibration(self):
         runtime = self._runtime(poses={
