@@ -380,14 +380,17 @@ def run_launcher(args):
     managed = []
     stopped = False
 
-    def _sigint_handler(sig, frame):
+    def _shutdown_handler(sig, frame):
         nonlocal stopped
         if stopped:
             return
         stopped = True
-        print("\n[launcher] Ctrl+C received, shutting down...")
+        signal_name = signal.Signals(sig).name
+        print(f"\n[launcher] {signal_name} received, shutting down...")
 
-    signal.signal(signal.SIGINT, _sigint_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _shutdown_handler)
 
     names = [e.name for e in entries]
     print(f"[launcher] nodes: {', '.join(names)}")

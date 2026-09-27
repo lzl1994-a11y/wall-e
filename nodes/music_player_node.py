@@ -13,6 +13,7 @@ from services.action.action_command import ACTION_COMMAND_TOPIC, parse_action_re
 from services.action.action_status import ACTION_STATUS_TOPIC, build_action_status
 from services.game.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 from services.audio.music_player import DEFAULT_MUSIC_DIRECTORY, MusicPlayer
+from services.motion.choreography import ChoreographyStore
 from services.audio.music_protocol import (
     MUSIC_AUDIO_TOPIC,
     MUSIC_SPECTRUM_FPS,
@@ -34,6 +35,8 @@ class MusicPlayerNode(Node):
         self._status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 10)
         self.create_subscription(String, ACTION_COMMAND_TOPIC, self._on_action, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
+        self._choreography_store = ChoreographyStore("core/config.yaml")
+        self._choreography_music_active = False
         self._player = MusicPlayer(
             directory=directory,
             on_audio=lambda samples: self._audio_pub.publish(
@@ -58,6 +61,13 @@ class MusicPlayerNode(Node):
             self._player.stop()
             self._publish_status(request, "completed")
             return
+        if name == "play_choreography":
+            self._play_choreography_music(request)
+            return
+        if self._choreography_music_active and name in {
+            "manual_servo", "move_chassis", "play_sequence", "preview_choreography"
+        }:
+            self._player.stop()
         if name != "control_music":
             return
         action = request["arguments"].get("action")
@@ -76,11 +86,33 @@ class MusicPlayerNode(Node):
         self._publish_status(request, "accepted")
         self._publish_status(request, "completed", track.name)
 
+    def _play_choreography_music(self, request) -> None:
+        choreography_id = request["arguments"].get("choreography_id", "")
+        try:
+            document = self._choreography_store.get(choreography_id)
+            _, compiled = self._choreography_store.validate(document)
+            audio = compiled.get("audio")
+            if not isinstance(audio, dict) or not audio.get("asset_id"):
+                self.get_logger().info(
+                    f"动作编排 {choreography_id} 未绑定音乐，仅播放动作"
+                )
+                return
+            track = self._choreography_store.audio_path(audio["asset_id"])
+            self._player.play_file(track)
+            self._choreography_music_active = True
+            self.get_logger().info(
+                f"动作编排 {choreography_id} 同步播放音乐: {audio.get('name', track.name)}"
+            )
+        except (OSError, ValueError) as exc:
+            self.get_logger().error(f"动作编排音乐播放失败: {exc}")
+
     def _on_game_state(self, message) -> None:
         if game_is_active(message.data):
             self._player.stop()
 
     def _publish_state(self, state: str, track: str, error: str) -> None:
+        if state in {"stopped", "error"}:
+            self._choreography_music_active = False
         self._state_pub.publish(String(data=encode_music_state(state, track, error)))
         if state == "error":
             self.get_logger().error(f"音乐播放失败: {error}")

@@ -44,6 +44,27 @@ class MusicPlayerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 resolve_track(root, "../outside.mp3")
 
+    def test_trusted_choreography_file_can_play_outside_music_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = root / "library"
+            library.mkdir()
+            track = root / "choreography.mp3"
+            track.touch()
+            player = MusicPlayer(
+                directory=library,
+                on_audio=lambda _samples: None,
+                on_audio_end=lambda: None,
+                on_spectrum=lambda _levels: None,
+                on_state=lambda *_value: None,
+                popen_factory=lambda *_args, **_kwargs: _Process(b""),
+            )
+
+            self.assertEqual(player.play_file(track), track.resolve())
+            deadline = time.monotonic() + 1.0
+            while player._thread is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+
     def test_streams_pcm_and_spectrum_without_owning_audio_hardware(self):
         with tempfile.TemporaryDirectory() as directory:
             track = Path(directory) / "tone.wav"

@@ -122,6 +122,13 @@ class MusicPlayer:
 
     def play(self, query: str = "") -> Path:
         track = resolve_track(self.directory, query)
+        return self.play_file(track)
+
+    def play_file(self, track: str | Path) -> Path:
+        """Play a trusted local audio file resolved by an owning service."""
+        track = Path(track).expanduser().resolve()
+        if not track.is_file() or track.suffix.lower() not in SUPPORTED_SUFFIXES:
+            raise FileNotFoundError(f"音乐文件不存在或格式不支持: {track.name}")
         self.stop()
         with self._lock:
             self._stop = threading.Event()

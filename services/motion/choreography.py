@@ -304,17 +304,22 @@ class ChoreographyStore:
         return metadata
 
     def get_audio(self, asset_id: str) -> tuple[bytes, str]:
-        if not isinstance(asset_id, str) or not AUDIO_ID_PATTERN.fullmatch(asset_id):
-            raise ChoreographyError("音乐资源 ID 无效")
-        path = (self.media_directory / asset_id).resolve()
-        if path.parent != self.media_directory.resolve() or not path.is_file():
-            raise ChoreographyError("音乐资源不存在")
+        path = self.audio_path(asset_id)
         metadata_path = self.media_directory / f"{asset_id}.meta.yaml"
         metadata = self._load_yaml_mapping(metadata_path)
         try:
             return path.read_bytes(), str(metadata.get("content_type") or "application/octet-stream")
         except OSError as exc:
             raise ChoreographyError(f"无法读取音乐资源: {exc}") from exc
+
+    def audio_path(self, asset_id: str) -> Path:
+        """Resolve one validated choreography-owned audio asset for playback."""
+        if not isinstance(asset_id, str) or not AUDIO_ID_PATTERN.fullmatch(asset_id):
+            raise ChoreographyError("音乐资源 ID 无效")
+        path = (self.media_directory / asset_id).resolve()
+        if path.parent != self.media_directory.resolve() or not path.is_file():
+            raise ChoreographyError("音乐资源不存在")
+        return path
 
     def list(self) -> list[dict[str, Any]]:
         if not self.directory.exists():

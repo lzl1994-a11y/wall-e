@@ -16,6 +16,7 @@
 
 import json
 import os
+import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -138,6 +139,23 @@ class HardwareBridgeNode(Node):
         self._state.set_motor('right', right_action, right.get('throttle', 0))
         if self._motor_watchdog.refresh():
             self.get_logger().info('[Bridge] 电机心跳恢复')
+
+    def _publish_shutdown_stop(self):
+        # This is the final serial-hardware boundary. Publish several zeroed
+        # frames before DDS teardown so Ctrl+C/SIGTERM cannot leave latched
+        # motor PWM behind when the normal watchdog process is also exiting.
+        self._state.stop_motors()
+        for _ in range(3):
+            self._publish_state()
+            time.sleep(self._PUBLISH_INTERVAL_SECONDS)
+        self._state.mark_published()
+
+    def destroy_node(self):
+        try:
+            self._publish_shutdown_stop()
+        except Exception as exc:
+            self.get_logger().error(f'[Bridge] 退出停车指令发送失败: {exc}')
+        return super().destroy_node()
 
 
 def main(args=None):

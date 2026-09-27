@@ -167,6 +167,24 @@ class HardwareBridgeNodeBoundaryTests(unittest.TestCase):
             node._flush_state()
         self.assertTrue(node._state.dirty)
 
+    def test_shutdown_publishes_repeated_zero_motor_frames(self):
+        node = self.make_node()
+        node._on_motor_cmd(self.command({
+            "left": {"action": 1, "throttle": 50},
+            "right": {"action": 2, "throttle": 10},
+        }))
+
+        with patch.object(hardware_bridge.time, "sleep"):
+            node._publish_shutdown_stop()
+
+        self.assertEqual(node._raw_pub.publish.call_count, 3)
+        for call in node._raw_pub.publish.call_args_list:
+            values = [
+                int(value)
+                for value in call.args[0].data.split(":", 1)[1].split(",")
+            ]
+            self.assertEqual(values[9:15], [0, 0, 0, 0, 0, 0])
+
 
 if __name__ == "__main__":
     unittest.main()
