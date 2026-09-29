@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 REASONING_MODES = {"fast", "default"}
 DOUBAO_PROVIDERS = {"doubao", "volcengine", "ark"}
 MIMO_PROVIDERS = {"mimo", "xiaomi", "xiaomi_mimo"}
+SILICONFLOW_PROVIDERS = {"siliconflow", "siliconcloud"}
 
 
 def _is_mimo_endpoint(settings):
@@ -56,6 +57,12 @@ def reasoning_request_options(settings):
     # See: https://www.volcengine.com/docs/82379/1795150
     if mode == "fast" and provider in DOUBAO_PROVIDERS:
         return {"extra_body": {"thinking": {"type": "disabled"}}}
+
+    # SiliconFlow documents enable_thinking for its OpenAI-compatible chat
+    # endpoint.  Keep provider-specific options isolated from the upstream
+    # model vendor selected behind that endpoint.
+    if mode == "fast" and provider in SILICONFLOW_PROVIDERS:
+        return {"extra_body": {"enable_thinking": False}}
 
     # DashScope exposes Qwen thinking controls through OpenAI extra_body.
     # Omitting the option keeps the model/provider default.

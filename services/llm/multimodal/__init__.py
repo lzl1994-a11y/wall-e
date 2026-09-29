@@ -3,6 +3,7 @@ import yaml
 from .aliyun_multimodal import AliyunMultimodal
 from .baidu_multimodal import BaiduMultimodal
 from .doubao_multimodal import DoubaoMultimodal
+from .siliconflow_multimodal import SiliconFlowMultimodal
 from .tencent_hunyuan_multimodal import TencentHunyuanMultimodal
 from .xiaomi_mimo_multimodal import XiaomiMiMoMultimodal
 from .zhipu_multimodal import ZhipuMultimodal
@@ -15,6 +16,8 @@ PROVIDERS = {
     "doubao": DoubaoMultimodal,
     "volcengine": DoubaoMultimodal,
     "ark": DoubaoMultimodal,
+    "siliconflow": SiliconFlowMultimodal,
+    "siliconcloud": SiliconFlowMultimodal,
     "tencent": TencentHunyuanMultimodal,
     "tencent_hunyuan": TencentHunyuanMultimodal,
     "hunyuan": TencentHunyuanMultimodal,
@@ -28,5 +31,9 @@ PROVIDERS = {
 def create_multimodal(config_path: str = "core/config.yaml"):
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    provider = config["llm"]["provider"]
-    return PROVIDERS[provider]()
+    llm = config["llm"]
+    provider = llm["provider"]
+    adapter = PROVIDERS[provider]
+    if adapter is SiliconFlowMultimodal:
+        return adapter(model=llm.get("model", ""))
+    return adapter()

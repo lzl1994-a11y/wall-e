@@ -608,6 +608,28 @@ llm:
 
 豆包既可用于 `pipeline.mode: asr_llm` 的文本回复，也可用于 `pipeline.mode: multimodal` 的原始音频直聊。后者请在方舟控制台选择确认支持音频输入的模型或接入点；已用项目的 `16 kHz / Mono / WAV` 测试语音验证 `doubao-seed-2-0-lite-260428` 可用。
 
+### 硅基流动 SiliconFlow
+
+Web 配置页选择“硅基流动 / SiliconFlow”，模型名使用模型广场展示的完整 ID。以 Kimi-K2.6 为例：
+
+```yaml
+pipeline:
+  mode: asr_llm
+llm:
+  provider: siliconflow
+  model: Pro/moonshotai/Kimi-K2.6
+  url: https://api.siliconflow.cn/v1
+  key: your-siliconflow-api-key
+  temperature: 0.4
+  max_tokens: 512
+  reasoning_effort: fast
+  tool_model: ''
+```
+
+Kimi-K2.6 在 SiliconFlow 的 Chat Completions 接口支持文本、图片和 Function Calling，但不接受音频内容，因此语音对话必须使用 `asr_llm`，先由 ASR 转写再调用 Kimi。配置页会阻止把该模型保存为原始音频直连模式。摄像头图片仍通过 `image_url` 交给 Kimi，不受 ASR 模式影响。
+
+SiliconFlow 也提供支持音频理解的其他模型；选择这类模型并使用 `pipeline.mode: multimodal` 时，项目会按平台协议发送 `audio_url` 数据 URI。`reasoning_effort: fast` 会发送 `enable_thinking: false`，`default` 则保留模型默认推理模式。模型能力可能调整，请以 SiliconFlow 模型广场和接口文档为准。
+
 ### 小米 MiMo LLM / 多模态
 
 Web 配置页选择“小米 / MiMo”，并填写官方 OpenAI 兼容接口。文本对话和动作工具可使用 `mimo-v2.5-pro`：

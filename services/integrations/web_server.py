@@ -92,6 +92,8 @@ LLM_MODEL_FAMILY_PREFIXES = {
     "xiaomi_mimo": ("mimo-",),
     "zhipu": ("glm-",),
 }
+SILICONFLOW_PROVIDERS = {"siliconflow", "siliconcloud"}
+SILICONFLOW_TEXT_VISION_ONLY_MODELS = {"kimi-k2.6"}
 
 
 class ConfigError(ValueError):
@@ -219,6 +221,37 @@ def _validate_llm_provider_model(llm: dict[str, Any], errors: list[str]) -> None
         f"当前服务商为 {selected_label}，模型 {llm.get('model')!r} 属于 {model_label}。"
         "请同时修改服务商、模型和接口地址。"
     )
+
+
+def _validate_llm_pipeline_compatibility(
+    pipeline: dict[str, Any],
+    llm: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Reject known model/input combinations that cannot reach the API."""
+    if pipeline.get("mode") != "multimodal":
+        return
+
+    provider = str(llm.get("provider", "")).strip().lower()
+    model = str(llm.get("model", "")).strip()
+    model_name = model.rsplit("/", 1)[-1].lower()
+    try:
+        hostname = (urlsplit(str(llm.get("url", ""))).hostname or "").lower()
+    except ValueError:
+        hostname = ""
+    is_siliconflow = (
+        provider in SILICONFLOW_PROVIDERS
+        or hostname == "siliconflow.cn"
+        or hostname.endswith(".siliconflow.cn")
+    )
+    if (
+        is_siliconflow
+        and model_name in SILICONFLOW_TEXT_VISION_ONLY_MODELS
+    ):
+        errors.append(
+            f"llm.model {model!r} 在 SiliconFlow 仅支持文本和图片输入，"
+            "不能用于 pipeline.mode=multimodal；请切换为 asr_llm"
+        )
 
 
 def _check_local_model_path(
@@ -523,6 +556,7 @@ def validate_config(config: Any) -> list[str]:
     _check_number(llm, "temperature", "llm.temperature", errors, 0, 2)
     _check_number(llm, "max_tokens", "llm.max_tokens", errors, 1, 131072, integer=True)
     _validate_llm_provider_model(llm, errors)
+    _validate_llm_pipeline_compatibility(pipeline, llm, errors)
     reasoning_effort = llm.get("reasoning_effort", "fast")
     if reasoning_effort not in {"fast", "default"}:
         errors.append("llm.reasoning_effort 只能是 fast 或 default")

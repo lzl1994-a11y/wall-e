@@ -312,6 +312,16 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn("https://api.xiaomimimo.com/v1", html)
         self.assertIn("thinking=disabled", html)
 
+    def test_llm_provider_selector_includes_siliconflow(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn(
+            '<option value="siliconflow">硅基流动 / SiliconFlow</option>',
+            html,
+        )
+        self.assertIn("https://api.siliconflow.cn/v1", html)
+        self.assertIn("Kimi-K2.6 只支持文本和图片", html)
+
     def test_multimodal_mode_shows_shared_llm_audio_capability_notice(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")
@@ -361,6 +371,71 @@ class ConfigWebServerTests(unittest.TestCase):
                             "model": "mimo-v2.5",
                             "url": "https://api.siliconflow.cn/v1/",
                         }
+                    }
+                },
+            )
+
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
+    def test_llm_patch_accepts_siliconflow_kimi_in_asr_pipeline(self):
+        status, result = self.request(
+            "/api/config",
+            method="POST",
+            payload={
+                "patch": {
+                    "llm": {
+                        "provider": "siliconflow",
+                        "model": "Pro/moonshotai/Kimi-K2.6",
+                        "url": "https://api.siliconflow.cn/v1/",
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        stored = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["llm"]["provider"], "siliconflow")
+        self.assertEqual(stored["llm"]["model"], "Pro/moonshotai/Kimi-K2.6")
+
+    def test_multimodal_patch_rejects_siliconflow_kimi(self):
+        before = self.config_path.read_text(encoding="utf-8")
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "pipeline": {"mode": "multimodal"},
+                        "llm": {
+                            "provider": "siliconflow",
+                            "model": "Pro/moonshotai/Kimi-K2.6",
+                            "url": "https://api.siliconflow.cn/v1/",
+                        },
+                    }
+                },
+            )
+
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
+    def test_multimodal_patch_detects_legacy_siliconflow_endpoint_label(self):
+        before = self.config_path.read_text(encoding="utf-8")
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "pipeline": {"mode": "multimodal"},
+                        "llm": {
+                            "provider": "aliyun",
+                            "model": "Pro/moonshotai/Kimi-K2.6",
+                            "url": "https://api.siliconflow.cn/v1/",
+                        },
                     }
                 },
             )
