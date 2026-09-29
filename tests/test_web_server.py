@@ -347,6 +347,27 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(stored["llm"]["url"], "https://api.xiaomimimo.com/v1")
         self.assertEqual(stored["llm"]["reasoning_effort"], "fast")
 
+    def test_llm_patch_rejects_obvious_cross_provider_model_mix(self):
+        before = self.config_path.read_text(encoding="utf-8")
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={
+                    "patch": {
+                        "llm": {
+                            "provider": "aliyun",
+                            "model": "mimo-v2.5",
+                            "url": "https://api.siliconflow.cn/v1/",
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+
     def test_dialog_listening_motion_selector_has_two_safe_modes(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")

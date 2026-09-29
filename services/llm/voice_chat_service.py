@@ -83,6 +83,7 @@ class VoiceChatService:
     API_TIMEOUT = 10.0
     LLM_IDLE_TIMEOUT = 40.0
     FALLBACK_REPLY = "这次我没听清，请再说一遍。"
+    ERROR_REPLY = "模型请求失败，请检查模型、接口地址和 API Key 配置后重试。"
 
     def __init__(self, config_path="core/config.yaml"):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -319,18 +320,39 @@ class VoiceChatService:
         )
         self._llm_thread.start()
 
+    def _notify_llm_failure(self):
+        """Surface a failed model turn through the normal TTS/screen callbacks.
+
+        A request failure must still close the turn, but publishing only the
+        turn-end marker leaves the user with a silent response.  Keep provider
+        details in logs and expose a safe, actionable message to the robot.
+        Each callback is isolated so a presentation-side error cannot prevent
+        the other notification or the ``finally`` cleanup from running.
+        """
+        for callback_name in ("on_llm_chunk", "on_llm_reply"):
+            callback = getattr(self, callback_name, None)
+            if callback is None:
+                continue
+            try:
+                callback(self.ERROR_REPLY)
+            except Exception as callback_error:
+                print(
+                    f"[VoiceChat] {callback_name} 失败提示回调异常: "
+                    f"{callback_error}"
+                )
+
     def _send_to_llm(self, audio_b64: str):
         """后台线程：拼 messages → 调 LLM → 流式回调。"""
         self.last_action_results = []
-        audio_message = self.multimodal.build_audio_message(audio_b64)
-        messages = [{"role": "system", "content": self.system_prompt}]
-        messages.extend(self._validated_history())
-        messages.append(audio_message)
-
-        print(f"[VoiceChat] 发送音频 → {self.model}")
         t0 = time.time()
 
         try:
+            audio_message = self.multimodal.build_audio_message(audio_b64)
+            messages = [{"role": "system", "content": self.system_prompt}]
+            messages.extend(self._validated_history())
+            messages.append(audio_message)
+
+            print(f"[VoiceChat] 发送音频 → {self.model}")
             streamed = self._stream_tool_calls(
                 messages,
                 tools=get_multimodal_tools(),
@@ -561,6 +583,8 @@ class VoiceChatService:
 
         except Exception as e:
             print(f"[VoiceChat] LLM 调用失败: {e}")
+            if not self._cancel_llm.is_set():
+                self._notify_llm_failure()
         finally:
             self._llm_done()
 

@@ -628,7 +628,7 @@ llm:
 
 MiMo 的深度思考默认开启；项目在 `reasoning_effort: fast` 时发送 `thinking: {type: disabled}`，让语音对话更早得到可播报正文。选择 `default` 时不发送开关，保留模型默认行为。旧配置即使误写了其他服务商，只要模型名以 `mimo-` 开头或接口主机为 `xiaomimimo.com`，也会应用同一兼容逻辑。
 
-`mimo-v2.5` 支持图片和原始音频理解。使用 `pipeline.mode: multimodal` 时，项目按小米协议把 `16 kHz / Mono / WAV` 录音包装为 `data:audio/wav;base64,...`；`mimo-v2.5-pro` 不应作为音频直连模型。页面只提示这些能力差异，不限制模型名称。
+`mimo-v2.5` 支持图片和原始音频理解。使用 `pipeline.mode: multimodal` 时，项目按小米协议把 `16 kHz / Mono / WAV` 录音包装为 `data:audio/wav;base64,...`；`mimo-v2.5-pro` 不应作为音频直连模型。页面允许自定义模型名称，但保存时会拒绝已知模型系列与所选服务商的明显错配；不会自动验证模型能力。
 
 ### 百度千帆 LLM / 多模态
 

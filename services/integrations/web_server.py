@@ -80,6 +80,19 @@ LOCAL_ASR_FILE_FIELDS = {
     "faster_whisper": ("model_path",),
 }
 
+# These prefixes identify model families that are exclusive to one of the
+# providers exposed by the configuration page.  The page intentionally keeps
+# the model field free-form so custom/private model IDs remain supported; only
+# an unambiguous cross-provider combination is rejected here.
+LLM_MODEL_FAMILY_PREFIXES = {
+    "aliyun": ("qwen",),
+    "doubao": ("doubao-", "seed-"),
+    "baidu_qianfan": ("ernie", "qianfan-"),
+    "tencent_hunyuan": ("hunyuan",),
+    "xiaomi_mimo": ("mimo-",),
+    "zhipu": ("glm-",),
+}
+
 
 class ConfigError(ValueError):
     """配置读取、校验或写入失败。"""
@@ -156,6 +169,56 @@ def _check_string(
         errors.append(f"{path} 不能为空")
     elif len(value) > max_length:
         errors.append(f"{path} 不能超过 {max_length} 个字符")
+
+
+def _validate_llm_provider_model(llm: dict[str, Any], errors: list[str]) -> None:
+    """Reject obvious provider/model mixes before they reach a live node.
+
+    Provider selection also chooses the multimodal message adapter, while the
+    model and endpoint remain user-entered.  A stale model from the previous
+    provider can therefore produce a remote ``model does not exist`` error only
+    after the robot has already started a turn.  Keep custom model IDs valid,
+    but fail closed for known model families owned by another provider.
+    """
+    provider = str(llm.get("provider", "")).strip().lower()
+    model = str(llm.get("model", "")).strip().lower()
+    if not provider or not model:
+        return
+
+    # Keep aliases/custom adapters that are not represented by the built-in
+    # provider list valid.  This guard is intentionally only semantic for the
+    # providers whose model families we can identify with confidence.
+    provider_aliases = {
+        "xiaomi": "xiaomi_mimo",
+        "mimo": "xiaomi_mimo",
+    }
+    provider_family = provider_aliases.get(provider, provider)
+    if provider_family not in LLM_MODEL_FAMILY_PREFIXES:
+        return
+
+    matched_family = None
+    for owner, prefixes in LLM_MODEL_FAMILY_PREFIXES.items():
+        if any(model.startswith(prefix) for prefix in prefixes):
+            matched_family = owner
+            break
+    if matched_family is None or matched_family == provider_family:
+        return
+
+    owner_labels = {
+        "aliyun": "阿里云/Qwen",
+        "doubao": "火山方舟/豆包",
+        "baidu_qianfan": "百度千帆/ERNIE",
+        "tencent_hunyuan": "腾讯混元",
+        "xiaomi_mimo": "小米 MiMo",
+        "zhipu": "智谱 GLM",
+    }
+    selected_label = owner_labels.get(provider_family, provider)
+    model_label = owner_labels.get(matched_family, matched_family)
+    errors.append(
+        "llm.provider 与 llm.model 不匹配："
+        f"当前服务商为 {selected_label}，模型 {llm.get('model')!r} 属于 {model_label}。"
+        "请同时修改服务商、模型和接口地址。"
+    )
 
 
 def _check_local_model_path(
@@ -459,6 +522,7 @@ def validate_config(config: Any) -> list[str]:
     _check_string(llm, "key", "llm.key", errors, allow_empty=True, max_length=8192)
     _check_number(llm, "temperature", "llm.temperature", errors, 0, 2)
     _check_number(llm, "max_tokens", "llm.max_tokens", errors, 1, 131072, integer=True)
+    _validate_llm_provider_model(llm, errors)
     reasoning_effort = llm.get("reasoning_effort", "fast")
     if reasoning_effort not in {"fast", "default"}:
         errors.append("llm.reasoning_effort 只能是 fast 或 default")

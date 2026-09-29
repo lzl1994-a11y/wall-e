@@ -212,6 +212,28 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         service.on_tool_call.assert_not_called()
         self.assertEqual(list(service._chat_history), [])
 
+    def test_model_request_failure_is_audible_and_reaches_screen_callback(self):
+        service = self._service()
+        service.multimodal = MagicMock()
+        service.multimodal.build_audio_message.return_value = {
+            "role": "user", "content": "audio"
+        }
+        service.system_prompt = "system"
+        service.model = "test-model"
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service._llm_done = MagicMock()
+        service._stream_tool_calls = MagicMock(
+            side_effect=RuntimeError("model does not exist")
+        )
+
+        service._send_to_llm("encoded-audio")
+
+        service.on_llm_chunk.assert_called_once_with(service.ERROR_REPLY)
+        service.on_llm_reply.assert_called_once_with(service.ERROR_REPLY)
+        service._llm_done.assert_called_once_with()
+        self.assertEqual(list(service._chat_history), [])
+
     def test_camera_skill_replaces_acknowledgement_with_visual_answer(self):
         service = self._service()
         service.multimodal = MagicMock()
