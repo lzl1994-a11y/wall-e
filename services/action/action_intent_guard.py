@@ -603,6 +603,33 @@ def deterministic_safety_action(user_text):
     return None
 
 
+def required_action_tool(user_text):
+    """Return one tool that an unambiguous command must express natively.
+
+    This is deliberately limited to music control.  Playback has a single
+    side-effect owner and the command polarity is validated again by
+    :func:`validate_action_call`; narrowing the advertised schema prevents an
+    OpenAI-compatible model from merely saying that playback started without
+    proposing ``control_music``.
+    """
+    compact = "".join(str(user_text or "").split())
+    if not compact or _obvious_non_command(compact):
+        return None
+    if _CANCEL_STOP_RE.search(compact) or _CANCEL_EXPLICIT_STOP_RE.search(compact):
+        return None
+    if re.search(
+        r"(?:停止|停下|关闭|关掉).{0,8}(?:音乐|歌曲|歌)|"
+        r"(?:音乐|歌曲|歌).{0,8}(?:停止|停下|关闭|关掉)",
+        compact,
+    ):
+        return "control_music"
+    if _NEGATED_ACTION_RE.search(compact) or _POSTPOSED_NEGATION_RE.search(compact):
+        return None
+    if re.search(r"(?:播放|放).{0,8}(?:音乐|歌曲|歌)", compact):
+        return "control_music"
+    return None
+
+
 def validate_action_arguments(name, arguments):
     """Validate an already-authorized structured action request.
 

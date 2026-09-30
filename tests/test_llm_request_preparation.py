@@ -107,6 +107,16 @@ class LLMRequestPreparationTests(unittest.TestCase):
         self.assertIn("普通对话保持一到两句、简短自然。", augmented)
         self.assertNotIn("这是朗读、背诵或完整内容请求", augmented)
 
+    def test_explicit_music_command_requires_music_tool(self):
+        for prompt in ("播放音乐。", "播放你存的音乐。", "停止播放音乐。"):
+            decision = prepare_voice_request(prompt)
+            self.assertEqual(decision.route, ROUTE_ORDINARY_DIALOG)
+            self.assertEqual(decision.only_action_name, "control_music")
+
+        for prompt in ("你会播放音乐吗？", "不要播放音乐。", "他说播放音乐。"):
+            decision = prepare_voice_request(prompt)
+            self.assertIsNone(decision.only_action_name)
+
     def test_long_form_request_min_2048_tokens(self):
         long_prompts = [
             "背诵一下将进酒",

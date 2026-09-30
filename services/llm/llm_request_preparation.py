@@ -7,7 +7,10 @@ from typing import Any, Mapping, Optional
 
 from pypinyin import Style, pinyin
 
-from services.action.action_intent_guard import deterministic_safety_action
+from services.action.action_intent_guard import (
+    deterministic_safety_action,
+    required_action_tool,
+)
 from services.vision.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
@@ -32,6 +35,7 @@ class PreparedVoiceRequest:
     augmented_prompt: Optional[str] = None
     tools_enabled: bool = True
     max_tokens_override: Optional[int] = None
+    only_action_name: Optional[str] = None
 
     @property
     def is_safety_action(self) -> bool:
@@ -182,6 +186,7 @@ class LLMRequestPreparation:
             augmented_prompt=augmented_prompt,
             tools_enabled=True,
             max_tokens_override=max_tokens_override,
+            only_action_name=required_action_tool(text),
         )
 
 

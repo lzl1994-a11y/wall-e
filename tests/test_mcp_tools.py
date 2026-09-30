@@ -688,6 +688,67 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         self.assertTrue(any(event["type"] == "text" for event in events))
         self.assertFalse(any(event["type"] == "tool_call" for event in events))
 
+    def test_siliconflow_content_first_response_recovers_late_tool_call(self):
+        class TextThenToolResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(
+                        content="好的，这就为你表演。", tool_calls=None
+                    ),
+                    finish_reason=None,
+                )])
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=[
+                        types.SimpleNamespace(
+                            index=0,
+                            function=types.SimpleNamespace(
+                                name="play_sequence",
+                                arguments='{"sequence_name":"turn_head_left"}',
+                            ),
+                        ),
+                    ]),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.settings["provider"] = "siliconflow"
+        service.client.chat.completions.create.return_value = TextThenToolResponse()
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            events = list(service.chat_stream("向左转头", tools_enabled=True))
+
+        self.assertEqual(events[0], {
+            "type": "tool_call",
+            "name": "play_sequence",
+            "arguments": '{"sequence_name": "turn_head_left"}',
+        })
+        self.assertFalse(any(event["type"] == "text" for event in events))
+
+    def test_siliconflow_required_single_tool_uses_required_choice(self):
+        service = self._service()
+        service.settings["provider"] = "siliconflow"
+        service.client.chat.completions.create.return_value = _ToolCallResponse()
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            list(service.chat_stream(
+                "向左转头", tools_enabled=True, only_action_name="play_sequence"
+            ))
+
+        request = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(request["tool_choice"], "required")
+
     def test_content_first_branch_streams_all_text_and_discards_late_tool(self):
         class MultiTextThenToolResponse:
             def __iter__(self):

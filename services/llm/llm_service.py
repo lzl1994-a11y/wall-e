@@ -353,7 +353,13 @@ class LLMService:
             # though they accept the same function schema.  Offering exactly
             # one action tool keeps routing atomic while retaining broad API
             # compatibility; the caller still fails closed if no call arrives.
-            request_kwargs["tool_choice"] = "auto"
+            request_kwargs["tool_choice"] = (
+                "required"
+                if only_action_name
+                and str(self.settings.get("provider", "")).strip().lower()
+                == "siliconflow"
+                else "auto"
+            )
         elif requires_structured_answer:
             tools = [DIRECT_ANSWER_TOOL]
             request_kwargs["tools"] = tools
@@ -385,12 +391,19 @@ class LLMService:
         acc = ToolCallAccumulator()
         answer_filter = VisibleAnswerFilter()
         finish_reason = ""
-        # A provider must choose exactly one protocol branch per turn.  Once
-        # visible content starts, it is streamed immediately and any later
-        # tool delta is ignored.  If a tool delta arrives first, all model text
-        # is discarded and the complete action call is emitted after parsing.
+        # A provider must choose exactly one protocol branch per turn.  Most
+        # providers expose plain text immediately and fail closed if a tool
+        # arrives afterwards.  SiliconFlow's Kimi stream can legitimately emit
+        # a visible preamble before its tool_call fragments, so its text is
+        # buffered until the complete response proves that no action exists.
         branch = None  # "text" | "tool"
         default_expression_emitted = False
+        buffer_tool_branch = (
+            tools_enabled
+            and str(self.settings.get("provider", "")).strip().lower()
+            == "siliconflow"
+        )
+        buffered_visible = []
 
         for chunk in response:
             if not chunk.choices:
@@ -415,6 +428,11 @@ class LLMService:
 
             if branch is None and has_tool_delta:
                 branch = "tool"
+                if buffered_visible:
+                    LOGGER.warning(
+                        "Discarded buffered model content before SiliconFlow tool call"
+                    )
+                    buffered_visible.clear()
             if branch == "tool":
                 if has_tool_delta:
                     acc.feed(delta)
@@ -435,6 +453,9 @@ class LLMService:
             if delta.content:
                 visible = answer_filter.feed(delta.content)
                 if visible:
+                    if buffer_tool_branch:
+                        buffered_visible.append(visible)
+                        continue
                     if branch is None:
                         branch = "text"
                     if not default_expression_emitted:
@@ -449,17 +470,23 @@ class LLMService:
             visible_tail = answer_filter.flush()
             if not tools_enabled and visible_tail:
                 yield {"type": "text", "content": visible_tail}
-            elif tools_enabled and branch != "tool" and visible_tail:
-                if branch is None:
-                    branch = "text"
-                if not default_expression_emitted:
-                    yield {
-                        "type": "dialog_expression",
-                        "expression": "neutral",
-                        "intensity": "low",
-                    }
-                    default_expression_emitted = True
-                yield {"type": "text", "content": visible_tail}
+            elif tools_enabled and branch != "tool":
+                if buffer_tool_branch and visible_tail:
+                    buffered_visible.append(visible_tail)
+                final_visible = (
+                    "".join(buffered_visible) if buffer_tool_branch else visible_tail
+                )
+                if final_visible:
+                    if branch is None:
+                        branch = "text"
+                    if not default_expression_emitted:
+                        yield {
+                            "type": "dialog_expression",
+                            "expression": "neutral",
+                            "intensity": "low",
+                        }
+                        default_expression_emitted = True
+                    yield {"type": "text", "content": final_visible}
 
         tool_calls = acc.flush()
         direct_answers = [

@@ -571,6 +571,7 @@ class LLMBrainNode(Node):
                 history,
                 tools_enabled=tools_enabled,
                 max_tokens_override=max_tokens_override,
+                only_action_name=prepared_request.only_action_name,
             )
 
             for data in stream:
