@@ -37,10 +37,44 @@ const state = {
     previewTimer: null,
     previewActive: false,
   },
+  eye: {
+    values: null,
+    validValues: null,
+    commandQueue: Promise.resolve(),
+    debounceTimers: new Map(),
+    blinkTimer: null,
+    statusPollTimer: null,
+    loaded: false,
+    requestInFlight: false,
+    pendingCommands: 0,
+    lastStatusSequence: 0,
+    epoch: 0,
+  },
 };
 
 const CAMERA_PREVIEW_POLL_MS = 180;
 const CAMERA_PREVIEW_STATUS_POLL_MS = 400;
+const EYE_UPDATE_DEBOUNCE_MS = 280;
+const EYE_STATUS_POLL_MS = 900;
+
+const EYE_DEFAULTS = Object.freeze({
+  color: "00E5FF",
+  ringColor: "00CFE8",
+  dotColor: "00BCD0",
+  brightness: 0.85,
+  ringBrightness: 0.65,
+  dotBrightness: 0.45,
+  scale: 1.0,
+  glow: 22,
+  lookX: 0,
+  lookY: 0,
+  breathMs: 2400,
+  autoBlink: true,
+  blinkMs: 4500,
+  ring: true,
+  dots: 48,
+  mood: "dot",
+});
 
 const CAMERA_PREVIEW_PHASES = Object.freeze({
   launching: { label: "启动 Web 采集", step: 0 },
@@ -192,10 +226,454 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(payload.error || `请求失败 (${response.status})`);
     error.details = payload.details || [];
+    error.event = payload.event || null;
     error.status = response.status;
     throw error;
   }
   return payload;
+}
+
+const EYE_MOOD_LABELS = Object.freeze({ dot: "光点", flame: "小火苗", heart: "爱心" });
+const EYE_OUTPUTS = Object.freeze({
+  brightness: "eye-brightness-value",
+  ringBrightness: "eye-ring-brightness-value",
+  dotBrightness: "eye-dot-brightness-value",
+  glow: "eye-glow-value",
+  scale: "eye-scale-value",
+  lookX: "eye-look-x-value",
+  lookY: "eye-look-y-value",
+  breathMs: "eye-breath-value",
+  blinkMs: "eye-blink-value",
+  dots: "eye-dots-value",
+});
+
+function clampNumber(value, minimum, maximum) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return minimum;
+  return Math.min(maximum, Math.max(minimum, number));
+}
+
+function normalizeEyeColor(value, fallback = "00E5FF") {
+  const normalized = String(value ?? "").trim().replace(/^#/, "").toUpperCase();
+  return /^[0-9A-F]{6}$/.test(normalized) ? normalized : fallback;
+}
+
+function normalizeEyeValue(key, value, fallback = EYE_DEFAULTS[key]) {
+  if (["color", "ringColor", "dotColor"].includes(key)) {
+    return normalizeEyeColor(value, fallback);
+  }
+  if (["autoBlink", "ring"].includes(key)) return Boolean(value);
+  if (key === "mood") return Object.hasOwn(EYE_MOOD_LABELS, value) ? value : fallback;
+  if (["glow"].includes(key)) return Math.round(clampNumber(value, 0, 80));
+  if (["lookX", "lookY"].includes(key)) return Math.round(clampNumber(value, -100, 100));
+  if (["breathMs"].includes(key)) return Math.round(clampNumber(value, 100, 10000) / 100) * 100;
+  if (["blinkMs"].includes(key)) return Math.round(clampNumber(value, 1000, 20000) / 100) * 100;
+  if (key === "dots") return Math.round(clampNumber(value, 0, 96));
+  if (key === "scale") return Math.round(clampNumber(value, 0.5, 2) * 20) / 20;
+  if (["brightness", "ringBrightness", "dotBrightness"].includes(key)) {
+    return Math.round(clampNumber(value, 0, 1) * 100) / 100;
+  }
+  return value ?? fallback;
+}
+
+function mergeEyeState(partial, base = state.eye.values || EYE_DEFAULTS) {
+  const next = { ...EYE_DEFAULTS, ...(base || {}) };
+  if (partial && typeof partial === "object") {
+    const aliases = {
+      centerColor: "color",
+      centerBrightness: "brightness",
+      pupilX: "lookX",
+      pupilY: "lookY",
+      autoBlinkEnabled: "autoBlink",
+      ringEnabled: "ring",
+      dotCount: "dots",
+    };
+    Object.entries(partial).forEach(([rawKey, rawValue]) => {
+      const key = aliases[rawKey] || rawKey;
+      if (Object.hasOwn(EYE_DEFAULTS, key)) next[key] = normalizeEyeValue(key, rawValue, next[key]);
+    });
+  }
+  return next;
+}
+
+function eyeStateFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return {};
+  if (payload.state && typeof payload.state === "object") return payload.state;
+  if (payload.event?.fields && typeof payload.event.fields === "object") return payload.event.fields;
+  return {};
+}
+
+function setEyeControlsEnabled(enabled) {
+  $$('[data-eye-field], [data-eye-mood], [data-eye-action]').forEach((control) => {
+    control.disabled = !enabled;
+  });
+  const reset = $("#eye-reset-button");
+  if (reset) reset.disabled = !enabled;
+}
+
+function eyeOutputText(key, value) {
+  if (["brightness", "ringBrightness", "dotBrightness"].includes(key)) return `${Math.round(Number(value) * 100)}%`;
+  if (key === "glow") return `${value} px`;
+  if (key === "scale") return `${Number(value).toFixed(2)}×`;
+  if (["breathMs", "blinkMs"].includes(key)) return `${value} ms`;
+  return String(value);
+}
+
+function updateEyeOutputs(values = state.eye.values || EYE_DEFAULTS) {
+  Object.entries(EYE_OUTPUTS).forEach(([key, id]) => {
+    const output = $(`#${id}`);
+    if (output) output.textContent = eyeOutputText(key, values[key]);
+  });
+}
+
+function renderEyeFields(values = state.eye.values || EYE_DEFAULTS) {
+  $$('[data-eye-field]').forEach((input) => {
+    const value = values[input.dataset.eyeField];
+    if (input.type === "checkbox") input.checked = Boolean(value);
+    else if (input.type === "color") input.value = `#${normalizeEyeColor(value)}`;
+    else input.value = value ?? "";
+  });
+  $$('[data-eye-mood]').forEach((button) => {
+    const active = button.dataset.eyeMood === values.mood;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-checked", String(active));
+  });
+  updateEyeOutputs(values);
+}
+
+function renderEyeDots(values = state.eye.values || EYE_DEFAULTS) {
+  const container = $("#eye-preview-dots");
+  if (!container) return;
+  const count = Math.max(0, Math.min(96, Math.round(Number(values.dots) || 0)));
+  container.replaceChildren();
+  if (!count) return;
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2 - Math.PI / 2;
+    const dot = document.createElement("span");
+    dot.className = "eye-preview-dot";
+    dot.style.left = `${50 + Math.cos(angle) * 46}%`;
+    dot.style.top = `${50 + Math.sin(angle) * 46}%`;
+    container.append(dot);
+  }
+}
+
+function triggerEyeBlink() {
+  const stage = $("#eye-preview-stage");
+  if (!stage) return;
+  stage.classList.remove("is-blinking");
+  void stage.offsetWidth;
+  stage.classList.add("is-blinking");
+  window.setTimeout(() => stage.classList.remove("is-blinking"), 190);
+}
+
+function restartEyeBlinkTimer(values = state.eye.values || EYE_DEFAULTS) {
+  clearInterval(state.eye.blinkTimer);
+  state.eye.blinkTimer = null;
+  if (!values.autoBlink) return;
+  state.eye.blinkTimer = window.setInterval(triggerEyeBlink, Math.max(1000, Number(values.blinkMs) || 4500));
+}
+
+function updateEyePreview(values = state.eye.values || EYE_DEFAULTS) {
+  const stage = $("#eye-preview-stage");
+  if (!stage) return;
+  stage.style.setProperty("--eye-center-color", `#${normalizeEyeColor(values.color)}`);
+  stage.style.setProperty("--eye-ring-color", `#${normalizeEyeColor(values.ringColor)}`);
+  stage.style.setProperty("--eye-dot-color", `#${normalizeEyeColor(values.dotColor)}`);
+  stage.style.setProperty("--eye-brightness", String(values.brightness));
+  stage.style.setProperty("--eye-ring-brightness", String(values.ringBrightness));
+  stage.style.setProperty("--eye-dot-brightness", String(values.dotBrightness));
+  stage.style.setProperty("--eye-scale", String(values.scale));
+  stage.style.setProperty("--eye-glow", `${values.glow}px`);
+  stage.style.setProperty("--eye-look-x", `${Number(values.lookX) * 0.42}px`);
+  stage.style.setProperty("--eye-look-y", `${Number(values.lookY) * 0.42}px`);
+  stage.style.setProperty("--eye-breath-duration", `${values.breathMs}ms`);
+  stage.dataset.mood = values.mood;
+  stage.setAttribute("aria-label", `眼睛${EYE_MOOD_LABELS[values.mood] || "预览"}`);
+  const ring = $("#eye-preview-ring");
+  if (ring) ring.classList.toggle("is-hidden", !values.ring);
+  const shape = $("#eye-preview-shape");
+  if (shape) shape.className = `eye-preview-shape mood-${values.mood}`;
+  const moodBadge = $("#eye-preview-mood");
+  if (moodBadge) moodBadge.textContent = EYE_MOOD_LABELS[values.mood] || values.mood;
+  renderEyeDots(values);
+  updateEyeOutputs(values);
+  restartEyeBlinkTimer(values);
+}
+
+function renderEyeDeviceState(values = state.eye.values || EYE_DEFAULTS, event = null) {
+  const mood = $("#eye-state-mood");
+  const colors = $("#eye-state-colors");
+  const brightness = $("#eye-state-brightness");
+  const ringDots = $("#eye-state-ring-dots");
+  const response = $("#eye-state-response");
+  if (mood) mood.textContent = EYE_MOOD_LABELS[values.mood] || values.mood;
+  if (colors) colors.textContent = `#${values.color} / #${values.ringColor} / #${values.dotColor}`;
+  if (brightness) brightness.textContent = `${Math.round(values.brightness * 100)}% / ${Math.round(values.ringBrightness * 100)}% / ${Math.round(values.dotBrightness * 100)}%`;
+  if (ringDots) ringDots.textContent = `${values.ring ? "开启" : "关闭"} / ${values.dots}`;
+  if (response && event?.raw) response.textContent = event.raw;
+}
+
+function setEyeFeedback(message, kind = "") {
+  const status = $("#eye-config-status");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `eye-config-status${kind ? ` ${kind}` : ""}`;
+}
+
+function setEyeDeviceOnline(online, text) {
+  const dot = $("#eye-device-dot");
+  const status = $("#eye-device-status");
+  if (dot) dot.className = `status-dot ${online ? "online" : "offline"}`;
+  if (status) status.textContent = text;
+}
+
+function applyEyeState(partial, { event = null, message = "已收到 EYE:STATE" } = {}) {
+  state.eye.values = mergeEyeState(partial);
+  state.eye.validValues = deepClone(state.eye.values);
+  state.eye.loaded = true;
+  renderEyeFields();
+  updateEyePreview();
+  renderEyeDeviceState(state.eye.values, event);
+  setEyeControlsEnabled(true);
+  setEyeDeviceOnline(true, "设备在线");
+  setEyeFeedback(message, "success");
+  if (event?.sequence) state.eye.lastStatusSequence = Math.max(state.eye.lastStatusSequence || 0, event.sequence);
+}
+
+function eyeNumber(value, decimals = 2) {
+  return Number(value).toFixed(decimals).replace(/\.?(0+)$/, "");
+}
+
+function eyeCommandForField(key, values = state.eye.values || EYE_DEFAULTS) {
+  if (["color", "ringColor", "dotColor"].includes(key)) return `eyeconfig:${key}=${normalizeEyeColor(values[key])}`;
+  if (["brightness", "ringBrightness", "dotBrightness", "scale"].includes(key)) return `eyeconfig:${key}=${eyeNumber(values[key])}`;
+  if (["glow", "breathMs", "blinkMs", "dots"].includes(key)) return `eyeconfig:${key}=${Math.round(values[key])}`;
+  if (["autoBlink", "ring"].includes(key)) return `eyeconfig:${key}=${values[key] ? 1 : 0}`;
+  if (key === "mood") return `eyeconfig:mood=${values.mood}`;
+  if (key === "lookX" || key === "lookY") return `eyeaction:look:x=${Math.round(values.lookX)},y=${Math.round(values.lookY)}`;
+  return "";
+}
+
+function applyEyeCommandResult(payload, event = null, affectedKeys = [], sentValues = null) {
+  const partial = eyeStateFromPayload(payload);
+  const currentValues = state.eye.values || EYE_DEFAULTS;
+  const safePartial = { ...partial };
+  if (sentValues) {
+    // A slider can move again while the previous command is waiting for
+    // EYE:OK. Never let an older acknowledgement (including a full-state
+    // echo) overwrite any newer local value; its debounced command will be
+    // sent next.
+    Object.keys(safePartial).forEach((key) => {
+      if (Object.hasOwn(EYE_DEFAULTS, key) && currentValues[key] !== sentValues[key]) {
+        delete safePartial[key];
+      }
+    });
+  }
+  if (Object.keys(safePartial).length) state.eye.values = mergeEyeState(safePartial);
+  if (affectedKeys.length && sentValues) {
+    const accepted = deepClone(state.eye.validValues || EYE_DEFAULTS);
+    affectedKeys.forEach((key) => {
+      if (currentValues[key] === sentValues[key]) accepted[key] = state.eye.values[key];
+    });
+    state.eye.validValues = accepted;
+  } else if (!state.eye.validValues) {
+    state.eye.validValues = deepClone(state.eye.values || EYE_DEFAULTS);
+  }
+  state.eye.loaded = true;
+  renderEyeFields();
+  updateEyePreview();
+  renderEyeDeviceState(state.eye.values, event || payload?.event);
+  setEyeDeviceOnline(true, "设备在线");
+  setEyeFeedback(event?.kind === "ok" ? "设备已确认 EYE:OK" : "命令已发送", "success");
+}
+
+function queueEyeCommand(command, affectedKeys = [], message = "") {
+  const epoch = state.eye.epoch;
+  const operation = async () => {
+    if (epoch !== state.eye.epoch) return;
+    const previous = deepClone(state.eye.validValues || EYE_DEFAULTS);
+    const sentValues = deepClone(state.eye.values || EYE_DEFAULTS);
+    state.eye.pendingCommands = (state.eye.pendingCommands || 0) + 1;
+    setEyeFeedback(message || `正在发送 ${command}`, "pending");
+    try {
+      const payload = await api("/api/eye-config/command", {
+        method: "POST",
+        body: JSON.stringify({ command }),
+      });
+      if (epoch !== state.eye.epoch) return;
+      applyEyeCommandResult(payload, payload.event, affectedKeys, sentValues);
+    } catch (error) {
+      if (epoch !== state.eye.epoch) return;
+      if (affectedKeys.length) {
+        const restored = {};
+        const currentValues = state.eye.values || EYE_DEFAULTS;
+        affectedKeys.forEach((key) => {
+          if (currentValues[key] === sentValues[key]) restored[key] = previous[key];
+        });
+        state.eye.values = mergeEyeState(restored, currentValues);
+        renderEyeFields();
+        updateEyePreview();
+        renderEyeDeviceState(state.eye.values, error.event);
+      }
+      setEyeDeviceOnline(false, error.event?.kind === "err" ? "设备拒绝命令" : "设备响应失败");
+      setEyeFeedback(error.message || "眼睛命令发送失败，已恢复上一次有效值", "error");
+      showToast(error.message || "眼睛命令发送失败", "error");
+    } finally {
+      if (epoch !== state.eye.epoch) return;
+      state.eye.pendingCommands = Math.max(0, (state.eye.pendingCommands || 1) - 1);
+    }
+  };
+  state.eye.commandQueue = state.eye.commandQueue.then(operation, operation);
+  return state.eye.commandQueue;
+}
+
+function scheduleEyeUpdate(key) {
+  clearTimeout(state.eye.debounceTimers.get(key));
+  state.eye.debounceTimers.set(key, window.setTimeout(() => {
+    state.eye.debounceTimers.delete(key);
+    const command = eyeCommandForField(key);
+    if (command) queueEyeCommand(command, key === "lookX" || key === "lookY" ? ["lookX", "lookY"] : [key]);
+  }, EYE_UPDATE_DEBOUNCE_MS));
+}
+
+function handleEyeFieldInput(input) {
+  if (!state.eye.values) state.eye.values = mergeEyeState(EYE_DEFAULTS);
+  const key = input.dataset.eyeField;
+  let value;
+  if (input.type === "checkbox") value = input.checked;
+  else if (input.type === "color") value = normalizeEyeColor(input.value);
+  else if (input.dataset.eyeType === "integer") value = Number.parseInt(input.value, 10);
+  else value = Number.parseFloat(input.value);
+  state.eye.values[key] = normalizeEyeValue(key, value, state.eye.values[key]);
+  updateEyePreview();
+  renderEyeDeviceState(state.eye.values);
+  scheduleEyeUpdate(key);
+}
+
+function handleEyeMood(mood) {
+  if (!Object.hasOwn(EYE_MOOD_LABELS, mood)) return;
+  if (!state.eye.values) state.eye.values = mergeEyeState(EYE_DEFAULTS);
+  state.eye.values.mood = mood;
+  renderEyeFields();
+  updateEyePreview();
+  renderEyeDeviceState(state.eye.values);
+  scheduleEyeUpdate("mood");
+}
+
+function sendEyeAction(action) {
+  const command = `eyeaction:${action}`;
+  if (action === "blink") triggerEyeBlink();
+  queueEyeCommand(command, [], `正在执行 ${action} 动作`);
+}
+
+function eyeDefaultCommandList() {
+  const defaults = EYE_DEFAULTS;
+  return [
+    "color", "ringColor", "dotColor", "brightness", "ringBrightness", "dotBrightness",
+    "scale", "glow", "breathMs", "autoBlink", "blinkMs", "ring", "dots", "mood",
+  ].map((key) => eyeCommandForField(key, defaults)).concat(
+    `eyeaction:look:x=${defaults.lookX},y=${defaults.lookY}`,
+  );
+}
+
+function resetEyeDefaults() {
+  if (!state.eye.values) state.eye.values = mergeEyeState(EYE_DEFAULTS);
+  const previous = deepClone(state.eye.validValues || state.eye.values);
+  state.eye.values = mergeEyeState(EYE_DEFAULTS);
+  renderEyeFields();
+  updateEyePreview();
+  renderEyeDeviceState(state.eye.values);
+  const epoch = state.eye.epoch;
+  const operation = async () => {
+    if (epoch !== state.eye.epoch) return;
+    state.eye.pendingCommands = (state.eye.pendingCommands || 0) + 1;
+    setEyeFeedback("正在逐项恢复设备默认配置…", "pending");
+    try {
+      for (const command of eyeDefaultCommandList()) {
+        await api("/api/eye-config/command", {
+          method: "POST",
+          body: JSON.stringify({ command }),
+        });
+        if (epoch !== state.eye.epoch) return;
+      }
+      const accepted = deepClone(state.eye.validValues || previous);
+      Object.keys(EYE_DEFAULTS).forEach((key) => {
+        if (state.eye.values[key] === EYE_DEFAULTS[key]) accepted[key] = EYE_DEFAULTS[key];
+      });
+      state.eye.validValues = accepted;
+      setEyeDeviceOnline(true, "设备在线");
+      setEyeFeedback("已恢复默认配置", "success");
+      showToast("眼睛默认配置已发送");
+    } catch (error) {
+      if (epoch !== state.eye.epoch) return;
+      const currentValues = state.eye.values || EYE_DEFAULTS;
+      const restored = {};
+      Object.keys(EYE_DEFAULTS).forEach((key) => {
+        if (currentValues[key] === EYE_DEFAULTS[key]) restored[key] = previous[key];
+      });
+      state.eye.values = mergeEyeState(restored, currentValues);
+      state.eye.validValues = deepClone(previous);
+      renderEyeFields();
+      updateEyePreview();
+      renderEyeDeviceState(state.eye.values);
+      setEyeDeviceOnline(false, "默认配置未完成");
+      setEyeFeedback(error.message || "恢复默认配置失败，已恢复上一次有效值", "error");
+      showToast(error.message || "恢复默认配置失败", "error");
+    } finally {
+      if (epoch !== state.eye.epoch) return;
+      state.eye.pendingCommands = Math.max(0, (state.eye.pendingCommands || 1) - 1);
+    }
+  };
+  state.eye.commandQueue = state.eye.commandQueue.then(operation, operation);
+}
+
+async function loadEyeConfig({ quiet = false } = {}) {
+  if (state.eye.requestInFlight) return;
+  const epoch = state.eye.epoch;
+  state.eye.requestInFlight = true;
+  setEyeFeedback("正在发送 eyeconfig:query…", "pending");
+  try {
+    const payload = await api("/api/eye-config/query", { method: "POST", body: JSON.stringify({}) });
+    if (epoch !== state.eye.epoch) return;
+    applyEyeState(eyeStateFromPayload(payload), { event: payload.event, message: "已收到 EYE:STATE，控件已回显" });
+    startEyeStatusPolling();
+    if (!quiet) showToast("已读取眼睛设备配置");
+  } catch (error) {
+    if (epoch !== state.eye.epoch) return;
+    setEyeDeviceOnline(false, "眼睛设备未响应");
+    setEyeFeedback(error.message || "眼睛设备查询失败", "error");
+    if (!quiet) showToast(error.message || "眼睛设备查询失败", "error");
+  } finally {
+    if (epoch === state.eye.epoch) state.eye.requestInFlight = false;
+  }
+}
+
+async function pollEyeStatus() {
+  if (!state.eye.loaded || state.eye.requestInFlight || state.eye.pendingCommands) return;
+  const epoch = state.eye.epoch;
+  try {
+    const payload = await api("/api/eye-config/status");
+    if (epoch !== state.eye.epoch) return;
+    const event = payload.event;
+    if (!event || Number(event.sequence || 0) <= Number(state.eye.lastStatusSequence || 0)) return;
+    state.eye.lastStatusSequence = Number(event.sequence || 0);
+    if (event.kind === "state") applyEyeState(event.fields, { event, message: "设备状态已更新" });
+    else if (event.kind === "err") {
+      setEyeDeviceOnline(false, "设备拒绝命令");
+      setEyeFeedback(event.message || "设备返回 EYE:ERR", "error");
+    } else {
+      renderEyeDeviceState(state.eye.values, event);
+      setEyeDeviceOnline(true, "设备在线");
+    }
+  } catch (_) {
+    // The command/query endpoints provide the actionable error. Polling is a
+    // best-effort way to catch an unsolicited EYE:STATE and stays quiet here.
+  }
+}
+
+function startEyeStatusPolling() {
+  clearInterval(state.eye.statusPollTimer);
+  state.eye.statusPollTimer = window.setInterval(pollEyeStatus, EYE_STATUS_POLL_MS);
 }
 
 function setCameraPreviewControls(active) {
@@ -765,6 +1243,22 @@ function clearConfigurationView() {
   renderUsbSelectors();
   clearAllDirty();
   clearModuleFeedbacks();
+  state.eye.loaded = false;
+  state.eye.epoch += 1;
+  state.eye.values = null;
+  state.eye.validValues = null;
+  state.eye.requestInFlight = false;
+  state.eye.pendingCommands = 0;
+  state.eye.lastStatusSequence = 0;
+  state.eye.debounceTimers.forEach((timer) => clearTimeout(timer));
+  state.eye.debounceTimers.clear();
+  clearInterval(state.eye.blinkTimer);
+  clearInterval(state.eye.statusPollTimer);
+  state.eye.blinkTimer = null;
+  state.eye.statusPollTimer = null;
+  setEyeControlsEnabled(false);
+  setEyeDeviceOnline(false, "尚未查询设备");
+  setEyeFeedback("正在等待配置服务", "");
 }
 
 function updateDirtyIndicator() {
@@ -1024,6 +1518,11 @@ async function loadConfig() {
     showToast("已读取 config.yaml 当前配置");
     loadUsbDevices({ quiet: true });
     loadMcpTokenStatus();
+    state.eye.values = state.eye.values || mergeEyeState(EYE_DEFAULTS);
+    renderEyeFields();
+    updateEyePreview();
+    setEyeControlsEnabled(true);
+    loadEyeConfig({ quiet: true });
   } catch (error) {
     clearConfigurationView();
     setConfigControlsEnabled(false);
@@ -2337,7 +2836,19 @@ function bindEvents() {
     $$(".tab").forEach((item) => item.classList.toggle("active", item === tab));
     $$(".panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === tab.dataset.tab));
     if (tab.dataset.tab === "choreography" && !state.choreography.loaded) loadChoreographyWorkspace();
+    if (tab.dataset.tab === "eyes" && !state.eye.loaded && !state.eye.requestInFlight) loadEyeConfig();
   }));
+  $$('[data-eye-field]').forEach((input) => {
+    input.addEventListener(input.type === "checkbox" ? "change" : "input", () => handleEyeFieldInput(input));
+  });
+  $$('[data-eye-mood]').forEach((button) => {
+    button.addEventListener("click", () => handleEyeMood(button.dataset.eyeMood));
+  });
+  $$('[data-eye-action]').forEach((button) => {
+    button.addEventListener("click", () => sendEyeAction(button.dataset.eyeAction));
+  });
+  $("#eye-query-button").addEventListener("click", () => loadEyeConfig());
+  $("#eye-reset-button").addEventListener("click", resetEyeDefaults);
   $$('[data-path]').forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
     markDirty(input.closest("[data-module]")?.dataset.module);
   }));
@@ -2498,6 +3009,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#access-token").value = sessionStorage.getItem("waliConfigToken") || DEFAULT_ACCESS_TOKEN;
   prepareModuleFeedbacks();
   setConfigControlsEnabled(false);
+  state.eye.values = mergeEyeState(EYE_DEFAULTS);
+  renderEyeFields();
+  updateEyePreview();
+  setEyeControlsEnabled(false);
   bindEvents();
   loadConfig();
   loadChoreographyWorkspace();

@@ -61,6 +61,11 @@ class SerialBridge:
         self._registered_netcfg_sequences = set()
         self._reader_stop = threading.Event()
         self._reader_thread = None
+        # Protocol-specific consumers (currently the eye configuration RPC)
+        # receive complete non-NETCFG lines from this same reader.  The bridge
+        # remains the only owner of the physical serial port.
+        self._line_listeners = set()
+        self._line_listener_lock = threading.RLock()
         
         # 🌟 新增：状态机与时间戳管理
         self.last_send_time = 0.0      # 上次成功发送数据的时间戳
@@ -194,12 +199,36 @@ class SerialBridge:
                 line = buffer.decode("utf-8", errors="replace")
                 buffer.clear()
                 sequence = self._netcfg_sequence(line)
-                if sequence is None:
-                    continue
-                with self._response_condition:
-                    if sequence in self._registered_netcfg_sequences:
-                        self._netcfg_responses[sequence].append(line)
-                        self._response_condition.notify_all()
+                if sequence is not None:
+                    with self._response_condition:
+                        if sequence in self._registered_netcfg_sequences:
+                            self._netcfg_responses[sequence].append(line)
+                            self._response_condition.notify_all()
+                self._notify_line_listeners(line)
+
+    def add_line_listener(self, callback):
+        """Register a callback for complete lines read from the shared port.
+
+        This is intentionally a small observation hook rather than another
+        serial API.  The reader thread still owns all physical reads, and a
+        slow or malformed listener is isolated from the serial loop.
+        """
+        with self._line_listener_lock:
+            self._line_listeners.add(callback)
+
+    def remove_line_listener(self, callback):
+        with self._line_listener_lock:
+            self._line_listeners.discard(callback)
+
+    def _notify_line_listeners(self, line):
+        with self._line_listener_lock:
+            listeners = tuple(self._line_listeners)
+        for callback in listeners:
+            try:
+                callback(line)
+            except Exception as exc:
+                # A protocol observer must never terminate the sole reader.
+                print(f"⚠️ [Serial Bridge] 串口响应监听器失败: {exc}")
 
     def _mark_disconnected(self, stream):
         with self._connection_lock:

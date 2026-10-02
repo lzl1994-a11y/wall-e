@@ -8,13 +8,14 @@
 
 动作分发由 sequence_ros_node 负责。serial_mcu 模式下运动数据由
 hardware_bridge_node 发送；ubuntu_i2c 模式下本节点只负责屏幕通信。
-本节点只做串口透传，不做任何业务解析。
+  本节点只做串口透传；眼睛配置和 NETCFG 仅做必要的协议路由与回包关联。
 """
 
 import json
 import threading
 import time
 import uuid
+from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -31,6 +32,14 @@ from services.hardware.esp32_netcfg import (
 )
 from services.hardware.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
 from services.audio.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
+from services.hardware.eyeconfig_rpc import (
+    EYE_REQUEST_TOPIC,
+    EYE_RESPONSE_TOPIC,
+    EYE_STATUS_TOPIC,
+    EyeConfigError,
+    parse_eye_response,
+    validate_eye_command,
+)
 
 
 class SerialNode(Node):
@@ -45,6 +54,11 @@ class SerialNode(Node):
         self._tft_preview_ready = threading.Event()
         self._music_active = False
         self._last_user_turn_id = ""
+        self._eye_request_lock = threading.Lock()
+        self._eye_response_condition = threading.Condition()
+        self._eye_events = deque(maxlen=64)
+        self._eye_event_sequence = 0
+        self._last_eye_state = {}
 
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')
@@ -74,6 +88,10 @@ class SerialNode(Node):
             ),
         )
         self.create_subscription(String, REQUEST_TOPIC, self.netcfg_request_callback, 10)
+        self._eye_response_publisher = self.create_publisher(String, EYE_RESPONSE_TOPIC, 10)
+        self._eye_status_publisher = self.create_publisher(String, EYE_STATUS_TOPIC, 20)
+        self.create_subscription(String, EYE_REQUEST_TOPIC, self.eyeconfig_request_callback, 10)
+        self.bridge.add_line_listener(self._on_serial_line)
         self._tft_ready_subscription = self.create_subscription(
             String,
             "tft_preview_ready",
@@ -286,6 +304,116 @@ class SerialNode(Node):
             self.get_logger().debug(f'[Serial] TFT cmd forwarded: {msg.data.strip()}')
 
     # ------------------------------------------------------------------
+    # eyeconfig_request: web eye configuration -> shared serial owner
+    # ------------------------------------------------------------------
+    def _on_serial_line(self, line):
+        """Observe EYE replies without opening a second serial connection."""
+        event = parse_eye_response(line)
+        if event is None:
+            return
+        with self._eye_response_condition:
+            self._eye_event_sequence += 1
+            sequence = self._eye_event_sequence
+            event["sequence"] = sequence
+            self._eye_events.append((sequence, event))
+            if event.get("kind") == "state":
+                self._last_eye_state.update(event.get("fields") or {})
+            self._eye_response_condition.notify_all()
+        self._eye_status_publisher.publish(
+            String(data=json.dumps({"event": event}, ensure_ascii=False, separators=(",", ":")))
+        )
+
+    def eyeconfig_request_callback(self, message):
+        try:
+            request = json.loads(message.data)
+            if not isinstance(request, dict):
+                return
+            request_id = request.get("request_id")
+            command = validate_eye_command(request.get("command"))
+            expected = request.get("expected")
+        except (AttributeError, TypeError, json.JSONDecodeError, EyeConfigError) as exc:
+            request_id = request.get("request_id") if isinstance(locals().get("request"), dict) else ""
+            self._publish_eye_response(
+                request_id,
+                ok=False,
+                error=str(exc) or "眼睛命令格式无效",
+            )
+            return
+        if not isinstance(request_id, str) or not request_id or expected not in {"state", "ack"}:
+            return
+        if not self._eye_request_lock.acquire(blocking=False):
+            self._publish_eye_response(request_id, ok=False, error="已有眼睛配置命令正在执行")
+            return
+        threading.Thread(
+            target=self._run_eyeconfig_request,
+            args=(request_id, command, expected),
+            name="eyeconfig-request",
+            daemon=True,
+        ).start()
+
+    def _wait_for_eye_event(self, after_sequence, expected, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        with self._eye_response_condition:
+            while True:
+                for sequence, event in self._eye_events:
+                    if sequence <= after_sequence:
+                        continue
+                    kind = event.get("kind")
+                    if kind == "err" or (expected == "state" and kind == "state") or (
+                        expected == "ack" and kind == "ok"
+                    ):
+                        return event
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._shutdown_event.is_set():
+                    return None
+                self._eye_response_condition.wait(remaining)
+
+    def _run_eyeconfig_request(self, request_id, command, expected):
+        response = {"request_id": request_id, "ok": False}
+        try:
+            with self._eye_response_condition:
+                after_sequence = self._eye_event_sequence
+            if not self.bridge.send_raw(command + "\n", wake_screen=False):
+                raise RuntimeError("串口未连接，眼睛命令未发送")
+            event = self._wait_for_eye_event(after_sequence, expected)
+            if event is None:
+                raise RuntimeError("等待眼睛设备响应超时")
+            response["event"] = event
+            if event.get("kind") == "err":
+                response["error"] = event.get("message") or "眼睛设备拒绝了命令"
+            else:
+                response["ok"] = True
+                if expected == "state":
+                    with self._eye_response_condition:
+                        state = dict(self._last_eye_state)
+                    response["state"] = state or dict(event.get("fields") or {})
+                elif event.get("fields"):
+                    # An EYE:OK line may optionally echo the accepted fields.
+                    # Do not attach the previous query snapshot here: doing
+                    # so would overwrite a just-accepted browser value with
+                    # stale state when firmware only returns a bare EYE:OK.
+                    response["state"] = dict(event["fields"])
+        except Exception as exc:
+            response["error"] = str(exc)
+        finally:
+            try:
+                self._publish_eye_response(**response)
+            finally:
+                self._eye_request_lock.release()
+
+    def _publish_eye_response(self, request_id, *, ok=False, error="", event=None, state=None):
+        body = {"request_id": request_id, "ok": bool(ok)}
+        if error:
+            body["error"] = str(error)
+        if isinstance(event, dict):
+            body["event"] = event
+        if isinstance(state, dict):
+            body["state"] = state
+        self._eye_response_publisher.publish(
+            String(data=json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+        )
+
+    # ------------------------------------------------------------------
     # pca9685_raw: 硬件 15 通道原始值（原 hardware_bridge_node 直接写串口）
     # ------------------------------------------------------------------
     def pca9685_callback(self, msg):
@@ -381,6 +509,8 @@ class SerialNode(Node):
     def destroy_node(self):
         self.get_logger().info('Closing serial bridge...')
         self._shutdown_event.set()
+        if hasattr(self, 'bridge'):
+            self.bridge.remove_line_listener(self._on_serial_line)
         if hasattr(self, 'bridge'):
             self.bridge.close()
         super().destroy_node()

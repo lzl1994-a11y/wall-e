@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>WALI 控制台 · 配置中心</title>
-  <link rel="stylesheet" href="/styles.css?v=20260925-choreography-preview">
+  <link rel="stylesheet" href="/styles.css?v=20261002-eye-config">
 </head>
 <body>
   <div class="shell">
@@ -48,6 +48,7 @@
       <button class="tab active" data-tab="runtime" type="button">运行</button>
       <button class="tab" data-tab="conversation" type="button">对话</button>
       <button class="tab" data-tab="hardware" type="button">硬件</button>
+      <button class="tab" data-tab="eyes" type="button">眼睛配置</button>
       <button class="tab" data-tab="choreography" type="button">动作编排</button>
       <button class="tab" data-tab="servos" type="button">舵机</button>
       <button class="tab" data-tab="motors" type="button">电机</button>
@@ -415,6 +416,93 @@
         </div>
       </section>
 
+      <section class="panel" data-panel="eyes">
+        <div class="section-heading">
+          <div><p class="eyebrow">EYE DISPLAY / LIVE DEVICE</p><h2>眼睛配置</h2></div>
+          <p>配置会实时发送到下位机串口。页面预览只在浏览器中运行，设备回传 EYE:STATE 后会自动回显。</p>
+        </div>
+        <div class="eye-layout">
+          <article class="card eye-preview-card">
+            <div class="card-heading-row">
+              <div><h3>眼睛 Web 实时预览</h3><p class="card-subtitle">光点、火苗和爱心会按当前参数动态呼吸与眨眼。</p></div>
+              <span id="eye-preview-mood" class="eye-mood-badge">光点</span>
+            </div>
+            <div class="eye-preview-shell">
+              <div id="eye-preview-stage" class="eye-preview-stage" data-mood="dot" aria-label="眼睛动态预览">
+                <div class="eye-preview-glow" aria-hidden="true"></div>
+                <div id="eye-preview-ring" class="eye-preview-ring" aria-hidden="true"></div>
+                <div id="eye-preview-dots" class="eye-preview-dots" aria-hidden="true"></div>
+                <div id="eye-preview-center" class="eye-preview-center">
+                  <div id="eye-preview-shape" class="eye-preview-shape mood-dot" aria-hidden="true">
+                    <span class="eye-preview-pupil"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="eye-preview-legend"><span><i class="legend-swatch center"></i>中心</span><span><i class="legend-swatch ring"></i>圆环</span><span><i class="legend-swatch dots"></i>点阵</span></div>
+          </article>
+
+          <article class="card eye-device-card">
+            <div class="card-heading-row"><div><h3>当前设备状态</h3><p class="card-subtitle">最近一次串口响应与设备配置。</p></div><button id="eye-query-button" class="button secondary small" type="button">重新查询</button></div>
+            <div class="eye-device-state" aria-live="polite"><span id="eye-device-dot" class="status-dot offline"></span><strong id="eye-device-status">尚未查询设备</strong></div>
+            <dl class="eye-device-meta">
+              <div><dt>设备心情</dt><dd id="eye-state-mood">—</dd></div>
+              <div><dt>颜色</dt><dd id="eye-state-colors">—</dd></div>
+              <div><dt>亮度</dt><dd id="eye-state-brightness">—</dd></div>
+              <div><dt>圆环 / 点阵</dt><dd id="eye-state-ring-dots">—</dd></div>
+              <div><dt>响应</dt><dd id="eye-state-response">—</dd></div>
+            </dl>
+            <p id="eye-config-status" class="eye-config-status" aria-live="polite">正在等待设备查询。</p>
+          </article>
+
+          <article class="card span-two eye-config-card">
+            <div class="card-heading-row"><div><h3>中心与点阵</h3><p class="card-subtitle">颜色使用十六进制 RGB；滑块松手后经过短暂 debounce 再发送。</p></div><span class="eye-live-indicator">LIVE CONFIG</span></div>
+            <div class="eye-mood-picker" id="eye-mood-picker" role="radiogroup" aria-label="中心心情">
+              <button type="button" class="eye-mood-option active" data-eye-mood="dot" role="radio" aria-checked="true"><span class="mood-icon dot-icon"></span><strong>光点</strong><small>默认中心</small></button>
+              <button type="button" class="eye-mood-option" data-eye-mood="flame" role="radio" aria-checked="false"><span class="mood-icon flame-icon">✦</span><strong>小火苗</strong><small>动态火焰</small></button>
+              <button type="button" class="eye-mood-option" data-eye-mood="heart" role="radio" aria-checked="false"><span class="mood-icon heart-icon">♥</span><strong>爱心</strong><small>动态心跳</small></button>
+            </div>
+            <div class="form-grid eye-form-grid">
+              <label class="field eye-color-field"><span>中心颜色</span><input id="eye-color" data-eye-field="color" type="color" value="#00E5FF"></label>
+              <label class="field eye-color-field"><span>圆环颜色</span><input id="eye-ring-color" data-eye-field="ringColor" type="color" value="#00CFE8"></label>
+              <label class="field eye-color-field"><span>点阵颜色</span><input id="eye-dot-color" data-eye-field="dotColor" type="color" value="#00BCD0"></label>
+              <label class="field eye-range-field"><span>中心亮度 <output id="eye-brightness-value">85%</output></span><input id="eye-brightness" data-eye-field="brightness" data-eye-type="number" type="range" min="0" max="1" step="0.01" value="0.85"></label>
+              <label class="field eye-range-field"><span>圆环亮度 <output id="eye-ring-brightness-value">65%</output></span><input id="eye-ring-brightness" data-eye-field="ringBrightness" data-eye-type="number" type="range" min="0" max="1" step="0.01" value="0.65"></label>
+              <label class="field eye-range-field"><span>点阵亮度 <output id="eye-dot-brightness-value">45%</output></span><input id="eye-dot-brightness" data-eye-field="dotBrightness" data-eye-type="number" type="range" min="0" max="1" step="0.01" value="0.45"></label>
+              <label class="field eye-range-field"><span>光晕大小 <output id="eye-glow-value">22 px</output></span><input id="eye-glow" data-eye-field="glow" data-eye-type="integer" type="range" min="0" max="80" step="1" value="22"></label>
+              <label class="field eye-range-field"><span>中心图形缩放 <output id="eye-scale-value">1.00×</output></span><input id="eye-scale" data-eye-field="scale" data-eye-type="number" type="range" min="0.5" max="2" step="0.05" value="1"></label>
+            </div>
+          </article>
+
+          <article class="card eye-motion-card">
+            <div class="card-heading-row"><div><h3>动作与节奏</h3><p class="card-subtitle">位置和周期也会同步到设备。</p></div></div>
+            <div class="form-grid">
+              <label class="field eye-range-field"><span>瞳孔 X 位置 <output id="eye-look-x-value">0</output></span><input id="eye-look-x" data-eye-field="lookX" data-eye-type="integer" type="range" min="-100" max="100" step="1" value="0"></label>
+              <label class="field eye-range-field"><span>瞳孔 Y 位置 <output id="eye-look-y-value">0</output></span><input id="eye-look-y" data-eye-field="lookY" data-eye-type="integer" type="range" min="-100" max="100" step="1" value="0"></label>
+              <label class="field eye-range-field"><span>呼吸周期 <output id="eye-breath-value">2400 ms</output></span><input id="eye-breath" data-eye-field="breathMs" data-eye-type="integer" type="range" min="100" max="10000" step="100" value="2400"></label>
+              <label class="field eye-range-field"><span>自动眨眼周期 <output id="eye-blink-value">4500 ms</output></span><input id="eye-blink" data-eye-field="blinkMs" data-eye-type="integer" type="range" min="1000" max="20000" step="100" value="4500"></label>
+              <label class="field eye-range-field"><span>点阵数量 <output id="eye-dots-value">48</output></span><input id="eye-dots" data-eye-field="dots" data-eye-type="integer" type="range" min="0" max="96" step="1" value="48"></label>
+            </div>
+            <div class="eye-switches">
+              <label class="switch-row compact"><span><strong>自动眨眼</strong><small>预览与设备按周期自然眨眼</small></span><input id="eye-auto-blink" data-eye-field="autoBlink" type="checkbox" checked><i></i></label>
+              <label class="switch-row compact"><span><strong>圆环</strong><small>显示或隐藏外侧圆环</small></span><input id="eye-ring" data-eye-field="ring" type="checkbox" checked><i></i></label>
+            </div>
+          </article>
+
+          <article class="card eye-actions-card">
+            <div class="card-heading-row"><div><h3>手动控制</h3><p class="card-subtitle">动作命令不会改变保存的配置。</p></div></div>
+            <div class="eye-action-grid">
+              <button class="button secondary" type="button" data-eye-action="blink">手动眨眼</button>
+              <button class="button secondary" type="button" data-eye-action="zoom">手动缩放</button>
+              <button class="button secondary" type="button" data-eye-action="dot">光点动作</button>
+              <button class="button secondary" type="button" data-eye-action="flame">火苗动作</button>
+              <button class="button secondary" type="button" data-eye-action="heart">爱心动作</button>
+              <button id="eye-reset-button" class="button danger" type="button">恢复默认配置</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
       <section class="panel" data-panel="choreography">
         <div class="section-heading choreography-heading">
           <div><p class="eyebrow">MOTION TIMELINE</p><h2>动作编排</h2></div>
@@ -544,6 +632,6 @@
     <div><strong>配置未保存</strong><button id="close-error" type="button" aria-label="关闭">×</button></div>
     <ul id="error-list"></ul>
   </div>
-  <script src="/app.js?v=20260927-choreography-throttle" defer></script>
+  <script src="/app.js?v=20261002-eye-config" defer></script>
 </body>
 </html>

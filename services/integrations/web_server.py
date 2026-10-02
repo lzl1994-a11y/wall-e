@@ -40,6 +40,11 @@ from services.hardware.esp32_netcfg import (
     validate_network_payload,
 )
 from services.hardware.esp32_netcfg_rpc import Esp32NetworkRpcClient
+from services.hardware.eyeconfig_rpc import (
+    EyeConfigError,
+    EyeConfigRpcClient,
+    validate_eye_command,
+)
 from services.motion.choreography import (
     MAX_AUDIO_BYTES,
     ChoreographyError,
@@ -912,6 +917,10 @@ class ConfigWebServer(ThreadingHTTPServer):
         # in a non-ROS test or standalone maintenance environment.
         self.network_configurator = network_configurator
         self._network_configurator_lock = threading.Lock()
+        # Created only when the eye page is opened.  The web process still
+        # never owns or opens the physical ESP32 serial port.
+        self.eye_configurator = None
+        self._eye_configurator_lock = threading.Lock()
         super().__init__(server_address, handler_class)
         try:
             self.camera_preview = CameraPreview(self.store.path)
@@ -925,6 +934,12 @@ class ConfigWebServer(ThreadingHTTPServer):
                 self.network_configurator = Esp32NetworkRpcClient()
             return self.network_configurator
 
+    def get_eye_configurator(self) -> EyeConfigRpcClient:
+        with self._eye_configurator_lock:
+            if self.eye_configurator is None:
+                self.eye_configurator = EyeConfigRpcClient()
+            return self.eye_configurator
+
     def server_close(self) -> None:
         preview = getattr(self, "camera_preview", None)
         if preview is not None:
@@ -932,6 +947,9 @@ class ConfigWebServer(ThreadingHTTPServer):
         choreography_preview = getattr(self, "choreography_preview", None)
         if choreography_preview is not None:
             choreography_preview.close()
+        eye_configurator = getattr(self, "eye_configurator", None)
+        if eye_configurator is not None and hasattr(eye_configurator, "close"):
+            eye_configurator.close()
         configurator = getattr(self, "network_configurator", None)
         if configurator is not None and hasattr(configurator, "close"):
             configurator.close()
@@ -1274,6 +1292,13 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_bytes(HTTPStatus.OK, frame, "image/jpeg")
             return
+        if route == "/api/eye-config/status":
+            if not self._require_api_auth():
+                return
+            configurator = self.server.eye_configurator
+            status = configurator.status() if configurator is not None else {}
+            self._send_json(HTTPStatus.OK, {"ok": True, **status})
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -1286,6 +1311,8 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             "/api/camera-preview/stop",
             "/api/esp32-network/save-and-apply",
             "/api/esp32-network/query",
+            "/api/eye-config/query",
+            "/api/eye-config/command",
             "/api/choreographies",
             "/api/choreographies/validate",
             "/api/choreographies/preview",
@@ -1450,6 +1477,42 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
             self._send_json(HTTPStatus.OK, {"ok": True, **result})
+            return
+
+        if route == "/api/eye-config/query":
+            try:
+                result = self.server.get_eye_configurator().query()
+            except EyeConfigError as exc:
+                status = (
+                    HTTPStatus.BAD_REQUEST
+                    if exc.kind in {"invalid", "device"}
+                    else HTTPStatus.SERVICE_UNAVAILABLE
+                )
+                body = {"ok": False, "error": str(exc)}
+                if exc.event is not None:
+                    body["event"] = exc.event
+                self._send_json(status, body)
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, **result})
+            return
+
+        if route == "/api/eye-config/command":
+            command = payload.get("command") if isinstance(payload, dict) else None
+            try:
+                command = validate_eye_command(command)
+                result = self.server.get_eye_configurator().command(command)
+            except EyeConfigError as exc:
+                status = (
+                    HTTPStatus.BAD_REQUEST
+                    if exc.kind in {"invalid", "device"}
+                    else HTTPStatus.SERVICE_UNAVAILABLE
+                )
+                body = {"ok": False, "error": str(exc)}
+                if exc.event is not None:
+                    body["event"] = exc.event
+                self._send_json(status, body)
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, "command": command, **result})
             return
 
         if route == "/api/access-token":

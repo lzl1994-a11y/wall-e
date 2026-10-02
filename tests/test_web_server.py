@@ -181,6 +181,72 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"WALI", body)
 
+    def test_eye_configuration_page_exposes_live_controls_and_preview(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        for marker in (
+            'data-tab="eyes"',
+            'data-panel="eyes"',
+            'data-eye-field="color"',
+            'data-eye-field="ringColor"',
+            'data-eye-field="dotColor"',
+            'data-eye-field="autoBlink"',
+            'data-eye-field="lookX"',
+            'data-eye-field="lookY"',
+            'data-eye-action="blink"',
+            'data-eye-action="zoom"',
+            'id="eye-reset-button"',
+            'id="eye-preview-stage"',
+            'data-eye-mood="flame"',
+            'data-eye-mood="heart"',
+        ):
+            self.assertIn(marker, html)
+        app_js = (DEFAULT_STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn('eyeconfig:query', app_js)
+        self.assertIn("EYE_UPDATE_DEBOUNCE_MS", app_js)
+
+    def test_eye_configuration_api_reuses_serial_owner_rpc(self):
+        eye = MagicMock()
+        eye.query.return_value = {
+            "event": {"kind": "state", "fields": {"mood": "heart"}},
+            "state": {"mood": "heart", "dots": 48},
+        }
+        eye.command.return_value = {
+            "event": {"kind": "ok", "raw": "EYE:OK"},
+            "state": {"mood": "heart", "dots": 48},
+        }
+        eye.status.return_value = {"event": {"kind": "ok", "raw": "EYE:OK"}}
+        self.server.eye_configurator = eye
+
+        status, body = self.request("/api/eye-config/query", method="POST", payload={})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"]["mood"], "heart")
+
+        status, body = self.request(
+            "/api/eye-config/command",
+            method="POST",
+            payload={"command": "eyeconfig:color=00e5ff"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["command"], "eyeconfig:color=00E5FF")
+        eye.command.assert_called_once_with("eyeconfig:color=00E5FF")
+
+        status, body = self.request("/api/eye-config/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["event"]["raw"], "EYE:OK")
+
+    def test_eye_configuration_api_rejects_unlisted_serial_commands(self):
+        eye = MagicMock()
+        self.server.eye_configurator = eye
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/eye-config/command",
+                method="POST",
+                payload={"command": "screen_dialog:secret"},
+            )
+        self.assertEqual(context.exception.code, 400)
+        eye.command.assert_not_called()
+
     def test_choreography_editor_is_exposed_in_static_page(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")
@@ -190,7 +256,7 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn('id="choreography-audio-play"', html)
         self.assertIn('id="segment-left-throttle"', html)
         self.assertIn('id="segment-right-throttle"', html)
-        self.assertIn("本版本只保存与校验，不会驱动真机", html)
+        self.assertIn("点击实时演示时只执行舵机，履带轨道仍会跳过", html)
 
     def test_choreography_audio_can_be_uploaded_and_streamed(self):
         audio_bytes = b"RIFF" + b"\x00" * 40
