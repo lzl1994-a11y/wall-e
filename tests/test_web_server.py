@@ -190,7 +190,7 @@ class ConfigWebServerTests(unittest.TestCase):
             'data-eye-field="color"',
             'data-eye-field="ringColor"',
             'data-eye-field="dotColor"',
-            'data-eye-field="autoBlink"',
+            'id="eye-auto-blink" type="checkbox" checked',
             'data-eye-field="lookX"',
             'data-eye-field="lookY"',
             'data-eye-action="blink"',
@@ -234,6 +234,16 @@ class ConfigWebServerTests(unittest.TestCase):
         status, body = self.request("/api/eye-config/status")
         self.assertEqual(status, 200)
         self.assertEqual(body["event"]["raw"], "EYE:OK")
+
+    def test_eye_input_schema_is_authenticated_and_matches_validator(self):
+        from services.hardware.eyeconfig_rpc import EYE_FIELD_LIMITS
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/eye-config/schema", token=None)
+        self.assertEqual(context.exception.code, 401)
+        status, body = self.request("/api/eye-config/schema")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["limits"], EYE_FIELD_LIMITS)
 
     def test_eye_configuration_api_rejects_unlisted_serial_commands(self):
         eye = MagicMock()

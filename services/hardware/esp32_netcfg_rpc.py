@@ -1,8 +1,7 @@
-"""Ephemeral ROS topic RPC between the config web process and serial owner.
+"""ROS topic RPC shared by the web clients of the sole serial owner.
 
-Passwords appear only in the one request message sent over the local ROS graph;
-they are never persisted, logged, or sent back in a response.  This avoids a
-second process opening the ESP32 USB serial port.
+Protocol clients retain their own topics and codecs.  Discovery, request
+correlation and executor lifetime are implemented once; no client opens USB.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from typing import Any
 
 try:
     from services.hardware.esp32_netcfg import NetworkConfigError
-except ImportError:  # Supports direct execution from services/hardware.
+except ImportError:
     from esp32_netcfg import NetworkConfigError
 
 REQUEST_TOPIC = "esp32_netcfg_request"
@@ -23,141 +22,177 @@ RESPONSE_TOPIC = "esp32_netcfg_response"
 WEB_RPC_TIMEOUT_SECONDS = 90.0
 ROS_DISCOVERY_TIMEOUT_SECONDS = 5.0
 
+_context_lock = threading.Lock()
+_context_users = 0
+_context_owned = False
 
-class Esp32NetworkRpcClient:
-    """Blocking, thread-safe client used by HTTP handlers in config_web."""
 
-    def __init__(
-        self,
-        *,
-        monotonic=time.monotonic,
-        discovery_timeout_seconds: float = ROS_DISCOVERY_TIMEOUT_SECONDS,
-    ) -> None:
+class _SerialOwnerRpcClient:
+    """Private transport used by the two serial-owner protocol clients."""
+
+    _request_topic = REQUEST_TOPIC
+    _response_topic = RESPONSE_TOPIC
+    _node_name = "walle_netcfg_web_client"
+    _error_type = NetworkConfigError
+
+    def __init__(self, *, monotonic=time.monotonic,
+                 discovery_timeout_seconds=ROS_DISCOVERY_TIMEOUT_SECONDS):
         try:
             import rclpy
             from rclpy.executors import SingleThreadedExecutor
             from rclpy.node import Node
             from std_msgs.msg import String
         except ImportError as exc:
-            raise NetworkConfigError("ROS 串口服务不可用；请通过主程序启动配置网页") from exc
+            raise self._error_type("ROS 串口服务不可用；请通过主程序启动配置网页") from exc
         self._rclpy = rclpy
         self._String = String
-        if not rclpy.ok():
-            rclpy.init(args=None)
-            self._owns_rclpy_context = True
-        else:
-            self._owns_rclpy_context = False
-        self._node = Node("walle_netcfg_web_client")
-        self._publisher = self._node.create_publisher(String, REQUEST_TOPIC, 10)
-        self._response_subscription = self._node.create_subscription(
-            String, RESPONSE_TOPIC, self._on_response, 10
-        )
-        self._executor = SingleThreadedExecutor()
-        self._executor.add_node(self._node)
-        self._pending: dict[str, tuple[threading.Event, dict[str, Any]]] = {}
-        self._lock = threading.Lock()
         self._closed = threading.Event()
+        self._lock = threading.RLock()
+        self._pending: dict[str, tuple[threading.Event, dict[str, Any]]] = {}
+        self._failure = ""
         self._monotonic = monotonic
-        self._discovery_timeout_seconds = discovery_timeout_seconds
-        self._thread = threading.Thread(target=self._spin, name="netcfg-web-rpc", daemon=True)
-        self._thread.start()
+        self._discovery_timeout_seconds = max(0.1, float(discovery_timeout_seconds))
+        self._context_registered = False
+        global _context_users, _context_owned
+        with _context_lock:
+            if not rclpy.ok():
+                rclpy.init(args=None)
+                _context_owned = True
+            _context_users += 1
+            self._context_registered = True
+        try:
+            self._node = Node(self._node_name)
+            self._publisher = self._node.create_publisher(String, self._request_topic, 10)
+            self._response_subscription = self._node.create_subscription(
+                String, self._response_topic, self._on_response, 10
+            )
+            self._executor = SingleThreadedExecutor()
+            self._executor.add_node(self._node)
+            self._thread = threading.Thread(
+                target=self._spin, name=self._node_name, daemon=True
+            )
+            self._thread.start()
+        except Exception as exc:
+            self.close()
+            raise self._error_type("ROS 串口配置服务初始化失败") from exc
 
-    def _spin(self) -> None:
-        while not self._closed.is_set() and self._rclpy.ok():
-            try:
+    def _fail_pending(self, message):
+        with self._lock:
+            self._failure = message
+            for event, result in self._pending.values():
+                result.update(ok=False, error=message)
+                event.set()
+
+    def _spin(self):
+        try:
+            while not self._closed.is_set() and self._rclpy.ok():
                 self._executor.spin_once(timeout_sec=0.2)
-            except Exception:
-                # A malformed DDS message/callback must not permanently stop
-                # the RPC receive loop and turn all later requests into timeouts.
-                if self._closed.is_set():
-                    return
-                self._closed.wait(0.05)
+            if not self._closed.is_set():
+                self._fail_pending("ROS 串口服务上下文已停止")
+        except Exception:
+            if not self._closed.is_set():
+                # Do not log message contents: NETCFG requests contain secrets.
+                self._fail_pending("串口 RPC 接收线程异常，服务已停止")
+                self._node.get_logger().error("串口 RPC 接收线程异常，服务已停止")
 
-    def _on_response(self, message: Any) -> None:
+    def _on_response(self, message):
         try:
             body = json.loads(message.data)
-            if not isinstance(body, dict):
-                return
-            request_id = body.get("request_id")
         except (AttributeError, TypeError, json.JSONDecodeError):
             return
-        with self._lock:
-            pending = self._pending.get(request_id)
-        if pending is None:
+        if not isinstance(body, dict) or not isinstance(body.get("request_id"), str):
             return
-        event, result = pending
-        result.update(body)
-        event.set()
+        with self._lock:
+            pending = self._pending.get(body["request_id"])
+            if pending is not None:
+                event, result = pending
+                result.update(body)
+                event.set()
 
-    def _wait_for_serial_owner(self, deadline: float) -> bool:
-        """Wait for ROS discovery before publishing a volatile one-shot request."""
+    def _wait_for_serial_owner(self, deadline):
         discovery_deadline = min(deadline, self._monotonic() + self._discovery_timeout_seconds)
         while not self._closed.is_set() and self._monotonic() < discovery_deadline:
+            if getattr(self, "_failure", ""):
+                return False
             try:
-                # ROS 2 Humble subscriptions do not expose
-                # ``get_publisher_count()``. Query the graph through Node APIs,
-                # which are supported across the deployed Humble runtime.
-                has_request_subscriber = (
-                    self._node.count_subscribers(REQUEST_TOPIC) >= 1
-                )
-                has_response_publisher = (
-                    self._node.count_publishers(RESPONSE_TOPIC) >= 1
-                )
+                subscriber = self._node.count_subscribers(self._request_topic) >= 1
+                publisher = self._node.count_publishers(self._response_topic) >= 1
             except RuntimeError:
                 return False
-            if has_request_subscriber and has_response_publisher:
+            if subscriber and publisher:
                 return True
-            self._closed.wait(min(0.05, max(0.0, discovery_deadline - self._monotonic())))
+            self._closed.wait(min(0.05, max(0, discovery_deadline - self._monotonic())))
         return False
 
-    def _call(self, operation: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _exchange(self, body, timeout):
         request_id = secrets.token_urlsafe(18)
         event = threading.Event()
-        result: dict[str, Any] = {}
-        deadline = self._monotonic() + WEB_RPC_TIMEOUT_SECONDS
+        result = {}
+        deadline = self._monotonic() + timeout
         with self._lock:
-            if self._closed.is_set():
-                raise NetworkConfigError("ROS 串口服务已停止")
+            if self._closed.is_set() or self._failure:
+                raise self._error_type(self._failure or "ROS 串口服务已停止")
             self._pending[request_id] = (event, result)
         try:
             if not self._wait_for_serial_owner(deadline):
-                raise NetworkConfigError(
-                    "未发现 serial_ros_node 的 ESP32 NETCFG RPC 端点"
-                )
-            # Do not log this JSON: save_and_apply contains Wi-Fi passwords.
-            body = {"request_id": request_id, "operation": operation}
-            if payload is not None:
-                body["payload"] = payload
+                raise self._error_type(self._failure or "未发现 serial_ros_node 的串口 RPC 端点")
             message = self._String()
-            message.data = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+            message.data = json.dumps(
+                {**body, "request_id": request_id}, ensure_ascii=False, separators=(",", ":")
+            )
             self._publisher.publish(message)
             remaining = deadline - self._monotonic()
             if remaining <= 0 or not event.wait(remaining):
-                raise NetworkConfigError("等待串口配置服务超时；请确认 serial_ros_node 正在运行")
-            if not result.get("ok"):
-                raise NetworkConfigError(str(result.get("error") or "设备网络配置失败"))
-            data = result.get("data")
-            return data if isinstance(data, dict) else {}
+                raise self._error_type("等待串口配置服务超时；请确认下位机已连接")
+            return result
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)
+
+    def close(self):
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._fail_pending("ROS 串口服务已停止")
+        thread = getattr(self, "_thread", None)
+        if thread is not None:
+            thread.join(timeout=1.0)
+        executor = getattr(self, "_executor", None)
+        node = getattr(self, "_node", None)
+        try:
+            if executor is not None:
+                if node is not None:
+                    executor.remove_node(node)
+                executor.shutdown(timeout_sec=1.0)
+            if node is not None:
+                node.destroy_node()
+        finally:
+            global _context_users, _context_owned
+            with _context_lock:
+                if self._context_registered:
+                    self._context_registered = False
+                    _context_users -= 1
+                    if _context_users == 0 and _context_owned:
+                        _context_owned = False
+                        if self._rclpy.ok():
+                            self._rclpy.shutdown()
+
+
+class Esp32NetworkRpcClient(_SerialOwnerRpcClient):
+    """Existing NETCFG API, backed by the shared ROS request transport."""
+
+    def _call(self, operation: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = {"operation": operation}
+        if payload is not None:
+            body["payload"] = payload
+        result = self._exchange(body, WEB_RPC_TIMEOUT_SECONDS)
+        if not result.get("ok"):
+            raise NetworkConfigError(str(result.get("error") or "设备网络配置失败"))
+        data = result.get("data")
+        return data if isinstance(data, dict) else {}
 
     def save_and_apply(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._call("save_and_apply", payload)
 
     def query(self) -> dict[str, Any]:
         return self._call("query")
-
-    def close(self) -> None:
-        self._closed.set()
-        self._thread.join(timeout=1)
-        try:
-            self._executor.remove_node(self._node)
-            self._node.destroy_node()
-        except Exception:
-            pass
-        if self._owns_rclpy_context:
-            try:
-                self._rclpy.shutdown()
-            except Exception:
-                pass

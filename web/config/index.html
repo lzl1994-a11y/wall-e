@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>WALI 控制台 · 配置中心</title>
-  <link rel="stylesheet" href="/styles.css?v=20261002-eye-config">
+  <link rel="stylesheet" href="/styles.css?v=20261002-eye-config-fix">
 </head>
 <body>
   <div class="shell">
@@ -484,7 +484,7 @@
               <label class="field eye-range-field"><span>点阵数量 <output id="eye-dots-value">48</output></span><input id="eye-dots" data-eye-field="dots" data-eye-type="integer" type="range" min="0" max="96" step="1" value="48"></label>
             </div>
             <div class="eye-switches">
-              <label class="switch-row compact"><span><strong>自动眨眼</strong><small>预览与设备按周期自然眨眼</small></span><input id="eye-auto-blink" data-eye-field="autoBlink" type="checkbox" checked><i></i></label>
+              <label class="switch-row compact"><span><strong>自动眨眼（Web 预览）</strong><small>默认开启，说话时暂停；设备开关待固件协议接入</small></span><input id="eye-auto-blink" type="checkbox" checked><i></i></label>
               <label class="switch-row compact"><span><strong>圆环</strong><small>显示或隐藏外侧圆环</small></span><input id="eye-ring" data-eye-field="ring" type="checkbox" checked><i></i></label>
             </div>
           </article>
@@ -494,9 +494,6 @@
             <div class="eye-action-grid">
               <button class="button secondary" type="button" data-eye-action="blink">手动眨眼</button>
               <button class="button secondary" type="button" data-eye-action="zoom">手动缩放</button>
-              <button class="button secondary" type="button" data-eye-action="dot">光点动作</button>
-              <button class="button secondary" type="button" data-eye-action="flame">火苗动作</button>
-              <button class="button secondary" type="button" data-eye-action="heart">爱心动作</button>
               <button id="eye-reset-button" class="button danger" type="button">恢复默认配置</button>
             </div>
           </article>
@@ -632,6 +629,6 @@
     <div><strong>配置未保存</strong><button id="close-error" type="button" aria-label="关闭">×</button></div>
     <ul id="error-list"></ul>
   </div>
-  <script src="/app.js?v=20261002-eye-config" defer></script>
+  <script src="/app.js?v=20261002-eye-config-fix" defer></script>
 </body>
 </html>

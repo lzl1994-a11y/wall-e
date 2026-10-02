@@ -41,6 +41,7 @@ from services.hardware.esp32_netcfg import (
 )
 from services.hardware.esp32_netcfg_rpc import Esp32NetworkRpcClient
 from services.hardware.eyeconfig_rpc import (
+    EYE_FIELD_LIMITS,
     EyeConfigError,
     EyeConfigRpcClient,
     validate_eye_command,
@@ -1291,6 +1292,11 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_bytes(HTTPStatus.OK, frame, "image/jpeg")
+            return
+        if route == "/api/eye-config/schema":
+            if not self._require_api_auth():
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, "limits": EYE_FIELD_LIMITS})
             return
         if route == "/api/eye-config/status":
             if not self._require_api_auth():

@@ -49,6 +49,10 @@ const state = {
     pendingCommands: 0,
     lastStatusSequence: 0,
     epoch: 0,
+    limits: null,
+    resetting: false,
+    previewAutoBlink: true,
+    speaking: false,
   },
 };
 
@@ -262,34 +266,21 @@ function normalizeEyeValue(key, value, fallback = EYE_DEFAULTS[key]) {
   if (["color", "ringColor", "dotColor"].includes(key)) {
     return normalizeEyeColor(value, fallback);
   }
-  if (["autoBlink", "ring"].includes(key)) return Boolean(value);
-  if (key === "mood") return Object.hasOwn(EYE_MOOD_LABELS, value) ? value : fallback;
-  if (["glow"].includes(key)) return Math.round(clampNumber(value, 0, 80));
-  if (["lookX", "lookY"].includes(key)) return Math.round(clampNumber(value, -100, 100));
-  if (["breathMs"].includes(key)) return Math.round(clampNumber(value, 100, 10000) / 100) * 100;
-  if (["blinkMs"].includes(key)) return Math.round(clampNumber(value, 1000, 20000) / 100) * 100;
-  if (key === "dots") return Math.round(clampNumber(value, 0, 96));
-  if (key === "scale") return Math.round(clampNumber(value, 0.5, 2) * 20) / 20;
-  if (["brightness", "ringBrightness", "dotBrightness"].includes(key)) {
-    return Math.round(clampNumber(value, 0, 1) * 100) / 100;
+  if (["autoBlink", "ring"].includes(key)) {
+    if ([true, 1, "1", "true"].includes(value)) return true;
+    if ([false, 0, "0", "false"].includes(value)) return false;
+    return fallback;
   }
-  return value ?? fallback;
+  if (key === "mood") return Object.hasOwn(EYE_MOOD_LABELS, value) ? value : fallback;
+  if (value === null || value === "" || typeof value === "boolean") return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 function mergeEyeState(partial, base = state.eye.values || EYE_DEFAULTS) {
   const next = { ...EYE_DEFAULTS, ...(base || {}) };
   if (partial && typeof partial === "object") {
-    const aliases = {
-      centerColor: "color",
-      centerBrightness: "brightness",
-      pupilX: "lookX",
-      pupilY: "lookY",
-      autoBlinkEnabled: "autoBlink",
-      ringEnabled: "ring",
-      dotCount: "dots",
-    };
-    Object.entries(partial).forEach(([rawKey, rawValue]) => {
-      const key = aliases[rawKey] || rawKey;
+    Object.entries(partial).forEach(([key, rawValue]) => {
       if (Object.hasOwn(EYE_DEFAULTS, key)) next[key] = normalizeEyeValue(key, rawValue, next[key]);
     });
   }
@@ -309,6 +300,8 @@ function setEyeControlsEnabled(enabled) {
   });
   const reset = $("#eye-reset-button");
   if (reset) reset.disabled = !enabled;
+  const query = $("#eye-query-button");
+  if (query) query.disabled = state.eye.resetting;
 }
 
 function eyeOutputText(key, value) {
@@ -331,7 +324,17 @@ function renderEyeFields(values = state.eye.values || EYE_DEFAULTS) {
     const value = values[input.dataset.eyeField];
     if (input.type === "checkbox") input.checked = Boolean(value);
     else if (input.type === "color") input.value = `#${normalizeEyeColor(value)}`;
-    else input.value = value ?? "";
+    else {
+      // Preserve device echoes even if firmware reports a value outside the
+      // host's input policy. Editing is still validated before sending.
+      const limit = state.eye.limits?.[input.dataset.eyeField];
+      if (limit) {
+        input.min = Math.min(limit.min, value);
+        input.max = Math.max(limit.max, value);
+        input.step = limit.integer ? "1" : "any";
+      }
+      input.value = value ?? "";
+    }
   });
   $$('[data-eye-mood]').forEach((button) => {
     const active = button.dataset.eyeMood === values.mood;
@@ -344,7 +347,7 @@ function renderEyeFields(values = state.eye.values || EYE_DEFAULTS) {
 function renderEyeDots(values = state.eye.values || EYE_DEFAULTS) {
   const container = $("#eye-preview-dots");
   if (!container) return;
-  const count = Math.max(0, Math.min(96, Math.round(Number(values.dots) || 0)));
+  const count = Math.max(0, Math.min(256, Math.round(Number(values.dots) || 0)));
   container.replaceChildren();
   if (!count) return;
   for (let index = 0; index < count; index += 1) {
@@ -369,8 +372,8 @@ function triggerEyeBlink() {
 function restartEyeBlinkTimer(values = state.eye.values || EYE_DEFAULTS) {
   clearInterval(state.eye.blinkTimer);
   state.eye.blinkTimer = null;
-  if (!values.autoBlink) return;
-  state.eye.blinkTimer = window.setInterval(triggerEyeBlink, Math.max(1000, Number(values.blinkMs) || 4500));
+  if (!state.eye.previewAutoBlink || state.eye.speaking) return;
+  state.eye.blinkTimer = window.setInterval(triggerEyeBlink, Math.max(100, Number(values.blinkMs) || 4500));
 }
 
 function updateEyePreview(values = state.eye.values || EYE_DEFAULTS) {
@@ -400,7 +403,7 @@ function updateEyePreview(values = state.eye.values || EYE_DEFAULTS) {
   restartEyeBlinkTimer(values);
 }
 
-function renderEyeDeviceState(values = state.eye.values || EYE_DEFAULTS, event = null) {
+function renderEyeDeviceState(values = state.eye.validValues || {}, event = null) {
   const mood = $("#eye-state-mood");
   const colors = $("#eye-state-colors");
   const brightness = $("#eye-state-brightness");
@@ -428,27 +431,30 @@ function setEyeDeviceOnline(online, text) {
 }
 
 function applyEyeState(partial, { event = null, message = "已收到 EYE:STATE" } = {}) {
-  state.eye.values = mergeEyeState(partial);
-  state.eye.validValues = deepClone(state.eye.values);
+  const current = state.eye.values || EYE_DEFAULTS;
+  const previous = state.eye.validValues || current;
+  const accepted = mergeEyeState(partial, previous);
+  const next = { ...current };
+  Object.keys(partial).forEach((key) => {
+    if (Object.hasOwn(EYE_DEFAULTS, key) && current[key] === previous[key]) next[key] = accepted[key];
+  });
+  state.eye.validValues = accepted;
+  state.eye.values = next;
   state.eye.loaded = true;
   renderEyeFields();
   updateEyePreview();
-  renderEyeDeviceState(state.eye.values, event);
-  setEyeControlsEnabled(true);
+  renderEyeDeviceState(accepted, event);
+  setEyeControlsEnabled(!state.eye.resetting);
   setEyeDeviceOnline(true, "设备在线");
   setEyeFeedback(message, "success");
   if (event?.sequence) state.eye.lastStatusSequence = Math.max(state.eye.lastStatusSequence || 0, event.sequence);
 }
 
-function eyeNumber(value, decimals = 2) {
-  return Number(value).toFixed(decimals).replace(/\.?(0+)$/, "");
-}
-
 function eyeCommandForField(key, values = state.eye.values || EYE_DEFAULTS) {
   if (["color", "ringColor", "dotColor"].includes(key)) return `eyeconfig:${key}=${normalizeEyeColor(values[key])}`;
-  if (["brightness", "ringBrightness", "dotBrightness", "scale"].includes(key)) return `eyeconfig:${key}=${eyeNumber(values[key])}`;
+  if (["brightness", "ringBrightness", "dotBrightness", "scale"].includes(key)) return `eyeconfig:${key}=${Number(values[key])}`;
   if (["glow", "breathMs", "blinkMs", "dots"].includes(key)) return `eyeconfig:${key}=${Math.round(values[key])}`;
-  if (["autoBlink", "ring"].includes(key)) return `eyeconfig:${key}=${values[key] ? 1 : 0}`;
+  if (key === "ring") return `eyeconfig:ring=${values.ring ? 1 : 0}`;
   if (key === "mood") return `eyeconfig:mood=${values.mood}`;
   if (key === "lookX" || key === "lookY") return `eyeaction:look:x=${Math.round(values.lookX)},y=${Math.round(values.lookY)}`;
   return "";
@@ -457,77 +463,86 @@ function eyeCommandForField(key, values = state.eye.values || EYE_DEFAULTS) {
 function applyEyeCommandResult(payload, event = null, affectedKeys = [], sentValues = null) {
   const partial = eyeStateFromPayload(payload);
   const currentValues = state.eye.values || EYE_DEFAULTS;
-  const safePartial = { ...partial };
-  if (sentValues) {
-    // A slider can move again while the previous command is waiting for
-    // EYE:OK. Never let an older acknowledgement (including a full-state
-    // echo) overwrite any newer local value; its debounced command will be
-    // sent next.
-    Object.keys(safePartial).forEach((key) => {
-      if (Object.hasOwn(EYE_DEFAULTS, key) && currentValues[key] !== sentValues[key]) {
-        delete safePartial[key];
-      }
-    });
-  }
-  if (Object.keys(safePartial).length) state.eye.values = mergeEyeState(safePartial);
-  if (affectedKeys.length && sentValues) {
-    const accepted = deepClone(state.eye.validValues || EYE_DEFAULTS);
-    affectedKeys.forEach((key) => {
-      if (currentValues[key] === sentValues[key]) accepted[key] = state.eye.values[key];
-    });
-    state.eye.validValues = accepted;
-  } else if (!state.eye.validValues) {
-    state.eye.validValues = deepClone(state.eye.values || EYE_DEFAULTS);
-  }
+  const previous = state.eye.validValues || EYE_DEFAULTS;
+  const confirmed = {};
+  affectedKeys.forEach((key) => { confirmed[key] = sentValues[key]; });
+  Object.assign(confirmed, partial);
+  const accepted = mergeEyeState(confirmed, previous);
+  const next = { ...currentValues };
+  Object.keys(confirmed).forEach((key) => {
+    if (!Object.hasOwn(EYE_DEFAULTS, key)) return;
+    const wasSent = affectedKeys.includes(key) && currentValues[key] === sentValues[key];
+    if (wasSent || currentValues[key] === previous[key]) next[key] = accepted[key];
+  });
+  state.eye.validValues = accepted;
+  state.eye.values = next;
   state.eye.loaded = true;
   renderEyeFields();
   updateEyePreview();
-  renderEyeDeviceState(state.eye.values, event || payload?.event);
+  renderEyeDeviceState(accepted, event || payload?.event);
   setEyeDeviceOnline(true, "设备在线");
   setEyeFeedback(event?.kind === "ok" ? "设备已确认 EYE:OK" : "命令已发送", "success");
 }
 
-function queueEyeCommand(command, affectedKeys = [], message = "") {
+function queueEyeOperation(operation) {
   const epoch = state.eye.epoch;
-  const operation = async () => {
-    if (epoch !== state.eye.epoch) return;
-    const previous = deepClone(state.eye.validValues || EYE_DEFAULTS);
-    const sentValues = deepClone(state.eye.values || EYE_DEFAULTS);
-    state.eye.pendingCommands = (state.eye.pendingCommands || 0) + 1;
-    setEyeFeedback(message || `正在发送 ${command}`, "pending");
+  state.eye.pendingCommands += 1;
+  const run = async () => {
     try {
-      const payload = await api("/api/eye-config/command", {
-        method: "POST",
-        body: JSON.stringify({ command }),
-      });
-      if (epoch !== state.eye.epoch) return;
-      applyEyeCommandResult(payload, payload.event, affectedKeys, sentValues);
-    } catch (error) {
-      if (epoch !== state.eye.epoch) return;
-      if (affectedKeys.length) {
-        const restored = {};
-        const currentValues = state.eye.values || EYE_DEFAULTS;
-        affectedKeys.forEach((key) => {
-          if (currentValues[key] === sentValues[key]) restored[key] = previous[key];
-        });
-        state.eye.values = mergeEyeState(restored, currentValues);
-        renderEyeFields();
-        updateEyePreview();
-        renderEyeDeviceState(state.eye.values, error.event);
-      }
-      setEyeDeviceOnline(false, error.event?.kind === "err" ? "设备拒绝命令" : "设备响应失败");
-      setEyeFeedback(error.message || "眼睛命令发送失败，已恢复上一次有效值", "error");
-      showToast(error.message || "眼睛命令发送失败", "error");
+      if (epoch === state.eye.epoch) return await operation(epoch);
     } finally {
-      if (epoch !== state.eye.epoch) return;
-      state.eye.pendingCommands = Math.max(0, (state.eye.pendingCommands || 1) - 1);
+      if (epoch === state.eye.epoch) state.eye.pendingCommands -= 1;
     }
   };
-  state.eye.commandQueue = state.eye.commandQueue.then(operation, operation);
-  return state.eye.commandQueue;
+  const result = state.eye.commandQueue.then(run, run);
+  state.eye.commandQueue = result;
+  return result;
+}
+
+async function sendEyeCommand(command, affectedKeys, sentValues, epoch) {
+  try {
+    const payload = await api("/api/eye-config/command", {
+      method: "POST", body: JSON.stringify({ command }),
+    });
+    if (epoch === state.eye.epoch) applyEyeCommandResult(payload, payload.event, affectedKeys, sentValues);
+  } catch (error) {
+    if (epoch === state.eye.epoch) {
+      const current = state.eye.values || EYE_DEFAULTS;
+      const accepted = state.eye.validValues || EYE_DEFAULTS;
+      const restored = {};
+      affectedKeys.forEach((key) => {
+        if (current[key] === sentValues[key]) restored[key] = accepted[key];
+      });
+      state.eye.values = mergeEyeState(restored, current);
+      renderEyeFields();
+      updateEyePreview();
+      renderEyeDeviceState(accepted, error.event);
+    }
+    throw error;
+  }
+}
+
+function reportEyeError(error) {
+  setEyeDeviceOnline(Boolean(error.event?.kind === "err"), error.event?.kind === "err" ? "设备拒绝命令" : "设备响应失败");
+  setEyeFeedback(error.message || "眼睛命令发送失败", "error");
+  showToast(error.message || "眼睛命令发送失败", "error");
+}
+
+function queueEyeCommand(command, affectedKeys = [], message = "") {
+  // Capture the values together with the encoded command, before it waits.
+  const sentValues = deepClone(state.eye.values || EYE_DEFAULTS);
+  return queueEyeOperation(async (epoch) => {
+    setEyeFeedback(message || `正在发送 ${command}`, "pending");
+    try {
+      await sendEyeCommand(command, affectedKeys, sentValues, epoch);
+    } catch (error) {
+      if (epoch === state.eye.epoch) reportEyeError(error);
+    }
+  });
 }
 
 function scheduleEyeUpdate(key) {
+  if (key === "lookX" || key === "lookY") key = "lookX";
   clearTimeout(state.eye.debounceTimers.get(key));
   state.eye.debounceTimers.set(key, window.setTimeout(() => {
     state.eye.debounceTimers.delete(key);
@@ -544,9 +559,14 @@ function handleEyeFieldInput(input) {
   else if (input.type === "color") value = normalizeEyeColor(input.value);
   else if (input.dataset.eyeType === "integer") value = Number.parseInt(input.value, 10);
   else value = Number.parseFloat(input.value);
+  const limit = state.eye.limits?.[key];
+  if (limit && (!Number.isFinite(value) || value < limit.min || value > limit.max || (limit.integer && !Number.isInteger(value)))) {
+    renderEyeFields();
+    setEyeFeedback("输入超出支持的参数范围", "error");
+    return;
+  }
   state.eye.values[key] = normalizeEyeValue(key, value, state.eye.values[key]);
   updateEyePreview();
-  renderEyeDeviceState(state.eye.values);
   scheduleEyeUpdate(key);
 }
 
@@ -556,7 +576,6 @@ function handleEyeMood(mood) {
   state.eye.values.mood = mood;
   renderEyeFields();
   updateEyePreview();
-  renderEyeDeviceState(state.eye.values);
   scheduleEyeUpdate("mood");
 }
 
@@ -570,61 +589,63 @@ function eyeDefaultCommandList() {
   const defaults = EYE_DEFAULTS;
   return [
     "color", "ringColor", "dotColor", "brightness", "ringBrightness", "dotBrightness",
-    "scale", "glow", "breathMs", "autoBlink", "blinkMs", "ring", "dots", "mood",
+    "scale", "glow", "breathMs", "blinkMs", "ring", "dots", "mood",
   ].map((key) => eyeCommandForField(key, defaults)).concat(
     `eyeaction:look:x=${defaults.lookX},y=${defaults.lookY}`,
   );
 }
 
 function resetEyeDefaults() {
+  if (state.eye.resetting) return state.eye.commandQueue;
   if (!state.eye.values) state.eye.values = mergeEyeState(EYE_DEFAULTS);
-  const previous = deepClone(state.eye.validValues || state.eye.values);
+  state.eye.debounceTimers.forEach((timer) => clearTimeout(timer));
+  state.eye.debounceTimers.clear();
+  state.eye.resetting = true;
+  state.eye.previewAutoBlink = true;
+  const blinkSwitch = $("#eye-auto-blink");
+  if (blinkSwitch) blinkSwitch.checked = true;
+  setEyeControlsEnabled(false);
   state.eye.values = mergeEyeState(EYE_DEFAULTS);
   renderEyeFields();
   updateEyePreview();
-  renderEyeDeviceState(state.eye.values);
-  const epoch = state.eye.epoch;
-  const operation = async () => {
-    if (epoch !== state.eye.epoch) return;
-    state.eye.pendingCommands = (state.eye.pendingCommands || 0) + 1;
+  return queueEyeOperation(async (epoch) => {
     setEyeFeedback("正在逐项恢复设备默认配置…", "pending");
     try {
-      for (const command of eyeDefaultCommandList()) {
-        await api("/api/eye-config/command", {
-          method: "POST",
-          body: JSON.stringify({ command }),
-        });
+      const keys = Object.keys(EYE_DEFAULTS).filter(key => key !== "autoBlink" && key !== "lookY");
+      for (const key of keys) {
+        const affectedKeys = key === "lookX" ? ["lookX", "lookY"] : [key];
+        await sendEyeCommand(eyeCommandForField(key, EYE_DEFAULTS), affectedKeys, EYE_DEFAULTS, epoch);
         if (epoch !== state.eye.epoch) return;
       }
-      const accepted = deepClone(state.eye.validValues || previous);
-      Object.keys(EYE_DEFAULTS).forEach((key) => {
-        if (state.eye.values[key] === EYE_DEFAULTS[key]) accepted[key] = EYE_DEFAULTS[key];
-      });
-      state.eye.validValues = accepted;
       setEyeDeviceOnline(true, "设备在线");
       setEyeFeedback("已恢复默认配置", "success");
       showToast("眼睛默认配置已发送");
     } catch (error) {
       if (epoch !== state.eye.epoch) return;
-      const currentValues = state.eye.values || EYE_DEFAULTS;
-      const restored = {};
-      Object.keys(EYE_DEFAULTS).forEach((key) => {
-        if (currentValues[key] === EYE_DEFAULTS[key]) restored[key] = previous[key];
-      });
-      state.eye.values = mergeEyeState(restored, currentValues);
-      state.eye.validValues = deepClone(previous);
+      state.eye.values = deepClone(state.eye.validValues || EYE_DEFAULTS);
       renderEyeFields();
       updateEyePreview();
-      renderEyeDeviceState(state.eye.values);
-      setEyeDeviceOnline(false, "默认配置未完成");
-      setEyeFeedback(error.message || "恢复默认配置失败，已恢复上一次有效值", "error");
-      showToast(error.message || "恢复默认配置失败", "error");
+      try {
+        await queryEyeDevice(epoch);
+      } catch (queryError) {
+        if (epoch === state.eye.epoch) error = new Error(`${error.message}；重新查询失败：${queryError.message}`);
+      }
+      if (epoch === state.eye.epoch) reportEyeError(error);
     } finally {
-      if (epoch !== state.eye.epoch) return;
-      state.eye.pendingCommands = Math.max(0, (state.eye.pendingCommands || 1) - 1);
+      if (epoch === state.eye.epoch) {
+        state.eye.resetting = false;
+        setEyeControlsEnabled(state.eye.loaded);
+      }
     }
-  };
-  state.eye.commandQueue = state.eye.commandQueue.then(operation, operation);
+  });
+}
+
+async function queryEyeDevice(epoch) {
+  const payload = await api("/api/eye-config/query", { method: "POST", body: JSON.stringify({}) });
+  if (epoch !== state.eye.epoch) return;
+  const fields = eyeStateFromPayload(payload);
+  if (!Object.keys(fields).length) throw new Error("设备响应未包含有效的眼睛配置");
+  applyEyeState(fields, { event: payload.event, message: "已读取设备配置" });
 }
 
 async function loadEyeConfig({ quiet = false } = {}) {
@@ -633,10 +654,13 @@ async function loadEyeConfig({ quiet = false } = {}) {
   state.eye.requestInFlight = true;
   setEyeFeedback("正在发送 eyeconfig:query…", "pending");
   try {
-    const payload = await api("/api/eye-config/query", { method: "POST", body: JSON.stringify({}) });
+    if (!state.eye.limits) {
+      const schema = await api("/api/eye-config/schema");
+      if (epoch !== state.eye.epoch) return;
+      state.eye.limits = schema.limits;
+    }
+    await queueEyeOperation(queryEyeDevice);
     if (epoch !== state.eye.epoch) return;
-    applyEyeState(eyeStateFromPayload(payload), { event: payload.event, message: "已收到 EYE:STATE，控件已回显" });
-    startEyeStatusPolling();
     if (!quiet) showToast("已读取眼睛设备配置");
   } catch (error) {
     if (epoch !== state.eye.epoch) return;
@@ -654,26 +678,36 @@ async function pollEyeStatus() {
   try {
     const payload = await api("/api/eye-config/status");
     if (epoch !== state.eye.epoch) return;
+    if (typeof payload.speaking === "boolean" && payload.speaking !== state.eye.speaking) {
+      state.eye.speaking = payload.speaking;
+      restartEyeBlinkTimer();
+    }
+    if (state.eye.pendingCommands || state.eye.requestInFlight || state.eye.debounceTimers.size) return;
     const event = payload.event;
-    if (!event || Number(event.sequence || 0) <= Number(state.eye.lastStatusSequence || 0)) return;
+    if (!event || (event.sequence === state.eye.lastStatusSequence)) return;
     state.eye.lastStatusSequence = Number(event.sequence || 0);
     if (event.kind === "state") applyEyeState(event.fields, { event, message: "设备状态已更新" });
     else if (event.kind === "err") {
       setEyeDeviceOnline(false, "设备拒绝命令");
       setEyeFeedback(event.message || "设备返回 EYE:ERR", "error");
     } else {
-      renderEyeDeviceState(state.eye.values, event);
+      renderEyeDeviceState(state.eye.validValues, event);
       setEyeDeviceOnline(true, "设备在线");
     }
-  } catch (_) {
-    // The command/query endpoints provide the actionable error. Polling is a
-    // best-effort way to catch an unsolicited EYE:STATE and stays quiet here.
+  } catch (error) {
+    if (epoch === state.eye.epoch) {
+      setEyeDeviceOnline(false, "状态查询失败");
+      setEyeFeedback(error.message || "眼睛状态查询失败", "error");
+    }
   }
 }
 
 function startEyeStatusPolling() {
   clearInterval(state.eye.statusPollTimer);
-  state.eye.statusPollTimer = window.setInterval(pollEyeStatus, EYE_STATUS_POLL_MS);
+  state.eye.statusPollTimer = null;
+  if (!document.hidden && $('.panel[data-panel="eyes"]')?.classList.contains("active")) {
+    state.eye.statusPollTimer = window.setInterval(pollEyeStatus, EYE_STATUS_POLL_MS);
+  }
 }
 
 function setCameraPreviewControls(active) {
@@ -1250,6 +1284,7 @@ function clearConfigurationView() {
   state.eye.requestInFlight = false;
   state.eye.pendingCommands = 0;
   state.eye.lastStatusSequence = 0;
+  state.eye.resetting = false;
   state.eye.debounceTimers.forEach((timer) => clearTimeout(timer));
   state.eye.debounceTimers.clear();
   clearInterval(state.eye.blinkTimer);
@@ -1521,8 +1556,8 @@ async function loadConfig() {
     state.eye.values = state.eye.values || mergeEyeState(EYE_DEFAULTS);
     renderEyeFields();
     updateEyePreview();
-    setEyeControlsEnabled(true);
-    loadEyeConfig({ quiet: true });
+    setEyeControlsEnabled(state.eye.loaded);
+    if ($('.panel[data-panel="eyes"]')?.classList.contains("active")) loadEyeConfig({ quiet: true });
   } catch (error) {
     clearConfigurationView();
     setConfigControlsEnabled(false);
@@ -2837,6 +2872,7 @@ function bindEvents() {
     $$(".panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === tab.dataset.tab));
     if (tab.dataset.tab === "choreography" && !state.choreography.loaded) loadChoreographyWorkspace();
     if (tab.dataset.tab === "eyes" && !state.eye.loaded && !state.eye.requestInFlight) loadEyeConfig();
+    startEyeStatusPolling();
   }));
   $$('[data-eye-field]').forEach((input) => {
     input.addEventListener(input.type === "checkbox" ? "change" : "input", () => handleEyeFieldInput(input));
@@ -2849,6 +2885,10 @@ function bindEvents() {
   });
   $("#eye-query-button").addEventListener("click", () => loadEyeConfig());
   $("#eye-reset-button").addEventListener("click", resetEyeDefaults);
+  $("#eye-auto-blink").addEventListener("change", (event) => {
+    state.eye.previewAutoBlink = event.target.checked;
+    restartEyeBlinkTimer();
+  });
   $$('[data-path]').forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
     markDirty(input.closest("[data-module]")?.dataset.module);
   }));
@@ -3001,6 +3041,7 @@ function bindEvents() {
   });
   window.addEventListener("pagehide", stopCameraPreviewOnPageExit);
   document.addEventListener("visibilitychange", () => {
+    startEyeStatusPolling();
     if (document.hidden && state.cameraPreview.active) stopCameraPreview({ quiet: true });
   });
 }
