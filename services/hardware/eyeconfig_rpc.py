@@ -15,7 +15,6 @@ import time
 from typing import Any
 
 from services.hardware.esp32_netcfg_rpc import _SerialOwnerRpcClient
-from services.speech.tts_protocol import decode_turn_end
 
 
 EYE_REQUEST_TOPIC = "eyeconfig_request"
@@ -24,19 +23,19 @@ EYE_STATUS_TOPIC = "eye_status"
 EYE_RPC_TIMEOUT_SECONDS = 8.0
 EYE_DISCOVERY_TIMEOUT_SECONDS = 3.0
 
-# Host input policy (not firmware capability claims). Both the API validator
-# and browser sliders consume these limits; device echoes are not clipped.
+# Firmware contract: wall-e-tft/src/domain/EyeRenderer.cpp::parseEyeSettings.
+# Both the API validator and browser sliders consume these limits.
 EYE_FIELD_LIMITS = {
     "brightness": {"min": 0, "max": 1, "integer": False},
     "ringBrightness": {"min": 0, "max": 1, "integer": False},
     "dotBrightness": {"min": 0, "max": 1, "integer": False},
-    "scale": {"min": 0.1, "max": 3, "integer": False},
-    "glow": {"min": 0, "max": 120, "integer": True},
-    "breathMs": {"min": 100, "max": 60000, "integer": True},
-    "blinkMs": {"min": 100, "max": 60000, "integer": True},
-    "dots": {"min": 0, "max": 256, "integer": True},
-    "lookX": {"min": -100, "max": 100, "integer": True},
-    "lookY": {"min": -100, "max": 100, "integer": True},
+    "scale": {"min": 0.4, "max": 1.5, "integer": False},
+    "glow": {"min": 8, "max": 30, "integer": True},
+    "breathMs": {"min": 500, "max": 10000, "integer": True, "allowZero": True},
+    "blinkMs": {"min": 1000, "max": 15000, "integer": True, "allowZero": True},
+    "dots": {"min": 0, "max": 64, "integer": True},
+    "lookX": {"min": -26, "max": 26, "integer": True},
+    "lookY": {"min": -26, "max": 26, "integer": True},
 }
 
 _COLOR_RE = r"[0-9A-Fa-f]{6}"
@@ -89,7 +88,10 @@ def validate_eye_command(command: Any) -> str:
             continue
         pattern = r"-?\d+" if limits["integer"] else r"[^\s]+"
         match = re.fullmatch(rf"eyeconfig:{key}=({pattern})", command)
-        if match and _number_in_range(match.group(1), limits["min"], limits["max"]):
+        if match and (
+            _number_in_range(match.group(1), limits["min"], limits["max"])
+            or (limits.get("allowZero") and float(match.group(1)) == 0)
+        ):
             value = int(match.group(1)) if limits["integer"] else float(match.group(1))
             return f"eyeconfig:{key}={value:g}"
 
@@ -134,6 +136,8 @@ _STATE_KEY_ALIASES = {
     "ringbrightness": "ringBrightness",
     "dotbrightness": "dotBrightness",
     "scale": "scale",
+    "minscale": "minScale",
+    "maxscale": "maxScale",
     "glow": "glow",
     "breathms": "breathMs",
     "blinkms": "blinkMs",
@@ -148,8 +152,8 @@ _STATE_KEY_ALIASES = {
 }
 
 _BOOLEAN_STATE_KEYS = {"autoBlink", "ring"}
-_INTEGER_STATE_KEYS = {"glow", "breathMs", "blinkMs", "dots", "lookX", "lookY"}
-_FLOAT_STATE_KEYS = {"brightness", "ringBrightness", "dotBrightness", "scale"}
+_INTEGER_STATE_KEYS = {"breathMs", "blinkMs", "dots"}
+_FLOAT_STATE_KEYS = {"brightness", "ringBrightness", "dotBrightness", "scale", "minScale", "maxScale", "glow", "lookX", "lookY"}
 _KNOWN_MOODS = {"dot", "flame", "heart"}
 
 
@@ -298,14 +302,6 @@ class EyeConfigRpcClient(_SerialOwnerRpcClient):
             self._status_subscription = self._node.create_subscription(
                 self._String, EYE_STATUS_TOPIC, self._on_status, 10
             )
-            # Match dialog_motion_node: TTS text starts speaking; playback idle
-            # arrives after the queued audio has drained.
-            self._tts_subscription = self._node.create_subscription(
-                self._String, "tts_text", self._on_tts_text, 10
-            )
-            self._playback_subscription = self._node.create_subscription(
-                self._String, "llm_busy", self._on_playback_state, 10
-            )
         except Exception as exc:
             self.close()
             raise EyeConfigError("ROS 眼睛状态订阅初始化失败") from exc
@@ -315,20 +311,12 @@ class EyeConfigRpcClient(_SerialOwnerRpcClient):
             body = json.loads(message.data)
         except (AttributeError, TypeError, json.JSONDecodeError):
             return
-        if isinstance(body, dict) and isinstance(body.get("event"), dict):
+        if isinstance(body, dict):
             with self._lock:
-                self._status = body
-
-    def _on_tts_text(self, message):
-        text = (message.data or "").strip()
-        if text and decode_turn_end(text) is None:
-            with self._lock:
-                self._speaking = True
-
-    def _on_playback_state(self, message):
-        if message.data == "idle":
-            with self._lock:
-                self._speaking = False
+                if isinstance(body.get("speaking"), bool):
+                    self._speaking = body["speaking"]
+                if isinstance(body.get("event"), dict):
+                    self._status = body
 
     def _call(self, command, expected):
         result = self._exchange(
@@ -342,6 +330,9 @@ class EyeConfigRpcClient(_SerialOwnerRpcClient):
                 event=event if isinstance(event, dict) else None,
                 kind="device" if isinstance(event, dict) and event.get("kind") == "err" else "unavailable",
             )
+        if isinstance(result.get("speaking"), bool):
+            with self._lock:
+                self._speaking = result["speaking"]
         return result
 
     def query(self):

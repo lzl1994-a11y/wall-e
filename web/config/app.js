@@ -51,7 +51,6 @@ const state = {
     epoch: 0,
     limits: null,
     resetting: false,
-    previewAutoBlink: true,
     speaking: false,
   },
 };
@@ -281,8 +280,13 @@ function mergeEyeState(partial, base = state.eye.values || EYE_DEFAULTS) {
   const next = { ...EYE_DEFAULTS, ...(base || {}) };
   if (partial && typeof partial === "object") {
     Object.entries(partial).forEach(([key, rawValue]) => {
-      if (Object.hasOwn(EYE_DEFAULTS, key)) next[key] = normalizeEyeValue(key, rawValue, next[key]);
+      if (Object.hasOwn(EYE_DEFAULTS, key) || ["minScale", "maxScale"].includes(key)) next[key] = normalizeEyeValue(key, rawValue, next[key]);
     });
+    if (Object.hasOwn(partial, "blinkMs")) {
+      const period = Number(partial.blinkMs);
+      if (!Object.hasOwn(partial, "autoBlink")) next.autoBlink = period > 0;
+      if (period === 0) next.blinkMs = base?.blinkMs > 0 ? base.blinkMs : EYE_DEFAULTS.blinkMs;
+    }
   }
   return next;
 }
@@ -329,8 +333,10 @@ function renderEyeFields(values = state.eye.values || EYE_DEFAULTS) {
       // host's input policy. Editing is still validated before sending.
       const limit = state.eye.limits?.[input.dataset.eyeField];
       if (limit) {
-        input.min = Math.min(limit.min, value);
-        input.max = Math.max(limit.max, value);
+        const minimum = input.dataset.eyeField === "scale" ? Math.max(limit.min, values.minScale ?? limit.min) : limit.min;
+        const maximum = input.dataset.eyeField === "scale" ? Math.min(limit.max, values.maxScale ?? limit.max) : limit.max;
+        input.min = limit.allowZero && input.dataset.eyeField === "breathMs" ? 0 : minimum;
+        input.max = maximum;
         input.step = limit.integer ? "1" : "any";
       }
       input.value = value ?? "";
@@ -372,7 +378,7 @@ function triggerEyeBlink() {
 function restartEyeBlinkTimer(values = state.eye.values || EYE_DEFAULTS) {
   clearInterval(state.eye.blinkTimer);
   state.eye.blinkTimer = null;
-  if (!state.eye.previewAutoBlink || state.eye.speaking) return;
+  if (!values.autoBlink || state.eye.speaking) return;
   state.eye.blinkTimer = window.setInterval(triggerEyeBlink, Math.max(100, Number(values.blinkMs) || 4500));
 }
 
@@ -436,8 +442,9 @@ function applyEyeState(partial, { event = null, message = "已收到 EYE:STATE" 
   const accepted = mergeEyeState(partial, previous);
   const next = { ...current };
   Object.keys(partial).forEach((key) => {
-    if (Object.hasOwn(EYE_DEFAULTS, key) && current[key] === previous[key]) next[key] = accepted[key];
+    if (Object.hasOwn(accepted, key) && current[key] === previous[key]) next[key] = accepted[key];
   });
+  if (Object.hasOwn(partial, "blinkMs") && current.autoBlink === previous.autoBlink) next.autoBlink = accepted.autoBlink;
   state.eye.validValues = accepted;
   state.eye.values = next;
   state.eye.loaded = true;
@@ -451,9 +458,10 @@ function applyEyeState(partial, { event = null, message = "已收到 EYE:STATE" 
 }
 
 function eyeCommandForField(key, values = state.eye.values || EYE_DEFAULTS) {
+  if (key === "autoBlink" || key === "blinkMs") return `eyeconfig:blinkMs=${values.autoBlink ? Math.round(values.blinkMs) : 0}`;
   if (["color", "ringColor", "dotColor"].includes(key)) return `eyeconfig:${key}=${normalizeEyeColor(values[key])}`;
   if (["brightness", "ringBrightness", "dotBrightness", "scale"].includes(key)) return `eyeconfig:${key}=${Number(values[key])}`;
-  if (["glow", "breathMs", "blinkMs", "dots"].includes(key)) return `eyeconfig:${key}=${Math.round(values[key])}`;
+  if (["glow", "breathMs", "dots"].includes(key)) return `eyeconfig:${key}=${Math.round(values[key])}`;
   if (key === "ring") return `eyeconfig:ring=${values.ring ? 1 : 0}`;
   if (key === "mood") return `eyeconfig:mood=${values.mood}`;
   if (key === "lookX" || key === "lookY") return `eyeaction:look:x=${Math.round(values.lookX)},y=${Math.round(values.lookY)}`;
@@ -467,7 +475,13 @@ function applyEyeCommandResult(payload, event = null, affectedKeys = [], sentVal
   const confirmed = {};
   affectedKeys.forEach((key) => { confirmed[key] = sentValues[key]; });
   Object.assign(confirmed, partial);
+  if (affectedKeys.includes("autoBlink") && partial.blinkMs === 0) {
+    confirmed.blinkMs = sentValues.blinkMs;
+    confirmed.autoBlink = false;
+  }
   const accepted = mergeEyeState(confirmed, previous);
+  // ACKs for the switch carry the remembered period as well as enabled state.
+  if (affectedKeys.includes("autoBlink") && !Object.hasOwn(partial, "blinkMs")) accepted.autoBlink = sentValues.autoBlink;
   const next = { ...currentValues };
   Object.keys(confirmed).forEach((key) => {
     if (!Object.hasOwn(EYE_DEFAULTS, key)) return;
@@ -542,12 +556,13 @@ function queueEyeCommand(command, affectedKeys = [], message = "") {
 }
 
 function scheduleEyeUpdate(key) {
+  if (key === "autoBlink") key = "blinkMs";
   if (key === "lookX" || key === "lookY") key = "lookX";
   clearTimeout(state.eye.debounceTimers.get(key));
   state.eye.debounceTimers.set(key, window.setTimeout(() => {
     state.eye.debounceTimers.delete(key);
     const command = eyeCommandForField(key);
-    if (command) queueEyeCommand(command, key === "lookX" || key === "lookY" ? ["lookX", "lookY"] : [key]);
+    if (command) queueEyeCommand(command, key === "lookX" || key === "lookY" ? ["lookX", "lookY"] : key === "blinkMs" ? ["blinkMs", "autoBlink"] : [key]);
   }, EYE_UPDATE_DEBOUNCE_MS));
 }
 
@@ -560,7 +575,9 @@ function handleEyeFieldInput(input) {
   else if (input.dataset.eyeType === "integer") value = Number.parseInt(input.value, 10);
   else value = Number.parseFloat(input.value);
   const limit = state.eye.limits?.[key];
-  if (limit && (!Number.isFinite(value) || value < limit.min || value > limit.max || (limit.integer && !Number.isInteger(value)))) {
+  const minimum = key === "scale" ? Math.max(limit?.min ?? 0.4, state.eye.values.minScale ?? 0.4) : limit?.min;
+  const maximum = key === "scale" ? Math.min(limit?.max ?? 1.5, state.eye.values.maxScale ?? 1.5) : limit?.max;
+  if (limit && (!Number.isFinite(value) || ((value < minimum || value > maximum) && !(limit.allowZero && value === 0)) || (limit.integer && !Number.isInteger(value)))) {
     renderEyeFields();
     setEyeFeedback("输入超出支持的参数范围", "error");
     return;
@@ -601,11 +618,10 @@ function resetEyeDefaults() {
   state.eye.debounceTimers.forEach((timer) => clearTimeout(timer));
   state.eye.debounceTimers.clear();
   state.eye.resetting = true;
-  state.eye.previewAutoBlink = true;
-  const blinkSwitch = $("#eye-auto-blink");
-  if (blinkSwitch) blinkSwitch.checked = true;
   setEyeControlsEnabled(false);
-  state.eye.values = mergeEyeState(EYE_DEFAULTS);
+  const defaults = mergeEyeState(EYE_DEFAULTS);
+  defaults.scale = Math.min(defaults.maxScale ?? 1.5, Math.max(defaults.minScale ?? 0.4, defaults.scale));
+  state.eye.values = defaults;
   renderEyeFields();
   updateEyePreview();
   return queueEyeOperation(async (epoch) => {
@@ -613,8 +629,8 @@ function resetEyeDefaults() {
     try {
       const keys = Object.keys(EYE_DEFAULTS).filter(key => key !== "autoBlink" && key !== "lookY");
       for (const key of keys) {
-        const affectedKeys = key === "lookX" ? ["lookX", "lookY"] : [key];
-        await sendEyeCommand(eyeCommandForField(key, EYE_DEFAULTS), affectedKeys, EYE_DEFAULTS, epoch);
+        const affectedKeys = key === "lookX" ? ["lookX", "lookY"] : key === "blinkMs" ? ["blinkMs", "autoBlink"] : [key];
+        await sendEyeCommand(eyeCommandForField(key, defaults), affectedKeys, defaults, epoch);
         if (epoch !== state.eye.epoch) return;
       }
       setEyeDeviceOnline(true, "设备在线");
@@ -645,6 +661,7 @@ async function queryEyeDevice(epoch) {
   if (epoch !== state.eye.epoch) return;
   const fields = eyeStateFromPayload(payload);
   if (!Object.keys(fields).length) throw new Error("设备响应未包含有效的眼睛配置");
+  if (typeof payload.speaking === "boolean") state.eye.speaking = payload.speaking;
   applyEyeState(fields, { event: payload.event, message: "已读取设备配置" });
 }
 
@@ -2885,10 +2902,6 @@ function bindEvents() {
   });
   $("#eye-query-button").addEventListener("click", () => loadEyeConfig());
   $("#eye-reset-button").addEventListener("click", resetEyeDefaults);
-  $("#eye-auto-blink").addEventListener("change", (event) => {
-    state.eye.previewAutoBlink = event.target.checked;
-    restartEyeBlinkTimer();
-  });
   $$('[data-path]').forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
     markDirty(input.closest("[data-module]")?.dataset.module);
   }));

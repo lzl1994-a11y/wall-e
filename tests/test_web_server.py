@@ -190,7 +190,7 @@ class ConfigWebServerTests(unittest.TestCase):
             'data-eye-field="color"',
             'data-eye-field="ringColor"',
             'data-eye-field="dotColor"',
-            'id="eye-auto-blink" type="checkbox" checked',
+            'id="eye-auto-blink" data-eye-field="autoBlink" type="checkbox" checked',
             'data-eye-field="lookX"',
             'data-eye-field="lookY"',
             'data-eye-action="blink"',

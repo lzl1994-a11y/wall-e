@@ -92,7 +92,7 @@ test('defaults never send an undocumented automatic-blink setter', () => {
 
 test('automatic blink is enabled by default, stops while speaking, resumes on idle', () => {
   const run = page();
-  assert.equal(run('state.eye.previewAutoBlink'), true);
+  assert.equal(run('state.eye.values.autoBlink'), true);
   run(`
     window.setInterval = () => 123;
     restartEyeBlinkTimer();
@@ -102,7 +102,7 @@ test('automatic blink is enabled by default, stops while speaking, resumes on id
   assert.equal(run('state.eye.blinkTimer'), null);
   run('state.eye.speaking = false; restartEyeBlinkTimer();');
   assert.equal(run('state.eye.blinkTimer'), 123);
-  run('state.eye.previewAutoBlink = false; restartEyeBlinkTimer();');
+  run('state.eye.values.autoBlink = false; restartEyeBlinkTimer();');
   assert.equal(run('state.eye.blinkTimer'), null);
 });
 
@@ -124,4 +124,46 @@ test('unsolicited state updates confirmed values without overwriting an unsent e
   assert.equal(run('state.eye.validValues.brightness'), 0.3);
   assert.equal(run('state.eye.values.brightness'), 0.7);
   assert.equal(run('state.eye.values.mood'), 'heart');
+});
+
+test('blink switch maps to firmware period and disabled state is echoed', () => {
+  const run = page();
+  assert.equal(run('eyeCommandForField("autoBlink", {...EYE_DEFAULTS,autoBlink:false})'), 'eyeconfig:blinkMs=0');
+  assert.equal(run('eyeCommandForField("autoBlink", {...EYE_DEFAULTS,autoBlink:true,blinkMs:6000})'), 'eyeconfig:blinkMs=6000');
+  assert.equal(run('mergeEyeState({blinkMs:0}).autoBlink'), false);
+});
+
+test('device switch rejection restores the last accepted switch and period', async () => {
+  const run = page();
+  await run(`(async () => {
+    state.eye.values.autoBlink = false;
+    api = async () => { throw new Error('EYE:ERR'); };
+    await queueEyeCommand(eyeCommandForField('autoBlink'), ['autoBlink','blinkMs']);
+  })()`);
+  assert.equal(run('state.eye.values.autoBlink'), true);
+  assert.equal(run('state.eye.values.blinkMs'), 4500);
+});
+
+test('disabled switch acknowledgement preserves the remembered period', async () => {
+  const run = page();
+  await run(`(async () => {
+    state.eye.values.autoBlink = false;
+    state.eye.values.blinkMs = 6000;
+    api = async () => ({state:{blinkMs:0},event:{kind:'ok'}});
+    await queueEyeCommand(eyeCommandForField('autoBlink'), ['autoBlink','blinkMs']);
+  })()`);
+  assert.equal(run('state.eye.validValues.autoBlink'), false);
+  assert.equal(run('state.eye.validValues.blinkMs'), 6000);
+  assert.equal(run('eyeCommandForField("autoBlink", {...state.eye.values,autoBlink:true})'), 'eyeconfig:blinkMs=6000');
+});
+
+test('scale editing respects device min/max constraints before sending', () => {
+  const run = page();
+  run(`
+    state.eye.limits = {scale:{min:0.4,max:1.5,integer:false}};
+    applyEyeState({minScale:0.6,maxScale:1.2});
+    handleEyeFieldInput({dataset:{eyeField:'scale'},type:'range',value:'1.3'});
+  `);
+  assert.equal(run('state.eye.values.scale'), 1);
+  assert.equal(run('state.eye.debounceTimers.size'), 0);
 });

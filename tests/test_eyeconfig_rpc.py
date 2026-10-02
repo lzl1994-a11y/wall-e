@@ -11,10 +11,35 @@ from services.hardware.eyeconfig_rpc import (
     parse_eye_response,
     validate_eye_command,
 )
-from services.speech.tts_protocol import encode_turn_end
 
 
 class EyeConfigProtocolTests(unittest.TestCase):
+    def test_firmware_boundaries_and_disabled_periods(self):
+        for command in (
+            "eyeconfig:scale=0.4", "eyeconfig:scale=1.5", "eyeconfig:glow=8",
+            "eyeconfig:glow=30", "eyeconfig:dots=64", "eyeconfig:breathMs=0",
+            "eyeconfig:breathMs=500", "eyeconfig:breathMs=10000",
+            "eyeconfig:blinkMs=0", "eyeconfig:blinkMs=1000", "eyeconfig:blinkMs=15000",
+            "eyeaction:look:x=-26,y=26",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(validate_eye_command(command), command)
+        for command in (
+            "eyeconfig:scale=0.39", "eyeconfig:scale=1.51", "eyeconfig:glow=7",
+            "eyeconfig:glow=31", "eyeconfig:dots=65", "eyeconfig:breathMs=499",
+            "eyeconfig:breathMs=10001", "eyeconfig:blinkMs=999", "eyeconfig:blinkMs=15001",
+            "eyeaction:look:x=27,y=0",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaises(EyeConfigError):
+                    validate_eye_command(command)
+
+    def test_firmware_echo_preserves_scale_constraints_and_fractional_position(self):
+        fields = parse_eye_response("EYE:STATE:minScale=0.6,maxScale=1.2,x=1.5,y=-2.5,blinkMs=0")["fields"]
+        self.assertEqual(fields["minScale"], 0.6)
+        self.assertEqual(fields["maxScale"], 1.2)
+        self.assertEqual(fields["lookX"], 1.5)
+        self.assertEqual(fields["lookY"], -2.5)
     def test_validate_documented_commands_and_normalizes_values(self):
         self.assertEqual(
             validate_eye_command("eyeconfig:color=00e5ff"),
@@ -88,18 +113,15 @@ class EyeConfigRuntimeTests(unittest.TestCase):
         client._speaking = False
         return client
 
-    def test_tts_starts_speaking_and_playback_idle_ends_it(self):
+    def test_serial_owner_speaking_status_is_authoritative(self):
         client = self.client()
-        client._on_tts_text(SimpleNamespace(data=encode_turn_end("one")))
+        client._on_status(SimpleNamespace(data='{"speaking":false}'))
         self.assertFalse(client.status()["speaking"])
-        client._on_tts_text(SimpleNamespace(data="hello"))
+        client._on_status(SimpleNamespace(data='{"speaking":true,"event":{"kind":"state"}}'))
         self.assertTrue(client.status()["speaking"])
-        client._on_tts_text(SimpleNamespace(data=encode_turn_end("one")))
-        self.assertTrue(client.status()["speaking"])
-        client._on_playback_state(SimpleNamespace(data="busy"))
-        self.assertTrue(client.status()["speaking"])
-        client._on_playback_state(SimpleNamespace(data="idle"))
+        client._on_status(SimpleNamespace(data='{"speaking":false}'))
         self.assertFalse(client.status()["speaking"])
+        self.assertEqual(client.status()["event"]["kind"], "state")
 
     def test_query_via_command_waits_for_state_not_ack(self):
         client = self.client()

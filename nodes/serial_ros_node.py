@@ -32,6 +32,7 @@ from services.hardware.esp32_netcfg import (
 )
 from services.hardware.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
 from services.audio.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
+from services.speech.tts_protocol import decode_turn_end
 from services.hardware.eyeconfig_rpc import (
     EYE_REQUEST_TOPIC,
     EYE_RESPONSE_TOPIC,
@@ -59,6 +60,11 @@ class SerialNode(Node):
         self._eye_events = deque(maxlen=64)
         self._eye_event_sequence = 0
         self._last_eye_state = {}
+        self._eye_blink_ms = None
+        self._eye_effective_blink_ms = None
+        self._eye_speaking = False
+        self._eye_blink_revision = 0
+        self._eye_blink_paused = False
 
         if not self.bridge.ser:
             self.get_logger().error('Serial bridge connection failed; check hardware connection.')
@@ -91,6 +97,8 @@ class SerialNode(Node):
         self._eye_response_publisher = self.create_publisher(String, EYE_RESPONSE_TOPIC, 10)
         self._eye_status_publisher = self.create_publisher(String, EYE_STATUS_TOPIC, 20)
         self.create_subscription(String, EYE_REQUEST_TOPIC, self.eyeconfig_request_callback, 10)
+        self.create_subscription(String, 'tts_text', self._on_eye_tts, 10)
+        self.create_subscription(String, 'llm_busy', self._on_eye_playback, 10)
         self.bridge.add_line_listener(self._on_serial_line)
         self._tft_ready_subscription = self.create_subscription(
             String,
@@ -306,6 +314,57 @@ class SerialNode(Node):
     # ------------------------------------------------------------------
     # eyeconfig_request: web eye configuration -> shared serial owner
     # ------------------------------------------------------------------
+    def _on_eye_tts(self, message):
+        text = (message.data or "").strip()
+        if text and decode_turn_end(text) is None:
+            self._set_eye_speaking(True)
+
+    def _on_eye_playback(self, message):
+        if message.data == "idle":
+            self._set_eye_speaking(False)
+
+    def _set_eye_speaking(self, speaking):
+        with self._eye_response_condition:
+            if self._shutdown_event.is_set() or self._eye_speaking == speaking:
+                return
+            self._eye_speaking = speaking
+            self._eye_blink_revision += 1
+            revision = self._eye_blink_revision
+        self._eye_status_publisher.publish(String(data=json.dumps({"speaking": speaking})))
+        threading.Thread(target=self._sync_eye_blink, args=(revision,),
+                         name="eye-speaking-blink", daemon=True).start()
+
+    def _sync_eye_blink(self, revision):
+        # Share ACK correlation with web commands; never write competing eye
+        # commands from the ROS callback or the serial reader thread.
+        if not self._eye_request_lock.acquire(timeout=3.0):
+            self.get_logger().error("等待眼睛配置事务超时，眨眼状态未同步")
+            return
+        try:
+            with self._eye_response_condition:
+                if revision != self._eye_blink_revision or self._shutdown_event.is_set():
+                    return
+            if self._eye_blink_ms is None:
+                result = self._exchange_eye_command("eyeconfig:query", "state")
+                if not result["ok"]:
+                    raise RuntimeError(result["error"])
+                if self._eye_blink_ms is None:
+                    raise RuntimeError("设备未回显 blinkMs，不能安全暂停眨眼")
+            with self._eye_response_condition:
+                period = 0 if self._eye_speaking else self._eye_blink_ms
+                if period == self._eye_effective_blink_ms:
+                    return
+            result = self._exchange_eye_command(f"eyeconfig:blinkMs={period}", "ack")
+            if not result["ok"]:
+                raise RuntimeError(result["error"])
+            with self._eye_response_condition:
+                self._eye_effective_blink_ms = period
+                self._eye_blink_paused = period == 0 and self._eye_blink_ms > 0
+        except RuntimeError as exc:
+            self.get_logger().error(f"眨眼状态同步失败: {exc}")
+        finally:
+            self._eye_request_lock.release()
+
     def _on_serial_line(self, line):
         """Observe EYE replies without opening a second serial connection."""
         event = parse_eye_response(line)
@@ -317,10 +376,17 @@ class SerialNode(Node):
             event["sequence"] = sequence
             self._eye_events.append((sequence, event))
             if event.get("kind") == "state":
+                fields = event.get("fields") or {}
+                if "blinkMs" in fields:
+                    self._eye_effective_blink_ms = fields["blinkMs"]
+                    if self._eye_blink_ms is None or (not self._eye_speaking and not self._eye_blink_paused):
+                        self._eye_blink_ms = fields["blinkMs"]
+                    # Surface the user configuration, not a temporary TTS pause.
+                    fields["blinkMs"] = self._eye_blink_ms
                 self._last_eye_state.update(event.get("fields") or {})
             self._eye_response_condition.notify_all()
         self._eye_status_publisher.publish(
-            String(data=json.dumps({"event": event}, ensure_ascii=False, separators=(",", ":")))
+            String(data=json.dumps({"event": event, "speaking": self._eye_speaking}, ensure_ascii=False, separators=(",", ":")))
         )
 
     def eyeconfig_request_callback(self, message):
@@ -340,9 +406,6 @@ class SerialNode(Node):
             )
             return
         if not isinstance(request_id, str) or not request_id or expected not in {"state", "ack"}:
-            return
-        if not self._eye_request_lock.acquire(blocking=False):
-            self._publish_eye_response(request_id, ok=False, error="已有眼睛配置命令正在执行")
             return
         threading.Thread(
             target=self._run_eyeconfig_request,
@@ -368,41 +431,59 @@ class SerialNode(Node):
                     return None
                 self._eye_response_condition.wait(remaining)
 
+    def _exchange_eye_command(self, command, expected):
+        """One transaction; caller holds the existing eye request lock."""
+        with self._eye_response_condition:
+            after_sequence = self._eye_event_sequence
+        if not self.bridge.send_raw(command + "\n", wake_screen=False):
+            raise RuntimeError("串口未连接，眼睛命令未发送")
+        event = self._wait_for_eye_event(after_sequence, expected)
+        if event is None:
+            raise RuntimeError("等待眼睛设备响应超时")
+        response = {"ok": event.get("kind") != "err", "event": event}
+        if not response["ok"]:
+            response["error"] = event.get("message") or "眼睛设备拒绝了命令"
+        elif expected == "state":
+            with self._eye_response_condition:
+                response["state"] = dict(self._last_eye_state)
+        elif event.get("fields"):
+            response["state"] = dict(event["fields"])
+        return response
+
     def _run_eyeconfig_request(self, request_id, command, expected):
-        response = {"request_id": request_id, "ok": False}
+        if not self._eye_request_lock.acquire(timeout=3.0):
+            self._publish_eye_response(request_id, ok=False, error="等待眼睛配置事务超时")
+            return
+        response = {"ok": False}
         try:
             with self._eye_response_condition:
-                after_sequence = self._eye_event_sequence
-            if not self.bridge.send_raw(command + "\n", wake_screen=False):
-                raise RuntimeError("串口未连接，眼睛命令未发送")
-            event = self._wait_for_eye_event(after_sequence, expected)
-            if event is None:
-                raise RuntimeError("等待眼睛设备响应超时")
-            response["event"] = event
-            if event.get("kind") == "err":
-                response["error"] = event.get("message") or "眼睛设备拒绝了命令"
-            else:
-                response["ok"] = True
-                if expected == "state":
-                    with self._eye_response_condition:
-                        state = dict(self._last_eye_state)
-                    response["state"] = state or dict(event.get("fields") or {})
-                elif event.get("fields"):
-                    # An EYE:OK line may optionally echo the accepted fields.
-                    # Do not attach the previous query snapshot here: doing
-                    # so would overwrite a just-accepted browser value with
-                    # stale state when firmware only returns a bare EYE:OK.
-                    response["state"] = dict(event["fields"])
+                if command.startswith("eyeconfig:scale="):
+                    scale = float(command.split("=", 1)[1])
+                    if not self._last_eye_state.get("minScale", 0.4) <= scale <= self._last_eye_state.get("maxScale", 1.5):
+                        raise RuntimeError("缩放超出设备当前 minScale/maxScale 范围")
+                requested_period = int(command.split("=", 1)[1]) if command.startswith("eyeconfig:blinkMs=") else None
+                wire_command = "eyeconfig:blinkMs=0" if requested_period is not None and self._eye_speaking else command
+            response = self._exchange_eye_command(wire_command, expected)
+            if response["ok"] and requested_period is not None:
+                with self._eye_response_condition:
+                    self._eye_blink_ms = requested_period
+                    self._eye_effective_blink_ms = int(wire_command.split("=", 1)[1])
+                    self._eye_blink_paused = self._eye_effective_blink_ms == 0 and requested_period > 0
+                    self._last_eye_state["blinkMs"] = requested_period
+                response["state"] = {"blinkMs": requested_period}
         except Exception as exc:
             response["error"] = str(exc)
         finally:
             try:
-                self._publish_eye_response(**response)
+                response["speaking"] = self._eye_speaking
+                self._publish_eye_response(request_id, **response)
             finally:
                 self._eye_request_lock.release()
 
-    def _publish_eye_response(self, request_id, *, ok=False, error="", event=None, state=None):
+    def _publish_eye_response(self, request_id, *, ok=False, error="", event=None, state=None, speaking=None):
         body = {"request_id": request_id, "ok": bool(ok)}
+        if speaking is not None:
+            body["speaking"] = speaking
         if error:
             body["error"] = str(error)
         if isinstance(event, dict):
