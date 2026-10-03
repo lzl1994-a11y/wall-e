@@ -197,13 +197,17 @@ class ConfigWebServerTests(unittest.TestCase):
             'data-eye-action="zoom"',
             'id="eye-reset-button"',
             'id="eye-preview-stage"',
+            'id="eye-preview-canvas"',
             'data-eye-mood="flame"',
             'data-eye-mood="heart"',
         ):
             self.assertIn(marker, html)
+        self.assertNotIn('eye-preview-pupil', html)
         app_js = (DEFAULT_STATIC_DIR / "app.js").read_text(encoding="utf-8")
         self.assertIn('eyeconfig:query', app_js)
         self.assertIn("EYE_UPDATE_DEBOUNCE_MS", app_js)
+        self.assertIn("EYE_PREVIEW_SIZE = 240", app_js)
+        self.assertIn("drawEyePreviewBackdrop", app_js)
 
     def test_eye_configuration_api_reuses_serial_owner_rpc(self):
         eye = MagicMock()

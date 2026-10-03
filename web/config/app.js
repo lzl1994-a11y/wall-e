@@ -52,6 +52,10 @@ const state = {
     limits: null,
     resetting: false,
     speaking: false,
+    previewStartedAt: 0,
+    previewBlinkAt: 0,
+    previewZoomAt: 0,
+    previewAnimationFrame: null,
   },
 };
 
@@ -59,6 +63,8 @@ const CAMERA_PREVIEW_POLL_MS = 180;
 const CAMERA_PREVIEW_STATUS_POLL_MS = 400;
 const EYE_UPDATE_DEBOUNCE_MS = 280;
 const EYE_STATUS_POLL_MS = 900;
+const EYE_PREVIEW_SIZE = 240;
+const EYE_BLINK_TIMING = Object.freeze({ close: 180, hold: 120, open: 300 });
 
 const EYE_DEFAULTS = Object.freeze({
   color: "00E5FF",
@@ -350,29 +356,270 @@ function renderEyeFields(values = state.eye.values || EYE_DEFAULTS) {
   updateEyeOutputs(values);
 }
 
-function renderEyeDots(values = state.eye.values || EYE_DEFAULTS) {
-  const container = $("#eye-preview-dots");
-  if (!container) return;
-  const count = Math.max(0, Math.min(256, Math.round(Number(values.dots) || 0)));
-  container.replaceChildren();
-  if (!count) return;
-  for (let index = 0; index < count; index += 1) {
-    const angle = (index / count) * Math.PI * 2 - Math.PI / 2;
-    const dot = document.createElement("span");
-    dot.className = "eye-preview-dot";
-    dot.style.left = `${50 + Math.cos(angle) * 46}%`;
-    dot.style.top = `${50 + Math.sin(angle) * 46}%`;
-    container.append(dot);
+function eyePreviewRgb(value) {
+  const color = normalizeEyeColor(value);
+  return {
+    r: Number.parseInt(color.slice(0, 2), 16),
+    g: Number.parseInt(color.slice(2, 4), 16),
+    b: Number.parseInt(color.slice(4, 6), 16),
+  };
+}
+
+function eyePreviewColor(value, brightness = 1) {
+  const { r, g, b } = eyePreviewRgb(value);
+  const amount = clampNumber(brightness, 0, 1);
+  return `rgb(${Math.round(r * amount)}, ${Math.round(g * amount)}, ${Math.round(b * amount)})`;
+}
+
+function eyePreviewRgba(value, alpha) {
+  const { r, g, b } = eyePreviewRgb(value);
+  return `rgba(${r}, ${g}, ${b}, ${clampNumber(alpha, 0, 1)})`;
+}
+
+function drawEyePreviewBase(context) {
+  const center = EYE_PREVIEW_SIZE / 2 - 0.5;
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, EYE_PREVIEW_SIZE, EYE_PREVIEW_SIZE);
+
+  const outer = context.createRadialGradient(center, center, 0, center, center, 108);
+  outer.addColorStop(0, "#07131d");
+  outer.addColorStop(0.78, "#06131d");
+  outer.addColorStop(0.88, "#12384b");
+  outer.addColorStop(0.97, "#0a1e2c");
+  outer.addColorStop(1, "#050d16");
+  context.fillStyle = outer;
+  context.beginPath();
+  context.arc(center, center, 108, 0, Math.PI * 2);
+  context.fill();
+
+  const glass = context.createRadialGradient(72, 68, 0, center, center, 86);
+  glass.addColorStop(0, "rgba(38, 78, 96, .48)");
+  glass.addColorStop(0.28, "rgba(11, 31, 44, .72)");
+  glass.addColorStop(0.72, "#030b13");
+  glass.addColorStop(1, "#02070c");
+  context.fillStyle = glass;
+  context.beginPath();
+  context.arc(center, center, 86, 0, Math.PI * 2);
+  context.fill();
+}
+
+function drawEyePreviewBackdrop(context, values) {
+  const center = EYE_PREVIEW_SIZE / 2 - 0.5;
+  if (values.ring) {
+    context.save();
+    context.globalCompositeOperation = "lighter";
+    context.globalAlpha = clampNumber(values.ringBrightness, 0, 1);
+    context.strokeStyle = eyePreviewColor(values.ringColor);
+    context.lineWidth = 5.5;
+    context.beginPath();
+    context.arc(center, center, 82, 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
   }
+
+  const count = Math.max(0, Math.min(64, Math.round(Number(values.dots) || 0)));
+  if (!count) return;
+  context.save();
+  context.fillStyle = eyePreviewColor(values.dotColor, values.dotBrightness);
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2;
+    const x = center + 71 * Math.cos(angle);
+    const y = center + 71 * Math.sin(angle);
+    context.beginPath();
+    context.arc(x, y, 1.15, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.restore();
+}
+
+function drawEyePreviewGlow(context, x, y, radius, color, brightness, strength = 0.42) {
+  if (radius <= 0 || brightness <= 0) return;
+  const glow = context.createRadialGradient(x, y, 0, x, y, radius);
+  glow.addColorStop(0, eyePreviewRgba(color, brightness * strength));
+  glow.addColorStop(0.32, eyePreviewRgba(color, brightness * strength * 0.62));
+  glow.addColorStop(0.72, eyePreviewRgba(color, brightness * strength * 0.13));
+  glow.addColorStop(1, eyePreviewRgba(color, 0));
+  context.save();
+  context.globalCompositeOperation = "lighter";
+  context.fillStyle = glow;
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+function drawEyePreviewDot(context, x, y, scale, color, brightness, glow) {
+  const halo = glow * scale;
+  const radius = 6 * scale;
+  drawEyePreviewGlow(context, x, y, halo, color, brightness, 0.55);
+  if (radius <= 0 || brightness <= 0) return;
+  const core = context.createRadialGradient(x, y, 0, x, y, radius);
+  core.addColorStop(0, eyePreviewRgba("FFFFFF", brightness * 0.78));
+  core.addColorStop(0.18, eyePreviewRgba(color, brightness));
+  core.addColorStop(0.72, eyePreviewRgba(color, brightness * 0.78));
+  core.addColorStop(1, eyePreviewRgba(color, brightness * 0.32));
+  context.save();
+  context.globalCompositeOperation = "lighter";
+  context.fillStyle = core;
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+function drawEyePreviewPolygon(context, points, x, y, size, color, brightness) {
+  context.beginPath();
+  points.forEach(([pointX, pointY], index) => {
+    const targetX = x + pointX * size;
+    const targetY = y + pointY * size;
+    if (index === 0) context.moveTo(targetX, targetY);
+    else context.lineTo(targetX, targetY);
+  });
+  context.closePath();
+  context.fillStyle = eyePreviewColor(color, brightness);
+  context.fill();
+}
+
+function drawEyePreviewFlame(context, x, y, scale, brightness, glow, now) {
+  const phase = (now % 900) * Math.PI * 2 / 900;
+  const wobble = 1.2 * scale * Math.sin(phase);
+  const size = 13 * scale * (0.96 + 0.06 * Math.sin(phase * 2));
+  const flameX = x + wobble;
+  const flameY = y + 0.5 * scale * Math.sin(phase * 1.3);
+  const halo = glow * scale * (0.92 + 0.08 * Math.sin(phase));
+  drawEyePreviewGlow(context, flameX, flameY, halo, "FF4A16", brightness);
+  drawEyePreviewPolygon(context, [
+    [-0.08, -1.15], [-0.28, -0.66], [-0.60, -0.34], [-0.76, 0.18],
+    [-0.55, 0.76], [-0.15, 1.10], [0.28, 0.98], [0.62, 0.57],
+    [0.73, 0.10], [0.52, -0.28], [0.25, -0.58], [0.18, -0.05],
+    [0.03, 0.32], [-0.18, 0.02], [-0.10, -0.38],
+  ], flameX, flameY, size, "FF5A16", brightness * 0.82);
+  drawEyePreviewPolygon(context, [
+    [0.02, -0.62], [-0.22, -0.08], [-0.34, 0.38], [-0.05, 0.78],
+    [0.30, 0.45], [0.34, 0.05], [0.15, -0.26],
+  ], flameX, flameY, size, "FFFFA8", brightness);
+}
+
+function drawEyePreviewHeart(context, x, y, scale, brightness, glow, now) {
+  const phase = (now % 1000) * Math.PI * 2 / 1000;
+  const size = 12 * scale * (1 + 0.07 * Math.sin(phase));
+  const glowPhase = (now % 900) * Math.PI * 2 / 900;
+  drawEyePreviewGlow(context, x, y, glow * scale * (0.92 + 0.08 * Math.sin(glowPhase)), "FF174F", brightness);
+  context.save();
+  context.globalCompositeOperation = "lighter";
+  context.beginPath();
+  context.moveTo(x, y + size * 1.08);
+  context.bezierCurveTo(x - size * 1.28, y + size * 0.28, x - size * 1.24, y - size * 0.82, x - size * 0.55, y - size * 0.92);
+  context.bezierCurveTo(x - size * 0.18, y - size * 1.00, x, y - size * 0.48, x, y - size * 0.18);
+  context.bezierCurveTo(x, y - size * 0.48, x + size * 0.18, y - size * 1.00, x + size * 0.55, y - size * 0.92);
+  context.bezierCurveTo(x + size * 1.24, y - size * 0.82, x + size * 1.28, y + size * 0.28, x, y + size * 1.08);
+  context.fillStyle = eyePreviewColor("FF2D6B", brightness * 0.9);
+  context.fill();
+  context.beginPath();
+  context.ellipse(x - size * 0.43, y - size * 0.28, size * 0.28, size * 0.38, -0.35, 0, Math.PI * 2);
+  context.fillStyle = eyePreviewColor("FFFFD8", brightness);
+  context.fill();
+  context.restore();
+}
+
+function eyePreviewBlinkProgress(now) {
+  const duration = EYE_BLINK_TIMING.close + EYE_BLINK_TIMING.hold + EYE_BLINK_TIMING.open;
+  let elapsed = -1;
+  if (state.eye.previewBlinkAt > 0) {
+    const manualElapsed = now - state.eye.previewBlinkAt;
+    if (manualElapsed < duration) elapsed = manualElapsed;
+    else state.eye.previewBlinkAt = 0;
+  }
+  if (elapsed < 0 || elapsed >= duration) return 0;
+  if (elapsed < EYE_BLINK_TIMING.close) return elapsed / EYE_BLINK_TIMING.close;
+  if (elapsed < EYE_BLINK_TIMING.close + EYE_BLINK_TIMING.hold) return 1;
+  return 1 - (elapsed - EYE_BLINK_TIMING.close - EYE_BLINK_TIMING.hold) / EYE_BLINK_TIMING.open;
+}
+
+function drawEyePreviewEyelids(context, progress) {
+  if (progress <= 0) return;
+  const center = EYE_PREVIEW_SIZE / 2 - 0.5;
+  const upperGap = 70 * (1 - progress);
+  const lowerGap = 108 * (1 - progress);
+  context.save();
+  context.beginPath();
+  context.arc(center, center, 108, 0, Math.PI * 2);
+  context.clip();
+  context.translate(center, center);
+  context.rotate(-5 * Math.PI / 180);
+  context.fillStyle = "rgb(16, 20, 22)";
+  context.fillRect(-240, -240, 480, 240 - upperGap);
+  context.fillRect(-240, lowerGap, 480, 240 - lowerGap);
+  context.restore();
+}
+
+function eyePreviewScale(values, now) {
+  const baseScale = Number(values.scale) || EYE_DEFAULTS.scale;
+  if (!state.eye.previewZoomAt) return baseScale;
+  const elapsed = now - state.eye.previewZoomAt;
+  if (elapsed >= 900) {
+    state.eye.previewZoomAt = 0;
+    return baseScale;
+  }
+  const minScale = Number(values.minScale) || 0.4;
+  const maxScale = Number(values.maxScale) || 1.5;
+  if (elapsed < 350) return baseScale + (maxScale - baseScale) * elapsed / 350;
+  if (elapsed < 650) return maxScale + (minScale - maxScale) * (elapsed - 350) / 300;
+  return minScale + (baseScale - minScale) * (elapsed - 650) / 250;
+}
+
+function drawEyePreviewFrame(timestamp = performance.now()) {
+  const canvas = $("#eye-preview-canvas");
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const now = Number.isFinite(timestamp) ? timestamp : performance.now();
+  if (!state.eye.previewStartedAt) state.eye.previewStartedAt = now;
+  const values = state.eye.values || EYE_DEFAULTS;
+  const center = EYE_PREVIEW_SIZE / 2 - 0.5;
+  const positionX = Number(values.lookX) || 0;
+  const positionY = Number(values.lookY) || 0;
+  const positionLength = Math.hypot(positionX, positionY);
+  const positionScale = positionLength > 26 ? 26 / positionLength : 1;
+  const x = center + positionX * positionScale;
+  const y = center + positionY * positionScale;
+  const scale = eyePreviewScale(values, now);
+  const breathMs = Number(values.breathMs) || 0;
+  const breath = breathMs > 0
+    ? 0.82 + 0.18 * Math.sin(((now - state.eye.previewStartedAt) % breathMs) * Math.PI * 2 / breathMs)
+    : 1;
+  const brightness = clampNumber(Number(values.brightness) || 0, 0, 1) * breath;
+
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = false;
+  context.save();
+  context.scale(canvas.width / EYE_PREVIEW_SIZE, canvas.height / EYE_PREVIEW_SIZE);
+  drawEyePreviewBase(context);
+  drawEyePreviewBackdrop(context, values);
+  if (values.mood === "flame") drawEyePreviewFlame(context, x, y, scale, brightness, Number(values.glow) || 0, now);
+  else if (values.mood === "heart") drawEyePreviewHeart(context, x, y, scale, brightness, Number(values.glow) || 0, now);
+  else drawEyePreviewDot(context, x, y, scale, values.color, brightness, Number(values.glow) || 0);
+  drawEyePreviewEyelids(context, eyePreviewBlinkProgress(now));
+  context.restore();
+}
+
+function ensureEyePreviewAnimation() {
+  if (state.eye.previewAnimationFrame !== null || !window.requestAnimationFrame) return;
+  const frame = (timestamp) => {
+    state.eye.previewAnimationFrame = null;
+    if (document.hidden) return;
+    drawEyePreviewFrame(timestamp);
+    if ($("#eye-preview-canvas")) state.eye.previewAnimationFrame = window.requestAnimationFrame(frame);
+  };
+  state.eye.previewAnimationFrame = window.requestAnimationFrame(frame);
 }
 
 function triggerEyeBlink() {
-  const stage = $("#eye-preview-stage");
-  if (!stage) return;
-  stage.classList.remove("is-blinking");
-  void stage.offsetWidth;
-  stage.classList.add("is-blinking");
-  window.setTimeout(() => stage.classList.remove("is-blinking"), 190);
+  if (!$("#eye-preview-canvas")) return;
+  state.eye.previewBlinkAt = performance.now();
+  drawEyePreviewFrame(state.eye.previewBlinkAt);
+  ensureEyePreviewAnimation();
 }
 
 function restartEyeBlinkTimer(values = state.eye.values || EYE_DEFAULTS) {
@@ -385,27 +632,13 @@ function restartEyeBlinkTimer(values = state.eye.values || EYE_DEFAULTS) {
 function updateEyePreview(values = state.eye.values || EYE_DEFAULTS) {
   const stage = $("#eye-preview-stage");
   if (!stage) return;
-  stage.style.setProperty("--eye-center-color", `#${normalizeEyeColor(values.color)}`);
-  stage.style.setProperty("--eye-ring-color", `#${normalizeEyeColor(values.ringColor)}`);
-  stage.style.setProperty("--eye-dot-color", `#${normalizeEyeColor(values.dotColor)}`);
-  stage.style.setProperty("--eye-brightness", String(values.brightness));
-  stage.style.setProperty("--eye-ring-brightness", String(values.ringBrightness));
-  stage.style.setProperty("--eye-dot-brightness", String(values.dotBrightness));
-  stage.style.setProperty("--eye-scale", String(values.scale));
-  stage.style.setProperty("--eye-glow", `${values.glow}px`);
-  stage.style.setProperty("--eye-look-x", `${Number(values.lookX) * 0.42}px`);
-  stage.style.setProperty("--eye-look-y", `${Number(values.lookY) * 0.42}px`);
-  stage.style.setProperty("--eye-breath-duration", `${values.breathMs}ms`);
   stage.dataset.mood = values.mood;
   stage.setAttribute("aria-label", `眼睛${EYE_MOOD_LABELS[values.mood] || "预览"}`);
-  const ring = $("#eye-preview-ring");
-  if (ring) ring.classList.toggle("is-hidden", !values.ring);
-  const shape = $("#eye-preview-shape");
-  if (shape) shape.className = `eye-preview-shape mood-${values.mood}`;
   const moodBadge = $("#eye-preview-mood");
   if (moodBadge) moodBadge.textContent = EYE_MOOD_LABELS[values.mood] || values.mood;
-  renderEyeDots(values);
   updateEyeOutputs(values);
+  drawEyePreviewFrame();
+  ensureEyePreviewAnimation();
   restartEyeBlinkTimer(values);
 }
 
@@ -599,6 +832,11 @@ function handleEyeMood(mood) {
 function sendEyeAction(action) {
   const command = `eyeaction:${action}`;
   if (action === "blink") triggerEyeBlink();
+  if (action === "zoom") {
+    state.eye.previewZoomAt = performance.now();
+    drawEyePreviewFrame(state.eye.previewZoomAt);
+    ensureEyePreviewAnimation();
+  }
   queueEyeCommand(command, [], `正在执行 ${action} 动作`);
 }
 
@@ -3055,6 +3293,10 @@ function bindEvents() {
   window.addEventListener("pagehide", stopCameraPreviewOnPageExit);
   document.addEventListener("visibilitychange", () => {
     startEyeStatusPolling();
+    if (!document.hidden) {
+      drawEyePreviewFrame();
+      ensureEyePreviewAnimation();
+    }
     if (document.hidden && state.cameraPreview.active) stopCameraPreview({ quiet: true });
   });
 }

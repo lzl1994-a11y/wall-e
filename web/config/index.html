@@ -429,14 +429,7 @@
             </div>
             <div class="eye-preview-shell">
               <div id="eye-preview-stage" class="eye-preview-stage" data-mood="dot" aria-label="眼睛动态预览">
-                <div class="eye-preview-glow" aria-hidden="true"></div>
-                <div id="eye-preview-ring" class="eye-preview-ring" aria-hidden="true"></div>
-                <div id="eye-preview-dots" class="eye-preview-dots" aria-hidden="true"></div>
-                <div id="eye-preview-center" class="eye-preview-center">
-                  <div id="eye-preview-shape" class="eye-preview-shape mood-dot" aria-hidden="true">
-                    <span class="eye-preview-pupil"></span>
-                  </div>
-                </div>
+                <canvas id="eye-preview-canvas" class="eye-preview-canvas" width="240" height="240" aria-hidden="true"></canvas>
               </div>
             </div>
             <div class="eye-preview-legend"><span><i class="legend-swatch center"></i>中心</span><span><i class="legend-swatch ring"></i>圆环</span><span><i class="legend-swatch dots"></i>点阵</span></div>
