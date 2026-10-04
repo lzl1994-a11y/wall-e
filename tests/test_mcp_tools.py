@@ -351,9 +351,11 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         request_prompt = service.client.chat.completions.create.call_args.kwargs[
             "messages"
         ][0]["content"]
-        self.assertIn("威胁、欺负、攻击或故意伤害时优先使用 angry", request_prompt)
+        self.assertIn("以下是固定映射，不做自由选择", request_prompt)
+        self.assertIn("expression 必须使用 angry", request_prompt)
+        self.assertIn("不得使用 sad", request_prompt)
         self.assertIn("用户送礼物", request_prompt)
-        self.assertIn("表达喜欢、喜爱或真诚夸奖时使用 happy", request_prompt)
+        self.assertIn("expression 必须使用\nhappy", request_prompt)
         self.assertIn("不能用 neutral 覆盖", request_prompt)
 
     def test_dialog_plain_content_streams_without_a_second_model_request(self):
