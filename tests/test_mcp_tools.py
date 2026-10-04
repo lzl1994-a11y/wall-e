@@ -356,6 +356,8 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         self.assertIn("不得使用 sad", request_prompt)
         self.assertIn("用户送礼物", request_prompt)
         self.assertIn("expression 必须使用\nhappy", request_prompt)
+        self.assertIn("只填写 direct_answer.expression，不是动作命令", request_prompt)
+        self.assertIn("绝不能因此调用\nexpress_emotion", request_prompt)
         self.assertIn("不能用 neutral 覆盖", request_prompt)
 
     def test_dialog_plain_content_streams_without_a_second_model_request(self):
