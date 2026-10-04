@@ -29,8 +29,11 @@ DIALOG_EXPRESSION_POLICY = """
 自然反应（统一使用 neutral、listening、thinking、happy、sad、surprised、confused、
 concerned、curious、disdain、angry），不需要用户明确命令：例如听到难以置信的
 消息可用 surprised，复杂问题可用 thinking，用户难过时可用 concerned，普通内容用
-neutral。不要为了热闹滥用强烈表情。身体动作工具仍只允许响应用户明确的现实动作命令。
-不要在普通 content 中输出台词或结构化字段。
+neutral。用户或瓦力受到明确威胁、欺负、攻击或故意伤害时优先使用 angry；用户送礼物、
+表达喜欢、喜爱或真诚夸奖时使用 happy。若调用 express_emotion，direct_answer 的
+expression 必须与请求执行的 emotion 一致，不能用 neutral 覆盖。不要为了热闹滥用强烈
+表情。身体动作工具仍只允许响应用户明确的现实动作命令。即使回答很短，也必须调用
+direct_answer，绝不能改用普通 content 输出台词或结构化字段。
 """.strip()
 
 

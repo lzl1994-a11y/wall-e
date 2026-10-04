@@ -348,6 +348,13 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             events,
         )
         self.assertIn({"type": "text", "content": "好呀，我来陪你。"}, events)
+        request_prompt = service.client.chat.completions.create.call_args.kwargs[
+            "messages"
+        ][0]["content"]
+        self.assertIn("威胁、欺负、攻击或故意伤害时优先使用 angry", request_prompt)
+        self.assertIn("用户送礼物", request_prompt)
+        self.assertIn("表达喜欢、喜爱或真诚夸奖时使用 happy", request_prompt)
+        self.assertIn("不能用 neutral 覆盖", request_prompt)
 
     def test_dialog_plain_content_streams_without_a_second_model_request(self):
         class PlainDialogResponse:
