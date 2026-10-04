@@ -17,6 +17,7 @@ from services.action.action_intent_guard import (
     registered_sequence_names,
     validate_action_arguments,
 )
+from services.dialog.dialog_expression_protocol import EXPRESSIONS
 
 
 CONDITIONAL_TASK_TOOL_NAME = "run_conditional_task"
@@ -161,9 +162,7 @@ def conditional_task_tool_schema() -> dict[str, Any]:
                     },
                     "emotion": {
                         "type": "string",
-                        "enum": [
-                            "curious", "happy", "sad", "surprised", "disdain", "angry"
-                        ],
+                        "enum": sorted(EXPRESSIONS),
                         "description": "express_emotion 专用",
                     },
                     "mode": {

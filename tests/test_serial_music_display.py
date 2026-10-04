@@ -111,6 +111,21 @@ class SerialMusicDisplayTests(unittest.TestCase):
         self.assertEqual(calls[1].args, ("pca9685:1\n",))
         self.assertEqual(calls[1].kwargs, {"block": False, "wake_screen": False})
 
+    def test_dialog_expression_updates_tft_mood_without_waking_chat(self):
+        message = _String(json.dumps({
+            "expression": "happy", "intensity": "medium", "turn_id": "t1"
+        }))
+        self.node._on_dialog_expression(message)
+        self.node._on_dialog_expression(message)
+
+        self.assertEqual(
+            self.node.bridge.send_raw.call_args_list,
+            [
+                unittest.mock.call("eyeaction:mood:heart\n", wake_screen=False),
+                unittest.mock.call("eyeaction:mood:heart\n", wake_screen=False),
+            ],
+        )
+
     def test_stopping_music_restores_chat_navigation(self):
         self.node._on_music_state(_String(encode_music_state("playing")))
         self.node._on_music_state(_String(encode_music_state("stopped")))

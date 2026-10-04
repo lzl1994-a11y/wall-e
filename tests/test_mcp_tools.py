@@ -124,6 +124,10 @@ class FastMcpToolTests(unittest.TestCase):
             [tool["function"]["name"] for tool in action_tools],
             ["play_sequence"],
         )
+        self.assertEqual(
+            tool_dispatcher.DIRECT_ANSWER_TOOL["function"]["parameters"]["required"],
+            ["response", "intent_type", "expression", "intensity"],
+        )
 
     def test_multimodal_direct_answer_requires_transcript_and_response(self):
         from services.llm import tool_dispatcher
@@ -283,6 +287,120 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         self.assertEqual(events[1], {
             "type": "text", "content": "真的吗？它长什么样？"
         })
+
+    def test_structured_dialog_returns_expression_and_action_with_one_contract(self):
+        class StructuredDialogResponse:
+            def __iter__(self):
+                calls = [
+                    types.SimpleNamespace(
+                        index=0,
+                        function=types.SimpleNamespace(
+                            name="direct_answer",
+                            arguments=(
+                                '{"response":"好呀，我来陪你。",'
+                                '"intent_type":"execute_task",'
+                                '"expression":"happy","intensity":"medium"}'
+                            ),
+                        ),
+                    ),
+                    types.SimpleNamespace(
+                        index=1,
+                        function=types.SimpleNamespace(
+                            name="play_sequence",
+                            arguments='{"sequence_name":"wave_hello"}',
+                        ),
+                    ),
+                ]
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=calls),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.settings["provider"] = "siliconflow"
+        service.client.chat.completions.create.return_value = StructuredDialogResponse()
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            events = list(service.chat_stream(
+                "内部增强 prompt", tools_enabled=True, dialog_expression=True,
+                dialog_heard_text="陪我挥手",
+            ))
+
+        self.assertIn({
+            "type": "tool_call",
+            "name": "play_sequence",
+            "arguments": '{"sequence_name": "wave_hello"}',
+        }, events)
+        answer = next(event for event in events if event["type"] == "dialog_answer")
+        self.assertEqual(answer["heard_text"], "陪我挥手")
+        self.assertEqual(answer["response"], "好呀，我来陪你。")
+        self.assertEqual(answer["intent_type"], "execute_task")
+        self.assertEqual(answer["expression"], "happy")
+        self.assertEqual(answer["intensity"], "medium")
+        self.assertIn(
+            {"type": "dialog_expression", "expression": "happy", "intensity": "medium"},
+            events,
+        )
+        self.assertIn({"type": "text", "content": "好呀，我来陪你。"}, events)
+
+    def test_dialog_plain_content_streams_without_a_second_model_request(self):
+        class PlainDialogResponse:
+            def __init__(self):
+                self.consumed = 0
+
+            def __iter__(self):
+                for content, finish_reason in (("你", None), ("好。", "stop")):
+                    self.consumed += 1
+                    yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content=content, tool_calls=None),
+                        finish_reason=finish_reason,
+                    )])
+
+        response = PlainDialogResponse()
+        service = self._service()
+        service.client.chat.completions.create.return_value = response
+        with patch("services.llm.llm_service.get_action_tools", return_value=[{
+            "type": "function",
+            "function": {
+                "name": "play_sequence",
+                "description": "x",
+                "parameters": {"type": "object"},
+            },
+        }]):
+            stream = service.chat_stream(
+                "内部增强 prompt",
+                tools_enabled=True,
+                dialog_expression=True,
+                dialog_heard_text="你好",
+            )
+            self.assertEqual(next(stream), {
+                "type": "dialog_expression",
+                "expression": "neutral",
+                "intensity": "low",
+            })
+            self.assertEqual(next(stream), {"type": "text", "content": "你"})
+            self.assertEqual(response.consumed, 1)
+            remaining = list(stream)
+
+        self.assertEqual(
+            [event for event in remaining if event["type"] == "text"],
+            [{"type": "text", "content": "好。"}],
+        )
+        self.assertIn({
+            "type": "dialog_answer",
+            "heard_text": "你好",
+            "response": "你好。",
+            "intent_type": "conversation",
+            "expression": "neutral",
+            "intensity": "low",
+        }, remaining)
+        service.client.chat.completions.create.assert_called_once()
 
     def test_plain_content_does_not_start_a_second_json_request(self):
         class PlainResponse:
@@ -835,6 +953,32 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             request["tool_choice"],
             {"type": "function", "function": {"name": "direct_answer"}},
         )
+
+    def test_structured_answer_rejects_content_removed_by_speech_sanitizer(self):
+        from services.llm.llm_service import StructuredAnswerUnavailableError
+
+        class EmptyAfterSanitizeResponse:
+            def __iter__(self):
+                tool_call = types.SimpleNamespace(
+                    index=0,
+                    function=types.SimpleNamespace(
+                        name="direct_answer",
+                        arguments='{"response":"【修正文本】你好"}',
+                    ),
+                )
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content=None, tool_calls=[tool_call]),
+                    finish_reason="tool_calls",
+                )])
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = EmptyAfterSanitizeResponse()
+        with self.assertRaisesRegex(StructuredAnswerUnavailableError, "可播放"):
+            list(service.chat_stream(
+                "看看画面",
+                tools_enabled=False,
+                structured_answer=True,
+            ))
 
     def test_primary_model_is_used_when_no_tool_model_is_configured(self):
         service = self._service()

@@ -22,6 +22,8 @@ import logging
 import os
 from typing import Any
 import yaml
+
+from services.dialog.dialog_expression_protocol import EXPRESSIONS
 from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -126,13 +128,7 @@ def express_emotion(emotion: str) -> str:
     仅当用户明确命令瓦力现在表达某种情绪时，控制瓦力用身体表达情绪。
     询问瓦力是否开心、讨论情绪或普通闲聊时不能为了生动而自行调用。
     
-    emotion 可选：
-      - "curious"  : 好奇，眼睛微动
-      - "happy"    : 开心，眉毛上扬、欢快动作
-      - "sad"      : 难过，手部低垂、眼睛低落
-      - "surprised": 惊讶，眼睛瞪大、眉毛上扬、脖子后仰
-      - "disdain"  : 鄙视/翻白眼
-      - "angry"    : 生气
+    emotion 可选值与对话表情统一；具体枚举由工具 Schema 提供。
     
     通过 ROS /action_request 提交，仲裁后由 sequence_ros_node 执行。
     """
@@ -306,9 +302,7 @@ def _tighten_tool_schema(name, parameters):
     schema['additionalProperties'] = False
     properties = schema.setdefault('properties', {})
     if name == 'express_emotion' and 'emotion' in properties:
-        properties['emotion']['enum'] = sorted({
-            'curious', 'happy', 'sad', 'surprised', 'disdain', 'angry'
-        })
+        properties['emotion']['enum'] = sorted(EXPRESSIONS)
     elif name == 'play_sequence' and 'sequence_name' in properties:
         sequence_names = _configured_sequence_names()
         if sequence_names:

@@ -182,7 +182,10 @@ def create_mcp_gateway(
 
     @server.tool(annotations=state_change)
     def express_emotion(
-        emotion: Literal["curious", "happy", "sad", "surprised", "disdain", "angry"],
+        emotion: Literal[
+            "neutral", "listening", "thinking", "happy", "sad", "surprised",
+            "confused", "concerned", "curious", "disdain", "angry",
+        ],
     ) -> dict[str, Any]:
         """Express one requested emotion using Wali's body and screen."""
         return invoke("express_emotion", {"emotion": emotion})

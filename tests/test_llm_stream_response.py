@@ -71,6 +71,27 @@ def test_dialog_expression_event():
     assert decision.expression == {"expression": "happy", "intensity": "high"}
 
 
+def test_dialog_answer_event_preserves_unified_fields():
+    accumulator = StreamResponseAccumulator()
+
+    decision = accumulator.process_event({
+        "type": "dialog_answer",
+        "heard_text": "你喜欢我吗",
+        "response": "当然喜欢。",
+        "intent_type": "conversation",
+        "expression": "happy",
+        "intensity": "medium",
+    })
+
+    assert decision.dialog_answer == {
+        "heard_text": "你喜欢我吗",
+        "response": "当然喜欢。",
+        "intent_type": "conversation",
+        "expression": "happy",
+        "intensity": "medium",
+    }
+
+
 def test_tool_call_and_done_events():
     accumulator = StreamResponseAccumulator()
 

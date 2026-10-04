@@ -572,6 +572,8 @@ class LLMBrainNode(Node):
                 tools_enabled=tools_enabled,
                 max_tokens_override=max_tokens_override,
                 only_action_name=prepared_request.only_action_name,
+                dialog_expression=True,
+                dialog_heard_text=user_prompt,
             )
 
             for data in stream:

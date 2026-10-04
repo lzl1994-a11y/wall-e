@@ -22,6 +22,7 @@ class StreamEventDecision:
     """Decision output for a single processed LLM stream event."""
 
     tts_sentences: list[str] = field(default_factory=list)
+    dialog_answer: dict[str, Any] | None = None
     expression: dict[str, Any] | None = None
     tool_call: dict[str, Any] | None = None
     finish_reason: str | None = None
@@ -72,6 +73,7 @@ class StreamResponseAccumulator:
         """Process one stream event and return any immediate decisions (TTS, expression, tool)."""
         data_type = event.get("type")
         tts_sentences: list[str] = []
+        dialog_answer: dict[str, Any] | None = None
         expression: dict[str, Any] | None = None
         tool_call: dict[str, Any] | None = None
         finish_reason: str | None = None
@@ -79,6 +81,14 @@ class StreamResponseAccumulator:
         if data_type == "text":
             chunk = event.get("content", "")
             tts_sentences = self.append_text(chunk)
+        elif data_type == "dialog_answer":
+            dialog_answer = {
+                "heard_text": event.get("heard_text"),
+                "response": event.get("response"),
+                "intent_type": event.get("intent_type"),
+                "expression": event.get("expression"),
+                "intensity": event.get("intensity"),
+            }
         elif data_type == "dialog_expression":
             expression = {
                 "expression": event.get("expression"),
@@ -95,6 +105,7 @@ class StreamResponseAccumulator:
 
         return StreamEventDecision(
             tts_sentences=tts_sentences,
+            dialog_answer=dialog_answer,
             expression=expression,
             tool_call=tool_call,
             finish_reason=finish_reason,

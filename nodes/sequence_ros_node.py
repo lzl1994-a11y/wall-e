@@ -11,7 +11,11 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from services.motion.motion_arbiter import MOTOR_AUTONOMY_TOPIC, STOP_COMMAND
 from services.vision.vision_pipeline_protocol import TRACKING_SERVO_TARGET_TOPIC
-from services.dialog.dialog_expression_protocol import DIALOG_EXPRESSION_TARGET_TOPIC
+from services.dialog.dialog_expression_protocol import (
+    DIALOG_EXPRESSION_TOPIC,
+    DIALOG_EXPRESSION_TARGET_TOPIC,
+    encode_dialog_expression,
+)
 from services.game.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 from services.motion.sequence_execution import (
     DEFAULT_MOTION_TO_MOTOR,
@@ -77,6 +81,9 @@ class SequenceRosNode(Node):
         self.servo_pub = self.create_publisher(String, '/servo_cmd', 10)
         self.motor_pub = self.create_publisher(String, MOTOR_AUTONOMY_TOPIC, 10)
         self.tft_pub   = self.create_publisher(String, '/tft_cmd', 10)
+        self.dialog_expression_pub = self.create_publisher(
+            String, DIALOG_EXPRESSION_TOPIC, 10
+        )
         self.action_status_pub = self.create_publisher(String, ACTION_STATUS_TOPIC, 10)
 
         # 4. 核心 50Hz 插值定时器
@@ -326,7 +333,9 @@ class SequenceRosNode(Node):
             elif effect.kind == "motor_stop":
                 self._stop_motors()
             elif effect.kind == "emotion":
-                self.tft_pub.publish(String(data=f"eyeaction:{effect.payload}\n"))
+                self.dialog_expression_pub.publish(String(
+                    data=encode_dialog_expression(effect.payload, "medium")
+                ))
             elif effect.kind == "status":
                 self._publish_request_status(
                     effect.payload["request"],

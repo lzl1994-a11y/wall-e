@@ -10,12 +10,47 @@ DIALOG_EXPRESSION_TARGET_TOPIC = "/servo_targets/dialog_expression"
 EXPRESSIONS = frozenset({
     "neutral", "listening", "thinking", "happy",
     "sad", "surprised", "confused", "concerned",
+    "curious", "disdain", "angry",
 })
 INTENSITIES = frozenset({"low", "medium", "high"})
+TFT_MOODS = frozenset({"dot", "flame", "heart"})
+
+_EXPRESSION_ALIASES = {
+    "calm": "neutral",
+    "love": "happy",
+    "loving": "happy",
+    "anger": "angry",
+    "mad": "angry",
+}
+
+_POSE_EXPRESSION_ALIASES = {
+    "curious": "thinking",
+    "disdain": "confused",
+    "angry": "concerned",
+}
+
+
+def expression_to_tft_mood(expression):
+    """Map the shared semantic expression onto the TFT's three eye moods."""
+    value = str(expression or "").strip().lower()
+    value = _EXPRESSION_ALIASES.get(value, value)
+    if value in {"happy"}:
+        return "heart"
+    if value in {"angry", "disdain"}:
+        return "flame"
+    return "dot"
+
+
+def expression_to_pose_expression(expression):
+    """Reuse the closest configured conversational pose for added semantics."""
+    value = str(expression or "").strip().lower()
+    value = _EXPRESSION_ALIASES.get(value, value)
+    return _POSE_EXPRESSION_ALIASES.get(value, value)
 
 
 def normalize_expression(expression, intensity):
     expression = str(expression or "").strip().lower()
+    expression = _EXPRESSION_ALIASES.get(expression, expression)
     intensity = str(intensity or "").strip().lower()
     if expression not in EXPRESSIONS:
         expression = "neutral"

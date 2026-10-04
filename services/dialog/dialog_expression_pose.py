@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from services.dialog.dialog_expression_protocol import expression_to_pose_expression
 from services.motion.servo_motion_config import resolve_servo_target
 
 DEFAULT_STEP_SIZE: float = 24.0
@@ -82,6 +83,7 @@ def resolve_dialog_expression_pose(
     """
     poses = expression_poses if isinstance(expression_poses, Mapping) else {}
     servos_map = servos if isinstance(servos, Mapping) else {}
+    expression = expression_to_pose_expression(expression)
 
     pose = poses.get(expression) if expression else None
     if not pose or not isinstance(pose, Mapping):

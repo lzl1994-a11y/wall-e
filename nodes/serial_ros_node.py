@@ -33,6 +33,11 @@ from services.hardware.esp32_netcfg import (
 from services.hardware.esp32_netcfg_rpc import REQUEST_TOPIC, RESPONSE_TOPIC
 from services.audio.music_protocol import MUSIC_STATE_TOPIC, decode_music_state
 from services.speech.tts_protocol import decode_turn_end
+from services.dialog.dialog_expression_protocol import (
+    DIALOG_EXPRESSION_TOPIC,
+    decode_dialog_expression,
+    expression_to_tft_mood,
+)
 from services.hardware.eyeconfig_rpc import (
     EYE_REQUEST_TOPIC,
     EYE_RESPONSE_TOPIC,
@@ -73,6 +78,7 @@ class SerialNode(Node):
         self.create_subscription(String, 'screen_dialog', self.screen_dialog_callback, 10)
         self.create_subscription(String, 'tft_cmd', self.tft_cmd_callback, 10)
         self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, 10)
+        self.create_subscription(String, DIALOG_EXPRESSION_TOPIC, self._on_dialog_expression, 10)
         # Motion state is latest-wins. Keeping ten stale states here causes a
         # visible catch-up burst after an exclusive serial transaction.
         self.create_subscription(
@@ -122,6 +128,14 @@ class SerialNode(Node):
         state = decode_music_state(message.data)
         if state is not None:
             self._music_active = state["state"] in {"loading", "playing"}
+
+    def _on_dialog_expression(self, message):
+        """Reflect the shared dialogue expression on the TFT's three moods."""
+        value = decode_dialog_expression(message.data)
+        if value is None:
+            return
+        mood = expression_to_tft_mood(value["expression"])
+        self.bridge.send_raw(f"eyeaction:mood:{mood}\n", wake_screen=False)
 
     def _apply_saved_network_on_start(self):
         """Push a fresh RAM-only Wi-Fi/TCP session after every process start."""

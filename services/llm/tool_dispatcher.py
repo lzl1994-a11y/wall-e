@@ -53,7 +53,7 @@ DIRECT_ANSWER_TOOL = {
                     "description": "表情幅度；没有强烈情绪时使用 low",
                 },
             },
-            "required": ["response", "expression", "intensity"],
+            "required": ["response", "intent_type", "expression", "intensity"],
             "additionalProperties": False,
         },
     },

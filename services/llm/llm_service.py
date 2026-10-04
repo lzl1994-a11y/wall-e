@@ -17,8 +17,10 @@ import logging
 import yaml
 from openai import OpenAI
 from services.llm.llm_output_filter import VisibleAnswerFilter
+from services.llm.llm_response_policy import LLMResponsePolicy
 from services.llm.llm_prompt import (
     with_action_tool_policy,
+    with_dialog_expression_policy,
     with_direct_speech_policy,
     with_structured_answer_policy,
 )
@@ -214,7 +216,8 @@ class LLMService:
             str(fallback_messages[0].get("content", ""))
             + "\n\n只返回一个 JSON 对象，不要 Markdown 或其他文字。必须包含 response、"
               "expression、intensity。expression 只能是 neutral、listening、thinking、"
-              "happy、sad、surprised、confused、concerned；intensity 只能是 low、"
+              "happy、sad、surprised、confused、concerned、curious、disdain、angry；"
+              "intensity 只能是 low、"
               "medium、high。还必须包含 actions 数组。只有用户明确命令瓦力现在执行现实"
               "动作时，actions 才能填写；普通聊天、能力询问、否定、引用、故事或第三方"
               "动作必须返回空数组。每项严格使用 {\"name\":工具名,\"arguments\":参数对象}。"
@@ -258,12 +261,14 @@ class LLMService:
         system_prompt=None,
         max_tokens_override=None,
         only_action_name=None,
+        dialog_expression=False,
+        dialog_heard_text=None,
     ):
         """
         [ZH] 发起流式对话 (Generator)。
-             yield 两种数据: "text" (供 TTS 播报) 和 "tool_call" (供硬件执行)。
+             yield 文本、统一对话回答、表情和动作事件。
         [EN] Initiate streaming chat (Generator).
-             Yields two types of data: "text" (for TTS) and "tool_call" (for hardware execution).
+             Yields text, unified dialog-answer/expression, and tool-call events.
         """
         if chat_history is None:
             chat_history = []
@@ -278,12 +283,17 @@ class LLMService:
                 "structured_answer is reserved for direct-answer-only requests; "
                 "disable action tools for this request"
             )
+        if dialog_expression and not tools_enabled:
+            raise ValueError("dialog_expression requires tools_enabled=True")
         if only_action_name and not tools_enabled:
             raise ValueError("only_action_name requires tools_enabled=True")
         requires_structured_answer = bool(structured_answer)
+        requires_dialog_answer = bool(dialog_expression)
         system_content = with_direct_speech_policy(selected_system_prompt)
         if tools_enabled:
             system_content = with_action_tool_policy(system_content)
+        if requires_dialog_answer and not only_action_name:
+            system_content = with_dialog_expression_policy(system_content)
         if requires_structured_answer:
             system_content = with_structured_answer_policy(system_content)
         messages = [{
@@ -332,10 +342,9 @@ class LLMService:
                     raise ToolCallingUnavailableError(
                         "动作工具为空；拒绝以无工具模式发送请求。请检查 FastMCP 2.x 工具注册。"
                     )
-                # Ordinary speech stays in native streamed ``content``.  Only
-                # real side-effect tools are advertised on an action-capable
-                # turn; direct_answer is reserved for explicitly structured
-                # requests below.
+                # Ordinary speech stays in native streamed ``content``.  The
+                # structured dialogue mode additionally advertises the shared
+                # direct_answer contract alongside real side-effect tools.
                 self._tools = action_tools
             if only_action_name:
                 tools = [
@@ -348,6 +357,8 @@ class LLMService:
                     )
             else:
                 tools = self._tools
+                if requires_dialog_answer:
+                    tools = [DIRECT_ANSWER_TOOL, *tools]
             request_kwargs["tools"] = tools
             # Some OpenAI-compatible providers reject a named tool_choice even
             # though they accept the same function schema.  Offering exactly
@@ -390,6 +401,7 @@ class LLMService:
 
         acc = ToolCallAccumulator()
         answer_filter = VisibleAnswerFilter()
+        dialog_raw_content = []
         finish_reason = ""
         # A provider must choose exactly one protocol branch per turn.  Most
         # providers expose plain text immediately and fail closed if a tool
@@ -433,6 +445,7 @@ class LLMService:
                         "Discarded buffered model content before SiliconFlow tool call"
                     )
                     buffered_visible.clear()
+                    dialog_raw_content.clear()
             if branch == "tool":
                 if has_tool_delta:
                     acc.feed(delta)
@@ -453,6 +466,8 @@ class LLMService:
             if delta.content:
                 visible = answer_filter.feed(delta.content)
                 if visible:
+                    if requires_dialog_answer:
+                        dialog_raw_content.append(visible)
                     if buffer_tool_branch:
                         buffered_visible.append(visible)
                         continue
@@ -473,6 +488,8 @@ class LLMService:
             elif tools_enabled and branch != "tool":
                 if buffer_tool_branch and visible_tail:
                     buffered_visible.append(visible_tail)
+                if requires_dialog_answer and visible_tail:
+                    dialog_raw_content.append(visible_tail)
                 final_visible = (
                     "".join(buffered_visible) if buffer_tool_branch else visible_tail
                 )
@@ -492,9 +509,29 @@ class LLMService:
         direct_answers = [
             tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
         ]
+        response_text = ""
+        expression, intensity = "neutral", "low"
+        intent_type = "conversation"
+        if requires_dialog_answer:
+            if direct_answers:
+                arguments = direct_answers[-1]["arguments"]
+                candidate = arguments.get("response")
+                if isinstance(candidate, str):
+                    response_text = candidate.strip()
+                expression, intensity = normalize_expression(
+                    arguments.get("expression"), arguments.get("intensity")
+                )
+                candidate_intent = arguments.get("intent_type")
+                if candidate_intent in {
+                    "conversation", "capability_query", "execute_task"
+                }:
+                    intent_type = candidate_intent
+            if not response_text and dialog_raw_content and not tool_calls:
+                response_text = "".join(dialog_raw_content).strip()
+            if tool_calls:
+                branch = "tool"
+
         if requires_structured_answer:
-            response_text = ""
-            expression, intensity = "neutral", "low"
             if direct_answers:
                 arguments = direct_answers[-1]["arguments"]
                 candidate = arguments.get("response")
@@ -517,20 +554,24 @@ class LLMService:
                     )
                 except Exception as exc:
                     LOGGER.warning("Structured JSON fallback failed: %s", exc)
-            if not response_text:
-                raise StructuredAnswerUnavailableError(
-                    "模型没有返回 direct_answer.response；请使用支持原生 Function Calling 的模型"
-                )
             # Structured callers consume the validated text response.  Dialog
             # expressions for ordinary streamed speech are emitted at branch
             # selection time above using the non-blocking neutral default.
+
+        if response_text:
+            response_text = LLMResponsePolicy.sanitize_speech_text(response_text)
+        if requires_structured_answer and not response_text:
+            raise StructuredAnswerUnavailableError(
+                "模型没有返回可播放的 direct_answer.response；"
+                "请使用支持原生 Function Calling 的模型"
+            )
 
         offered_action_names = {
             tool["function"]["name"]
             for tool in tools
             if tools_enabled and isinstance(tool.get("function"), dict)
         }
-        for tc in tool_calls if branch == "tool" else []:
+        for tc in tool_calls if branch == "tool" or requires_dialog_answer else []:
             if tc["name"] == DIRECT_ANSWER_TOOL_NAME:
                 continue
             if not tools_enabled or tc["name"] not in offered_action_names:
@@ -547,5 +588,27 @@ class LLMService:
         # without first playing a model-generated preamble such as “我看一下”.
         if requires_structured_answer and response_text:
             yield {"type": "text", "content": response_text}
+
+        if requires_dialog_answer:
+            if response_text:
+                yield {
+                    "type": "dialog_answer",
+                    "heard_text": (
+                        user_text
+                        if dialog_heard_text is None
+                        else str(dialog_heard_text)
+                    ),
+                    "response": response_text,
+                    "intent_type": intent_type,
+                    "expression": expression,
+                    "intensity": intensity,
+                }
+                if not default_expression_emitted:
+                    yield {
+                        "type": "dialog_expression",
+                        "expression": expression,
+                        "intensity": intensity,
+                    }
+                    yield {"type": "text", "content": response_text}
 
         yield {"type": "done", "finish_reason": finish_reason}

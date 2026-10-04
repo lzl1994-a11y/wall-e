@@ -78,6 +78,21 @@ def _load_module():
 
 
 class SequenceMotorHeartbeatTests(unittest.TestCase):
+    def test_emotion_action_reuses_shared_dialog_expression_pipeline(self):
+        module = _load_module()
+        node = module.SequenceRosNode()
+
+        node._dispatch_action({"type": "express_emotion", "emotion": "thinking"})
+
+        messages = node.publishers["dialog_expression"].messages
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(json.loads(messages[0].data), {
+            "expression": "thinking",
+            "intensity": "medium",
+            "turn_id": "",
+        })
+        self.assertEqual(node.publishers["/tft_cmd"].messages, [])
+
     def test_choreography_starts_only_for_its_first_music_pcm(self):
         module = _load_module()
         node = module.SequenceRosNode()

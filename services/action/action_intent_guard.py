@@ -14,8 +14,10 @@ from pathlib import Path
 
 import yaml
 
+from services.dialog.dialog_expression_protocol import EXPRESSIONS
 
-_EMOTIONS = {"curious", "happy", "sad", "surprised", "disdain", "angry"}
+
+_EMOTIONS = set(EXPRESSIONS)
 _DIRECTIONS = {"forward", "backward", "spin", "left", "right"}
 _TRACKING_MODES = {"follow_me", "look_at_me", "idle"}
 _MUSIC_ACTIONS = {"play", "stop"}
