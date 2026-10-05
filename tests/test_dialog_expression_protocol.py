@@ -12,7 +12,7 @@ from services.dialog.dialog_expression_protocol import (
 def test_shared_expression_maps_to_tft_moods():
     assert expression_to_tft_mood("happy") == "heart"
     assert expression_to_tft_mood("angry") == "flame"
-    assert expression_to_tft_mood("disdain") == "flame"
+    assert expression_to_tft_mood("disdain") == "dot"
     assert expression_to_tft_mood("thinking") == "dot"
 
 
@@ -32,12 +32,23 @@ def test_action_only_expressions_reuse_existing_dialog_poses():
 
 
 def test_dialog_expression_prefix_is_removed_before_tts():
-    assert split_dialog_expression_prefix("😠别拆我。") == (
-        "angry", "medium", "别拆我。", True
-    )
-    assert split_dialog_expression_prefix("  😍 谢谢你！") == (
-        "happy", "medium", "谢谢你！", True
-    )
+    cases = {
+        "😶": ("neutral", "low"),
+        "👂": ("listening", "medium"),
+        "🤔": ("thinking", "medium"),
+        "😍": ("happy", "medium"),
+        "😢": ("sad", "medium"),
+        "😮": ("surprised", "high"),
+        "😕": ("confused", "medium"),
+        "😟": ("concerned", "medium"),
+        "🧐": ("curious", "medium"),
+        "😒": ("disdain", "medium"),
+        "😠": ("angry", "medium"),
+    }
+    for emoji, (expression, intensity) in cases.items():
+        assert split_dialog_expression_prefix(f"  {emoji} 测试台词。") == (
+            expression, intensity, "测试台词。", True
+        )
 
 
 def test_missing_dialog_expression_prefix_falls_back_without_losing_text():

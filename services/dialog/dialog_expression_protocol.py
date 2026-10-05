@@ -16,11 +16,20 @@ INTENSITIES = frozenset({"low", "medium", "high"})
 TFT_MOODS = frozenset({"dot", "flame", "heart"})
 
 # Ordinary ASR replies use the same one-prefix contract as Xiaozhi: the model
-# selects one small, closed-set marker and the local pipeline removes it before
-# TTS.  Keep this deliberately limited to the three TFT states.
+# selects one closed-set marker and the local pipeline removes it before TTS.
+# The semantic expression drives the existing dialog pose controller; only
+# happy and angry have dedicated TFT eye moods.
 DIALOG_EXPRESSION_PREFIXES = {
     "😶": ("neutral", "low"),
+    "👂": ("listening", "medium"),
+    "🤔": ("thinking", "medium"),
     "😍": ("happy", "medium"),
+    "😢": ("sad", "medium"),
+    "😮": ("surprised", "high"),
+    "😕": ("confused", "medium"),
+    "😟": ("concerned", "medium"),
+    "🧐": ("curious", "medium"),
+    "😒": ("disdain", "medium"),
     "😠": ("angry", "medium"),
 }
 
@@ -45,7 +54,7 @@ def expression_to_tft_mood(expression):
     value = _EXPRESSION_ALIASES.get(value, value)
     if value in {"happy"}:
         return "heart"
-    if value in {"angry", "disdain"}:
+    if value == "angry":
         return "flame"
     return "dot"
 

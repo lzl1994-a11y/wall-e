@@ -338,8 +338,10 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "messages"
         ][0]["content"]
         self.assertIn("第一个字符放且只放一个表情标记", request_prompt)
-        self.assertIn("😠：用户或瓦力受到明确威胁", request_prompt)
-        self.assertIn("用户送礼物", request_prompt)
+        self.assertIn("😠 angry：用户或瓦力受到明确威胁", request_prompt)
+        self.assertIn("收到礼物", request_prompt)
+        self.assertIn("😟 concerned", request_prompt)
+        self.assertIn("上述 11 个标记", request_prompt)
         self.assertIn("这个语义标记不是动作命令", request_prompt)
         self.assertIn("绝不能因此调用 express_emotion", request_prompt)
         self.assertNotIn("每轮必须调用 direct_answer", request_prompt)
