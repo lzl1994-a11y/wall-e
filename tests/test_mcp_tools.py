@@ -293,7 +293,7 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             def __iter__(self):
                 yield types.SimpleNamespace(choices=[types.SimpleNamespace(
                     delta=types.SimpleNamespace(
-                        content="😍谢谢你的礼物，我很喜欢！",
+                        content="😍 happy：谢谢你的礼物，我很喜欢！",
                         tool_calls=None,
                     ),
                     finish_reason="stop",

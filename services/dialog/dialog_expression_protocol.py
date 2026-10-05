@@ -77,6 +77,20 @@ def normalize_expression(expression, intensity):
     return expression, intensity
 
 
+def _strip_dialog_expression_label(text):
+    """Remove a model-written English label after a valid Emoji prefix."""
+    value = str(text or "").lstrip()
+    folded = value.lower()
+    for label in sorted(EXPRESSIONS, key=len, reverse=True):
+        if not folded.startswith(label):
+            continue
+        suffix = value[len(label):]
+        if suffix and suffix[0] not in " \t\r\n:：-—":
+            continue
+        return suffix.lstrip(" \t\r\n:：-—")
+    return value
+
+
 def split_dialog_expression_prefix(text):
     """Extract one leading semantic marker and return TTS-safe text.
 
@@ -89,7 +103,9 @@ def split_dialog_expression_prefix(text):
         mapping = DIALOG_EXPRESSION_PREFIXES.get(candidate[0])
         if mapping is not None:
             expression, intensity = mapping
-            return expression, intensity, candidate[1:].lstrip(), True
+            return expression, intensity, _strip_dialog_expression_label(
+                candidate[1:]
+            ), True
     return "neutral", "low", value, False
 
 

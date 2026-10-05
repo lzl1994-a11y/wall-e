@@ -55,3 +55,12 @@ def test_missing_dialog_expression_prefix_falls_back_without_losing_text():
     assert split_dialog_expression_prefix("你好。") == (
         "neutral", "low", "你好。", False
     )
+    assert split_dialog_expression_prefix("confused：请再说一次") == (
+        "neutral", "low", "confused：请再说一次", False
+    )
+
+
+def test_model_written_expression_label_after_emoji_is_not_spoken():
+    assert split_dialog_expression_prefix("😕 confused：我刚才没有说过星期。") == (
+        "confused", "medium", "我刚才没有说过星期。", True
+    )
