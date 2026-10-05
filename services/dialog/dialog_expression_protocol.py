@@ -15,6 +15,15 @@ EXPRESSIONS = frozenset({
 INTENSITIES = frozenset({"low", "medium", "high"})
 TFT_MOODS = frozenset({"dot", "flame", "heart"})
 
+# Ordinary ASR replies use the same one-prefix contract as Xiaozhi: the model
+# selects one small, closed-set marker and the local pipeline removes it before
+# TTS.  Keep this deliberately limited to the three TFT states.
+DIALOG_EXPRESSION_PREFIXES = {
+    "😶": ("neutral", "low"),
+    "😍": ("happy", "medium"),
+    "😠": ("angry", "medium"),
+}
+
 _EXPRESSION_ALIASES = {
     "calm": "neutral",
     "love": "happy",
@@ -57,6 +66,22 @@ def normalize_expression(expression, intensity):
     if intensity not in INTENSITIES:
         intensity = "low"
     return expression, intensity
+
+
+def split_dialog_expression_prefix(text):
+    """Extract one leading semantic marker and return TTS-safe text.
+
+    Missing or unknown markers fail softly to ``neutral/low`` so providers
+    that ignore the prompt still produce audible replies.
+    """
+    value = str(text or "")
+    candidate = value.lstrip()
+    if candidate:
+        mapping = DIALOG_EXPRESSION_PREFIXES.get(candidate[0])
+        if mapping is not None:
+            expression, intensity = mapping
+            return expression, intensity, candidate[1:].lstrip(), True
+    return "neutral", "low", value, False
 
 
 def encode_dialog_expression(expression, intensity="low", turn_id=""):

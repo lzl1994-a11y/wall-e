@@ -34,7 +34,10 @@ from services.llm.tool_dispatcher import (
     ToolCallAccumulator,
     get_action_tools,
 )
-from services.dialog.dialog_expression_protocol import normalize_expression
+from services.dialog.dialog_expression_protocol import (
+    normalize_expression,
+    split_dialog_expression_prefix,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -342,9 +345,9 @@ class LLMService:
                     raise ToolCallingUnavailableError(
                         "动作工具为空；拒绝以无工具模式发送请求。请检查 FastMCP 2.x 工具注册。"
                     )
-                # Ordinary speech stays in native streamed ``content``.  The
-                # structured dialogue mode additionally advertises the shared
-                # direct_answer contract alongside real side-effect tools.
+                # Ordinary speech stays in native streamed ``content``. Dialog
+                # expressions are carried by a leading marker, not a competing
+                # direct_answer tool branch.
                 self._tools = action_tools
             if only_action_name:
                 tools = [
@@ -357,8 +360,6 @@ class LLMService:
                     )
             else:
                 tools = self._tools
-                if requires_dialog_answer:
-                    tools = [DIRECT_ANSWER_TOOL, *tools]
             request_kwargs["tools"] = tools
             # Some OpenAI-compatible providers reject a named tool_choice even
             # though they accept the same function schema.  Offering exactly
@@ -410,6 +411,7 @@ class LLMService:
         # buffered until the complete response proves that no action exists.
         branch = None  # "text" | "tool"
         default_expression_emitted = False
+        dialog_expression, dialog_intensity = "neutral", "low"
         buffer_tool_branch = (
             tools_enabled
             and str(self.settings.get("provider", "")).strip().lower()
@@ -466,13 +468,26 @@ class LLMService:
             if delta.content:
                 visible = answer_filter.feed(delta.content)
                 if visible:
-                    if requires_dialog_answer:
-                        dialog_raw_content.append(visible)
                     if buffer_tool_branch:
                         buffered_visible.append(visible)
                         continue
                     if branch is None:
                         branch = "text"
+                    if requires_dialog_answer and not default_expression_emitted:
+                        (
+                            dialog_expression,
+                            dialog_intensity,
+                            visible,
+                            _matched_prefix,
+                        ) = split_dialog_expression_prefix(visible)
+                        yield {
+                            "type": "dialog_expression",
+                            "expression": dialog_expression,
+                            "intensity": dialog_intensity,
+                        }
+                        default_expression_emitted = True
+                    if requires_dialog_answer and visible:
+                        dialog_raw_content.append(visible)
                     if not default_expression_emitted:
                         yield {
                             "type": "dialog_expression",
@@ -480,7 +495,8 @@ class LLMService:
                             "intensity": "low",
                         }
                         default_expression_emitted = True
-                    yield {"type": "text", "content": visible}
+                    if visible:
+                        yield {"type": "text", "content": visible}
         if not requires_structured_answer:
             visible_tail = answer_filter.flush()
             if not tools_enabled and visible_tail:
@@ -488,14 +504,27 @@ class LLMService:
             elif tools_enabled and branch != "tool":
                 if buffer_tool_branch and visible_tail:
                     buffered_visible.append(visible_tail)
-                if requires_dialog_answer and visible_tail:
-                    dialog_raw_content.append(visible_tail)
                 final_visible = (
                     "".join(buffered_visible) if buffer_tool_branch else visible_tail
                 )
                 if final_visible:
                     if branch is None:
                         branch = "text"
+                    if requires_dialog_answer and not default_expression_emitted:
+                        (
+                            dialog_expression,
+                            dialog_intensity,
+                            final_visible,
+                            _matched_prefix,
+                        ) = split_dialog_expression_prefix(final_visible)
+                        yield {
+                            "type": "dialog_expression",
+                            "expression": dialog_expression,
+                            "intensity": dialog_intensity,
+                        }
+                        default_expression_emitted = True
+                    if requires_dialog_answer and final_visible:
+                        dialog_raw_content.append(final_visible)
                     if not default_expression_emitted:
                         yield {
                             "type": "dialog_expression",
@@ -503,29 +532,17 @@ class LLMService:
                             "intensity": "low",
                         }
                         default_expression_emitted = True
-                    yield {"type": "text", "content": final_visible}
+                    if final_visible:
+                        yield {"type": "text", "content": final_visible}
 
         tool_calls = acc.flush()
         direct_answers = [
             tc for tc in tool_calls if tc["name"] == DIRECT_ANSWER_TOOL_NAME
         ]
         response_text = ""
-        expression, intensity = "neutral", "low"
+        expression, intensity = dialog_expression, dialog_intensity
         intent_type = "conversation"
         if requires_dialog_answer:
-            if direct_answers:
-                arguments = direct_answers[-1]["arguments"]
-                candidate = arguments.get("response")
-                if isinstance(candidate, str):
-                    response_text = candidate.strip()
-                expression, intensity = normalize_expression(
-                    arguments.get("expression"), arguments.get("intensity")
-                )
-                candidate_intent = arguments.get("intent_type")
-                if candidate_intent in {
-                    "conversation", "capability_query", "execute_task"
-                }:
-                    intent_type = candidate_intent
             if not response_text and dialog_raw_content and not tool_calls:
                 response_text = "".join(dialog_raw_content).strip()
             if tool_calls:

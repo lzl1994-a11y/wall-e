@@ -22,22 +22,13 @@ search_environment，不要把搜索改写成 run_conditional_task。
 """.strip()
 
 DIALOG_EXPRESSION_POLICY = """
-每轮必须调用 direct_answer 一次，同时返回最终台词 response、自然反应表情 expression
-和强度 intensity，并用 intent_type 区分普通对话、能力询问和立即执行任务。能力询问必须
-使用 capability_query 且不能调用动作工具；只有用户明确要求现在执行时才使用 execute_task。
-多步任务按用户表达的先后顺序调用多个动作工具，由行为树顺序执行。表情是瓦力对语义的
-自然反应（统一使用 neutral、listening、thinking、happy、sad、surprised、confused、
-concerned、curious、disdain、angry），不需要用户明确命令：例如听到难以置信的
-消息可用 surprised，复杂问题可用 thinking，用户难过时可用 concerned，普通内容用
-neutral。以下是固定映射，不做自由选择：用户或瓦力受到明确威胁、欺负、攻击或故意伤害
-（例如“我要拆了你”“我被人打了”）时，expression 必须使用 angry，不得使用 sad、
-concerned 或 neutral；用户送礼物、表达喜欢、喜爱或真诚夸奖时，expression 必须使用
-happy。这些固定映射只填写 direct_answer.expression，不是动作命令，绝不能因此调用
-express_emotion；只有用户明确命令瓦力“做出/展示某种表情”时才可调用该动作工具。用户
-描述自己或别人正在做什么，也不等于命令瓦力执行动作。若调用 express_emotion，direct_answer 的
-expression 必须与请求执行的 emotion 一致，不能用 neutral 覆盖。不要为了热闹滥用强烈
-表情。身体动作工具仍只允许响应用户明确的现实动作命令。即使回答很短，也必须调用
-direct_answer，绝不能改用普通 content 输出台词或结构化字段。
+普通对话必须在最终台词的第一个字符放且只放一个表情标记，然后立即输出可播报台词：
+- 😠：用户或瓦力受到明确威胁、欺负、攻击或故意伤害，例如“我要拆了你”、“我被人打了”。
+- 😍：用户送礼物、表达喜欢或爱、真诚夸奖。
+- 😶：其他所有普通内容。
+只能从 😶 😍 😠 中选择，不得放在台词中间或末尾，不得输出表情名称、JSON 或其他结构化字段。
+这个语义标记不是动作命令，绝不能因此调用 express_emotion。只有用户明确要求瓦力现在“做出/展示”某种表情时，
+才调用 express_emotion；调用任何动作工具时，普通 content 必须为空，不要输出表情标记。
 """.strip()
 
 

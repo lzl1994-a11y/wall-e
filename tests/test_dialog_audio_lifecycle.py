@@ -838,6 +838,42 @@ class LLMEmptyAnswerTests(unittest.TestCase):
         self.assertEqual(history[3]["content"], "好的，我向右看。")
         sys.modules.pop("nodes.llm_ros_node", None)
 
+    def test_explicit_emotion_action_ack_does_not_overwrite_with_neutral(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node.llm = MagicMock()
+        node.llm.chat_stream.return_value = iter([
+            {
+                "type": "tool_call",
+                "name": "express_emotion",
+                "arguments": '{"emotion":"angry"}',
+            },
+            {"type": "done", "finish_reason": "tool_calls"},
+        ])
+        node.chat_history = deque(maxlen=40)
+        node.punctuations = {'。', '？', '.', '?', '！', '!'}
+        node.tts_publisher = MagicMock()
+        node.action_publisher = MagicMock()
+        node.dialog_expression_publisher = MagicMock()
+        node.corrected_publisher = MagicMock()
+        node.full_ai_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node.busy_publisher = MagicMock()
+        node.get_logger = lambda: MagicMock()
+
+        self._acknowledge_actions(node)
+        node._process_voice_task("turn-angry", "请做一个生气的表情")
+
+        node.dialog_expression_publisher.publish.assert_not_called()
+        published = json.loads(node.action_publisher.publish.call_args.args[0].data)
+        self.assertEqual(published["name"], "express_emotion")
+        self.assertEqual(published["arguments"], {"emotion": "angry"})
+        self.assertEqual(
+            node.tts_publisher.publish.call_args_list[0].args[0].data,
+            "好呀。",
+        )
+        sys.modules.pop("nodes.llm_ros_node", None)
+
     def test_request_history_is_limited_and_starts_with_user(self):
         node_class = self._load_node_class()
         node = node_class.__new__(node_class)

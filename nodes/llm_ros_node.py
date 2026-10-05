@@ -694,7 +694,16 @@ class LLMBrainNode(Node):
                 user_prompt=user_prompt,
                 turn_id=turn_id,
             )
-            state.apply_action_sequence(sequence, turn_id)
+            executed_actions = state.apply_action_sequence(sequence, turn_id)
+            if any(
+                action.get("name") == "express_emotion"
+                and action.get("status") in {"completed", "skipped"}
+                for action in executed_actions
+            ):
+                # The action owner has already published the requested
+                # expression. Do not overwrite it with neutral when the local
+                # acknowledgement is subsequently sent to TTS.
+                state.mark_expression_published()
 
         # Emit tail TTS clause if punctuation did not close it during streaming.
         # 若流式末尾存在未被标点闭合的剩余文本从句，进行最终播报。

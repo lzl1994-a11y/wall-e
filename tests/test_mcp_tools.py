@@ -288,37 +288,20 @@ class LlmToolAvailabilityTests(unittest.TestCase):
             "type": "text", "content": "真的吗？它长什么样？"
         })
 
-    def test_structured_dialog_returns_expression_and_action_with_one_contract(self):
-        class StructuredDialogResponse:
+    def test_dialog_expression_uses_one_plain_content_contract(self):
+        class EmojiDialogResponse:
             def __iter__(self):
-                calls = [
-                    types.SimpleNamespace(
-                        index=0,
-                        function=types.SimpleNamespace(
-                            name="direct_answer",
-                            arguments=(
-                                '{"response":"好呀，我来陪你。",'
-                                '"intent_type":"execute_task",'
-                                '"expression":"happy","intensity":"medium"}'
-                            ),
-                        ),
-                    ),
-                    types.SimpleNamespace(
-                        index=1,
-                        function=types.SimpleNamespace(
-                            name="play_sequence",
-                            arguments='{"sequence_name":"wave_hello"}',
-                        ),
-                    ),
-                ]
                 yield types.SimpleNamespace(choices=[types.SimpleNamespace(
-                    delta=types.SimpleNamespace(content=None, tool_calls=calls),
-                    finish_reason="tool_calls",
+                    delta=types.SimpleNamespace(
+                        content="😍谢谢你的礼物，我很喜欢！",
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
                 )])
 
         service = self._service()
         service.settings["provider"] = "siliconflow"
-        service.client.chat.completions.create.return_value = StructuredDialogResponse()
+        service.client.chat.completions.create.return_value = EmojiDialogResponse()
         with patch("services.llm.llm_service.get_action_tools", return_value=[{
             "type": "function",
             "function": {
@@ -329,36 +312,37 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         }]):
             events = list(service.chat_stream(
                 "内部增强 prompt", tools_enabled=True, dialog_expression=True,
-                dialog_heard_text="陪我挥手",
+                dialog_heard_text="我送你一个礼物",
             ))
 
-        self.assertIn({
-            "type": "tool_call",
-            "name": "play_sequence",
-            "arguments": '{"sequence_name": "wave_hello"}',
-        }, events)
         answer = next(event for event in events if event["type"] == "dialog_answer")
-        self.assertEqual(answer["heard_text"], "陪我挥手")
-        self.assertEqual(answer["response"], "好呀，我来陪你。")
-        self.assertEqual(answer["intent_type"], "execute_task")
+        self.assertEqual(answer["heard_text"], "我送你一个礼物")
+        self.assertEqual(answer["response"], "谢谢你的礼物，我很喜欢！")
+        self.assertEqual(answer["intent_type"], "conversation")
         self.assertEqual(answer["expression"], "happy")
         self.assertEqual(answer["intensity"], "medium")
         self.assertIn(
             {"type": "dialog_expression", "expression": "happy", "intensity": "medium"},
             events,
         )
-        self.assertIn({"type": "text", "content": "好呀，我来陪你。"}, events)
+        self.assertIn(
+            {"type": "text", "content": "谢谢你的礼物，我很喜欢！"},
+            events,
+        )
+        request = service.client.chat.completions.create.call_args.kwargs
+        self.assertEqual(
+            [tool["function"]["name"] for tool in request["tools"]],
+            ["play_sequence"],
+        )
         request_prompt = service.client.chat.completions.create.call_args.kwargs[
             "messages"
         ][0]["content"]
-        self.assertIn("以下是固定映射，不做自由选择", request_prompt)
-        self.assertIn("expression 必须使用 angry", request_prompt)
-        self.assertIn("不得使用 sad", request_prompt)
+        self.assertIn("第一个字符放且只放一个表情标记", request_prompt)
+        self.assertIn("😠：用户或瓦力受到明确威胁", request_prompt)
         self.assertIn("用户送礼物", request_prompt)
-        self.assertIn("expression 必须使用\nhappy", request_prompt)
-        self.assertIn("只填写 direct_answer.expression，不是动作命令", request_prompt)
-        self.assertIn("绝不能因此调用\nexpress_emotion", request_prompt)
-        self.assertIn("不能用 neutral 覆盖", request_prompt)
+        self.assertIn("这个语义标记不是动作命令", request_prompt)
+        self.assertIn("绝不能因此调用 express_emotion", request_prompt)
+        self.assertNotIn("每轮必须调用 direct_answer", request_prompt)
 
     def test_dialog_plain_content_streams_without_a_second_model_request(self):
         class PlainDialogResponse:
