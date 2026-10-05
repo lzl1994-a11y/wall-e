@@ -47,6 +47,7 @@ class SerialEyeRpcTests(unittest.TestCase):
         node._last_eye_state = {}
         node._eye_blink_ms = None
         node._eye_effective_blink_ms = None
+        node._eye_auto_blink_enabled = True
         node._eye_speaking = False
         node._eye_blink_revision = 0
         node._eye_blink_paused = False
@@ -120,11 +121,19 @@ class SerialEyeRpcTests(unittest.TestCase):
         self.assertEqual(self.node._eye_blink_ms, 7000)
 
     def test_user_disabled_blink_stays_disabled_after_speaking(self):
-        self.node._eye_blink_ms = self.node._eye_effective_blink_ms = 0
+        self.node._eye_blink_ms = 4500
+        self.node._eye_effective_blink_ms = 0
+        self.node._eye_auto_blink_enabled = False
         self.node._eye_blink_revision = 2
         with patch.object(self.node, "_exchange_eye_command") as exchange:
             self.node._sync_eye_blink(2)
             exchange.assert_not_called()
+
+    def test_disabling_blink_retains_period_for_later_reenable(self):
+        self.node._eye_blink_ms = 4500
+        self._run_and_ack("disable", "eyeconfig:blinkMs=0", "ack", "EYE:OK")
+        self.assertFalse(self.node._eye_auto_blink_enabled)
+        self.assertEqual(self.node._eye_blink_ms, 4500)
 
     def test_stale_speaking_transition_does_not_send_commands(self):
         self.node._eye_blink_revision = 2

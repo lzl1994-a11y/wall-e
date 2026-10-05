@@ -44,6 +44,8 @@ from services.hardware.eyeconfig_rpc import (
     EYE_STATUS_TOPIC,
     EyeConfigError,
     parse_eye_response,
+    eye_config_commands,
+    load_saved_eye_config,
     validate_eye_command,
 )
 
@@ -67,6 +69,7 @@ class SerialNode(Node):
         self._last_eye_state = {}
         self._eye_blink_ms = None
         self._eye_effective_blink_ms = None
+        self._eye_auto_blink_enabled = True
         self._eye_speaking = False
         self._eye_blink_revision = 0
         self._eye_blink_paused = False
@@ -115,8 +118,8 @@ class SerialNode(Node):
 
         self.get_logger().info('Serial ROS node is online (sole serial owner).')
         self._startup_netcfg_thread = threading.Thread(
-            target=self._apply_saved_network_on_start,
-            name="esp32-netcfg-startup",
+            target=self._apply_saved_startup_config,
+            name="esp32-startup-config",
             daemon=True,
         )
         self._startup_netcfg_thread.start()
@@ -136,6 +139,55 @@ class SerialNode(Node):
             return
         mood = expression_to_tft_mood(value["expression"])
         self.bridge.send_raw(f"eyeaction:mood:{mood}\n", wake_screen=False)
+
+    def _apply_saved_startup_config(self):
+        """Replay host-owned eye settings before the existing network startup."""
+        self._apply_saved_eye_on_start()
+        if not self._shutdown_event.is_set():
+            self._apply_saved_network_on_start()
+
+    def _apply_saved_eye_on_start(self):
+        """Apply the upper-host eye config; the TFT keeps only its RAM state."""
+        try:
+            settings = load_saved_eye_config()
+            commands = eye_config_commands(settings)
+        except EyeConfigError as exc:
+            self.get_logger().error(f"启动时读取上位机眼睛配置失败: {exc}")
+            return
+
+        if not self._eye_request_lock.acquire(timeout=5.0):
+            self.get_logger().warning("眼睛配置正忙，跳过启动时配置同步")
+            return
+        try:
+            result = self._exchange_eye_command("eyeconfig:query", "state")
+            if not result["ok"]:
+                raise RuntimeError(result.get("error") or "设备拒绝眼睛状态查询")
+
+            for command in commands:
+                wire_command = command
+                if self._eye_speaking and command.startswith("eyeconfig:blinkMs="):
+                    wire_command = "eyeconfig:blinkMs=0"
+                result = self._exchange_eye_command(wire_command, "ack")
+                if not result["ok"]:
+                    raise RuntimeError(result.get("error") or f"设备拒绝命令: {command}")
+
+            with self._eye_response_condition:
+                self._eye_blink_ms = settings["blinkMs"]
+                self._eye_auto_blink_enabled = settings["autoBlink"]
+                self._eye_effective_blink_ms = 0 if self._eye_speaking else (
+                    settings["blinkMs"] if settings["autoBlink"] else 0
+                )
+                self._eye_blink_paused = (
+                    self._eye_effective_blink_ms == 0 and settings["blinkMs"] > 0
+                )
+                self._last_eye_state.update(settings)
+            self.get_logger().info(
+                f"启动时已向眼睛设备同步上位机配置 ({len(commands)} 条命令)"
+            )
+        except (EyeConfigError, RuntimeError) as exc:
+            self.get_logger().error(f"启动时眼睛配置同步失败: {exc}")
+        finally:
+            self._eye_request_lock.release()
 
     def _apply_saved_network_on_start(self):
         """Push a fresh RAM-only Wi-Fi/TCP session after every process start."""
@@ -365,7 +417,11 @@ class SerialNode(Node):
                 if self._eye_blink_ms is None:
                     raise RuntimeError("设备未回显 blinkMs，不能安全暂停眨眼")
             with self._eye_response_condition:
-                period = 0 if self._eye_speaking else self._eye_blink_ms
+                period = (
+                    0
+                    if self._eye_speaking or not getattr(self, "_eye_auto_blink_enabled", True)
+                    else self._eye_blink_ms
+                )
                 if period == self._eye_effective_blink_ms:
                     return
             result = self._exchange_eye_command(f"eyeconfig:blinkMs={period}", "ack")
@@ -393,8 +449,12 @@ class SerialNode(Node):
                 fields = event.get("fields") or {}
                 if "blinkMs" in fields:
                     self._eye_effective_blink_ms = fields["blinkMs"]
-                    if self._eye_blink_ms is None or (not self._eye_speaking and not self._eye_blink_paused):
+                    if self._eye_blink_ms is None:
                         self._eye_blink_ms = fields["blinkMs"]
+                        self._eye_auto_blink_enabled = fields["blinkMs"] > 0
+                    elif not self._eye_speaking and not self._eye_blink_paused:
+                        self._eye_blink_ms = fields["blinkMs"]
+                        self._eye_auto_blink_enabled = fields["blinkMs"] > 0
                     # Surface the user configuration, not a temporary TTS pause.
                     fields["blinkMs"] = self._eye_blink_ms
                 self._last_eye_state.update(event.get("fields") or {})
@@ -480,10 +540,14 @@ class SerialNode(Node):
             response = self._exchange_eye_command(wire_command, expected)
             if response["ok"] and requested_period is not None:
                 with self._eye_response_condition:
-                    self._eye_blink_ms = requested_period
+                    if requested_period > 0:
+                        self._eye_blink_ms = requested_period
+                    elif self._eye_blink_ms is None:
+                        self._eye_blink_ms = 0
+                    self._eye_auto_blink_enabled = requested_period > 0
                     self._eye_effective_blink_ms = int(wire_command.split("=", 1)[1])
-                    self._eye_blink_paused = self._eye_effective_blink_ms == 0 and requested_period > 0
-                    self._last_eye_state["blinkMs"] = requested_period
+                    self._eye_blink_paused = self._eye_effective_blink_ms == 0 and self._eye_blink_ms > 0
+                    self._last_eye_state["blinkMs"] = self._eye_blink_ms
                 response["state"] = {"blinkMs": requested_period}
         except Exception as exc:
             response["error"] = str(exc)

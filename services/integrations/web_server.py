@@ -41,9 +41,11 @@ from services.hardware.esp32_netcfg import (
 )
 from services.hardware.esp32_netcfg_rpc import Esp32NetworkRpcClient
 from services.hardware.eyeconfig_rpc import (
+    EYE_CONFIG_DEFAULTS,
     EYE_FIELD_LIMITS,
     EyeConfigError,
     EyeConfigRpcClient,
+    normalize_eye_config,
     validate_eye_command,
 )
 from services.motion.choreography import (
@@ -530,6 +532,13 @@ def _validate_tft_preview(value: Any, errors: list[str]) -> None:
     _check_string(value, "photo_directory", "tft_preview.photo_directory", errors)
 
 
+def _validate_eye_config(value: Any, errors: list[str]) -> None:
+    try:
+        normalize_eye_config(value)
+    except EyeConfigError as exc:
+        errors.append(str(exc))
+
+
 def validate_config(config: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(config, dict):
@@ -740,6 +749,9 @@ def validate_config(config: Any) -> list[str]:
     if config.get("tft_preview") is not None:
         _validate_tft_preview(config.get("tft_preview"), errors)
 
+    if config.get("eye") is not None:
+        _validate_eye_config(config.get("eye"), errors)
+
     if config.get("esp32_network") is not None:
         try:
             validate_network_payload(config.get("esp32_network"))
@@ -797,6 +809,11 @@ class ConfigStore:
         validate_roots: set[str] | None = None,
     ) -> dict[str, Any]:
         merged = _merge_preserving_secrets(current, incoming)
+        if isinstance(incoming, dict) and "eye" in incoming:
+            try:
+                merged["eye"] = normalize_eye_config(merged.get("eye"))
+            except EyeConfigError as exc:
+                raise ConfigError(str(exc)) from exc
         if isinstance(incoming, dict) and isinstance(incoming.get("usb_devices"), dict):
             merged["usb_devices"] = copy.deepcopy(incoming["usb_devices"])
         errors = validate_config(merged)
@@ -1296,7 +1313,10 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/eye-config/schema":
             if not self._require_api_auth():
                 return
-            self._send_json(HTTPStatus.OK, {"ok": True, "limits": EYE_FIELD_LIMITS})
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "limits": EYE_FIELD_LIMITS, "defaults": EYE_CONFIG_DEFAULTS},
+            )
             return
         if route == "/api/eye-config/status":
             if not self._require_api_auth():

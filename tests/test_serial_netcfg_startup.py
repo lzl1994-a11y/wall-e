@@ -82,6 +82,56 @@ class SerialNetcfgStartupTests(unittest.TestCase):
         self.assertTrue(all("wifi" not in item for item in statuses))
         self.assertTrue(all("password" not in repr(item) for item in statuses))
 
+    def test_startup_replays_host_eye_config_through_existing_serial_owner(self):
+        module = self._load_module()
+        node = module.SerialNode.__new__(module.SerialNode)
+        node._shutdown_event = threading.Event()
+        node._eye_request_lock = threading.Lock()
+        node._eye_response_condition = threading.Condition()
+        node._eye_speaking = False
+        node._last_eye_state = {}
+        node._eye_blink_ms = None
+        node._eye_effective_blink_ms = None
+        node._eye_auto_blink_enabled = True
+        node._eye_blink_paused = False
+        node.get_logger = MagicMock(return_value=MagicMock())
+        node._exchange_eye_command = MagicMock(
+            return_value={"ok": True, "state": {"blinkMs": 4500}}
+        )
+        settings = {
+            "color": "FF7A45",
+            "ringColor": "FFB347",
+            "dotColor": "FFE08A",
+            "brightness": 0.85,
+            "ringBrightness": 0.65,
+            "dotBrightness": 0.45,
+            "scale": 1.0,
+            "glow": 22,
+            "lookX": 15,
+            "lookY": -8,
+            "breathMs": 2400,
+            "autoBlink": True,
+            "blinkMs": 6000,
+            "ring": True,
+            "dots": 48,
+            "mood": "heart",
+        }
+        commands = ["eyeconfig:color=FF7A45", "eyeconfig:mood=heart", "eyeaction:look:x=15,y=-8"]
+        with patch.object(module, "load_saved_eye_config", return_value=settings), patch.object(
+            module, "eye_config_commands", return_value=commands
+        ):
+            node._apply_saved_eye_on_start()
+
+        self.assertEqual(
+            [call.args for call in node._exchange_eye_command.call_args_list],
+            [("eyeconfig:query", "state"),
+             ("eyeconfig:color=FF7A45", "ack"),
+             ("eyeconfig:mood=heart", "ack"),
+             ("eyeaction:look:x=15,y=-8", "ack")],
+        )
+        self.assertEqual(node._eye_blink_ms, 6000)
+        self.assertEqual(node._last_eye_state["mood"], "heart")
+
 
 if __name__ == "__main__":
     unittest.main()

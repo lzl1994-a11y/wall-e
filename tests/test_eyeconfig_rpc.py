@@ -1,12 +1,18 @@
 import unittest
 import threading
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from services.hardware.eyeconfig_rpc import (
+    EYE_CONFIG_DEFAULTS,
     EyeConfigError,
     EyeConfigRpcClient,
     encode_eye_request,
+    eye_config_commands,
+    load_saved_eye_config,
+    normalize_eye_config,
     normalize_eye_state,
     parse_eye_response,
     validate_eye_command,
@@ -97,6 +103,52 @@ class EyeConfigProtocolTests(unittest.TestCase):
             normalize_eye_state({"color": "#ffffff", "dots": "12", "unknown": "x"}),
             {"color": "FFFFFF", "dots": 12},
         )
+
+    def test_host_config_fills_defaults_and_replays_disabled_blink(self):
+        config = normalize_eye_config({"autoBlink": False, "blinkMs": 6000, "mood": "heart"})
+        self.assertEqual(config["color"], EYE_CONFIG_DEFAULTS["color"])
+        self.assertFalse(config["autoBlink"])
+        self.assertEqual(config["blinkMs"], 6000)
+        self.assertEqual(config["mood"], "heart")
+        commands = eye_config_commands(config)
+        self.assertIn("eyeconfig:blinkMs=0", commands)
+        self.assertIn("eyeconfig:mood=heart", commands)
+        self.assertIn("eyeaction:look:x=0,y=0", commands)
+
+    def test_startup_replay_encodes_every_host_owned_field(self):
+        self.assertEqual(
+            eye_config_commands(EYE_CONFIG_DEFAULTS),
+            [
+                "eyeconfig:color=00E5FF",
+                "eyeconfig:ringColor=00CFE8",
+                "eyeconfig:dotColor=00BCD0",
+                "eyeconfig:brightness=0.85",
+                "eyeconfig:ringBrightness=0.65",
+                "eyeconfig:dotBrightness=0.45",
+                "eyeconfig:scale=1",
+                "eyeconfig:glow=22",
+                "eyeconfig:breathMs=2400",
+                "eyeconfig:blinkMs=4500",
+                "eyeconfig:ring=1",
+                "eyeconfig:dots=48",
+                "eyeconfig:mood=dot",
+                "eyeaction:look:x=0,y=0",
+            ],
+        )
+
+    def test_host_config_rejects_unknown_and_boolean_numeric_values(self):
+        with self.assertRaises(EyeConfigError):
+            normalize_eye_config({"unexpected": True})
+        with self.assertRaises(EyeConfigError):
+            normalize_eye_config({"brightness": True})
+
+    def test_missing_host_config_section_uses_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.yaml"
+            config_path.write_text("serial: {}\n", encoding="utf-8")
+            self.assertEqual(load_saved_eye_config(config_path), EYE_CONFIG_DEFAULTS)
+        with self.subTest("missing file remains backward compatible"):
+            self.assertEqual(load_saved_eye_config("does-not-exist.yaml"), EYE_CONFIG_DEFAULTS)
 
     def test_encode_request_validates_before_publishing_contract(self):
         body = encode_eye_request("request-1", "eyeconfig:ring=1", "ack")

@@ -12,9 +12,13 @@ import json
 import math
 import re
 import time
+from pathlib import Path
 from typing import Any
 
+import yaml
+
 from services.hardware.esp32_netcfg_rpc import _SerialOwnerRpcClient
+from services.hardware.usb_devices import DEFAULT_CONFIG_PATH
 
 
 EYE_REQUEST_TOPIC = "eyeconfig_request"
@@ -37,6 +41,28 @@ EYE_FIELD_LIMITS = {
     "lookX": {"min": -26, "max": 26, "integer": True},
     "lookY": {"min": -26, "max": 26, "integer": True},
 }
+
+# The upper host is authoritative.  ``blinkMs`` is retained even when
+# ``autoBlink`` is false so re-enabling the switch restores the user's period.
+EYE_CONFIG_DEFAULTS = {
+    "color": "00E5FF",
+    "ringColor": "00CFE8",
+    "dotColor": "00BCD0",
+    "brightness": 0.85,
+    "ringBrightness": 0.65,
+    "dotBrightness": 0.45,
+    "scale": 1.0,
+    "glow": 22,
+    "lookX": 0,
+    "lookY": 0,
+    "breathMs": 2400,
+    "autoBlink": True,
+    "blinkMs": 4500,
+    "ring": True,
+    "dots": 48,
+    "mood": "dot",
+}
+EYE_CONFIG_KEYS = tuple(EYE_CONFIG_DEFAULTS)
 
 _COLOR_RE = r"[0-9A-Fa-f]{6}"
 _SIGNED_INTEGER_RE = r"-?\d{1,3}"
@@ -207,6 +233,88 @@ def normalize_eye_state(fields: Any) -> dict[str, Any]:
     return result
 
 
+def normalize_eye_config(config: Any) -> dict[str, Any]:
+    """Validate the host-owned eye configuration and fill omitted defaults."""
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise EyeConfigError("eye 必须是配置对象", kind="invalid")
+    unknown = sorted(str(key) for key in config if key not in EYE_CONFIG_KEYS)
+    if unknown:
+        raise EyeConfigError(f"eye 包含不支持的字段: {', '.join(map(str, unknown))}", kind="invalid")
+
+    result = dict(EYE_CONFIG_DEFAULTS)
+    for key in EYE_CONFIG_KEYS:
+        if key not in config:
+            continue
+        raw = config[key]
+        if key in {"color", "ringColor", "dotColor"}:
+            value = str(raw).strip().lstrip("#").upper()
+            valid = re.fullmatch(_COLOR_RE, value) is not None
+        elif key in _BOOLEAN_STATE_KEYS:
+            value = _coerce_state_value(key, raw)
+            valid = value is not None
+        elif key == "mood":
+            value = str(raw).strip().lower()
+            valid = value in _KNOWN_MOODS
+        else:
+            try:
+                number = float(raw) if not isinstance(raw, bool) else float("nan")
+            except (TypeError, ValueError, OverflowError):
+                number = float("nan")
+            limits = EYE_FIELD_LIMITS[key]
+            valid = math.isfinite(number) and (
+                limits["min"] <= number <= limits["max"]
+                or (limits.get("allowZero") and number == 0)
+            )
+            if valid and limits["integer"] and number != int(number):
+                valid = False
+            value = int(number) if valid and limits["integer"] else number
+        if not valid:
+            raise EyeConfigError(f"eye.{key} 超出支持的配置范围", kind="invalid")
+        result[key] = value
+
+    if result["autoBlink"] and result["blinkMs"] == 0:
+        raise EyeConfigError("eye.blinkMs 开启自动眨眼时不能为 0", kind="invalid")
+    if not result["autoBlink"] and result["blinkMs"] == 0:
+        result["blinkMs"] = EYE_CONFIG_DEFAULTS["blinkMs"]
+    return result
+
+
+def eye_config_commands(config: Any) -> list[str]:
+    """Encode one complete host configuration for startup replay."""
+    settings = normalize_eye_config(config)
+    return [
+        f"eyeconfig:color={settings['color']}",
+        f"eyeconfig:ringColor={settings['ringColor']}",
+        f"eyeconfig:dotColor={settings['dotColor']}",
+        f"eyeconfig:brightness={settings['brightness']:g}",
+        f"eyeconfig:ringBrightness={settings['ringBrightness']:g}",
+        f"eyeconfig:dotBrightness={settings['dotBrightness']:g}",
+        f"eyeconfig:scale={settings['scale']:g}",
+        f"eyeconfig:glow={settings['glow']}",
+        f"eyeconfig:breathMs={settings['breathMs']}",
+        f"eyeconfig:blinkMs={settings['blinkMs'] if settings['autoBlink'] else 0}",
+        f"eyeconfig:ring={1 if settings['ring'] else 0}",
+        f"eyeconfig:dots={settings['dots']}",
+        f"eyeconfig:mood={settings['mood']}",
+        f"eyeaction:look:x={settings['lookX']},y={settings['lookY']}",
+    ]
+
+
+def load_saved_eye_config(config_path: Path | str = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Load the upper-host eye config; missing legacy sections use defaults."""
+    try:
+        document = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        return dict(EYE_CONFIG_DEFAULTS)
+    except (OSError, yaml.YAMLError) as exc:
+        raise EyeConfigError(f"读取上位机眼睛配置失败: {exc}", kind="invalid") from exc
+    if not isinstance(document, dict):
+        raise EyeConfigError("配置文件根节点必须是对象", kind="invalid")
+    return normalize_eye_config(document.get("eye"))
+
+
 def _parse_state_payload(payload: str) -> dict[str, Any]:
     payload = payload.strip().lstrip(":| ")
     if not payload:
@@ -348,14 +456,20 @@ class EyeConfigRpcClient(_SerialOwnerRpcClient):
 
 
 __all__ = [
+    "EYE_CONFIG_DEFAULTS",
+    "EYE_CONFIG_KEYS",
     "EYE_DISCOVERY_TIMEOUT_SECONDS",
+    "EYE_FIELD_LIMITS",
     "EYE_REQUEST_TOPIC",
     "EYE_RESPONSE_TOPIC",
     "EYE_RPC_TIMEOUT_SECONDS",
     "EYE_STATUS_TOPIC",
     "EyeConfigError",
     "EyeConfigRpcClient",
+    "eye_config_commands",
     "encode_eye_request",
+    "load_saved_eye_config",
+    "normalize_eye_config",
     "normalize_eye_state",
     "parse_eye_response",
     "validate_eye_command",

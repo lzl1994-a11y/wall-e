@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.integrations.web_server import DEFAULT_STATIC_DIR, create_server
+from services.hardware.eyeconfig_rpc import EYE_CONFIG_DEFAULTS
 
 
 class FakeNetworkConfigurator:
@@ -190,12 +191,14 @@ class ConfigWebServerTests(unittest.TestCase):
             'data-eye-field="color"',
             'data-eye-field="ringColor"',
             'data-eye-field="dotColor"',
-            'id="eye-auto-blink" data-eye-field="autoBlink" type="checkbox" checked',
+            'id="eye-auto-blink" data-eye-field="autoBlink" type="checkbox"',
             'data-eye-field="lookX"',
             'data-eye-field="lookY"',
             'data-eye-action="blink"',
             'data-eye-action="zoom"',
             'id="eye-reset-button"',
+            'id="eye-save-button"',
+            'data-eye-preset="sunset"',
             'id="eye-preview-stage"',
             'id="eye-preview-canvas"',
             'data-eye-mood="flame"',
@@ -208,6 +211,42 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn("EYE_UPDATE_DEBOUNCE_MS", app_js)
         self.assertIn("EYE_PREVIEW_SIZE = 240", app_js)
         self.assertIn("drawEyePreviewBackdrop", app_js)
+        self.assertNotIn('api("/api/eye-config/save"', app_js)
+
+    def test_eye_config_save_persists_on_upper_host_without_opening_serial(self):
+        config = {
+            "color": "ff7a45",
+            "ringColor": "FFB347",
+            "dotColor": "FFE08A",
+            "brightness": 0.72,
+            "autoBlink": False,
+            "blinkMs": 6200,
+            "mood": "heart",
+        }
+        status, body = self.request(
+            "/api/config",
+            method="POST",
+            payload={"patch": {"eye": config}},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["config"]["eye"]["color"], "FF7A45")
+        self.assertFalse(body["config"]["eye"]["autoBlink"])
+        self.assertEqual(body["config"]["eye"]["glow"], EYE_CONFIG_DEFAULTS["glow"])
+        self.assertIsNone(self.server.eye_configurator)
+        saved = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["eye"]["ringColor"], "FFB347")
+        self.assertEqual(saved["eye"]["mood"], "heart")
+
+    def test_eye_config_save_rejects_invalid_values_without_changing_file(self):
+        before = self.config_path.read_text(encoding="utf-8")
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/config",
+                method="POST",
+                payload={"patch": {"eye": {"dots": 65}}},
+            )
+        self.assertEqual(context.exception.code, 400)
+        self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
 
     def test_eye_configuration_api_reuses_serial_owner_rpc(self):
         eye = MagicMock()
@@ -248,6 +287,7 @@ class ConfigWebServerTests(unittest.TestCase):
         status, body = self.request("/api/eye-config/schema")
         self.assertEqual(status, 200)
         self.assertEqual(body["limits"], EYE_FIELD_LIMITS)
+        self.assertEqual(body["defaults"], EYE_CONFIG_DEFAULTS)
 
     def test_eye_configuration_api_rejects_unlisted_serial_commands(self):
         eye = MagicMock()

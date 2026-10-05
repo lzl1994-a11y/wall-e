@@ -520,6 +520,7 @@ tbody tr:hover td { background: rgba(47, 93, 132, .16); }
 .eye-layout .span-two { grid-column: 1 / -1; }
 .eye-preview-card { min-width: 0; }
 .eye-preview-card .card-heading-row { align-items: flex-start; }
+.eye-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .eye-mood-badge, .eye-live-indicator { display: inline-flex; align-items: center; min-height: 27px; padding: 0 10px; border: 1px solid rgba(111, 226, 255, .38); border-radius: 999px; color: #aeefff; background: rgba(26, 91, 119, .32); font-size: 11px; font-weight: 800; letter-spacing: .05em; white-space: nowrap; }
 .eye-live-indicator { color: #82f1ca; border-color: rgba(89, 227, 180, .42); background: rgba(23, 90, 76, .34); letter-spacing: .12em; }
 .eye-preview-shell { display: grid; place-items: center; margin-top: 20px; padding: clamp(16px, 4vw, 34px); border: 1px solid rgba(100, 191, 238, .25); border-radius: 18px; background: radial-gradient(circle at 50% 45%, rgba(35, 105, 151, .23), rgba(6, 16, 31, .88) 66%); overflow: hidden; }
@@ -548,6 +549,11 @@ tbody tr:hover td { background: rgba(47, 93, 132, .16); }
 .eye-mood-option.active { border-color: rgba(102, 232, 255, .82); background: linear-gradient(125deg, rgba(25, 83, 111, .7), rgba(54, 42, 96, .66)); box-shadow: 0 0 0 1px rgba(91, 216, 255, .12) inset, 0 8px 20px rgba(23, 163, 222, .1); }
 .eye-mood-option strong, .eye-mood-option small { grid-column: 2; }
 .eye-mood-option small { color: var(--muted); font-size: 10px; }
+.eye-color-presets { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: -4px 0 18px; }
+.eye-preset-label { margin-right: 3px; color: var(--muted); font-size: 11px; }
+.eye-color-preset { min-height: 31px; padding: 0 11px; border: 1px solid rgba(116, 176, 227, .28); border-radius: 999px; color: var(--text); background: rgba(10, 26, 46, .72); cursor: pointer; font-size: 11px; transition: .18s ease; }
+.eye-color-preset:hover { border-color: rgba(105, 231, 255, .7); transform: translateY(-1px); }
+.eye-color-preset.active { border-color: rgba(102, 232, 255, .82); color: #d8fbff; background: rgba(25, 83, 111, .72); box-shadow: 0 0 0 1px rgba(91, 216, 255, .12) inset; }
 .mood-icon { grid-row: 1 / span 2; display: grid; width: 34px; height: 34px; place-items: center; color: #75ebff; font-size: 25px; line-height: 1; text-shadow: 0 0 12px currentColor; }
 .dot-icon { width: 18px; height: 18px; margin: 8px; border-radius: 50%; background: currentColor; }
 .flame-icon { color: #ffbd72; }

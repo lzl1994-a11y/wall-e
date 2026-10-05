@@ -18,6 +18,8 @@ function page() {
     setEyeFeedback = () => {};
     setEyeControlsEnabled = () => {};
     showToast = () => {};
+    updateDirtyIndicator = () => {};
+    state.config = {eye: {...EYE_DEFAULTS}};
     state.eye.values = {...EYE_DEFAULTS};
     state.eye.validValues = {...EYE_DEFAULTS};
   `, context);
@@ -142,6 +144,45 @@ test('device switch rejection restores the last accepted switch and period', asy
   })()`);
   assert.equal(run('state.eye.values.autoBlink'), true);
   assert.equal(run('state.eye.values.blinkMs'), 4500);
+});
+
+test('host save persists the edited snapshot and keeps the accepted baseline', async () => {
+  const run = page();
+  await run(`(async () => {
+    state.eye.hostConfigLoaded = true;
+    state.eye.values = {...EYE_DEFAULTS, color:'FF7A45', ringColor:'FFB347', dotColor:'FFE08A'};
+    api = async (url, options) => ({config:{eye:JSON.parse(options.body).patch.eye}});
+    await saveEyeConfig();
+  })()`);
+  assert.equal(run('state.eye.validValues.color'), 'FF7A45');
+  assert.equal(run('state.eye.values.dotColor'), 'FFE08A');
+  assert.equal(run('state.eye.saveInFlight'), false);
+  assert.equal(run('state.dirtyModules.has("eye")'), false);
+});
+
+test('eye edits participate in the shared unsaved-change tracking', () => {
+  const run = page();
+  run(`
+    handleEyeMood('heart');
+    state.eye.debounceTimers.forEach(timer => clearTimeout(timer));
+    state.eye.debounceTimers.clear();
+  `);
+  assert.equal(run('state.dirtyModules.has("eye")'), true);
+  run('state.eye.values = {...state.config.eye}; syncEyeDirtyState();');
+  assert.equal(run('state.dirtyModules.has("eye")'), false);
+});
+
+test('device query updates status without overwriting host-owned controls', async () => {
+  const run = page();
+  await run(`(async () => {
+    state.eye.hostConfigLoaded = true;
+    state.eye.values = {...EYE_DEFAULTS, color:'FF7A45'};
+    api = async () => ({state:{color:'0000FF', mood:'heart'}, event:{kind:'state'}});
+    await queryEyeDevice(state.eye.epoch);
+  })()`);
+  assert.equal(run('state.eye.values.color'), 'FF7A45');
+  assert.equal(run('state.eye.lastDeviceValues.color'), '0000FF');
+  assert.equal(run('state.eye.lastDeviceValues.mood'), 'heart');
 });
 
 test('disabled switch acknowledgement preserves the remembered period', async () => {
