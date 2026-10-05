@@ -68,7 +68,7 @@ class MotionArbiterNode(Node):
             for source, topic in SOURCE_TOPICS.items()
         ]
         self.get_logger().info(
-            "运动仲裁器上线：joystick > tracking > autonomy，"
+            "运动仲裁器上线：joystick > remote > tracking > autonomy，"
             "事件驱动，上游命令超时自动停车"
         )
 

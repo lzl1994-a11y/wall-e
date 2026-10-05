@@ -14,6 +14,8 @@ def source_priority(source: str, action_name: str) -> int:
         return 1000
     if "joystick" in source or source == "joy":
         return 100
+    if source.startswith("remote") or "webrtc" in source:
+        return 90
     if source == "mcp" or source.startswith("mcp_"):
         return 70
     if "behavior_tree" in source:

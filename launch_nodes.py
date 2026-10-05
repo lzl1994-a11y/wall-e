@@ -135,12 +135,15 @@ def build_node_list(args):
     hardware_cfg = config.get("hardware", {})
     mcp_cfg = config.get("mcp", {})
     orchestration_cfg = config.get("orchestration", {})
+    webrtc_remote_cfg = config.get("webrtc_remote", {})
     if not isinstance(mcp_cfg, dict):
         mcp_cfg = {}
     if not isinstance(hardware_cfg, dict):
         hardware_cfg = {}
     if not isinstance(orchestration_cfg, dict):
         orchestration_cfg = {}
+    if not isinstance(webrtc_remote_cfg, dict):
+        webrtc_remote_cfg = {}
     hardware_backend = hardware_cfg.get("backend", "serial_mcu")
     if hardware_backend not in {"serial_mcu", "ubuntu_i2c"}:
         hardware_backend = "serial_mcu"
@@ -224,6 +227,18 @@ def build_node_list(args):
                 nodes.append(NodeEntry("i2c_hardware", ROOT / "nodes" / "i2c_hardware_node.py"))
             elif not args.no_serial:
                 nodes.append(NodeEntry("hardware_bridge", ROOT / "nodes" / "hardware_bridge_node.py"))
+
+    if (
+        getattr(args, "remote_control", False)
+        or (
+            webrtc_remote_cfg.get("enabled", False)
+            and not getattr(args, "no_remote_control", False)
+        )
+    ):
+        nodes.append(NodeEntry(
+            "remote_webrtc",
+            ROOT / "nodes" / "remote_webrtc_gateway_node.py",
+        ))
 
     if pipeline == "multimodal":
         nodes.append(NodeEntry(
@@ -473,6 +488,16 @@ def main():
         "--no-web",
         action="store_true",
         help="Do not start the config web service.",
+    )
+    parser.add_argument(
+        "--remote-control",
+        action="store_true",
+        help="Start the WebRTC robot gateway for phone control.",
+    )
+    parser.add_argument(
+        "--no-remote-control",
+        action="store_true",
+        help="Disable the WebRTC robot gateway even when enabled in config.",
     )
     parser.add_argument(
         "--save-voice-debug",

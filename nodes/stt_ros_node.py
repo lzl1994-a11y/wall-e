@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
+import json
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+try:
+    from std_msgs.msg import String, UInt8MultiArray
+except ImportError:  # Keep policy-only tests compatible with minimal ROS stubs.
+    from std_msgs.msg import String
+
+    class UInt8MultiArray:
+        def __init__(self, data=None):
+            self.data = [] if data is None else data
 
 # 引入底层的听觉血肉引擎
 from services.speech.stt_service import STTService
@@ -10,6 +18,10 @@ from services.dialog.dialog_motion_protocol import (
     DIALOG_MOTION_VAD_TOPIC,
     VAD_SPEECH_ENDED,
     VAD_SPEECH_STARTED,
+)
+from services.remote.remote_protocol import (
+    REMOTE_AUDIO_PCM_TOPIC,
+    REMOTE_VOICE_STATE_TOPIC,
 )
 
 class STTNode(Node):
@@ -25,6 +37,18 @@ class STTNode(Node):
         self._llm_busy = False
         self._recording_paused = False
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
+        self.create_subscription(
+            UInt8MultiArray,
+            REMOTE_AUDIO_PCM_TOPIC,
+            self._on_remote_audio,
+            50,
+        )
+        self.create_subscription(
+            String,
+            REMOTE_VOICE_STATE_TOPIC,
+            self._on_remote_voice_state,
+            10,
+        )
 
         # 订阅 LLM 忙闲状态，LLM 处理中暂停 ASR
         self.busy_subscription = self.create_subscription(
@@ -80,6 +104,26 @@ class STTNode(Node):
             return
         self._game_active = active
         self._sync_recording()
+
+    def _on_remote_voice_state(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except (TypeError, json.JSONDecodeError):
+            return
+        state = payload.get("state") if isinstance(payload, dict) else None
+        engine = getattr(self, "stt_engine", None)
+        if engine is None:
+            return
+        if state == "start":
+            if not engine.begin_remote_turn():
+                self.get_logger().warning("当前语音状态不允许开始远程对话")
+        elif state == "stop":
+            engine.end_remote_turn()
+
+    def _on_remote_audio(self, msg):
+        engine = getattr(self, "stt_engine", None)
+        if engine is not None:
+            engine.accept_remote_audio(bytes(msg.data or b""), sample_rate=16000)
 
     def _sync_recording(self):
         """Keep the loaded wake model idle while any audio policy blocks recording."""

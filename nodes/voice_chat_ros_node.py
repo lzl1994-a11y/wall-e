@@ -10,6 +10,7 @@
 """
 
 import base64
+import json
 import os
 import sys
 import threading
@@ -90,6 +91,10 @@ from services.audio.wake_audio_protocol import (
     WAKE_AUDIO_TOPIC,
     encode_wake_audio,
 )
+from services.remote.remote_protocol import (
+    REMOTE_AUDIO_PCM_TOPIC,
+    REMOTE_VOICE_STATE_TOPIC,
+)
 
 OUTPUT_ECHO_GUARD_SECONDS = 0.35
 GAME_COMMENTARY_PROMPT = (
@@ -167,6 +172,18 @@ class VoiceChatNode(Node):
         self._photo_capture_workflow = None
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_action_status, 10)
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
+        self.create_subscription(
+            UInt8MultiArray,
+            REMOTE_AUDIO_PCM_TOPIC,
+            self._on_remote_audio,
+            50,
+        )
+        self.create_subscription(
+            String,
+            REMOTE_VOICE_STATE_TOPIC,
+            self._on_remote_voice_state,
+            10,
+        )
         self.dialog_motion_pub = self.create_publisher(
             String, DIALOG_MOTION_VAD_TOPIC, 10
         )
@@ -210,6 +227,21 @@ class VoiceChatNode(Node):
 
         self.vc.start()
         self.get_logger().info("语音直聊节点已上线")
+
+    def _on_remote_voice_state(self, message):
+        try:
+            payload = json.loads(message.data)
+        except (TypeError, json.JSONDecodeError):
+            return
+        state = payload.get("state") if isinstance(payload, dict) else None
+        if state == "start":
+            if not self.vc.begin_remote_turn():
+                self.get_logger().warning("当前语音状态不允许开始远程对话")
+        elif state == "stop":
+            self.vc.end_remote_turn()
+
+    def _on_remote_audio(self, message):
+        self.vc.accept_remote_audio(bytes(message.data or b""), sample_rate=16000)
 
     def _on_game_state(self, message):
         mode = game_mode_from_message(message.data)

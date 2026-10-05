@@ -377,6 +377,25 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 - `--no-serial`：不启动屏幕/下位机串口节点；板载 I²C 后端仍可运行。
 - `--no-hardware`：不启动舵机/电机硬件后端，保留其他节点用于调试。
 - `--no-web`：不启动 `config.yaml` 配置网页。
+- `--remote-control`：启动手机 WebRTC 控制网关；也可以在 `webrtc_remote.enabled` 中长期启用。
+
+### 手机 WebRTC 遥控
+
+手机端项目位于相邻的 `wall-e-remote` 目录。机器人端网关只负责把已建立的
+WebRTC 视频、音频和 DataChannel 数据接入现有 ROS 总线：摄像头使用 `/camera_frame`
+租约，底盘使用独立的 `/motor_cmd/remote`（实体手柄仍保持更高优先级），动作使用
+`/action_request`，断线或急停会立即发布停车命令。机器人端需要安装 `requirements.txt`
+中的 `aiortc` 和 `websockets` 依赖，
+并在 `core/config.yaml` 的 `webrtc_remote` 中设置 signaling 地址、机器人房间名和令牌。
+
+启动方式：
+
+```bash
+python launch_nodes.py --remote-control --voice-chat
+```
+
+公网连接还必须给手机端配置可访问的 STUN/TURN ICE server；signaling 只交换 SDP/ICE，
+不承担媒体中继。`VITE_SIGNALING_TOKEN` 与机器人端 `webrtc_remote.token` 必须一致。
 
 ### 胸前屏幕拍照预览
 

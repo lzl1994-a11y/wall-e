@@ -199,6 +199,10 @@ class AudioPipeline:
         self._audio_stream_lock = threading.Lock()
         self._audio_device_identity = ""
         self._awake = False  # 唤醒后才启动 VAD 断句
+        self._external_audio_lock = threading.Lock()
+        self._external_turn_active = False
+        self._external_turn_buffer = bytearray()
+        self._external_turn_max_bytes = self.SAMPLE_RATE * 2 * 30
 
         self.on_sentence = None       # Callable[[bytes], None]
         self.on_speech_start = None   # Callable[[bytes], None]
@@ -223,6 +227,9 @@ class AudioPipeline:
     def stop(self):
         self._is_running = False
         self._paused_event.set()
+        with self._external_audio_lock:
+            self._external_turn_active = False
+            self._external_turn_buffer.clear()
         self._close_audio_stream()
         if self._apm: self._apm.stop(); self._apm = None
         if self._listen_thread and self._listen_thread.is_alive():
@@ -248,6 +255,52 @@ class AudioPipeline:
         self._paused_event.clear()
         self._reset_vad_state()
         print("[AudioPipeline] 已恢复")
+
+    def begin_external_turn(self) -> bool:
+        """Start a push-to-talk turn supplied by a remote transport.
+
+        Remote audio is already decoded to mono PCM by the WebRTC gateway, so
+        it bypasses the local microphone device and wake-word detector while
+        still reusing VoiceChatService's sentence/LLM state machine.
+        """
+        if not self._is_running or self._is_paused:
+            return False
+        self._drain_queue()
+        with self._external_audio_lock:
+            self._external_turn_buffer.clear()
+            self._external_turn_active = True
+        self._awake = True
+        self._reset_vad_state()
+        return True
+
+    def accept_external_pcm(self, pcm: bytes, sample_rate: int = SAMPLE_RATE) -> None:
+        """Append one bounded remote PCM chunk to the active PTT turn."""
+        if not pcm:
+            return
+        with self._external_audio_lock:
+            if not self._external_turn_active:
+                return
+            raw = bytes(pcm)
+            if len(raw) < 2:
+                return
+            samples = np.frombuffer(raw[: len(raw) - len(raw) % 2], dtype=np.int16)
+            if sample_rate != self.SAMPLE_RATE:
+                samples = self._resample_samples(samples, sample_rate, self.SAMPLE_RATE)
+            remaining = self._external_turn_max_bytes - len(self._external_turn_buffer)
+            if remaining > 0:
+                self._external_turn_buffer.extend(samples.astype(np.int16).tobytes()[:remaining])
+
+    def end_external_turn(self) -> bool:
+        """Flush the current remote PTT turn as one sentence."""
+        with self._external_audio_lock:
+            if not self._external_turn_active:
+                return False
+            pcm = bytes(self._external_turn_buffer)
+            self._external_turn_buffer.clear()
+            self._external_turn_active = False
+        self._awake = False
+        self._emit_sentence([pcm])
+        return True
 
     def _init_vad(self):
         """按配置加载 VAD；依赖缺失时回退到另一个可用后端。"""
@@ -440,6 +493,16 @@ class AudioPipeline:
     def _audio_callback(self, indata, frames, time_info, status):
         if not self._is_running or self._is_paused:
             return
+        external_audio_lock = getattr(self, "_external_audio_lock", None)
+        if external_audio_lock is None:
+            # Keep the callback safe for lightweight test doubles and legacy
+            # embedders that construct the pipeline without __init__.
+            if getattr(self, "_external_turn_active", False):
+                return
+        else:
+            with external_audio_lock:
+                if self._external_turn_active:
+                    return
         try:
             # 无论输入是单声道还是双声道，全部混合为单声道 (mono)
             if indata.shape[1] > 1:
@@ -485,11 +548,28 @@ class AudioPipeline:
 
     def _resample_fallback(self, samples: np.ndarray) -> np.ndarray:
         """Keep 16 kHz VAD/ASR working if the optional APM process is absent."""
-        if self._device_sample_rate == self.SAMPLE_RATE: return samples
-        if self._device_sample_rate % self.SAMPLE_RATE == 0:
-            return samples[:: self._device_sample_rate // self.SAMPLE_RATE]
-        count = max(1, round(samples.size * self.SAMPLE_RATE / self._device_sample_rate))
-        return np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples).astype(np.int16)
+        return self._resample_samples(
+            samples,
+            self._device_sample_rate,
+            self.SAMPLE_RATE,
+        )
+
+    @staticmethod
+    def _resample_samples(
+        samples: np.ndarray,
+        source_rate: int,
+        target_rate: int,
+    ) -> np.ndarray:
+        if source_rate <= 0 or source_rate == target_rate or samples.size <= 1:
+            return samples
+        if source_rate % target_rate == 0:
+            return samples[:: source_rate // target_rate]
+        count = max(1, round(samples.size * target_rate / source_rate))
+        return np.interp(
+            np.linspace(0, samples.size - 1, count),
+            np.arange(samples.size),
+            samples,
+        ).astype(np.int16)
 
     def _run(self):
         silence_sec = getattr(self, "_silence_sec", self.SILENCE_SEC)

@@ -18,12 +18,20 @@ class MotionArbiterTests(unittest.TestCase):
         self.now = 10.0
         self.arbiter = MotionArbiter(timeout_sec=0.3, clock=lambda: self.now)
 
-    def test_priority_is_joystick_then_tracking_then_autonomy(self):
+    def test_priority_is_joystick_then_remote_then_tracking_then_autonomy(self):
         self.assertTrue(self.arbiter.update("autonomy", FORWARD))
         self.assertEqual(self.arbiter.select(), ("autonomy", FORWARD))
 
         self.assertTrue(self.arbiter.update("tracking", REVERSE))
         self.assertEqual(self.arbiter.select(), ("tracking", REVERSE))
+
+        self.assertTrue(self.arbiter.update("joystick", STOP_COMMAND))
+        self.assertEqual(self.arbiter.select(), ("joystick", STOP_COMMAND))
+
+    def test_remote_is_below_joystick_and_above_tracking(self):
+        self.assertTrue(self.arbiter.update("tracking", FORWARD))
+        self.assertTrue(self.arbiter.update("remote", REVERSE))
+        self.assertEqual(self.arbiter.select(), ("remote", REVERSE))
 
         self.assertTrue(self.arbiter.update("joystick", STOP_COMMAND))
         self.assertEqual(self.arbiter.select(), ("joystick", STOP_COMMAND))

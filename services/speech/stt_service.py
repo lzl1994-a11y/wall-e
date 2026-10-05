@@ -108,6 +108,38 @@ class STTService:
                 self._reset_awake_timer()
         print("[STT] 麦克风已恢复，重新开始唤醒超时计时")
 
+    def begin_remote_turn(self) -> bool:
+        """Start a browser push-to-talk turn without a local wake word."""
+        with self._awake_lock:
+            self._awake = True
+            self._cancel_awake_timer_locked()
+        accepted = self._pipe.begin_external_turn()
+        if not accepted:
+            with self._awake_lock:
+                self._awake = False
+            return False
+        if accepted:
+            callback = getattr(self, "on_speech_start", None)
+            if callback:
+                callback()
+            print("[STT] 远程按住说话开始")
+        return accepted
+
+    def accept_remote_audio(self, pcm_data: bytes, sample_rate: int = SAMPLE_RATE) -> None:
+        self._pipe.accept_external_pcm(pcm_data, sample_rate=sample_rate)
+
+    def end_remote_turn(self) -> bool:
+        """Flush remote audio off the ROS callback thread."""
+        def flush():
+            if self._pipe.end_external_turn():
+                print("[STT] 远程按住说话结束")
+
+        with self._awake_lock:
+            if not self._awake:
+                return False
+        threading.Thread(target=flush, name="remote-stt-flush", daemon=True).start()
+        return True
+
     def set_awake(self, value: bool):
         """外部控制唤醒状态。"""
         with self._awake_lock:

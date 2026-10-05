@@ -167,6 +167,40 @@ class VoiceChatService:
         self._pipe.resume()
         print("[VoiceChat] 已恢复")
 
+    def begin_remote_turn(self) -> bool:
+        """Enter the awake state for a browser push-to-talk session."""
+        with self._state_lock:
+            if self._state in {_State.LLM_PENDING, _State.SPEAKING}:
+                return False
+            self._state = _State.AWAKE
+        self._last_llm_activity = time.time()
+        accepted = self._pipe.begin_external_turn()
+        if not accepted:
+            with self._state_lock:
+                if self._state == _State.AWAKE:
+                    self._state = _State.IDLE
+            return False
+        if accepted:
+            callback = getattr(self, "on_speech_start", None)
+            if callback:
+                callback()
+            print("[VoiceChat] 远程按住说话开始")
+        return accepted
+
+    def accept_remote_audio(self, pcm_data: bytes, sample_rate: int = SAMPLE_RATE) -> None:
+        """Feed decoded browser microphone PCM into the shared voice pipeline."""
+        self._pipe.accept_external_pcm(pcm_data, sample_rate=sample_rate)
+
+    def end_remote_turn(self) -> bool:
+        """Flush a browser push-to-talk session into the normal LLM turn."""
+        with self._state_lock:
+            if self._state != _State.AWAKE:
+                return False
+        accepted = self._pipe.end_external_turn()
+        if accepted:
+            print("[VoiceChat] 远程按住说话结束")
+        return accepted
+
     def begin_output_playback(self):
         """Mute capture while robot audio is playing through the speaker."""
         with self._state_lock:
