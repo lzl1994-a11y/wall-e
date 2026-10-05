@@ -16,6 +16,7 @@ class MixingPlaybackService(PlaybackService):
         self._stopped = threading.Event()
         self._mixer = None
         self._next_device_attempt = 0.0
+        self._interrupt_requested = threading.Event()
         self.on_wake_complete = on_wake_complete
         self.on_system_complete = on_system_complete
         # The base constructor starts the worker; it waits until initialization.
@@ -34,6 +35,14 @@ class MixingPlaybackService(PlaybackService):
 
     def mark_turn_end(self):
         self._submit("end_speech", "dialogue")
+
+    def stop_speech(self):
+        """Abort foreground speech on a barge-in while keeping music alive."""
+        with self._mix_lock:
+            if self._mixer is not None:
+                self._mixer.stop_speech()
+        self._interrupt_requested.set()
+        self._ready.set()
 
     def play_wake(self, samples, request_id):
         self.play_prompt(samples, "wake", request_id)
@@ -73,6 +82,10 @@ class MixingPlaybackService(PlaybackService):
         self._close_stream(drain=True)
 
     def _play_mix_block(self):
+        if self._interrupt_requested.is_set():
+            self._interrupt_requested.clear()
+            self._close_stream(drain=False)
+            return
         opened = self._stream is not None
         if not opened and time.monotonic() >= self._next_device_attempt:
             self._next_device_attempt = time.monotonic() + 1.0

@@ -229,10 +229,10 @@ def build_node_list(args):
                 nodes.append(NodeEntry("hardware_bridge", ROOT / "nodes" / "hardware_bridge_node.py"))
 
     if (
-        getattr(args, "remote_control", False)
-        or (
-            webrtc_remote_cfg.get("enabled", False)
-            and not getattr(args, "no_remote_control", False)
+        not getattr(args, "no_remote_control", False)
+        and (
+            getattr(args, "remote_control", False)
+            or webrtc_remote_cfg.get("enabled", False)
         )
     ):
         nodes.append(NodeEntry(

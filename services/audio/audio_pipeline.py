@@ -147,6 +147,7 @@ class AudioPipeline:
     SPEECH_START_MS = 300
     SILENCE_SEC = 0.5
     MAX_SPEECH_SEC = 15.0
+    _EXTERNAL_SESSION_END = object()
 
     def __init__(self, config_path: str = "core/config.yaml"):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -200,6 +201,8 @@ class AudioPipeline:
         self._audio_device_identity = ""
         self._awake = False  # 唤醒后才启动 VAD 断句
         self._external_audio_lock = threading.Lock()
+        self._external_session_active = False
+        self._external_session_end_pending = False
         self._external_turn_active = False
         self._external_turn_buffer = bytearray()
         self._external_turn_max_bytes = self.SAMPLE_RATE * 2 * 30
@@ -209,6 +212,7 @@ class AudioPipeline:
         self.on_speech_audio = None   # Callable[[bytes], None]
         self.on_speech_cancel = None  # Callable[[], None]
         self.on_wake_word = None      # Callable[[], None]
+        self.on_external_session_end = None  # Callable[[], None]
 
     # ── Public API ──
     def start(self):
@@ -228,6 +232,8 @@ class AudioPipeline:
         self._is_running = False
         self._paused_event.set()
         with self._external_audio_lock:
+            self._external_session_active = False
+            self._external_session_end_pending = False
             self._external_turn_active = False
             self._external_turn_buffer.clear()
         self._close_audio_stream()
@@ -267,18 +273,35 @@ class AudioPipeline:
             return False
         self._drain_queue()
         with self._external_audio_lock:
+            self._external_session_active = False
+            self._external_session_end_pending = False
             self._external_turn_buffer.clear()
             self._external_turn_active = True
         self._awake = True
         self._reset_vad_state()
         return True
 
+    def begin_external_session(self) -> bool:
+        """Start a continuous remote call whose utterances are split by VAD."""
+        if not self._is_running or self._is_paused:
+            return False
+        self._drain_queue()
+        with self._external_audio_lock:
+            self._external_turn_active = False
+            self._external_turn_buffer.clear()
+            self._external_session_end_pending = False
+            self._external_session_active = True
+        self._awake = True
+        self._reset_vad_state()
+        return True
+
     def accept_external_pcm(self, pcm: bytes, sample_rate: int = SAMPLE_RATE) -> None:
-        """Append one bounded remote PCM chunk to the active PTT turn."""
+        """Accept one bounded remote PCM chunk for PTT or a continuous call."""
         if not pcm:
             return
         with self._external_audio_lock:
-            if not self._external_turn_active:
+            session_active = self._external_session_active
+            if not session_active and not self._external_turn_active:
                 return
             raw = bytes(pcm)
             if len(raw) < 2:
@@ -286,6 +309,20 @@ class AudioPipeline:
             samples = np.frombuffer(raw[: len(raw) - len(raw) % 2], dtype=np.int16)
             if sample_rate != self.SAMPLE_RATE:
                 samples = self._resample_samples(samples, sample_rate, self.SAMPLE_RATE)
+            if session_active:
+                try:
+                    self.audio_queue.put_nowait(samples.astype(np.int16).tobytes())
+                except queue.Full:
+                    # Preserve the newest microphone audio without blocking ROS.
+                    try:
+                        self.audio_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self.audio_queue.put_nowait(samples.astype(np.int16).tobytes())
+                    except queue.Full:
+                        pass
+                return
             remaining = self._external_turn_max_bytes - len(self._external_turn_buffer)
             if remaining > 0:
                 self._external_turn_buffer.extend(samples.astype(np.int16).tobytes()[:remaining])
@@ -301,6 +338,24 @@ class AudioPipeline:
         self._awake = False
         self._emit_sentence([pcm])
         return True
+
+    def end_external_session(self) -> bool:
+        """Stop a continuous call after flushing the final VAD silence tail."""
+        with self._external_audio_lock:
+            if not self._external_session_active or self._external_session_end_pending:
+                return False
+            self._external_session_end_pending = True
+            marker = self._EXTERNAL_SESSION_END
+            while True:
+                try:
+                    self.audio_queue.put_nowait(marker)
+                    return True
+                except queue.Full:
+                    try:
+                        self.audio_queue.get_nowait()
+                    except queue.Empty:
+                        self._external_session_end_pending = False
+                        return False
 
     def _init_vad(self):
         """按配置加载 VAD；依赖缺失时回退到另一个可用后端。"""
@@ -588,6 +643,8 @@ class AudioPipeline:
         silence_count = 0
         in_speech = False
         speech_frame_count = 0
+        external_flush_frames = 0
+        external_flush_started = False
 
         while self._is_running:
             if self._paused_event.is_set():
@@ -599,19 +656,36 @@ class AudioPipeline:
                 in_speech = False
                 silence_count = 0
                 speech_frame_count = 0
+                external_flush_frames = 0
+                external_flush_started = False
                 continue
 
-            try:
-                byte_buf.extend(self.audio_queue.get(timeout=0.1))
-            except queue.Empty:
-                pass
+            if external_flush_frames > 0 and len(byte_buf) < self.FRAME_BYTES:
+                byte_buf.extend(b"\x00" * self.FRAME_BYTES)
+                external_flush_frames -= 1
+            else:
+                try:
+                    item = self.audio_queue.get(timeout=0.1)
+                    if item is self._EXTERNAL_SESSION_END:
+                        external_flush_frames = max_silence + 1
+                        external_flush_started = True
+                    else:
+                        byte_buf.extend(item)
+                except queue.Empty:
+                    pass
 
             while len(byte_buf) >= self.FRAME_BYTES:
                 frame = bytes(byte_buf[:self.FRAME_BYTES])
                 del byte_buf[:self.FRAME_BYTES]
 
                 # ── 唤醒词检测（所有帧直送 Sherpa-ONNX，不做 VAD 前置过滤）──
-                if self._ww.enabled:
+                external_input = getattr(self, "_external_session_active", False)
+                if not external_input:
+                    with getattr(self, "_external_audio_lock", threading.Lock()):
+                        external_input = getattr(
+                            self, "_external_session_active", False
+                        )
+                if self._ww.enabled and not external_input:
                     if self._check_wake_word(frame):
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
                         self._awake = True
@@ -698,6 +772,24 @@ class AudioPipeline:
                         self._emit_sentence(trimmed)
                         speech_frames.clear()
                         speech_frame_count = 0
+
+            session_finished = False
+            if external_flush_started and external_flush_frames == 0 and getattr(
+                self, "_external_session_end_pending", False
+            ):
+                with getattr(self, "_external_audio_lock", threading.Lock()):
+                    if getattr(self, "_external_session_end_pending", False):
+                        self._external_session_end_pending = False
+                        self._external_session_active = False
+                        self._awake = False
+                        session_finished = True
+            if session_finished:
+                callback = getattr(self, "on_external_session_end", None)
+                if callback:
+                    try:
+                        callback()
+                    except Exception as exc:
+                        print(f"[AudioPipeline] on_external_session_end 异常: {exc}")
 
     def _vad_prob(self, frame: bytes) -> float:
         """

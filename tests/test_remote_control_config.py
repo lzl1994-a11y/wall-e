@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.motion.remote_control_config import RemoteControlConfigWatcher, load_remote_control_config
+from services.motion.remote_control_config import (
+    RemoteControlConfigWatcher,
+    load_command_timeout_sec,
+    load_remote_control_config,
+)
 
 
 class RemoteControlConfigTests(unittest.TestCase):
@@ -61,6 +65,21 @@ class RemoteControlConfigTests(unittest.TestCase):
                 load_remote_control_config(path),
                 {"servo_step_size": 40.0, "update_rate_hz": 20.0},
             )
+
+    def test_command_timeout_is_bounded_and_configurable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.yaml"
+            path.write_text(
+                "remote_control:\n  command_timeout_sec: 0.45\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(load_command_timeout_sec(path), 0.45)
+
+            path.write_text(
+                "remote_control:\n  command_timeout_sec: 9\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(load_command_timeout_sec(path), 0.3)
 
 
 if __name__ == "__main__":

@@ -91,6 +91,10 @@ from services.audio.wake_audio_protocol import (
     WAKE_AUDIO_TOPIC,
     encode_wake_audio,
 )
+from services.audio.audio_control_protocol import (
+    AUDIO_CONTROL_TOPIC,
+    encode_stop_speech_control,
+)
 from services.remote.remote_protocol import (
     REMOTE_AUDIO_PCM_TOPIC,
     REMOTE_VOICE_STATE_TOPIC,
@@ -172,6 +176,9 @@ class VoiceChatNode(Node):
         self._photo_capture_workflow = None
         self.create_subscription(String, ACTION_STATUS_TOPIC, self._on_action_status, 10)
         self.game_busy_pub = self.create_publisher(String, "llm_busy", 10)
+        self.audio_control_pub = self.create_publisher(
+            String, AUDIO_CONTROL_TOPIC, 10
+        )
         self.create_subscription(
             UInt8MultiArray,
             REMOTE_AUDIO_PCM_TOPIC,
@@ -214,6 +221,7 @@ class VoiceChatNode(Node):
         self.vc.on_inspection_request = self._process_heard_camera_inspection
         self.vc.on_llm_done = self._on_llm_done
         self.vc.on_llm_timeout = self._on_llm_timeout
+        self.vc.on_remote_barge_in = self._on_remote_barge_in
 
         self._turn_controller = DialogTurnController()
         self._output_controller = DialogOutputController()
@@ -234,14 +242,35 @@ class VoiceChatNode(Node):
         except (TypeError, json.JSONDecodeError):
             return
         state = payload.get("state") if isinstance(payload, dict) else None
+        mode = payload.get("mode") if isinstance(payload, dict) else None
         if state == "start":
-            if not self.vc.begin_remote_turn():
+            accepted = (
+                self.vc.begin_remote_session()
+                if mode == "session"
+                else self.vc.begin_remote_turn()
+            )
+            if not accepted:
                 self.get_logger().warning("当前语音状态不允许开始远程对话")
         elif state == "stop":
-            self.vc.end_remote_turn()
+            if mode == "session":
+                self.vc.end_remote_session()
+            else:
+                self.vc.end_remote_turn()
 
     def _on_remote_audio(self, message):
         self.vc.accept_remote_audio(bytes(message.data or b""), sample_rate=16000)
+
+    def _on_remote_barge_in(self):
+        """Stop queued local TTS as soon as remote VAD detects speech."""
+        self.audio_control_pub.publish(
+            String(data=encode_stop_speech_control("remote_barge_in"))
+        )
+        self._output().finish_tts_playback()
+        with self._timer_lock:
+            if self._resume_timer is not None:
+                self._resume_timer.cancel()
+                self._resume_timer = None
+        self.get_logger().info("远程用户开始说话，已打断机器人播报")
 
     def _on_game_state(self, message):
         mode = game_mode_from_message(message.data)

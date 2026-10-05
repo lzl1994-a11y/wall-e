@@ -378,15 +378,39 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 - `--no-hardware`：不启动舵机/电机硬件后端，保留其他节点用于调试。
 - `--no-web`：不启动 `config.yaml` 配置网页。
 - `--remote-control`：启动手机 WebRTC 控制网关；也可以在 `webrtc_remote.enabled` 中长期启用。
+- `--no-remote-control`：即使配置启用，也不启动手机 WebRTC 控制网关。
 
 ### 手机 WebRTC 遥控
 
 手机端项目位于相邻的 `wall-e-remote` 目录。机器人端网关只负责把已建立的
-WebRTC 视频、音频和 DataChannel 数据接入现有 ROS 总线：摄像头使用 `/camera_frame`
-租约，底盘使用独立的 `/motor_cmd/remote`（实体手柄仍保持更高优先级），动作使用
-`/action_request`，断线或急停会立即发布停车命令。机器人端需要安装 `requirements.txt`
-中的 `aiortc` 和 `websockets` 依赖，
-并在 `core/config.yaml` 的 `webrtc_remote` 中设置 signaling 地址、机器人房间名和令牌。
+WebRTC 视频、双向音频和 DataChannel 数据接入现有 ROS 总线：摄像头使用
+`/camera_frame` 租约，底盘使用独立的 `/motor_cmd/remote`（实体手柄仍保持更高
+优先级），动作使用 `/action_request`。连续通话由机器人现有 VAD 自动切分语句，
+用户开口时会通过 `/audio_playback_control` 打断本地 TTS；断线、急停或控制消息
+异常会立即进入安全状态。
+
+默认配置是关闭远程网关；部署时在未跟踪的 `core/config.yaml` 中设置：
+
+```yaml
+webrtc_remote:
+  enabled: false
+  signaling_url: ws://43.172.84.112:8787/signal
+  robot_id: WALLY-01
+  token: ""
+  servo_step_size: 50
+  # 可选：STUN/TURN，支持字符串或 {urls, username, credential} 对象
+  ice_servers: []
+
+remote_control:
+  command_timeout_sec: 0.3
+```
+
+`remote_control.command_timeout_sec` 是运动控制 watchdog；远程控制消息超过该时间
+未刷新就会由运动仲裁器输出 `STOP_COMMAND`，默认 300ms，允许范围为 100ms～2s。
+
+令牌不要写入 Git 或普通日志；也可以使用 `WALLE_WEBRTC_SIGNALING_TOKEN`、
+`WALLE_WEBRTC_SIGNALING_URL`、`WALLE_WEBRTC_ROBOT_ID` 覆盖配置，使用
+`WALLE_WEBRTC_ICE_SERVERS`（JSON 数组或逗号分隔 URL）覆盖 ICE server。
 
 启动方式：
 
@@ -395,7 +419,9 @@ python launch_nodes.py --remote-control --voice-chat
 ```
 
 公网连接还必须给手机端配置可访问的 STUN/TURN ICE server；signaling 只交换 SDP/ICE，
-不承担媒体中继。`VITE_SIGNALING_TOKEN` 与机器人端 `webrtc_remote.token` 必须一致。
+不承担媒体中继。`VITE_SIGNALING_TOKEN` 与机器人端令牌必须一致。当前使用
+`ws://` 时不应把它当作生产安全配置；没有 TURN 时，受限 NAT 网络可能无法建立
+媒体连接，浏览器麦克风在生产环境通常还需要 HTTPS/WSS 安全上下文。
 
 ### 胸前屏幕拍照预览
 

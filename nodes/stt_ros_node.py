@@ -111,14 +111,23 @@ class STTNode(Node):
         except (TypeError, json.JSONDecodeError):
             return
         state = payload.get("state") if isinstance(payload, dict) else None
+        mode = payload.get("mode") if isinstance(payload, dict) else None
         engine = getattr(self, "stt_engine", None)
         if engine is None:
             return
         if state == "start":
-            if not engine.begin_remote_turn():
+            accepted = (
+                engine.begin_remote_session()
+                if mode == "session"
+                else engine.begin_remote_turn()
+            )
+            if not accepted:
                 self.get_logger().warning("当前语音状态不允许开始远程对话")
         elif state == "stop":
-            engine.end_remote_turn()
+            if mode == "session":
+                engine.end_remote_session()
+            else:
+                engine.end_remote_turn()
 
     def _on_remote_audio(self, msg):
         engine = getattr(self, "stt_engine", None)

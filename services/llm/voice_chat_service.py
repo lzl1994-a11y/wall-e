@@ -122,6 +122,9 @@ class VoiceChatService:
         self._last_llm_activity = 0.0
         self._cancel_llm = threading.Event()
         self._llm_thread = None
+        self._remote_session_active = False
+        self._remote_session_end_requested = False
+        self._pipe.on_external_session_end = self._on_external_session_end
 
         # ── 回调 ──
         self.on_wake_word = None       # 唤醒词触发（应播放应答语音、切 TFT 页面）
@@ -136,6 +139,7 @@ class VoiceChatService:
         self.on_inspection_request = None  # 多模态看图请求（由 ROS 节点执行）
         self.on_llm_done = None        # LLM 本轮结束（成功、失败或取消）
         self.on_llm_timeout = None     # 40s 无回复超时
+        self.on_remote_barge_in = None # 远程通话中用户打断机器人播报
 
     # ================================================================
     # Public API
@@ -151,6 +155,9 @@ class VoiceChatService:
 
     def stop(self):
         self._cancel_llm.set()
+        with self._state_lock:
+            self._remote_session_active = False
+            self._remote_session_end_requested = False
         self._pipe.stop()
         if self._llm_thread and self._llm_thread.is_alive():
             self._llm_thread.join(timeout=3.0)
@@ -170,7 +177,7 @@ class VoiceChatService:
     def begin_remote_turn(self) -> bool:
         """Enter the awake state for a browser push-to-talk session."""
         with self._state_lock:
-            if self._state in {_State.LLM_PENDING, _State.SPEAKING}:
+            if self._remote_session_active or self._state in {_State.LLM_PENDING, _State.SPEAKING}:
                 return False
             self._state = _State.AWAKE
         self._last_llm_activity = time.time()
@@ -187,6 +194,34 @@ class VoiceChatService:
             print("[VoiceChat] 远程按住说话开始")
         return accepted
 
+    def begin_remote_session(self) -> bool:
+        """Start a continuous WebRTC call; VAD, not a button release, ends turns."""
+        with self._state_lock:
+            if self._remote_session_active:
+                if self._remote_session_end_requested:
+                    return False
+                return True
+            was_speaking = self._state == _State.SPEAKING
+            if self._state == _State.LLM_PENDING:
+                return False
+            self._remote_session_active = True
+            self._remote_session_end_requested = False
+            self._state = _State.AWAKE
+        if was_speaking:
+            self._cancel_llm.set()
+            self._notify_remote_barge_in()
+        accepted = self._pipe.begin_external_session()
+        if not accepted:
+            with self._state_lock:
+                self._remote_session_active = False
+                self._remote_session_end_requested = False
+                if self._state == _State.AWAKE:
+                    self._state = _State.IDLE
+            return False
+        self._last_llm_activity = time.time()
+        print("[VoiceChat] 远程全双工通话开始")
+        return True
+
     def accept_remote_audio(self, pcm_data: bytes, sample_rate: int = SAMPLE_RATE) -> None:
         """Feed decoded browser microphone PCM into the shared voice pipeline."""
         self._pipe.accept_external_pcm(pcm_data, sample_rate=sample_rate)
@@ -201,11 +236,64 @@ class VoiceChatService:
             print("[VoiceChat] 远程按住说话结束")
         return accepted
 
+    def end_remote_session(self) -> bool:
+        """End a continuous call after the audio pipeline flushes its VAD tail."""
+        with self._state_lock:
+            if (
+                not self._remote_session_active
+                or self._remote_session_end_requested
+            ):
+                return False
+            # Keep the session state alive until AudioPipeline has consumed its
+            # queued silence tail. Otherwise the final utterance can be
+            # delivered after this method returns and be dropped as IDLE.
+            self._remote_session_end_requested = True
+        accepted = self._pipe.end_external_session()
+        if not accepted:
+            with self._state_lock:
+                self._remote_session_end_requested = False
+            return False
+        if accepted:
+            print("[VoiceChat] 远程全双工通话结束")
+        return accepted
+
+    def _on_external_session_end(self):
+        """Close remote-session state after the final VAD tail is delivered."""
+        with self._state_lock:
+            self._remote_session_active = False
+            self._remote_session_end_requested = False
+            if self._state == _State.AWAKE:
+                self._state = _State.IDLE
+
+    def interrupt_output_playback(self) -> bool:
+        """Return to capture immediately after a remote barge-in."""
+        with self._state_lock:
+            if not self._remote_session_active or self._state != _State.SPEAKING:
+                return False
+            self._state = _State.AWAKE
+        self._last_llm_activity = time.time()
+        return True
+
+    @property
+    def remote_session_active(self) -> bool:
+        with self._state_lock:
+            return self._remote_session_active
+
+    def _notify_remote_barge_in(self):
+        callback = getattr(self, "on_remote_barge_in", None)
+        if callback:
+            try:
+                callback()
+            except Exception as exc:
+                print(f"[VoiceChat] 远程打断回调异常: {exc}")
+
     def begin_output_playback(self):
         """Mute capture while robot audio is playing through the speaker."""
         with self._state_lock:
             self._state = _State.SPEAKING
-        self._pipe.pause()
+            remote_session = self._remote_session_active
+        if not remote_session:
+            self._pipe.pause()
         print("[VoiceChat] 播放期间暂停麦克风")
 
     def complete_output_playback(self):
@@ -214,8 +302,10 @@ class VoiceChatService:
             if self._state != _State.SPEAKING:
                 return False
             self._state = _State.AWAKE
+            remote_session = self._remote_session_active
         self._last_llm_activity = time.time()
-        self._pipe.resume()
+        if not remote_session:
+            self._pipe.resume()
         print("[VoiceChat] 播放完成，恢复麦克风")
         return True
 
@@ -247,9 +337,10 @@ class VoiceChatService:
                 print(f"[VoiceChat] on_wake_word 异常: {e}")
 
     def _on_sentence(self, pcm_data: bytes):
-        """VAD 断句回调：仅 AWAKE 状态时派发 LLM。"""
+        """VAD 断句回调；连续远程通话期间不暂停输入管线。"""
         duration_ms = len(pcm_data) // 2 * 1000 // self.SAMPLE_RATE
         with self._state_lock:
+            remote_session = self._remote_session_active
             if self._state != _State.AWAKE:
                 return  # IDLE、LLM_PENDING 或 SPEAKING 时忽略
             if duration_ms < 200:
@@ -267,7 +358,8 @@ class VoiceChatService:
         if short_noise:
             return
 
-        self._pipe.pause()
+        if not remote_session:
+            self._pipe.pause()
 
         # 转 WAV → base64，在新线程发 LLM
         wav_path = None
@@ -304,9 +396,19 @@ class VoiceChatService:
                     pass
 
     def _on_speech_start(self, _initial_pcm: bytes):
+        should_interrupt = False
         with self._state_lock:
-            if self._state != _State.AWAKE:
+            if self._remote_session_active and self._state in {
+                _State.LLM_PENDING,
+                _State.SPEAKING,
+            }:
+                self._state = _State.AWAKE
+                should_interrupt = True
+            elif self._state != _State.AWAKE:
                 return
+        if should_interrupt:
+            self._cancel_llm.set()
+            self._notify_remote_barge_in()
         callback = getattr(self, "on_speech_start", None)
         if callback:
             callback()
@@ -324,7 +426,18 @@ class VoiceChatService:
         print("[VoiceChat] LLM 40s 无回复，超时回到待机")
         self._cancel_llm.set()
         with self._state_lock:
-            self._state = _State.IDLE
+            remote_session = self._remote_session_active
+            self._state = _State.AWAKE if remote_session else _State.IDLE
+        if remote_session:
+            # A slow model request must not tear down an otherwise healthy
+            # telephone session. Keep VAD alive so the caller can speak again.
+            self._last_llm_activity = time.time()
+            if self.on_llm_timeout:
+                try:
+                    self.on_llm_timeout()
+                except Exception as e:
+                    print(f"[VoiceChat] on_llm_timeout 异常: {e}")
+            return
         self._pipe.set_awake(False)
         self._pipe.resume()
         if self.on_llm_timeout:
@@ -339,6 +452,9 @@ class VoiceChatService:
             time.sleep(2)
             with self._state_lock:
                 state = self._state
+                remote_session = self._remote_session_active
+            if remote_session and state != _State.LLM_PENDING:
+                continue
             if state in (_State.AWAKE, _State.LLM_PENDING):
                 if time.time() - self._last_llm_activity > self.LLM_IDLE_TIMEOUT:
                     self._on_timeout()
@@ -1024,8 +1140,12 @@ class VoiceChatService:
         """LLM 调用结束，等待扬声器真正播完后再恢复采集。"""
         self._last_llm_activity = time.time()
         with self._state_lock:
-            if self._state == _State.LLM_PENDING:
-                self._state = _State.SPEAKING
+            if self._state != _State.LLM_PENDING:
+                # A cancelled request may finish after a remote barge-in or a
+                # timeout has already reopened capture. Its completion marker
+                # belongs to the old turn and must not close the new one.
+                return
+            self._state = _State.SPEAKING
         if self.on_llm_done:
             try:
                 self.on_llm_done()

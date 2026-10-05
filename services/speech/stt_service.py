@@ -50,6 +50,7 @@ class STTService:
         self._pipe.on_speech_audio = self._on_speech_audio
         self._pipe.on_speech_cancel = self._on_speech_cancel
         self._pipe.on_wake_word = self._on_wake_word
+        self._pipe.on_external_session_end = self._on_external_session_end
 
         # 透传唤醒词回调
         self.on_wake_word = None
@@ -63,6 +64,7 @@ class STTService:
         self._awake_timer_generation = 0
         self._streaming_active = False
         self._streaming_lock = threading.Lock()
+        self._remote_session_end_requested = False
 
     def _on_wake_word(self):
         """唤醒词触发：进入监听状态。"""
@@ -89,6 +91,7 @@ class STTService:
         self._close_asr()
         with self._awake_lock:
             self._awake = False
+            self._remote_session_end_requested = False
             self._cancel_awake_timer_locked()
         print("[STT] 语音监听已停止")
 
@@ -125,6 +128,22 @@ class STTService:
             print("[STT] 远程按住说话开始")
         return accepted
 
+    def begin_remote_session(self) -> bool:
+        """Start continuous remote audio with the shared VAD splitter."""
+        with self._awake_lock:
+            if self._remote_session_end_requested:
+                return False
+        accepted = self._pipe.begin_external_session()
+        if accepted:
+            with self._awake_lock:
+                self._awake = True
+                self._remote_session_end_requested = False
+            callback = getattr(self, "on_speech_start", None)
+            if callback:
+                callback()
+            print("[STT] 远程全双工通话开始")
+        return accepted
+
     def accept_remote_audio(self, pcm_data: bytes, sample_rate: int = SAMPLE_RATE) -> None:
         self._pipe.accept_external_pcm(pcm_data, sample_rate=sample_rate)
 
@@ -139,6 +158,29 @@ class STTService:
                 return False
         threading.Thread(target=flush, name="remote-stt-flush", daemon=True).start()
         return True
+
+    def end_remote_session(self) -> bool:
+        """End continuous remote audio after the VAD tail is flushed."""
+        with self._awake_lock:
+            if not self._awake or self._remote_session_end_requested:
+                return False
+            # Keep STT awake until AudioPipeline has delivered the final VAD
+            # sentence; otherwise the tail would be discarded by _on_sentence.
+            self._remote_session_end_requested = True
+        accepted = self._pipe.end_external_session()
+        if not accepted:
+            with self._awake_lock:
+                self._remote_session_end_requested = False
+            return False
+        print("[STT] 远程全双工通话结束")
+        return True
+
+    def _on_external_session_end(self):
+        """Close the remote STT gate after the final VAD sentence returns."""
+        with self._awake_lock:
+            self._awake = False
+            self._remote_session_end_requested = False
+            self._cancel_awake_timer_locked()
 
     def set_awake(self, value: bool):
         """外部控制唤醒状态。"""

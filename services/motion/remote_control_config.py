@@ -9,6 +9,7 @@ import yaml
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "core" / "config.yaml"
 DEFAULT_SERVO_STEP_SIZE = 40.0
 DEFAULT_UPDATE_RATE_HZ = 20
+DEFAULT_COMMAND_TIMEOUT_SEC = 0.3
 _UNSET = object()
 
 
@@ -37,6 +38,23 @@ def load_remote_control_config(config_path: Path | str = DEFAULT_CONFIG_PATH) ->
             remote.get("update_rate_hz"), 1, 100, DEFAULT_UPDATE_RATE_HZ
         ),
     }
+
+
+def load_command_timeout_sec(config_path: Path | str = DEFAULT_CONFIG_PATH) -> float:
+    """Load the motor watchdog timeout without changing the legacy config shape."""
+    try:
+        config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        config = {}
+    remote = config.get("remote_control", {}) if isinstance(config, dict) else {}
+    if not isinstance(remote, dict):
+        remote = {}
+    return _number_in_range(
+        remote.get("command_timeout_sec"),
+        0.1,
+        2.0,
+        DEFAULT_COMMAND_TIMEOUT_SEC,
+    )
 
 
 class RemoteControlConfigWatcher:

@@ -24,6 +24,8 @@ def launcher_args(
     mcp=False,
     no_mcp=False,
     save_voice_debug=False,
+    remote_control=False,
+    no_remote_control=False,
 ):
     return Namespace(
         voice_chat=False,
@@ -37,6 +39,8 @@ def launcher_args(
         mcp=mcp,
         no_mcp=no_mcp,
         save_voice_debug=save_voice_debug,
+        remote_control=remote_control,
+        no_remote_control=no_remote_control,
     )
 
 
@@ -169,6 +173,38 @@ class LaunchNodesTests(unittest.TestCase):
             web_entries[0].script,
             launch_nodes.ROOT / "services" / "integrations" / "web_server.py",
         )
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={"pipeline": {"mode": "keyboard"}, "webrtc_remote": {"enabled": True}},
+    )
+    def test_remote_gateway_follows_config_and_can_be_disabled(self, _load_config):
+        enabled = [entry.name for entry in launch_nodes.build_node_list(launcher_args())]
+        disabled = [
+            entry.name
+            for entry in launch_nodes.build_node_list(
+                launcher_args(no_remote_control=True)
+            )
+        ]
+
+        self.assertIn("remote_webrtc", enabled)
+        self.assertNotIn("remote_webrtc", disabled)
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "keyboard"}})
+    def test_remote_gateway_cli_flag_overrides_disabled_default(self, _load_config):
+        entries = launch_nodes.build_node_list(launcher_args(remote_control=True))
+        gateway = next(entry for entry in entries if entry.name == "remote_webrtc")
+        self.assertEqual(
+            gateway.script,
+            launch_nodes.ROOT / "nodes" / "remote_webrtc_gateway_node.py",
+        )
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "keyboard"}})
+    def test_no_remote_control_overrides_cli_enable(self, _load_config):
+        entries = launch_nodes.build_node_list(
+            launcher_args(remote_control=True, no_remote_control=True)
+        )
+        self.assertNotIn("remote_webrtc", [entry.name for entry in entries])
 
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_camera_capture_owner_always_starts_before_consumers(self, _load_config):

@@ -68,6 +68,13 @@ class AudioMixer:
     def end_speech(self, token="dialogue"):
         self.speech.parts.append(_End(token))
 
+    def stop_speech(self):
+        """Drop queued foreground speech without affecting the music lane."""
+        self.speech.parts.clear()
+        self.speech.active = False
+        self._pending_end = None
+        self._tail_frames = 0
+
     def play_music(self, samples):
         self.music.push(samples)
 

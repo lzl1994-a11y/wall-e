@@ -67,6 +67,19 @@ class AudioMixerTests(unittest.TestCase):
         audio, _ = mixer.render(20)
         np.testing.assert_allclose(audio, 5000 / 32768)
 
+    def test_stop_speech_drops_foreground_queue_but_keeps_music_lane(self):
+        mixer = AudioMixer(sample_rate=1000)
+        mixer.play_music(np.full(100, 2000, dtype=np.int16))
+        mixer.play(np.full(100, 10000, dtype=np.int16))
+        mixer.end_speech()
+        mixer.stop_speech()
+
+        audio, completed = mixer.render(20)
+
+        np.testing.assert_allclose(audio, 2000 / 32768)
+        self.assertEqual(completed, [])
+        self.assertTrue(mixer.music.active)
+
     def test_loud_mix_saturates_without_int16_wraparound(self):
         mixer = AudioMixer(sample_rate=1000)
         mixer.play_music(np.full(100, 32767, dtype=np.int16))

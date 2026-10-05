@@ -15,6 +15,10 @@ from std_msgs.msg import String, UInt8MultiArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio.audio_output import OUTPUT_SAMPLE_RATE
+from services.audio.audio_control_protocol import (
+    AUDIO_CONTROL_TOPIC,
+    decode_audio_control,
+)
 from services.audio.music_protocol import MUSIC_AUDIO_TOPIC
 from services.audio.mixing_playback_service import MixingPlaybackService
 from services.audio.esp32_network_prompt import (
@@ -72,6 +76,9 @@ class AudioPlaybackNode(Node):
             self._on_audio,
             QoSProfile(depth=128, reliability=ReliabilityPolicy.RELIABLE),
         )
+        self.create_subscription(
+            String, AUDIO_CONTROL_TOPIC, self._on_audio_control, 10
+        )
         self.create_subscription(UInt8MultiArray, MUSIC_AUDIO_TOPIC, self._on_music_audio, 10)
         self.create_subscription(String, WAKE_AUDIO_TOPIC, self._on_wake_audio, 10)
         self.create_subscription(String, SYSTEM_AUDIO_TOPIC, self._on_system_audio, 10)
@@ -100,6 +107,15 @@ class AudioPlaybackNode(Node):
         self._track_tts_sequence(msg)
         samples = np.frombuffer(bytes(msg.data), dtype=np.int16)
         self._player.play(samples)
+
+    def _on_audio_control(self, msg):
+        control = decode_audio_control(msg.data)
+        if control is None:
+            return
+        self._player.stop_speech()
+        self.get_logger().info(
+            f"前景音频已停止 (source={control['source']})"
+        )
 
     def _track_tts_sequence(self, msg):
         sequence = 0

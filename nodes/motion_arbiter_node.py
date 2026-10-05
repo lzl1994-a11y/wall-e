@@ -17,6 +17,7 @@ from services.motion.motion_arbiter import (
     MotionArbiter,
     STOP_COMMAND,
 )
+from services.motion.remote_control_config import load_command_timeout_sec
 from services.game.game_protocol import GAME_MODE_STATE_TOPIC, game_is_active
 
 
@@ -36,7 +37,9 @@ class MotionArbiterNode(Node):
             enable_rosout=False,
             start_parameter_services=False,
         )
-        self._arbiter = arbiter or MotionArbiter()
+        self._arbiter = arbiter or MotionArbiter(
+            timeout_sec=load_command_timeout_sec()
+        )
         publisher_events = PublisherEventCallbacks(use_default_callbacks=False)
         subscription_events = SubscriptionEventCallbacks(use_default_callbacks=False)
         self._publisher = self.create_publisher(

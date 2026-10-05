@@ -12,7 +12,11 @@ class VoiceChatCaptureGuardTests(unittest.TestCase):
         service._state_lock = threading.Lock()
         service._pipe = MagicMock()
         service._last_llm_activity = 0.0
+        service._cancel_llm = threading.Event()
+        service._remote_session_active = False
+        service._remote_session_end_requested = False
         service.on_llm_done = None
+        service.on_llm_timeout = None
         return service
 
     def test_output_playback_mutes_capture_until_completion(self):
@@ -66,6 +70,53 @@ class VoiceChatCaptureGuardTests(unittest.TestCase):
 
         self.assertFalse(service.complete_output_playback())
         service._pipe.resume.assert_not_called()
+
+    def test_remote_session_end_waits_for_audio_pipeline_tail(self):
+        service = self._service(_State.AWAKE)
+        service._remote_session_active = True
+        service._remote_session_end_requested = False
+        service._pipe.end_external_session.return_value = True
+
+        self.assertTrue(service.end_remote_session())
+        self.assertTrue(service._remote_session_active)
+        self.assertTrue(service._remote_session_end_requested)
+        self.assertEqual(service._state, _State.AWAKE)
+
+        service._on_external_session_end()
+
+        self.assertFalse(service._remote_session_active)
+        self.assertFalse(service._remote_session_end_requested)
+        self.assertEqual(service._state, _State.IDLE)
+
+    def test_remote_llm_timeout_keeps_the_call_audio_gate_alive(self):
+        service = self._service(_State.LLM_PENDING)
+        service._remote_session_active = True
+
+        service._on_timeout()
+
+        self.assertEqual(service._state, _State.AWAKE)
+        service._pipe.set_awake.assert_not_called()
+        service._pipe.resume.assert_not_called()
+
+    def test_stale_llm_completion_does_not_close_a_reopened_turn(self):
+        service = self._service(_State.AWAKE)
+        service.on_llm_done = MagicMock()
+
+        service._llm_done()
+
+        service.on_llm_done.assert_not_called()
+        self.assertEqual(service._state, _State.AWAKE)
+
+    def test_remote_speech_cancels_an_inflight_llm_turn(self):
+        service = self._service(_State.LLM_PENDING)
+        service._remote_session_active = True
+        service.on_remote_barge_in = MagicMock()
+
+        service._on_speech_start(b"initial")
+
+        self.assertEqual(service._state, _State.AWAKE)
+        self.assertTrue(service._cancel_llm.is_set())
+        service.on_remote_barge_in.assert_called_once_with()
 
 
 if __name__ == "__main__":

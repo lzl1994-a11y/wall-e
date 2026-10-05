@@ -18,6 +18,10 @@ from services.audio.audio_buffer import StreamingPCMPrebuffer
 from services.audio.audio_output import OUTPUT_SAMPLE_RATE
 from services.audio.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
 from services.audio.paced_pcm_output import PacedPCMOutput
+from services.audio.audio_control_protocol import (
+    AUDIO_CONTROL_TOPIC,
+    decode_audio_control,
+)
 from services.speech.tts_pipeline import OrderedTTSPipeline
 from services.speech.tts_protocol import decode_turn_end
 from services.speech.tts_service import TTSService
@@ -28,6 +32,9 @@ class TTSPlayNode(Node):
         super().__init__("tts_play_node")
 
         self.create_subscription(String, "tts_text", self._on_tts_text, 10)
+        self.create_subscription(
+            String, AUDIO_CONTROL_TOPIC, self._on_audio_control, 10
+        )
         self.audio_pub = self.create_publisher(
             UInt8MultiArray,
             "audio_output",
@@ -93,6 +100,7 @@ class TTSPlayNode(Node):
             prebuffer_ms=self.stream_prebuffer_ms,
         )
         self._stream_bytes = 0
+        self._accept_audio = True
         # ``audio_output`` carries raw PCM, so a sequence number in the
         # MultiArray metadata lets the receiver detect DDS/cache loss without
         # changing the PCM payload or the topic contract.
@@ -145,9 +153,25 @@ class TTSPlayNode(Node):
         if turn_id is not None:
             self._pipeline.submit_turn_end(turn_id)
             return
+        self._accept_audio = True
         self._pipeline.submit_speech(text)
 
+    def _on_audio_control(self, msg):
+        control = decode_audio_control(msg.data)
+        if control is None:
+            return
+        self._accept_audio = False
+        self._pipeline.cancel_pending()
+        self._pcm_output.interrupt()
+        self._stream_trimmer.reset()
+        self._stream_prebuffer.reset()
+        self.get_logger().info(
+            f"TTS 输出已打断 (source={control['source']})"
+        )
+
     def _publish_audio(self, samples, text, elapsed):
+        if not self._accept_audio:
+            return
         trim_log = ""
         if self.trim_boundary_silence:
             result = self._audio_trimmer.process(samples)
@@ -164,6 +188,8 @@ class TTSPlayNode(Node):
         )
 
     def _publish_stream_chunk(self, samples, text, elapsed, first_chunk):
+        if not self._accept_audio:
+            return
         if first_chunk:
             self._audio_trimmer.mark_segment()
             self._stream_trimmer.reset()
@@ -186,6 +212,8 @@ class TTSPlayNode(Node):
             )
 
     def _finish_stream_audio(self, text, elapsed):
+        if not self._accept_audio:
+            return
         if self.trim_boundary_silence:
             tail = self._stream_trimmer.finish()
             tail, playback_started = self._stream_prebuffer.push(tail)
@@ -227,12 +255,16 @@ class TTSPlayNode(Node):
         self._turn_audio_chunks += 1
 
     def _publish_turn_end(self, turn_id):
+        if not self._accept_audio:
+            return
         self._pcm_output.finish_turn(turn_id)
         self._audio_trimmer.reset()
         self._stream_trimmer.reset()
         self._stream_prebuffer.reset()
 
     def _publish_turn_end_marker(self, turn_id):
+        if not self._accept_audio:
+            return
         self.audio_pub.publish(UInt8MultiArray(data=[]))
         self.get_logger().info(
             f"TTS PCM diagnostics: turn={turn_id}, "

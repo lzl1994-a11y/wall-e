@@ -165,6 +165,32 @@ class OrderedTTSPipelineTests(unittest.TestCase):
         self.assertEqual(emitted[0][:2], ("error", "hello"))
         self.assertEqual(emitted[-1], ("end", "turn-timeout"))
 
+    def test_cancel_pending_invalidates_old_results_before_new_turn(self):
+        started = threading.Event()
+        release = threading.Event()
+        emitted = []
+
+        def synthesize(text):
+            if text == "old":
+                started.set()
+                release.wait(timeout=2.0)
+            return text
+
+        pipeline = OrderedTTSPipeline(
+            synthesize=synthesize,
+            on_audio=lambda samples, text, _elapsed: emitted.append((text, samples)),
+            on_turn_end=lambda _turn_id: None,
+            workers=2,
+        )
+        pipeline.submit_speech("old")
+        self.assertTrue(started.wait(timeout=1.0))
+        pipeline.cancel_pending()
+        pipeline.submit_speech("new")
+        release.set()
+        pipeline.shutdown()
+
+        self.assertEqual(emitted, [("new", "new")])
+
 
 if __name__ == "__main__":
     unittest.main()

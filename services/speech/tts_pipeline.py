@@ -32,6 +32,7 @@ class OrderedTTSPipeline:
         self._next_emit = 0
         self._closed = False
         self._turn_has_speech = False
+        self._generation = 0
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, int(workers)),
             thread_name_prefix="tts-synthesis",
@@ -49,6 +50,7 @@ class OrderedTTSPipeline:
                 raise RuntimeError("TTS pipeline is closed")
             sequence = self._next_submit
             self._next_submit += 1
+            generation = self._generation
             use_stream = (
                 not self._turn_has_speech
                 and self._synthesize_stream is not None
@@ -56,7 +58,7 @@ class OrderedTTSPipeline:
             )
             self._turn_has_speech = True
         task = self._synthesize_stream_task if use_stream else self._synthesize_task
-        self._executor.submit(task, sequence, text)
+        self._executor.submit(task, sequence, text, generation)
 
     def submit_turn_end(self, turn_id):
         with self._condition:
@@ -65,7 +67,20 @@ class OrderedTTSPipeline:
             sequence = self._next_submit
             self._next_submit += 1
             self._turn_has_speech = False
-        self._store_result(sequence, ("turn_end", turn_id, None, 0.0))
+            generation = self._generation
+        self._store_result(sequence, ("turn_end", turn_id, None, 0.0, generation))
+
+    def cancel_pending(self) -> None:
+        """Invalidate queued and in-flight output from the current TTS turn."""
+        with self._condition:
+            if self._closed:
+                return
+            self._generation += 1
+            self._results.clear()
+            # The emitter must not wait for results belonging to the old turn.
+            self._next_emit = self._next_submit
+            self._turn_has_speech = False
+            self._condition.notify_all()
 
     def shutdown(self):
         with self._condition:
@@ -85,28 +100,34 @@ class OrderedTTSPipeline:
             self._next_submit += 1
             return sequence
 
-    def _synthesize_task(self, sequence, text):
+    def _synthesize_task(self, sequence, text, generation):
         started = time.monotonic()
         try:
             samples = self._synthesize(text)
-            result = ("speech", text, samples, time.monotonic() - started)
+            result = ("speech", text, samples, time.monotonic() - started, generation)
         except Exception as exc:
-            result = ("error", text, exc, time.monotonic() - started)
+            result = ("error", text, exc, time.monotonic() - started, generation)
         self._store_result(sequence, result)
 
-    def _synthesize_stream_task(self, sequence, text):
+    def _synthesize_stream_task(self, sequence, text, generation):
         started = time.monotonic()
         try:
             stream = self._synthesize_stream(text)
-            result = ("stream", text, stream, started)
+            result = ("stream", text, stream, started, generation)
         except Exception as exc:
-            result = ("error", text, exc, time.monotonic() - started)
+            result = ("error", text, exc, time.monotonic() - started, generation)
         self._store_result(sequence, result)
 
     def _store_result(self, sequence, result):
         with self._condition:
+            if sequence < self._next_emit:
+                return
             self._results[sequence] = result
             self._condition.notify_all()
+
+    def _generation_is_current(self, generation):
+        with self._condition:
+            return generation == self._generation
 
     def _emit_worker(self):
         while True:
@@ -118,12 +139,18 @@ class OrderedTTSPipeline:
                 result = self._results.pop(self._next_emit)
                 self._next_emit += 1
 
-            item_type, value, payload, elapsed = result
+            if len(result) == 5:
+                item_type, value, payload, elapsed, generation = result
+            else:
+                item_type, value, payload, elapsed = result
+                generation = self._generation
             try:
+                if not self._generation_is_current(generation):
+                    continue
                 if item_type == "speech":
                     self._on_audio(payload, value, elapsed)
                 elif item_type == "stream":
-                    self._emit_stream(value, payload, elapsed)
+                    self._emit_stream(value, payload, elapsed, generation)
                 elif item_type == "turn_end":
                     self._on_turn_end(value)
                 elif self._on_error:
@@ -132,11 +159,13 @@ class OrderedTTSPipeline:
                 if self._on_error:
                     self._on_error(value, exc, elapsed)
 
-    def _emit_stream(self, text, stream, started):
+    def _emit_stream(self, text, stream, started, generation):
         emitted = False
         stream_error = None
         try:
             for samples in stream:
+                if not self._generation_is_current(generation):
+                    return
                 if samples is None or len(samples) == 0:
                     continue
                 first_chunk = not emitted
@@ -152,10 +181,10 @@ class OrderedTTSPipeline:
         except Exception as exc:
             stream_error = exc
         finally:
-            if emitted and self._on_stream_end:
+            if emitted and self._on_stream_end and self._generation_is_current(generation):
                 self._on_stream_end(text, time.monotonic() - started)
 
-        if stream_error is None:
+        if stream_error is None or not self._generation_is_current(generation):
             return
         # A timeout means the upstream network path is unhealthy. Repeating
         # the same request through full synthesis would block the turn again.
@@ -171,7 +200,8 @@ class OrderedTTSPipeline:
         fallback_started = time.monotonic()
         try:
             samples = self._synthesize(text)
-            self._on_audio(samples, text, time.monotonic() - fallback_started)
+            if self._generation_is_current(generation):
+                self._on_audio(samples, text, time.monotonic() - fallback_started)
         except Exception as fallback_error:
             if self._on_error:
                 self._on_error(

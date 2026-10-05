@@ -62,6 +62,17 @@ class PacedPCMOutput:
         if not self._stopped.is_set():
             self._queue.put(("turn_end", turn_id))
 
+    def interrupt(self) -> None:
+        """Discard queued PCM and reset the pacing clock for a barge-in."""
+        while True:
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                break
+        self._clock_started_at = None
+        self._frames_sent = 0
+
     def close(self) -> None:
         self._stopped.set()
         try:
