@@ -9,6 +9,7 @@ RTCDataChannel and media arrives/leaves as WebRTC tracks.
 from __future__ import annotations
 
 import asyncio
+from array import array
 import json
 import os
 import threading
@@ -775,8 +776,9 @@ class RemoteWebRtcGateway:
                     if samples.size == 0:
                         continue
                     message = UInt8MultiArray()
-                    message.data = list(
-                        samples.astype(np.int16, copy=False).tobytes()
+                    message.data = array(
+                        "B",
+                        samples.astype(np.int16, copy=False).tobytes(),
                     )
                     self._remote_audio_pub.publish(message)
             except (AttributeError, TypeError, ValueError) as exc:

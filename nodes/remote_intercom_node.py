@@ -9,6 +9,7 @@ gateway.
 
 from __future__ import annotations
 
+from array import array
 import sys
 from pathlib import Path
 
@@ -41,7 +42,7 @@ class RemoteIntercomNode(Node):
         if not pcm:
             return
         message = UInt8MultiArray()
-        message.data = list(pcm)
+        message.data = array("B", pcm)
         self._audio_pub.publish(message)
 
     def destroy_node(self):
