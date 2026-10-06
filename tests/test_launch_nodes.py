@@ -221,6 +221,15 @@ class LaunchNodesTests(unittest.TestCase):
         self.assertNotIn("stt", names)
         self.assertNotIn("llm", names)
 
+    def test_remote_gateway_uses_pyav_resampler_before_ndarray_conversion(self):
+        source = (
+            launch_nodes.ROOT / "nodes" / "remote_webrtc_gateway_node.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("AudioResampler(", source)
+        self.assertIn("converted.to_ndarray()", source)
+        self.assertNotIn('to_ndarray(format="s16")', source)
+
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_camera_capture_owner_always_starts_before_consumers(self, _load_config):
         entries = launch_nodes.build_node_list(launcher_args())

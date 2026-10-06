@@ -37,7 +37,7 @@ from aiortc import (
     VideoStreamTrack,
 )
 from aiortc.sdp import candidate_from_sdp
-from av import AudioFrame, VideoFrame
+from av import AudioFrame, AudioResampler, VideoFrame
 
 from services.action.action_command import ACTION_REQUEST_TOPIC, new_action_request_id
 from services.audio.audio_control_protocol import (
@@ -729,6 +729,11 @@ class RemoteWebRtcGateway:
         )
 
     async def _consume_remote_audio(self, track) -> None:
+        resampler = AudioResampler(
+            format="s16",
+            layout="mono",
+            rate=ROBOT_AUDIO_SAMPLE_RATE,
+        )
         while not self._stopping.is_set() and track.readyState == "live":
             try:
                 frame = await track.recv()
@@ -744,17 +749,15 @@ class RemoteWebRtcGateway:
             if not (self._remote_voice_active or self._remote_call_active):
                 continue
             try:
-                samples = frame.to_ndarray(format="s16")
-                if samples.ndim > 1:
-                    samples = np.mean(samples, axis=0)
-                samples = _resample_mono(
-                    samples,
-                    int(frame.sample_rate or 48_000),
-                    ROBOT_AUDIO_SAMPLE_RATE,
-                )
-                message = UInt8MultiArray()
-                message.data = list(samples.astype(np.int16).tobytes())
-                self._remote_audio_pub.publish(message)
+                for converted in resampler.resample(frame):
+                    samples = converted.to_ndarray().reshape(-1)
+                    if samples.size == 0:
+                        continue
+                    message = UInt8MultiArray()
+                    message.data = list(
+                        samples.astype(np.int16, copy=False).tobytes()
+                    )
+                    self._remote_audio_pub.publish(message)
             except (AttributeError, TypeError, ValueError) as exc:
                 self.node.get_logger().warning(f"远程音频帧解析失败: {exc}")
                 self._send_event({
