@@ -26,6 +26,7 @@ from services.motion.motor_control import mix_differential_drive
 from services.motion.motion_arbiter import MOTOR_JOYSTICK_TOPIC, STOP_COMMAND
 from services.motion.remote_control_config import RemoteControlConfigWatcher
 from services.motion.servo_motion_config import load_neck_kinematics
+from services.remote.realtime_control import ChangedTargetGate
 from services.game.game_protocol import (
     GAME_MODE_REQUEST_TOPIC,
     GAME_MODE_STATE_TOPIC,
@@ -74,6 +75,7 @@ class JoyControlNode(Node):
         self._scan_thread = None
         self._game_active = False
         self._was_moving = False
+        self._servo_gate = ChangedTargetGate(min_interval_sec=0.1)
         self._button_policy = JoystickButtonPolicy(hold_seconds=2.0)
 
         # 模拟轴归一化状态 (-1.0 到 1.0, 扳机为 0.0 到 1.0)
@@ -146,6 +148,7 @@ class JoyControlNode(Node):
                 if dev:
                     self.get_logger().info(f"手柄连接: {dev.name}")
                     self.device = dev
+                    self._servo_gate.reset()
                     self._send_action_cmd("set_tracking_mode", {"mode": "idle"})
                     self._run_control()
                     self.get_logger().info("手柄断开。")
@@ -244,7 +247,11 @@ class JoyControlNode(Node):
             self._neck_kinematics,
         )
 
-        # 发送 manual_servo
+        # Chassis commands are a high-rate dead-man heartbeat, but absolute
+        # servo targets are actions.  Reissuing an unchanged action every tick
+        # causes needless arbitration/cancellation churn and can starve media.
+        if not self._servo_gate.accept(targets, time.monotonic()):
+            return
         msg_s = String()
         msg_s.data = json.dumps({
             "name": "manual_servo", 
@@ -268,6 +275,8 @@ class JoyControlNode(Node):
 
     def _on_game_state(self, message):
         active = game_is_active(message.data)
+        if active != self._game_active:
+            self._servo_gate.reset()
         if active and not self._game_active:
             self._stop_motors()
             for axis in self._axes:

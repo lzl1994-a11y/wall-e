@@ -168,7 +168,7 @@ class JoyControlNodeContractTests(unittest.TestCase):
         # 2. Continuous motion on subsequent tick continues to publish every tick
         node._tick_loop()
         self.assertEqual(len(node.motor_pub.messages), 2)
-        self.assertEqual(len(node.action_pub.messages), 2)
+        self.assertEqual(len(node.action_pub.messages), 1)
         self.assertTrue(node._was_moving)
 
         # 3. Resetting axes stops motors once and clears moving flag
@@ -178,16 +178,16 @@ class JoyControlNodeContractTests(unittest.TestCase):
         node._tick_loop()
 
         self.assertEqual(len(node.motor_pub.messages), 3)
-        self.assertEqual(len(node.action_pub.messages), 3)
+        self.assertEqual(len(node.action_pub.messages), 1)
         stop_cmd = json.loads(node.motor_pub.messages[2].data)
         self.assertEqual(stop_cmd, module.STOP_COMMAND)
         self.assertFalse(node._was_moving)
 
-        # 4. Continuous idle does NOT repeat stop command, while manual_servo is still published
+        # 4. Continuous idle repeats neither stop nor an unchanged servo action.
         node._tick_loop()
 
         self.assertEqual(len(node.motor_pub.messages), 3)
-        self.assertEqual(len(node.action_pub.messages), 4)
+        self.assertEqual(len(node.action_pub.messages), 1)
         self.assertFalse(node._was_moving)
 
     def test_failed_stop_publish_keeps_moving_state_for_retry(self):
