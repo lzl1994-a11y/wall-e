@@ -150,14 +150,20 @@ class AudioPipeline:
     MAX_SPEECH_SEC = 15.0
     _EXTERNAL_SESSION_END = object()
 
-    def __init__(self, config_path: str = "core/config.yaml"):
+    def __init__(
+        self,
+        config_path: str = "core/config.yaml",
+        *,
+        raw_only: bool = False,
+    ):
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
-        self._ww = WakeWordDetector(config)
+        self._raw_only = bool(raw_only)
+        self._ww = WakeWordDetector({} if self._raw_only else config)
         self._config_path = config_path
         
-        self._vad_cfg = config.get("vad", {})
+        self._vad_cfg = {} if self._raw_only else config.get("vad", {})
         if not isinstance(self._vad_cfg, dict):
             self._vad_cfg = {}
         self._vad_backend = "none"
@@ -168,7 +174,8 @@ class AudioPipeline:
         self._silero_pending = np.empty(0, dtype=np.float32)
         self._silero_context = np.zeros(self.SILERO_CONTEXT_SIZE, dtype=np.float32)
         self._silero_last_prob = 0.0
-        self._init_vad()
+        if not self._raw_only:
+            self._init_vad()
             
         self._vad_lock = threading.Lock()
         self._vad_err_count = 0
@@ -224,11 +231,16 @@ class AudioPipeline:
             self._apm = WebRTCApm(self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db)
             self._apm.start(self.DEVICE_SAMPLE_RATE)
         self._apm_disable_scheduled = False
-        self._listen_thread = threading.Thread(target=self._run, daemon=True)
-        self._listen_thread.start()
+        if not self._raw_only:
+            self._listen_thread = threading.Thread(target=self._run, daemon=True)
+            self._listen_thread.start()
         self._device_thread = threading.Thread(target=self._device_monitor, daemon=True)
         self._device_thread.start()
-        print(f"[AudioPipeline] started (wake-word={'ON' if self._ww.enabled else 'OFF'})")
+        mode = "raw-only" if self._raw_only else "speech"
+        print(
+            f"[AudioPipeline] started (mode={mode}, "
+            f"wake-word={'ON' if self._ww.enabled else 'OFF'})"
+        )
 
     def stop(self):
         self._is_running = False
@@ -550,6 +562,8 @@ class AudioPipeline:
                 callback(pcm)
             except Exception as exc:
                 print(f"[AudioPipeline] on_raw_pcm 异常: {exc}")
+        if getattr(self, "_raw_only", False):
+            return
         try: self.audio_queue.put_nowait(pcm)
         except queue.Full: pass
 

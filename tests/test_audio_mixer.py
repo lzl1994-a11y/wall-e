@@ -87,6 +87,17 @@ class AudioMixerTests(unittest.TestCase):
         audio, _ = mixer.render(100)
         self.assertTrue(np.all(audio == 1.0))
 
+    def test_realtime_speech_drops_old_backlog(self):
+        mixer = AudioMixer(sample_rate=1000)
+        mixer.play_realtime(np.full(100, 1000, dtype=np.int16), 120)
+        mixer.play_realtime(np.full(100, 2000, dtype=np.int16), 120)
+
+        first, _ = mixer.render(20)
+        second, _ = mixer.render(100)
+
+        np.testing.assert_allclose(first, 1000 / 32768)
+        np.testing.assert_allclose(second, 2000 / 32768)
+
     def test_worker_uses_one_stream_and_distinct_wake_and_dialogue_acks(self):
         events = []
         with patch("services.audio.playback_service.threading.Thread"):

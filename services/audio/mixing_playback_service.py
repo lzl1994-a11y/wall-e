@@ -33,6 +33,14 @@ class MixingPlaybackService(PlaybackService):
         if samples is not None:
             self._submit("play", samples)
 
+    def play_realtime(self, samples, max_buffer_sec=0.12):
+        if samples is not None:
+            self._submit(
+                "play_realtime",
+                samples,
+                max(1, round(self.sample_rate * float(max_buffer_sec))),
+            )
+
     def mark_turn_end(self):
         self._submit("end_speech", "dialogue")
 

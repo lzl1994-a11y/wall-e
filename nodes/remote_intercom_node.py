@@ -30,7 +30,7 @@ class RemoteIntercomNode(Node):
             ROBOT_AUDIO_PCM_TOPIC,
             qos_profile_sensor_data,
         )
-        self._capture = AudioPipeline()
+        self._capture = AudioPipeline(raw_only=True)
         self._capture.on_raw_pcm = self._publish_audio
         self._capture.start()
         self.get_logger().info(

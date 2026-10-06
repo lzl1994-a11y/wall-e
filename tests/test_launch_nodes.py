@@ -221,6 +221,22 @@ class LaunchNodesTests(unittest.TestCase):
         self.assertNotIn("stt", names)
         self.assertNotIn("llm", names)
 
+    @patch(
+        "launch_nodes.load_config",
+        return_value={
+            "pipeline": {"mode": "intercom"},
+            "launch": {"tracking": True},
+        },
+    )
+    def test_intercom_mode_skips_background_tracking_unless_explicit(self, _load_config):
+        automatic = launch_nodes.build_node_list(launcher_args())
+        explicit = launch_nodes.build_node_list(launcher_args(tracking=True))
+
+        self.assertNotIn("hobot_vision", [entry.name for entry in automatic])
+        self.assertNotIn("tracking", [entry.name for entry in automatic])
+        self.assertIn("hobot_vision", [entry.name for entry in explicit])
+        self.assertIn("tracking", [entry.name for entry in explicit])
+
     def test_remote_gateway_uses_pyav_resampler_before_ndarray_conversion(self):
         source = (
             launch_nodes.ROOT / "nodes" / "remote_webrtc_gateway_node.py"

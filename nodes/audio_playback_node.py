@@ -137,7 +137,9 @@ class AudioPlaybackNode(Node):
     def _on_remote_audio(self, msg):
         if not msg.data:
             return
-        self._player.play(np.frombuffer(bytes(msg.data), dtype=np.int16))
+        self._player.play_realtime(
+            np.frombuffer(bytes(msg.data), dtype=np.int16)
+        )
 
     def _on_remote_intercom_state(self, msg):
         try:

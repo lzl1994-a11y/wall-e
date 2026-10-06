@@ -26,6 +26,25 @@ class _Lane:
         if audio.size:
             self.parts.append(audio.astype(np.float32) / 32768.0)
 
+    def trim_to(self, max_frames):
+        """Drop the oldest queued audio to keep a live stream near real time."""
+        limit = max(0, int(max_frames))
+        buffered = sum(
+            part.size for part in self.parts if not isinstance(part, _End)
+        )
+        excess = max(0, buffered - limit)
+        while self.parts and excess > 0:
+            part = self.parts[0]
+            if isinstance(part, _End):
+                self.parts.popleft()
+                continue
+            if part.size <= excess:
+                excess -= part.size
+                self.parts.popleft()
+            else:
+                self.parts[0] = part[excess:]
+                excess = 0
+
     def read(self, count):
         output = np.zeros(count, dtype=np.float32)
         offset = 0
@@ -64,6 +83,10 @@ class AudioMixer:
 
     def play(self, samples):
         self.speech.push(samples)
+
+    def play_realtime(self, samples, max_buffer_frames):
+        self.speech.push(samples)
+        self.speech.trim_to(max_buffer_frames)
 
     def end_speech(self, token="dialogue"):
         self.speech.parts.append(_End(token))

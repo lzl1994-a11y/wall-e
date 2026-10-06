@@ -266,7 +266,10 @@ def build_node_list(args):
         nodes.append(NodeEntry("keyboard_stt", ROOT / "nodes" / "keyboard_stt_node.py"))
 
     # tracking: CLI --tracking 覆盖 config
-    if args.tracking or launch_cfg.get("tracking", False):
+    tracking_enabled = args.tracking or (
+        launch_cfg.get("tracking", False) and pipeline != "intercom"
+    )
+    if tracking_enabled:
         nodes.append(NodeEntry("hobot_vision", ROOT / "nodes" / "hobot_vision_node.py"))
         nodes.append(
             NodeEntry(

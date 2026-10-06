@@ -74,7 +74,9 @@ ROBOT_MIC_SAMPLE_RATE = 16_000
 ROBOT_AUDIO_SAMPLE_RATE = 48_000
 ROBOT_AUDIO_FRAME_SAMPLES = 960
 VIDEO_CLOCK_RATE = 90_000
-VIDEO_FPS = 15
+VIDEO_FPS = 10
+VIDEO_WIDTH = 480
+VIDEO_HEIGHT = 360
 
 
 def _safe_signaling_url(url: str) -> str:
@@ -178,12 +180,22 @@ class CameraVideoTrack(VideoStreamTrack):
         try:
             if jpeg:
                 with Image.open(BytesIO(jpeg)) as image:
-                    frame = VideoFrame.from_image(image.convert("RGB"))
+                    rgb = image.convert("RGB")
+                    if rgb.size != (VIDEO_WIDTH, VIDEO_HEIGHT):
+                        rgb = rgb.resize(
+                            (VIDEO_WIDTH, VIDEO_HEIGHT),
+                            Image.Resampling.BILINEAR,
+                        )
+                    frame = VideoFrame.from_image(rgb)
             else:
-                frame = VideoFrame.from_image(Image.new("RGB", (640, 480), (4, 15, 19)))
+                frame = VideoFrame.from_image(
+                    Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (4, 15, 19))
+                )
         except (OSError, ValueError) as exc:
             self._gateway.report_camera_error(exc)
-            frame = VideoFrame.from_image(Image.new("RGB", (640, 480), (4, 15, 19)))
+            frame = VideoFrame.from_image(
+                Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (4, 15, 19))
+            )
         frame.pts = pts
         frame.time_base = time_base
         return frame
@@ -197,6 +209,7 @@ class RobotAudioTrack(AudioStreamTrack):
         self._buffer = bytearray()
         self._lock = threading.Lock()
         self._pts = 0
+        self._next_frame_at = time.monotonic()
 
     def push(self, pcm: bytes, sample_rate: int = ROBOT_AUDIO_SAMPLE_RATE) -> None:
         if not pcm:
@@ -208,14 +221,22 @@ class RobotAudioTrack(AudioStreamTrack):
         samples = _resample_mono(samples, sample_rate, ROBOT_AUDIO_SAMPLE_RATE)
         with self._lock:
             self._buffer.extend(samples.tobytes())
-            max_bytes = ROBOT_AUDIO_SAMPLE_RATE * 2
+            max_bytes = int(ROBOT_AUDIO_SAMPLE_RATE * 2 * 0.2)
             if len(self._buffer) > max_bytes:
                 del self._buffer[:-max_bytes]
 
     async def recv(self):
-        await asyncio.sleep(ROBOT_AUDIO_FRAME_SAMPLES / ROBOT_AUDIO_SAMPLE_RATE)
+        frame_duration = ROBOT_AUDIO_FRAME_SAMPLES / ROBOT_AUDIO_SAMPLE_RATE
+        now = time.monotonic()
+        if self._next_frame_at > now:
+            await asyncio.sleep(self._next_frame_at - now)
+        elif now - self._next_frame_at > frame_duration * 2:
+            self._next_frame_at = now
+        self._next_frame_at += frame_duration
         needed = ROBOT_AUDIO_FRAME_SAMPLES * 2
         with self._lock:
+            if len(self._buffer) > needed * 4:
+                del self._buffer[: len(self._buffer) - needed * 2]
             payload = bytes(self._buffer[:needed])
             del self._buffer[:len(payload)]
         payload = payload.ljust(needed, b"\x00")
