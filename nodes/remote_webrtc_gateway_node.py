@@ -59,6 +59,7 @@ from services.remote.remote_protocol import (
     decode_remote_message,
     encode_voice_state,
 )
+from services.remote.realtime_control import ChangedTargetGate
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
@@ -287,6 +288,7 @@ class RemoteWebRtcGateway:
         self._frame_lock = threading.Lock()
         self._camera_error_reported = False
         self._last_sequence = -1
+        self._servo_gate = ChangedTargetGate(min_interval_sec=0.1)
         self._remote_voice_active = False
         self._remote_call_active = False
         self._camera_client_id = f"webrtc:{robot_id}"[:96]
@@ -296,7 +298,7 @@ class RemoteWebRtcGateway:
         self._motor_pub = node.create_publisher(String, MOTOR_REMOTE_TOPIC, 10)
         self._action_pub = node.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
         self._remote_audio_pub = node.create_publisher(
-            UInt8MultiArray, REMOTE_AUDIO_PLAYBACK_TOPIC, 10
+            UInt8MultiArray, REMOTE_AUDIO_PLAYBACK_TOPIC, qos_profile_sensor_data
         )
         self._intercom_state_pub = node.create_publisher(
             String, REMOTE_INTERCOM_STATE_TOPIC, 10
@@ -675,6 +677,8 @@ class RemoteWebRtcGateway:
         pitch = float(vector["pitch"])
         targets = {"head_yaw": int(5000 - yaw * 2600)}
         targets.update(self._neck_kinematics.targets(-pitch))
+        if not self._servo_gate.accept(targets, time.monotonic()):
+            return
         self._action_pub.publish(String(data=json.dumps({
             "name": "manual_servo",
             "arguments": {
@@ -854,6 +858,7 @@ class RemoteWebRtcGateway:
         self._video_track = None
         self._audio_track = None
         self._last_sequence = -1
+        self._servo_gate.reset()
         self._stop_robot_outputs()
         if peer is not None:
             await peer.close()

@@ -85,7 +85,7 @@ class AudioPlaybackNode(Node):
             UInt8MultiArray,
             REMOTE_AUDIO_PLAYBACK_TOPIC,
             self._on_remote_audio,
-            QoSProfile(depth=128, reliability=ReliabilityPolicy.RELIABLE),
+            QoSProfile(depth=4, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
         self.create_subscription(
             String,
