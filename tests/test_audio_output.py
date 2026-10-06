@@ -27,6 +27,20 @@ class AudioSampleRateContractTests(unittest.TestCase):
     def test_input_pipeline_remains_16khz(self):
         self.assertEqual(AudioPipeline.SAMPLE_RATE, 16000)
 
+    def test_raw_capture_callback_receives_post_apm_pcm_without_vad_gate(self):
+        pipeline = AudioPipeline.__new__(AudioPipeline)
+        pipeline._is_running = True
+        pipeline._is_paused = False
+        pipeline.audio_queue = queue.Queue()
+        emitted = []
+        pipeline.on_raw_pcm = emitted.append
+
+        pcm = b"raw-pcm"
+        pipeline._queue_processed_pcm(pcm)
+
+        self.assertEqual(emitted, [pcm])
+        self.assertEqual(pipeline.audio_queue.get_nowait(), pcm)
+
     def test_paused_pipeline_keeps_wake_model_loaded_but_idle(self):
         pipeline = AudioPipeline.__new__(AudioPipeline)
         pipeline._ww = MagicMock(enabled=True)

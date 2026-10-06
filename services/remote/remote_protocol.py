@@ -7,8 +7,14 @@ import math
 from typing import Any
 
 
+# Legacy remote-ASR topics are kept for the local voice pipelines. The WebRTC
+# intercom uses dedicated topics so live audio cannot accidentally be fed into
+# ASR/LLM or echoed back through the browser track.
 REMOTE_AUDIO_PCM_TOPIC = "/remote_audio_pcm"
 REMOTE_VOICE_STATE_TOPIC = "/remote_voice_state"
+ROBOT_AUDIO_PCM_TOPIC = "/robot_audio_pcm"
+REMOTE_AUDIO_PLAYBACK_TOPIC = "/remote_audio_playback"
+REMOTE_INTERCOM_STATE_TOPIC = "/remote_intercom_state"
 REMOTE_SOURCE = "remote"
 REMOTE_SAFETY_SOURCE = "remote_safety"
 MAX_REMOTE_MESSAGE_BYTES = 64 * 1024

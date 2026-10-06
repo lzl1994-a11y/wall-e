@@ -6,6 +6,7 @@ Usage:
     pipe = AudioPipeline(config_path)
     pipe.on_speech_start = lambda initial_pcm: ...
     pipe.on_speech_audio = lambda pcm_frame: ...
+    pipe.on_raw_pcm = lambda pcm_frame: ...
     pipe.on_sentence = lambda pcm_frames: ...
     pipe.on_wake_word = lambda: ...
     pipe.start()
@@ -210,6 +211,7 @@ class AudioPipeline:
         self.on_sentence = None       # Callable[[bytes], None]
         self.on_speech_start = None   # Callable[[bytes], None]
         self.on_speech_audio = None   # Callable[[bytes], None]
+        self.on_raw_pcm = None        # Callable[[bytes], None] — post-APM capture
         self.on_speech_cancel = None  # Callable[[], None]
         self.on_wake_word = None      # Callable[[], None]
         self.on_external_session_end = None  # Callable[[], None]
@@ -542,6 +544,12 @@ class AudioPipeline:
 
     def _queue_processed_pcm(self, pcm: bytes):
         if not self._is_running or self._is_paused: return
+        callback = getattr(self, "on_raw_pcm", None)
+        if callback:
+            try:
+                callback(pcm)
+            except Exception as exc:
+                print(f"[AudioPipeline] on_raw_pcm 异常: {exc}")
         try: self.audio_queue.put_nowait(pcm)
         except queue.Full: pass
 

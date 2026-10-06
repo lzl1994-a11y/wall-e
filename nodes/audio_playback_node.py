@@ -4,6 +4,7 @@
 只负责 ROS I/O。播放与降音逻辑在 services/audio/mixing_playback_service.py。
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -34,6 +35,10 @@ from services.audio.wake_audio_protocol import (
     WAKE_AUDIO_DONE_TOPIC,
     WAKE_AUDIO_TOPIC,
     decode_wake_audio,
+)
+from services.remote.remote_protocol import (
+    REMOTE_AUDIO_PLAYBACK_TOPIC,
+    REMOTE_INTERCOM_STATE_TOPIC,
 )
 
 
@@ -77,6 +82,18 @@ class AudioPlaybackNode(Node):
             QoSProfile(depth=128, reliability=ReliabilityPolicy.RELIABLE),
         )
         self.create_subscription(
+            UInt8MultiArray,
+            REMOTE_AUDIO_PLAYBACK_TOPIC,
+            self._on_remote_audio,
+            QoSProfile(depth=128, reliability=ReliabilityPolicy.RELIABLE),
+        )
+        self.create_subscription(
+            String,
+            REMOTE_INTERCOM_STATE_TOPIC,
+            self._on_remote_intercom_state,
+            10,
+        )
+        self.create_subscription(
             String, AUDIO_CONTROL_TOPIC, self._on_audio_control, 10
         )
         self.create_subscription(UInt8MultiArray, MUSIC_AUDIO_TOPIC, self._on_music_audio, 10)
@@ -116,6 +133,20 @@ class AudioPlaybackNode(Node):
         self.get_logger().info(
             f"前景音频已停止 (source={control['source']})"
         )
+
+    def _on_remote_audio(self, msg):
+        if not msg.data:
+            return
+        self._player.play(np.frombuffer(bytes(msg.data), dtype=np.int16))
+
+    def _on_remote_intercom_state(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except (TypeError, json.JSONDecodeError):
+            return
+        if isinstance(payload, dict) and payload.get("state") in {"stop", "end"}:
+            self._player.stop_speech()
+            self.get_logger().info("实时对讲接收已停止")
 
     def _track_tts_sequence(self, msg):
         sequence = 0

@@ -372,6 +372,7 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 #### 启动参数选项 (`launch_nodes.py`)
 - `--tracking`：开启视觉追踪节点（监听地平线 BPU 输出）。
 - `--voice-chat`：使用大模型端到端语音交互（Qwen-Omni）。
+- `--remote-intercom`：启动无 AI、无录音的 WebRTC 实时对讲采集链路。
 - `--real-stt`：启动 `ASR → LLM → TTS` 链路，实际 ASR 引擎由 `core/config.yaml` 或 Web 页面中的 `asr.mode`、`provider` / `engine` 决定。
 - `--keyboard-stt`：使用键盘输入文字模拟语音识别（调试用）。
 - `--no-serial`：不启动屏幕/下位机串口节点；板载 I²C 后端仍可运行。
@@ -383,11 +384,11 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 ### 手机 WebRTC 遥控
 
 手机端项目位于相邻的 `wall-e-remote` 目录。机器人端网关只负责把已建立的
-WebRTC 视频、双向音频和 DataChannel 数据接入现有 ROS 总线：摄像头使用
+WebRTC 视频、双向实时 PCM 音频和 DataChannel 数据接入现有 ROS 总线：摄像头使用
 `/camera_frame` 租约，底盘使用独立的 `/motor_cmd/remote`（实体手柄仍保持更高
-优先级），动作使用 `/action_request`。连续通话由机器人现有 VAD 自动切分语句，
-用户开口时会通过 `/audio_playback_control` 打断本地 TTS；断线、急停或控制消息
-异常会立即进入安全状态。
+优先级），动作使用 `/action_request`。实时对讲不经过 ASR、LLM 或 TTS，按住控制端
+按钮时的上行音频直接播放到瓦力扬声器，瓦力麦克风也实时回传到控制端；音频只在
+内存缓冲中传输，不保存对话记录。断线、急停或控制消息异常会立即进入安全状态。
 
 默认配置是关闭远程网关；部署时在未跟踪的 `core/config.yaml` 中设置：
 
@@ -415,7 +416,7 @@ remote_control:
 启动方式：
 
 ```bash
-python launch_nodes.py --remote-control --voice-chat
+python launch_nodes.py --remote-control --remote-intercom
 ```
 
 公网连接还必须给手机端配置可访问的 STUN/TURN ICE server；signaling 只交换 SDP/ICE，

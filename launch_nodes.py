@@ -158,7 +158,9 @@ def build_node_list(args):
     ros2_action_setup = ROOT / "install" / "setup.bash"
 
     # pipeline mode: CLI 优先 → config → keyboard
-    if args.voice_chat:
+    if getattr(args, "remote_intercom", False):
+        pipeline = "intercom"
+    elif args.voice_chat:
         pipeline = "multimodal"
     elif args.real_stt:
         pipeline = "asr_llm"
@@ -188,12 +190,13 @@ def build_node_list(args):
             "config_web", ROOT / "services" / "integrations" / "web_server.py"
         ))
 
-    nodes.append(NodeEntry(
-        "llm",
-        ROOT / "nodes" / "llm_ros_node.py",
-        environment=voice_debug_env,
-        environment_setup=ros2_action_setup,
-    ))
+    if pipeline != "intercom":
+        nodes.append(NodeEntry(
+            "llm",
+            ROOT / "nodes" / "llm_ros_node.py",
+            environment=voice_debug_env,
+            environment_setup=ros2_action_setup,
+        ))
 
     # 音频播放管线（始终启动）
     nodes.append(NodeEntry("tts_play", ROOT / "nodes" / "tts_play_node.py"))
@@ -240,7 +243,12 @@ def build_node_list(args):
             ROOT / "nodes" / "remote_webrtc_gateway_node.py",
         ))
 
-    if pipeline == "multimodal":
+    if pipeline == "intercom":
+        nodes.append(NodeEntry(
+            "remote_intercom",
+            ROOT / "nodes" / "remote_intercom_node.py",
+        ))
+    elif pipeline == "multimodal":
         nodes.append(NodeEntry(
             "voice_chat",
             ROOT / "nodes" / "voice_chat_ros_node.py",
@@ -453,6 +461,11 @@ def main():
         "--voice-chat",
         action="store_true",
         help="Use Qwen-Omni audio→LLM pipeline (replaces stt+llm).",
+    )
+    parser.add_argument(
+        "--remote-intercom",
+        action="store_true",
+        help="Use raw WebRTC microphone/speaker audio without ASR, LLM, or recording.",
     )
     parser.add_argument(
         "--real-stt",

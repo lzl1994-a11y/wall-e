@@ -25,10 +25,12 @@ def launcher_args(
     no_mcp=False,
     save_voice_debug=False,
     remote_control=False,
+    remote_intercom=False,
     no_remote_control=False,
 ):
     return Namespace(
         voice_chat=False,
+        remote_intercom=remote_intercom,
         real_stt=False,
         keyboard_stt=keyboard_stt,
         no_serial=no_serial,
@@ -205,6 +207,19 @@ class LaunchNodesTests(unittest.TestCase):
             launcher_args(remote_control=True, no_remote_control=True)
         )
         self.assertNotIn("remote_webrtc", [entry.name for entry in entries])
+
+    @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "keyboard"}})
+    def test_remote_intercom_starts_raw_audio_without_llm(self, _load_config):
+        entries = launch_nodes.build_node_list(
+            launcher_args(remote_control=True, remote_intercom=True)
+        )
+        names = [entry.name for entry in entries]
+
+        self.assertIn("remote_webrtc", names)
+        self.assertIn("remote_intercom", names)
+        self.assertNotIn("voice_chat", names)
+        self.assertNotIn("stt", names)
+        self.assertNotIn("llm", names)
 
     @patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "asr_llm"}})
     def test_camera_capture_owner_always_starts_before_consumers(self, _load_config):

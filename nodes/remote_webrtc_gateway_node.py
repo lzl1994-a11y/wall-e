@@ -48,10 +48,11 @@ from services.motion.motor_control import mix_differential_drive
 from services.motion.motion_arbiter import MOTOR_REMOTE_TOPIC, STOP_COMMAND
 from services.motion.servo_motion_config import load_neck_kinematics
 from services.remote.remote_protocol import (
-    REMOTE_AUDIO_PCM_TOPIC,
+    REMOTE_AUDIO_PLAYBACK_TOPIC,
+    REMOTE_INTERCOM_STATE_TOPIC,
     REMOTE_SAFETY_SOURCE,
     REMOTE_SOURCE,
-    REMOTE_VOICE_STATE_TOPIC,
+    ROBOT_AUDIO_PCM_TOPIC,
     action_request_for,
     encode_call_state,
     decode_remote_message,
@@ -69,7 +70,7 @@ SIGNALING_RECONNECT_DELAY_SEC = 1.0
 SIGNALING_RECONNECT_MAX_SEC = 30.0
 CAMERA_LEASE_SEC = 15.0
 CAMERA_RENEW_SEC = 5.0
-REMOTE_AUDIO_SAMPLE_RATE = 16_000
+ROBOT_MIC_SAMPLE_RATE = 16_000
 ROBOT_AUDIO_SAMPLE_RATE = 48_000
 ROBOT_AUDIO_FRAME_SAMPLES = 960
 VIDEO_CLOCK_RATE = 90_000
@@ -197,11 +198,16 @@ class RobotAudioTrack(AudioStreamTrack):
         self._lock = threading.Lock()
         self._pts = 0
 
-    def push(self, pcm: bytes) -> None:
+    def push(self, pcm: bytes, sample_rate: int = ROBOT_AUDIO_SAMPLE_RATE) -> None:
         if not pcm:
             return
+        raw = pcm[: len(pcm) - len(pcm) % 2]
+        if not raw:
+            return
+        samples = np.frombuffer(raw, dtype=np.int16)
+        samples = _resample_mono(samples, sample_rate, ROBOT_AUDIO_SAMPLE_RATE)
         with self._lock:
-            self._buffer.extend(pcm)
+            self._buffer.extend(samples.tobytes())
             max_bytes = ROBOT_AUDIO_SAMPLE_RATE * 2
             if len(self._buffer) > max_bytes:
                 del self._buffer[:-max_bytes]
@@ -267,8 +273,12 @@ class RemoteWebRtcGateway:
         self._camera_command_pub = node.create_publisher(String, CAMERA_COMMAND_TOPIC, 10)
         self._motor_pub = node.create_publisher(String, MOTOR_REMOTE_TOPIC, 10)
         self._action_pub = node.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
-        self._remote_audio_pub = node.create_publisher(UInt8MultiArray, REMOTE_AUDIO_PCM_TOPIC, 10)
-        self._voice_state_pub = node.create_publisher(String, REMOTE_VOICE_STATE_TOPIC, 10)
+        self._remote_audio_pub = node.create_publisher(
+            UInt8MultiArray, REMOTE_AUDIO_PLAYBACK_TOPIC, 10
+        )
+        self._intercom_state_pub = node.create_publisher(
+            String, REMOTE_INTERCOM_STATE_TOPIC, 10
+        )
         self._audio_control_pub = node.create_publisher(String, AUDIO_CONTROL_TOPIC, 10)
         self._camera_sub = node.create_subscription(
             CompressedImage,
@@ -287,6 +297,12 @@ class RemoteWebRtcGateway:
             "audio_output",
             self._on_audio_output,
             10,
+        )
+        self._robot_audio_sub = node.create_subscription(
+            UInt8MultiArray,
+            ROBOT_AUDIO_PCM_TOPIC,
+            self._on_robot_audio,
+            qos_profile_sensor_data,
         )
         self._dialog_sub = node.create_subscription(
             String,
@@ -371,6 +387,14 @@ class RemoteWebRtcGateway:
         track = self._audio_track
         if track is not None:
             track.push(bytes(message.data or b""))
+
+    def _on_robot_audio(self, message: UInt8MultiArray) -> None:
+        track = self._audio_track
+        if track is not None:
+            track.push(
+                bytes(message.data or b""),
+                sample_rate=ROBOT_MIC_SAMPLE_RATE,
+            )
 
     def _on_dialog(self, message: String) -> None:
         try:
@@ -684,7 +708,12 @@ class RemoteWebRtcGateway:
         if active == self._remote_voice_active:
             return
         self._remote_voice_active = active
-        self._voice_state_pub.publish(String(data=encode_voice_state("start" if active else "stop")))
+        self._intercom_state_pub.publish(
+            String(data=encode_voice_state("start" if active else "stop"))
+        )
+        self.node.get_logger().info(
+            f"远程控制端上行语音{'开始' if active else '停止'}"
+        )
 
     def _set_remote_call(self, active: bool) -> None:
         if active == self._remote_call_active:
@@ -692,7 +721,7 @@ class RemoteWebRtcGateway:
         self._remote_call_active = active
         if not active:
             self._publish_audio_control("remote_call_end")
-        self._voice_state_pub.publish(
+        self._intercom_state_pub.publish(
             String(data=encode_call_state("start" if active else "end"))
         )
         self.node.get_logger().info(
@@ -721,7 +750,7 @@ class RemoteWebRtcGateway:
                 samples = _resample_mono(
                     samples,
                     int(frame.sample_rate or 48_000),
-                    REMOTE_AUDIO_SAMPLE_RATE,
+                    ROBOT_AUDIO_SAMPLE_RATE,
                 )
                 message = UInt8MultiArray()
                 message.data = list(samples.astype(np.int16).tobytes())
