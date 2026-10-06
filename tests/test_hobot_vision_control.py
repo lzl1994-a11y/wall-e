@@ -126,6 +126,7 @@ class VisionPipelineControlTests(unittest.TestCase):
         self.assertNotIn("ros2 run websocket", pipeline_script)
         self.assertNotIn("/image_padded_jpeg", pipeline_script)
         self.assertIn("ros_img_topic_name:=/image_padded_nv12", pipeline_script)
+        self.assertIn("flip_vertical:=false -p flip_horizontal:=true", pipeline_script)
 
     def test_padder_uses_sensor_qos_input_and_reliable_model_output(self):
         source = (

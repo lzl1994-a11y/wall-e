@@ -151,12 +151,19 @@ class TftProtocolTests(unittest.TestCase):
         self.assertEqual(decoded.shape[:2], (180, 240))
         self.assertEqual(_sof_marker(jpeg), 0xC0)
 
-    def test_tft_jpeg_is_rotated_180_degrees(self):
-        jpeg = prepare_tft_jpeg(_source_jpeg(640, 480), quality=100)
+    def test_tft_jpeg_keeps_panel_orientation_after_shared_vertical_flip(self):
+        source = cv2.imdecode(
+            np.frombuffer(_source_jpeg(640, 480), np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        normalized = cv2.flip(source, 0)
+        ok, encoded = cv2.imencode(".jpg", normalized, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+        self.assertTrue(ok)
+        jpeg = prepare_tft_jpeg(encoded.tobytes(), quality=100)
 
         decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-        # Source image is red on the left and green on the right. After the
-        # TFT-only 180-degree rotation, their horizontal positions swap.
+        # The shared vertical flip plus the TFT's remaining horizontal flip
+        # preserves the panel's previous effective 180-degree orientation.
         self.assertGreater(int(decoded[90, 30, 1]), int(decoded[90, 30, 2]))
         self.assertGreater(int(decoded[90, 210, 2]), int(decoded[90, 210, 1]))
 

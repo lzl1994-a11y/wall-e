@@ -216,8 +216,15 @@ def jpeg_from_ros_image(
     *,
     quality: int = 85,
     validate_decode: bool = True,
+    flip_vertical: bool = False,
 ) -> bytes | None:
-    """Convert an Image or CompressedImage payload to JPEG bytes."""
+    """Convert an Image or CompressedImage payload to JPEG bytes.
+
+    ``flip_vertical`` mirrors the image top-to-bottom while preserving the
+    left-to-right direction.  The option is intentionally opt-in so callers
+    consuming the already-normalized ``/camera_frame`` stream do not apply
+    the transform twice.
+    """
     encoding = str(getattr(message, "encoding", "")).lower()
     image_format = str(getattr(message, "format", "")).lower()
     raw = bytes(getattr(message, "data", b""))
@@ -237,7 +244,7 @@ def jpeg_from_ros_image(
         if eoi < 2:
             return None
         jpeg = raw[:eoi + 2]
-        if not validate_decode:
+        if not validate_decode and not flip_vertical:
             return jpeg
         try:
             import cv2
@@ -253,6 +260,14 @@ def jpeg_from_ros_image(
             return None
         if decoded is None or decoded.size == 0:
             return None
+        if flip_vertical:
+            decoded = cv2.flip(decoded, 0)
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                decoded,
+                [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)],
+            )
+            return encoded.tobytes() if ok else None
         return jpeg
 
     try:
@@ -272,5 +287,7 @@ def jpeg_from_ros_image(
         image = image[:, :, 0]
     elif encoding.startswith("rgb"):
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if flip_vertical:
+        image = cv2.flip(image, 0)
     ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
     return encoded.tobytes() if ok else None

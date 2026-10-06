@@ -59,6 +59,32 @@ class CameraCaptureProtocolTests(unittest.TestCase):
     def test_jpeg_ros_image_is_forwarded_without_opening_a_device(self):
         self.assertEqual(jpeg_from_ros_image(_JpegImage()), _JpegImage.data)
 
+    def test_jpeg_ros_image_can_flip_top_to_bottom_without_mirroring_left_to_right(self):
+        import cv2
+        import numpy as np
+
+        source = np.zeros((80, 120, 3), dtype=np.uint8)
+        source[:40, :60] = (0, 0, 255)  # red, top-left
+        source[:40, 60:] = (0, 255, 0)  # green, top-right
+        source[40:, :60] = (255, 0, 0)  # blue, bottom-left
+        source[40:, 60:] = (255, 255, 255)  # white, bottom-right
+        ok, encoded = cv2.imencode(".jpg", source, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+        self.assertTrue(ok)
+        message = type("Image", (), {
+            "encoding": "jpeg",
+            "data": encoded.tobytes(),
+        })()
+
+        flipped = jpeg_from_ros_image(message, flip_vertical=True)
+        decoded = cv2.imdecode(np.frombuffer(flipped, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+        # Vertical flip moves bottom-left to top-left and bottom-right to
+        # top-right; the left/right positions must not exchange.
+        self.assertGreater(float(decoded[10:30, 15:45, 0].mean()), float(decoded[10:30, 15:45, 2].mean()))
+        self.assertGreater(float(decoded[10:30, 75:105].mean()), 180.0)
+        self.assertGreater(float(decoded[50:70, 15:45, 2].mean()), float(decoded[50:70, 15:45, 0].mean()))
+        self.assertGreater(float(decoded[50:70, 75:105, 1].mean()), float(decoded[50:70, 75:105, 0].mean()))
+
     def test_incomplete_or_mislabeled_jpeg_is_rejected(self):
         incomplete = type("Image", (), {
             "encoding": "jpeg",

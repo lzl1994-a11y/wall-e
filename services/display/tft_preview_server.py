@@ -194,7 +194,7 @@ class PersistentTftStream:
 
 
 def prepare_tft_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
-    """Rotate for the chest panel, then fit within 240x240 without padding."""
+    """Orient for the chest panel, then fit within 240x240 without padding."""
     try:
         import cv2
         import numpy as np
@@ -210,10 +210,10 @@ def prepare_tft_jpeg(jpeg: bytes, *, quality: int = 70) -> bytes | None:
         return None
     if image is None or image.size == 0:
         return None
-    # The chest TFT is mounted upside down. Rotate only its outgoing preview:
-    # ``result.last_frame`` remains the original camera JPEG for photos and
-    # model recognition.
-    image = cv2.rotate(image, cv2.ROTATE_180)
+    # camera_capture_node already flips the shared camera image vertically.
+    # The chest TFT is mounted upside down, so its outgoing preview keeps the
+    # remaining horizontal correction. ``result.last_frame`` is unaffected.
+    image = cv2.flip(image, 1)
     height, width = image.shape[:2]
     scale = min(240.0 / width, 240.0 / height)
     target_width = min(240, max(1, int(width * scale + 0.5)))

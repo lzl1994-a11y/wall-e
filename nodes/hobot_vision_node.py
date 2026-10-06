@@ -130,7 +130,9 @@ def _start_pipeline(padder_bin: Path | None = None):
     pipeline_script = (
         "source /opt/tros/humble/setup.bash && { "
         f"ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:={CAMERA_FRAME_TOPIC} -p pub_topic:=/image_nv12 & "
-        f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=true -p flip_horizontal:=true & "
+        # camera_capture_node already normalizes the shared JPEG stream
+        # vertically; keep the detector's existing horizontal correction only.
+        f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=false -p flip_horizontal:=true & "
         # The padded image already matches the model's 960x544 coordinate
         # space. Publish final detections directly instead of passing every AI
         # message through a no-op Python scaler and another DDS boundary.

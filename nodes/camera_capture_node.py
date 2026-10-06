@@ -119,7 +119,13 @@ class CameraCaptureNode(Node):
             or now - self._last_decode_validation
             >= self.DECODE_VALIDATION_INTERVAL_SEC
         )
-        jpeg = jpeg_from_ros_image(message, validate_decode=validate_decode)
+        # The camera is mounted upside down. Normalize the shared stream once
+        # so AI, WebRTC, and photos share the same camera orientation.
+        jpeg = jpeg_from_ros_image(
+            message,
+            validate_decode=validate_decode,
+            flip_vertical=True,
+        )
         if not jpeg:
             return
         # A running process alone is not healthy: only a complete, decodable
