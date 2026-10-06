@@ -395,7 +395,7 @@ WebRTC 视频、双向实时 PCM 音频和 DataChannel 数据接入现有 ROS �
 ```yaml
 webrtc_remote:
   enabled: false
-  signaling_url: ws://43.172.84.112:8787/signal
+  signaling_url: wss://43.172.84.112:8787/signal
   robot_id: WALLY-01
   token: ""
   servo_step_size: 50
@@ -420,9 +420,8 @@ python launch_nodes.py --remote-control --remote-intercom
 ```
 
 公网连接还必须给手机端配置可访问的 STUN/TURN ICE server；signaling 只交换 SDP/ICE，
-不承担媒体中继。`VITE_SIGNALING_TOKEN` 与机器人端令牌必须一致。当前使用
-`ws://` 时不应把它当作生产安全配置；没有 TURN 时，受限 NAT 网络可能无法建立
-媒体连接，浏览器麦克风在生产环境通常还需要 HTTPS/WSS 安全上下文。
+不承担媒体中继。`VITE_SIGNALING_TOKEN` 与机器人端令牌必须一致。生产环境应使用
+HTTPS/WSS 安全上下文；没有 TURN 时，受限 NAT 网络可能无法建立媒体连接。
 
 ### 胸前屏幕拍照预览
 
