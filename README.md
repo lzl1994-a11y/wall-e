@@ -436,6 +436,13 @@ python launch_nodes.py --remote-control --remote-intercom
 不承担媒体中继。`VITE_SIGNALING_TOKEN` 与机器人端令牌必须一致。生产环境应使用
 HTTPS/WSS 安全上下文；没有 TURN 时，受限 NAT 网络可能无法建立媒体连接。
 
+首次 ICE 失败时新版控制网页只尝试一次 TURN TCP 备用协商，不会自动恢复已断开的
+运动或对讲。两端 ICE 配置都需包含 `turn:<地址>:3478?transport=tcp`（或可达的
+`turns:` 服务）及对应凭据。aiortc 只采用第一个有效 TURN 地址，网关收到 TCP 备用
+请求后显式选择配置中的 TCP 地址；未配置则返回明确错误，不接受信令传入的任意地址。
+协商编号用于丢弃上一轮候选/应答；鉴权错误、取消、急停及已连接后的断线不重试。
+该机制提高受限网络连接机会，不是百分百打洞或低延迟保证。
+
 ### 胸前屏幕拍照预览
 
 独立的 `tft_tcp_service_node` 会自动启动 TFT TCP 服务；文本 LLM 与多模态语音

@@ -38,6 +38,7 @@ from aiortc import (
     VideoStreamTrack,
 )
 from aiortc.sdp import candidate_from_sdp
+from aiortc.rtcicetransport import parse_stun_turn_uri
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler, VideoFrame
 
@@ -144,6 +145,33 @@ def _repository_config() -> dict:
     except (OSError, yaml.YAMLError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _ice_servers_for_transport(servers: list[RTCIceServer], transport=None):
+    """aiortc uses ONE TURN URL. A retry must explicitly choose another one."""
+    if transport is None:
+        return list(servers)
+    if transport != "tcp":
+        raise ValueError("不支持的 TURN 备用传输类型")
+    stun = []
+    selected = None
+    for server in servers:
+        for url in server.urls if isinstance(server.urls, list) else [server.urls]:
+            try:
+                parsed = parse_stun_turn_uri(url)
+            except (ValueError, TypeError):
+                continue
+            if parsed["scheme"] == "stun" and not stun:
+                stun.append(RTCIceServer(urls=url))
+            if (selected is None and parsed["scheme"] in {"turn", "turns"}
+                    and parsed["transport"] == "tcp" and server.credentialType == "password"):
+                selected = RTCIceServer(
+                    urls=url, username=server.username, credential=server.credential,
+                    credentialType=server.credentialType,
+                )
+    if selected is None:
+        raise ValueError("瓦力端未配置可用的 TURN TCP 备用地址")
+    return stun + [selected]
 
 
 def _remote_config() -> dict:
@@ -289,6 +317,7 @@ class RemoteWebRtcGateway:
         self._thread: threading.Thread | None = None
         self._socket = None
         self._controller_peer_id: str | None = None
+        self._negotiation_id: int | None = None
         self._peer: RTCPeerConnection | None = None
         self._channel = None
         self._video_track: CameraVideoTrack | None = None
@@ -512,27 +541,51 @@ class RemoteWebRtcGateway:
     async def _handle_signal(self, signal: dict, *, sender: str | None = None) -> None:
         kind = signal.get("type")
         if kind == "offer" and isinstance(signal.get("sdp"), str):
-            await self._accept_offer(signal["sdp"], sender=sender)
+            negotiation_id = signal.get("negotiationId")
+            transport = signal.get("turnTransport")
+            if (negotiation_id is not None and (isinstance(negotiation_id, bool)
+                    or not isinstance(negotiation_id, int) or not 0 <= negotiation_id <= 2**53 - 1)):
+                return
+            if transport not in (None, "tcp"):
+                return
+            await self._accept_offer(
+                signal["sdp"], sender=sender, negotiation_id=negotiation_id,
+                turn_transport=transport,
+            )
         elif kind == "candidate":
             await self._accept_candidate(signal)
 
-    async def _accept_offer(self, sdp: str, *, sender: str | None = None) -> None:
+    async def _accept_offer(self, sdp: str, *, sender: str | None = None,
+                            negotiation_id: int | None = None, turn_transport=None) -> None:
         controller_peer_id = sender or self._controller_peer_id
         if self._peer is not None:
             if not sender or sender != self._controller_peer_id:
                 self.node.get_logger().warning("忽略第二个 controller 的 offer")
                 return
+        try:
+            servers = _ice_servers_for_transport(self._ice_servers, turn_transport)
+        except ValueError as exc:
+            self.node.get_logger().warning(str(exc))
+            if self._socket is not None and controller_peer_id:
+                await self._socket.send(json.dumps({
+                    "type": "signal", "to": controller_peer_id,
+                    "signal": {"type": "error", "message": str(exc), "negotiationId": negotiation_id},
+                }, separators=(",", ":")))
+            return
         await self._close_peer()
         # _close_peer() clears the old session identity. Preserve the sender
         # of this offer so the answer can be routed back through signaling.
         self._controller_peer_id = controller_peer_id
+        self._negotiation_id = negotiation_id
         peer = RTCPeerConnection(
-            RTCConfiguration(iceServers=list(self._ice_servers))
+            RTCConfiguration(iceServers=servers)
         )
         self._peer = peer
         self.node.get_logger().info(
             f"PeerConnection 建立: controller={self._controller_peer_id or '<unknown>'}"
         )
+        if turn_transport:
+            self.node.get_logger().info("初次 ICE 失败后明确选择 TURN TCP 备用配置")
         self._video_track = CameraVideoTrack(self)
         self._audio_track = RobotAudioTrack()
         peer.addTrack(self._video_track)
@@ -541,6 +594,9 @@ class RemoteWebRtcGateway:
 
         @peer.on("datachannel")
         def on_datachannel(channel):
+            if self._peer is not peer:
+                channel.close()
+                return
             if channel.label not in {"control", "motion"} or channel.label in self._channels:
                 channel.close()
                 return
@@ -550,6 +606,8 @@ class RemoteWebRtcGateway:
 
             @channel.on("open")
             def on_open():
+                if self._peer is not peer:
+                    return
                 self._send_event({
                     "type": "status",
                     "value": "机器人 WebRTC 网关已就绪",
@@ -572,7 +630,7 @@ class RemoteWebRtcGateway:
 
         @peer.on("track")
         def on_track(track):
-            if track.kind == "audio":
+            if self._peer is peer and track.kind == "audio":
                 task = asyncio.create_task(self._consume_remote_audio(track))
                 self._audio_tasks.add(task)
                 task.add_done_callback(self._audio_tasks.discard)
@@ -590,11 +648,12 @@ class RemoteWebRtcGateway:
         await peer.setLocalDescription(answer)
         await self._wait_ice_complete(peer)
         local = peer.localDescription
-        if local and self._socket is not None and self._controller_peer_id:
+        if self._peer is peer and local and self._socket is not None and self._controller_peer_id:
             await self._socket.send(json.dumps({
                 "type": "signal",
                 "to": self._controller_peer_id,
-                "signal": {"type": "answer", "sdp": local.sdp},
+                "signal": {"type": "answer", "sdp": local.sdp,
+                           "negotiationId": negotiation_id, "turnTransport": turn_transport},
             }, separators=(",", ":")))
 
     async def _wait_ice_complete(self, peer: RTCPeerConnection) -> None:
@@ -603,6 +662,8 @@ class RemoteWebRtcGateway:
             await asyncio.sleep(0.05)
 
     async def _accept_candidate(self, signal: dict) -> None:
+        if signal.get("negotiationId") != self._negotiation_id:
+            return
         peer = self._peer
         value = signal.get("candidate")
         if peer is None or not isinstance(value, str) or not value:
@@ -848,21 +909,25 @@ class RemoteWebRtcGateway:
     async def _close_peer(self, expected_peer: RTCPeerConnection | None = None) -> None:
         if expected_peer is not None and self._peer is not expected_peer:
             return
-        for task in list(self._audio_tasks):
-            task.cancel()
-        if self._audio_tasks:
-            await asyncio.gather(*self._audio_tasks, return_exceptions=True)
+        # Detach the old session BEFORE awaiting teardown. A late close from
+        # the old peer must not clear a freshly negotiated TCP retry.
+        tasks = list(self._audio_tasks)
         self._audio_tasks.clear()
         peer = self._peer
         self._peer = None
         self._channel = None
         self._controller_peer_id = None
+        self._negotiation_id = None
         self._video_track = None
         self._audio_track = None
         self._servo_gate.reset()
         self._stop_robot_outputs()
         self._channels.clear()
         self._sequence_gate.reset()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if peer is not None:
             await peer.close()
             self.node.get_logger().info("PeerConnection 已关闭并进入安全状态")
