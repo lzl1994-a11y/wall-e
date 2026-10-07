@@ -3,6 +3,7 @@ import json
 import asyncio
 import os
 import time
+from io import BytesIO
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -11,6 +12,7 @@ pytest.importorskip("rclpy")
 pytest.importorskip("aiortc")
 from aiortc import RTCIceServer
 from aiortc.rtcicetransport import connection_kwargs
+from PIL import Image, JpegImagePlugin
 from nodes.remote_webrtc_gateway_node import (
     CameraVideoTrack, RobotAudioTrack, RemoteWebRtcGateway, _ice_servers_for_transport,
     _ice_servers, _remote_config,
@@ -75,6 +77,29 @@ def test_media_timestamps_follow_elapsed_time_after_cpu_stall():
         assert video_frame.pts == 180000
         audio.stop(); video.stop()
     asyncio.run(scenario())
+
+
+def test_large_jpeg_uses_native_downsampling_before_load_and_preserves_orientation():
+    image = Image.new("RGB", (1920, 1080), "red")
+    image.paste("blue", (0, 540, 1920, 1080))
+    output = BytesIO()
+    image.save(output, format="JPEG")
+    observations = []
+    original = JpegImagePlugin.JpegImageFile.draft
+
+    def draft(source, mode, size):
+        assert source.tile  # No full-resolution decode has taken place.
+        result = original(source, mode, size)
+        observations.append(source.size)
+        return result
+
+    with patch.object(JpegImagePlugin.JpegImageFile, "draft", draft):
+        frame = CameraVideoTrack._make_frame(output.getvalue(), 320, 240)
+    assert observations == [(480, 270)]
+    assert (frame.width, frame.height) == (320, 240)
+    pixels = frame.to_ndarray(format="rgb24")
+    assert pixels[:60, :, 0].mean() > 240
+    assert pixels[-60:, :, 2].mean() > 240
 
 
 def test_tcp_retry_selects_a_turn_url_the_sdk_actually_uses():

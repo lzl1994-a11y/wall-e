@@ -231,6 +231,10 @@ class CameraVideoTrack(VideoStreamTrack):
             image = Image.new("RGB", (width, height), (4, 15, 19))
         else:
             with Image.open(BytesIO(jpeg)) as source:
+                # Let the native JPEG decoder discard unneeded DCT detail.
+                # draft() must precede convert()/load(); decoding the full
+                # camera resolution wastes CPU on pixels we immediately resize.
+                source.draft("RGB", (width, height))
                 image = source.convert("RGB")
                 if image.size != (width, height):
                     image = image.resize(
