@@ -8,6 +8,43 @@ from services.audio.mixing_playback_service import MixingPlaybackService
 
 
 class AudioMixerTests(unittest.TestCase):
+    def test_quick_second_ptt_reopens_speaker_without_dropping_audio(self):
+        with patch("services.audio.playback_service.threading.Thread"):
+            player = MixingPlaybackService(sample_rate=1000)
+        player._stopped.wait = MagicMock()
+        streams = []
+
+        def open_stream():
+            stream = MagicMock(latency=0.0)
+            streams.append(stream)
+            player._stream = stream
+            return True
+
+        with patch.object(player, "_ensure_stream", side_effect=open_stream), patch(
+            "services.audio.mixing_playback_service.time.monotonic", return_value=100.0
+        ):
+            player.play_realtime(np.full(20, 1000, dtype=np.int16))
+            player._play_mix_block()
+            player.stop_speech()
+            player._play_mix_block()
+            player.play_realtime(np.full(20, 2000, dtype=np.int16))
+            player._play_mix_block()
+        self.assertEqual(len(streams), 2)
+        np.testing.assert_allclose(streams[1].write.call_args.args[0], 2000 / 32768)
+
+    def test_failed_speaker_open_is_throttled_but_success_clears_backoff(self):
+        with patch("services.audio.playback_service.threading.Thread"):
+            player = MixingPlaybackService(sample_rate=1000)
+        player._stopped.wait = MagicMock()
+        player.play_realtime(np.ones(100, dtype=np.int16))
+        with patch.object(player, "_ensure_stream", return_value=False) as ensure, patch(
+            "services.audio.mixing_playback_service.time.monotonic", return_value=100.0
+        ):
+            player._play_mix_block()
+            player._play_mix_block()
+            ensure.assert_called_once()
+        self.assertEqual(player._next_device_attempt, 101.0)
+
     def test_music_advances_during_speech_and_recovers_after_completion(self):
         mixer = AudioMixer(sample_rate=1000)
         music = np.arange(1, 1001, dtype=np.int16) * 10

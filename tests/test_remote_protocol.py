@@ -52,3 +52,11 @@ def test_browser_actions_use_the_existing_sequence_skill():
         "play_sequence",
         {"sequence_name": "wave_hello"},
     )
+
+
+def test_media_profile_is_bounded_and_allowlisted():
+    for profile in ("normal", "low"):
+        message = {"type": "media", "seq": 1, "video": profile}
+        assert decode_remote_message(json.dumps(message)) == message
+    for profile in ("4k", None, 5, {}, ["low"]):
+        assert decode_remote_message(json.dumps({"type": "media", "seq": 1, "video": profile})) is None

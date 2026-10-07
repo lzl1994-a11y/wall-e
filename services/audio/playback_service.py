@@ -21,6 +21,7 @@ class PlaybackService:
     _STREAM_END = object()
     TURN_END_SILENCE_SEC = 0.1
     IDLE_SILENCE_SEC = 0.02
+    latency = "high"
 
     def __init__(
         self,
@@ -28,11 +29,13 @@ class PlaybackService:
         sample_rate=OUTPUT_SAMPLE_RATE,
         config_path=DEFAULT_CONFIG_PATH,
         on_turn_complete=None,
+        latency="high",
     ):
         self.mode = mode
         self.sample_rate = sample_rate
         self.config_path = config_path
         self.on_turn_complete = on_turn_complete
+        self.latency = latency
         self._device = None
         self._device_identity = ""
         self._stream = None
@@ -133,6 +136,7 @@ class PlaybackService:
                 channels=1,
                 dtype="float32",
                 blocksize=0,
+                latency=self.latency,
             )
             self._stream.start()
             return True

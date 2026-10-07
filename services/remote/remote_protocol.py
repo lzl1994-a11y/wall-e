@@ -13,6 +13,7 @@ from typing import Any
 REMOTE_AUDIO_PCM_TOPIC = "/remote_audio_pcm"
 REMOTE_VOICE_STATE_TOPIC = "/remote_voice_state"
 ROBOT_AUDIO_PCM_TOPIC = "/robot_audio_pcm"
+ROBOT_MIC_SAMPLE_RATE = 48_000
 REMOTE_AUDIO_PLAYBACK_TOPIC = "/remote_audio_playback"
 REMOTE_INTERCOM_STATE_TOPIC = "/remote_intercom_state"
 REMOTE_SOURCE = "remote"
@@ -127,6 +128,13 @@ def decode_remote_message(raw: str | bytes) -> dict[str, Any] | None:
         if state not in {"start", "stop"}:
             return None
         return {"type": "voice", "seq": seq, "state": state}
+
+    if message_type == "media":
+        if set(message) != {"type", "seq", "video"}:
+            return None
+        if message.get("video") not in ("normal", "low"):
+            return None
+        return {"type": "media", "seq": seq, "video": message["video"]}
 
     return None
 

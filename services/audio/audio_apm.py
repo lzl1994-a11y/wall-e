@@ -12,15 +12,20 @@ from collections.abc import Callable
 class WebRTCApm:
     """Feed native microphone PCM to one long-lived WebRTC APM process."""
 
-    OUTPUT_RATE = 16000
+    MAX_PENDING_FRAMES = 4
 
-    def __init__(self, on_pcm: Callable[[bytes], None], *, pre_gain_db: float = 6.0):
+    def __init__(self, on_pcm: Callable[[bytes], None], *, pre_gain_db: float = 6.0,
+                 output_rate: int = 16000, frame_ms: int = 30):
+        if output_rate not in (16000, 48000) or frame_ms not in (10, 20, 30):
+            raise ValueError("unsupported APM PCM format")
+        self.output_rate = output_rate
+        self.frame_ms = frame_ms
         self._on_pcm = on_pcm
         self.pre_gain_db = float(min(24.0, max(-12.0, pre_gain_db)))
         self._running = False
         self._input_rate = 0
         self._process: subprocess.Popen | None = None
-        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=100)
+        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=self.MAX_PENDING_FRAMES)
         self._writer: threading.Thread | None = None
         self._reader: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -47,12 +52,12 @@ class WebRTCApm:
                 print(f"[AudioPipeline] GStreamer APM 启动失败: {exc}")
                 return False
             self._running, self._input_rate = True, input_rate
-            self._queue = queue.Queue(maxsize=100)
+            self._queue = queue.Queue(maxsize=self.MAX_PENDING_FRAMES)
             self._overloaded.clear()
             self._writer = threading.Thread(target=self._write, name="wali-apm-input", daemon=True)
             self._reader = threading.Thread(target=self._read, name="wali-apm-output", daemon=True)
             self._writer.start(); self._reader.start()
-        print(f"[AudioPipeline] WebRTC APM 常驻: {input_rate}Hz -> 16000Hz, pre-gain={self.pre_gain_db:g}dB")
+        print(f"[AudioPipeline] WebRTC APM 常驻: {input_rate}Hz -> {self.output_rate}Hz, pre-gain={self.pre_gain_db:g}dB")
         return True
 
     def stop(self) -> None:
@@ -81,7 +86,7 @@ class WebRTCApm:
         return self._overloaded.is_set()
 
     def submit(self, pcm: bytes) -> bool:
-        if not self._running: return False
+        if not self._running or self.overloaded: return False
         try:
             self._queue.put_nowait(pcm)
             return True
@@ -97,10 +102,10 @@ class WebRTCApm:
     def _command(self, input_rate: int) -> list[str]:
         gain = 10 ** (self.pre_gain_db / 20.0)
         return [
-            "gst-launch-1.0", "-q", "fdsrc", "fd=0", "blocksize=960", "!",
+            "gst-launch-1.0", "-q", "fdsrc", "fd=0", f"blocksize={input_rate * self.frame_ms // 1000 * 2}", "!",
             "rawaudioparse", "format=pcm", "pcm-format=s16le", f"sample-rate={input_rate}", "num-channels=1", "!",
             "audioconvert", "!", "audioresample", "!",
-            "audio/x-raw,format=S16LE,layout=interleaved,rate=16000,channels=1", "!",
+            f"audio/x-raw,format=S16LE,layout=interleaved,rate={self.output_rate},channels=1", "!",
             "volume", f"volume={gain:.9f}", "!",
             "webrtcdsp", "echo-cancel=false", "high-pass-filter=true", "noise-suppression=true",
             "noise-suppression-level=moderate", "gain-control=true", "gain-control-mode=fixed-digital",
@@ -120,7 +125,7 @@ class WebRTCApm:
 
     def _read(self) -> None:
         pending = bytearray()
-        frame_bytes = self.OUTPUT_RATE * 30 // 1000 * 2
+        frame_bytes = self.output_rate * self.frame_ms // 1000 * 2
         try:
             if not self._process or not self._process.stdout: return
             while self._running:
@@ -129,6 +134,6 @@ class WebRTCApm:
                 pending.extend(chunk)
                 while len(pending) >= frame_bytes:
                     frame = bytes(pending[:frame_bytes]); del pending[:frame_bytes]
-                    if self._running: self._on_pcm(frame)
+                    if self._running and not self.overloaded: self._on_pcm(frame)
         except OSError:
             if self._running: print("[AudioPipeline] GStreamer APM 输出管道已关闭")

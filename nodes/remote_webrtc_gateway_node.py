@@ -2,8 +2,8 @@
 """WebRTC robot gateway for the Walle remote-control web client.
 
 The gateway keeps the browser-facing transport separate from ROS. Signaling is
-only used for SDP/ICE exchange; control messages arrive over an ordered
-RTCDataChannel and media arrives/leaves as WebRTC tracks.
+only used for SDP/ICE exchange; reliable commands and expiring motion use
+separate RTCDataChannels, with media carried by WebRTC tracks.
 """
 
 from __future__ import annotations
@@ -55,12 +55,13 @@ from services.remote.remote_protocol import (
     REMOTE_SAFETY_SOURCE,
     REMOTE_SOURCE,
     ROBOT_AUDIO_PCM_TOPIC,
+    ROBOT_MIC_SAMPLE_RATE,
     action_request_for,
     encode_call_state,
     decode_remote_message,
     encode_voice_state,
 )
-from services.remote.realtime_control import ChangedTargetGate
+from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
@@ -73,7 +74,6 @@ SIGNALING_RECONNECT_DELAY_SEC = 1.0
 SIGNALING_RECONNECT_MAX_SEC = 30.0
 CAMERA_LEASE_SEC = 15.0
 CAMERA_RENEW_SEC = 5.0
-ROBOT_MIC_SAMPLE_RATE = 16_000
 ROBOT_AUDIO_SAMPLE_RATE = 48_000
 ROBOT_AUDIO_FRAME_SAMPLES = 960
 VIDEO_CLOCK_RATE = 90_000
@@ -168,40 +168,42 @@ class CameraVideoTrack(VideoStreamTrack):
         self._gateway = gateway
         self._next_frame_at = time.monotonic()
         self._pts = 0
+        self.profile = "normal"
 
     async def recv(self):
         now = time.monotonic()
         if self._next_frame_at > now:
             await asyncio.sleep(self._next_frame_at - now)
-        self._next_frame_at += 1.0 / VIDEO_FPS
+        width, height, fps = (320, 240, 5) if self.profile == "low" else (VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
+        self._next_frame_at += 1.0 / fps
         if self._next_frame_at < time.monotonic():
             self._next_frame_at = time.monotonic()
         pts = self._pts
-        self._pts += VIDEO_CLOCK_RATE // VIDEO_FPS
+        self._pts += VIDEO_CLOCK_RATE // fps
         time_base = Fraction(1, VIDEO_CLOCK_RATE)
         jpeg = self._gateway.latest_camera_frame()
         try:
             # JPEG decode, resize and colorspace conversion are CPU work. Keep
             # them off aiortc's event loop so camera frames cannot stall audio,
             # ICE timers or data-channel control.
-            frame = await asyncio.to_thread(self._make_frame, jpeg)
+            frame = await asyncio.to_thread(self._make_frame, jpeg, width, height)
         except (OSError, ValueError) as exc:
             self._gateway.report_camera_error(exc)
-            frame = await asyncio.to_thread(self._make_frame, b"")
+            frame = await asyncio.to_thread(self._make_frame, b"", width, height)
         frame.pts = pts
         frame.time_base = time_base
         return frame
 
     @staticmethod
-    def _make_frame(jpeg: bytes) -> VideoFrame:
+    def _make_frame(jpeg: bytes, width=VIDEO_WIDTH, height=VIDEO_HEIGHT) -> VideoFrame:
         if not jpeg:
-            image = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (4, 15, 19))
+            image = Image.new("RGB", (width, height), (4, 15, 19))
         else:
             with Image.open(BytesIO(jpeg)) as source:
                 image = source.convert("RGB")
-                if image.size != (VIDEO_WIDTH, VIDEO_HEIGHT):
+                if image.size != (width, height):
                     image = image.resize(
-                        (VIDEO_WIDTH, VIDEO_HEIGHT),
+                        (width, height),
                         Image.Resampling.BILINEAR,
                     )
         return VideoFrame.from_image(image)
@@ -291,7 +293,8 @@ class RemoteWebRtcGateway:
         self._last_jpeg = b""
         self._frame_lock = threading.Lock()
         self._camera_error_reported = False
-        self._last_sequence = -1
+        self._sequence_gate = ChannelSequenceGate()
+        self._channels = {}
         self._servo_gate = ChangedTargetGate(min_interval_sec=0.1)
         self._remote_voice_active = False
         self._remote_call_active = False
@@ -320,23 +323,11 @@ class RemoteWebRtcGateway:
             self._on_camera_status,
             10,
         )
-        self._audio_sub = node.create_subscription(
-            UInt8MultiArray,
-            "audio_output",
-            self._on_audio_output,
-            10,
-        )
         self._robot_audio_sub = node.create_subscription(
             UInt8MultiArray,
             ROBOT_AUDIO_PCM_TOPIC,
             self._on_robot_audio,
             qos_profile_sensor_data,
-        )
-        self._dialog_sub = node.create_subscription(
-            String,
-            "screen_dialog",
-            self._on_dialog,
-            10,
         )
 
     def start(self) -> None:
@@ -411,11 +402,6 @@ class RemoteWebRtcGateway:
             self._stop_robot_outputs()
             self._schedule_peer_close()
 
-    def _on_audio_output(self, message: UInt8MultiArray) -> None:
-        track = self._audio_track
-        if track is not None:
-            track.push(bytes(message.data or b""))
-
     def _on_robot_audio(self, message: UInt8MultiArray) -> None:
         track = self._audio_track
         if track is not None:
@@ -423,19 +409,6 @@ class RemoteWebRtcGateway:
                 bytes(message.data or b""),
                 sample_rate=ROBOT_MIC_SAMPLE_RATE,
             )
-
-    def _on_dialog(self, message: String) -> None:
-        try:
-            payload = json.loads(message.data)
-        except (TypeError, json.JSONDecodeError):
-            payload = {"ai_text": str(message.data or "")}
-        text = payload.get("ai_text") if isinstance(payload, dict) else ""
-        if isinstance(text, str) and text.strip():
-            self._send_event_threadsafe({
-                "type": "transcript",
-                "speaker": "robot",
-                "text": text.strip()[:1000],
-            })
 
     def _run_thread(self) -> None:
         try:
@@ -563,7 +536,12 @@ class RemoteWebRtcGateway:
 
         @peer.on("datachannel")
         def on_datachannel(channel):
-            self._channel = channel
+            if channel.label not in {"control", "motion"} or channel.label in self._channels:
+                channel.close()
+                return
+            self._channels[channel.label] = channel
+            if channel.label == "control":
+                self._channel = channel
 
             @channel.on("open")
             def on_open():
@@ -575,10 +553,14 @@ class RemoteWebRtcGateway:
 
             @channel.on("message")
             def on_message(message):
-                self._on_data_message(message)
+                if self._peer is peer:
+                    self._on_data_message(message, channel.label)
 
             @channel.on("close")
             def on_close():
+                if self._peer is not peer:
+                    return
+                self._sequence_gate.stopped = True
                 self._stop_robot_outputs()
                 if self._loop and self._loop.is_running():
                     self._loop.create_task(self._close_peer(peer))
@@ -632,7 +614,7 @@ class RemoteWebRtcGateway:
                 "message": "忽略无效 ICE candidate",
             })
 
-    def _on_data_message(self, raw) -> None:
+    def _on_data_message(self, raw, channel="control") -> None:
         message = decode_remote_message(raw)
         if message is None:
             self.node.get_logger().warning("收到非法远程控制消息，进入安全状态")
@@ -643,11 +625,11 @@ class RemoteWebRtcGateway:
             self._stop_robot_outputs()
             self._schedule_peer_close()
             return
-        sequence = int(message["seq"])
-        if sequence <= self._last_sequence:
-            self.node.get_logger().warning(
-                f"拒绝重复或倒退的远程 seq={sequence}"
-            )
+        try:
+            if not self._sequence_gate.accept(channel, message):
+                return
+        except ValueError as exc:
+            self.node.get_logger().warning(f"拒绝远程控制消息: {exc}")
             self._send_event({
                 "type": "warning",
                 "message": "远程控制序号重复或倒退，连接已进入安全状态",
@@ -655,7 +637,6 @@ class RemoteWebRtcGateway:
             self._stop_robot_outputs()
             self._schedule_peer_close()
             return
-        self._last_sequence = sequence
         message_type = message["type"]
         if message_type == "control":
             self._publish_control(message["vector"])
@@ -668,6 +649,9 @@ class RemoteWebRtcGateway:
             self._set_remote_voice(message["state"] == "start")
         elif message_type == "call":
             self._set_remote_call(message["state"] == "start")
+        elif message_type == "media" and self._video_track is not None:
+            self._video_track.profile = message["video"]
+            self._send_event({"type": "status", "value": f"视频档位：{message['video']}"})
 
     def _publish_control(self, vector: dict[str, float]) -> None:
         forward = float(vector["forward"])
@@ -710,6 +694,7 @@ class RemoteWebRtcGateway:
             publisher.publish(String(data=encode_stop_speech_control(source)))
 
     def _stop_robot_outputs(self) -> None:
+        self._sequence_gate.stopped = True
         self._motor_pub.publish(String(data=json.dumps(STOP_COMMAND, separators=(",", ":"))))
         self._action_pub.publish(String(data=json.dumps({
             "name": "stop_all",
@@ -869,9 +854,10 @@ class RemoteWebRtcGateway:
         self._controller_peer_id = None
         self._video_track = None
         self._audio_track = None
-        self._last_sequence = -1
         self._servo_gate.reset()
         self._stop_robot_outputs()
+        self._channels.clear()
+        self._sequence_gate.reset()
         if peer is not None:
             await peer.close()
             self.node.get_logger().info("PeerConnection 已关闭并进入安全状态")

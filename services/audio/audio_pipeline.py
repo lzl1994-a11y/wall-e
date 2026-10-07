@@ -160,6 +160,13 @@ class AudioPipeline:
             config = yaml.safe_load(f)
 
         self._raw_only = bool(raw_only)
+        if self._raw_only:
+            # ASR keeps its 16 kHz / 30 ms contract; live intercom does not
+            # downsample and upsample the same USB microphone unnecessarily.
+            self.SAMPLE_RATE = self.DEVICE_SAMPLE_RATE
+            self.FRAME_MS = 20
+            self.FRAME_SIZE = self.SAMPLE_RATE * self.FRAME_MS // 1000
+            self.FRAME_BYTES = self.FRAME_SIZE * 2
         self._ww = WakeWordDetector({} if self._raw_only else config)
         self._config_path = config_path
         
@@ -228,7 +235,10 @@ class AudioPipeline:
         self._is_running = True
         self._paused_event.clear()
         if self._apm_enabled:
-            self._apm = WebRTCApm(self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db)
+            self._apm = WebRTCApm(
+                self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db,
+                output_rate=self.SAMPLE_RATE, frame_ms=self.FRAME_MS,
+            )
             self._apm.start(self.DEVICE_SAMPLE_RATE)
         self._apm_disable_scheduled = False
         if not self._raw_only:
@@ -501,7 +511,7 @@ class AudioPipeline:
                     self._device_sample_rate = sample_rate
                     with self._audio_stream_lock:
                         self._audio_stream = stream; self._audio_device_identity = identity
-                    print(f"[AudioPipeline] microphone connected (device={device_index}, channels={channels}, capture={sample_rate}Hz -> VAD/ASR=16000Hz)")
+                    print(f"[AudioPipeline] microphone connected (device={device_index}, channels={channels}, capture={sample_rate}Hz -> PCM={self.SAMPLE_RATE}Hz)")
                     return True
                 except Exception:
                     if stream:

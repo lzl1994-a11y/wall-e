@@ -11,6 +11,7 @@ class MixingPlaybackService(PlaybackService):
     BLOCK_SEC = 0.02
 
     def __init__(self, *args, on_wake_complete=None, on_system_complete=None, **kwargs):
+        kwargs.setdefault("latency", "low")
         self._mix_lock = threading.Lock()
         self._ready = threading.Event()
         self._stopped = threading.Event()
@@ -96,11 +97,13 @@ class MixingPlaybackService(PlaybackService):
             return
         opened = self._stream is not None
         if not opened and time.monotonic() >= self._next_device_attempt:
-            self._next_device_attempt = time.monotonic() + 1.0
             try:
                 opened = self._ensure_stream()
             except Exception as exc:
                 print(f"[Playback Service] 音频设备暂不可用: {exc}")
+            # Back off only an unavailable device, never a successful open.
+            # A new PTT turn must be playable immediately after an abort.
+            self._next_device_attempt = 0.0 if opened else time.monotonic() + 1.0
         latency = float(self._stream.latency) if opened else 0.0
         with self._mix_lock:
             audio, completed = self._mixer.render(

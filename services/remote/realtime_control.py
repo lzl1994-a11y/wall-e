@@ -32,4 +32,31 @@ class ChangedTargetGate:
         self._last_sent_at = float("-inf")
 
 
-__all__ = ["ChangedTargetGate"]
+class ChannelSequenceGate:
+    """Independent sequence spaces; unreliable motion can arrive reordered."""
+
+    def __init__(self):
+        self._last: dict[str, int] = {}
+        self.stopped = False
+
+    def accept(self, channel: str, message: dict) -> bool:
+        if self.stopped:
+            return False
+        if channel == "motion" and message["type"] != "control":
+            raise ValueError("motion channel accepts only control")
+        sequence = message["seq"]
+        if sequence <= self._last.get(channel, -1):
+            if channel == "motion":
+                return False
+            raise ValueError("reliable sequence repeated or reversed")
+        self._last[channel] = sequence
+        if message["type"] == "stop":
+            self.stopped = True
+        return True
+
+    def reset(self):
+        self._last.clear()
+        self.stopped = False
+
+
+__all__ = ["ChangedTargetGate", "ChannelSequenceGate"]

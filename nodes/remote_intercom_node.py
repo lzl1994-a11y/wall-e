@@ -3,7 +3,7 @@
 
 This node deliberately does not run wake-word detection, ASR, LLM, TTS, or
 voice-history storage. ``AudioPipeline`` is reused only for device discovery,
-APM, and conversion to the 16 kHz mono PCM contract consumed by the WebRTC
+APM, and native 48 kHz mono PCM consumed by the WebRTC
 gateway.
 """
 
