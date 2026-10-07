@@ -196,14 +196,21 @@ def test_deployed_turn_tcp_allocation_and_bidirectional_relay():
     allocations; this is a TURN probe, not a browser/mobile WebRTC benchmark.
     """
     import aioice
+    stage = "configuration"
 
     async def scenario():
+        nonlocal stage
         kwargs = connection_kwargs(_ice_servers_for_transport(_ice_servers(_remote_config()), "tcp"))
         kwargs.pop("stun_server", None)
         peers = [aioice.Connection(ice_controlling=role, transport_policy=aioice.TransportPolicy.RELAY, **kwargs)
                  for role in (True, False)]
+        completed = False
         try:
+            stage = "allocation"
             await asyncio.wait_for(asyncio.gather(*(peer.gather_candidates() for peer in peers)), 10)
+            print(json.dumps({"turn_transport": "tcp", "relay_candidates": [
+                sum(candidate.type == "relay" for candidate in peer.local_candidates) for peer in peers
+            ]}))
             relays = [next(candidate for candidate in peer.local_candidates if candidate.type == "relay")
                       for peer in peers]
             for index, peer in enumerate(peers):
@@ -214,18 +221,27 @@ def test_deployed_turn_tcp_allocation_and_bidirectional_relay():
             for seq in range(20):
                 payload = f"turn-tcp-probe-{seq}".encode()
                 start = time.monotonic()
+                stage = f"forward-{seq}"
                 await peers[0].send(payload)
                 assert await asyncio.wait_for(peers[1].recv(), 2) == payload
+                stage = f"return-{seq}"
                 await peers[1].send(payload)
                 assert await asyncio.wait_for(peers[0].recv(), 2) == payload
                 samples.append((time.monotonic() - start) * 1000)
+            completed = True
             print(json.dumps({"turn_transport": "tcp", "relay_roundtrips": len(samples),
                               "rtt_mean_ms": round(sum(samples) / len(samples), 1),
                               "rtt_max_ms": round(max(samples), 1)}))
         finally:
-            await asyncio.wait_for(asyncio.gather(*(peer.close() for peer in peers)), 5)
+            try:
+                await asyncio.wait_for(asyncio.gather(*(peer.close() for peer in peers)), 5)
+            except asyncio.TimeoutError:
+                print("TURN TCP probe cleanup timed out")
+                if completed:
+                    stage = "cleanup"
+                    raise
     try:
         asyncio.run(asyncio.wait_for(scenario(), 55))
     except Exception as exc:
         # Avoid credential-bearing tracebacks from network client internals.
-        pytest.fail(f"TURN TCP allocation/relay probe failed ({type(exc).__name__})", pytrace=False)
+        pytest.fail(f"TURN TCP probe failed at {stage} ({type(exc).__name__})", pytrace=False)
