@@ -14,9 +14,9 @@ class WebRTCApmBackpressureTests(unittest.TestCase):
         apm._running = True
         for _ in range(4):
             self.assertTrue(apm.submit(b"pcm"))
-        self.assertFalse(apm.submit(b"stale"))
-        apm._queue.get_nowait()
-        self.assertFalse(apm.submit(b"late"))
+        self.assertTrue(apm.submit(b"current"))
+        self.assertEqual(apm._queue.qsize(), 4)
+        self.assertEqual(apm.dropped_frames, 1)
 
     def test_native_intercom_pcm_and_asr_formats_do_not_cross(self):
         with patch("builtins.open", mock_open(read_data="{}")):
@@ -33,13 +33,23 @@ class WebRTCApmBackpressureTests(unittest.TestCase):
         self.assertIn("audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=1", command)
         self.assertIn("rate=16000", " ".join(WebRTCApm(lambda _: None)._command(48000)))
 
-    def test_full_input_queue_marks_apm_overloaded(self):
+    def test_full_input_queue_drops_old_frame_without_disabling_healthy_apm(self):
         apm = WebRTCApm(lambda _pcm: None)
         apm._running = True
         apm._queue = queue.Queue(maxsize=1)
         apm._queue.put(b"first")
 
-        self.assertFalse(apm.submit(b"second"))
+        self.assertTrue(apm.submit(b"second"))
+        self.assertFalse(apm.overloaded)
+        self.assertEqual(apm._queue.get_nowait(), b"second")
+
+    def test_stalled_output_triggers_bounded_fallback_not_silent_backlog(self):
+        apm = WebRTCApm(lambda _pcm: None)
+        apm._running = True
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100):
+            self.assertTrue(apm.submit(b"first"))
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.26):
+            self.assertFalse(apm.submit(b"late"))
         self.assertTrue(apm.overloaded)
 
     def test_audio_callback_schedules_nonblocking_fallback(self):

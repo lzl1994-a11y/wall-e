@@ -65,6 +65,8 @@ class ArecordInputStream:
             str(self.samplerate),
             "-c",
             str(self.channels),
+            "--period-size", str(self.blocksize),
+            "--buffer-size", str(self.blocksize * 4),
         ]
         self._stop_event.clear()
         self._process = subprocess.Popen(

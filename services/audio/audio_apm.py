@@ -6,6 +6,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 
 
@@ -13,6 +14,7 @@ class WebRTCApm:
     """Feed native microphone PCM to one long-lived WebRTC APM process."""
 
     MAX_PENDING_FRAMES = 4
+    MAX_OUTPUT_STALL_SEC = 0.25
 
     def __init__(self, on_pcm: Callable[[bytes], None], *, pre_gain_db: float = 6.0,
                  output_rate: int = 16000, frame_ms: int = 30):
@@ -30,6 +32,9 @@ class WebRTCApm:
         self._reader: threading.Thread | None = None
         self._lock = threading.RLock()
         self._overloaded = threading.Event()
+        self._first_input_at: float | None = None
+        self._last_output_at: float | None = None
+        self.dropped_frames = 0
 
     @staticmethod
     def available() -> bool:
@@ -54,6 +59,8 @@ class WebRTCApm:
             self._running, self._input_rate = True, input_rate
             self._queue = queue.Queue(maxsize=self.MAX_PENDING_FRAMES)
             self._overloaded.clear()
+            self._first_input_at = self._last_output_at = None
+            self.dropped_frames = 0
             self._writer = threading.Thread(target=self._write, name="wali-apm-input", daemon=True)
             self._reader = threading.Thread(target=self._read, name="wali-apm-output", daemon=True)
             self._writer.start(); self._reader.start()
@@ -87,17 +94,31 @@ class WebRTCApm:
 
     def submit(self, pcm: bytes) -> bool:
         if not self._running or self.overloaded: return False
+        now = time.monotonic()
+        if self._first_input_at is None:
+            self._first_input_at = now
+        last_progress = self._last_output_at if self._last_output_at is not None else self._first_input_at
+        if now - last_progress > self.MAX_OUTPUT_STALL_SEC:
+            self._overloaded.set()
+            print("[AudioPipeline] APM 输出停滞超过实时预算，切换到直采样回退")
+            return False
         try:
             self._queue.put_nowait(pcm)
             return True
         except queue.Full:
-            # Printing once matters here: this method is called by the audio
-            # callback and a log line per 30 ms frame can itself keep the
-            # callback behind indefinitely.
-            if not self._overloaded.is_set():
-                self._overloaded.set()
-                print("[AudioPipeline] APM 输入积压，切换到直采样回退")
-            return False
+            # A capture burst is not a wedged processor. Keep only current
+            # frames; failure is determined by OUTPUT progress, not fullness.
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            self.dropped_frames += 1
+            if self.dropped_frames == 1:
+                print("[AudioPipeline] APM 突发输入，丢弃旧帧以保持实时")
+            if not self._running:
+                return False
+            self._queue.put_nowait(pcm)
+            return True
 
     def _command(self, input_rate: int) -> list[str]:
         gain = 10 ** (self.pre_gain_db / 20.0)
@@ -134,6 +155,8 @@ class WebRTCApm:
                 pending.extend(chunk)
                 while len(pending) >= frame_bytes:
                     frame = bytes(pending[:frame_bytes]); del pending[:frame_bytes]
-                    if self._running and not self.overloaded: self._on_pcm(frame)
+                    if self._running and not self.overloaded:
+                        self._last_output_at = time.monotonic()
+                        self._on_pcm(frame)
         except OSError:
             if self._running: print("[AudioPipeline] GStreamer APM 输出管道已关闭")

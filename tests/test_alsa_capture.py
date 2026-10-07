@@ -61,6 +61,8 @@ class ArecordInputStreamTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertEqual(command[:4], ["arecord", "-q", "-D", "plughw:3,0"])
         self.assertIn("48000", command)
+        self.assertEqual(command[command.index("--period-size") + 1], "4")
+        self.assertEqual(command[command.index("--buffer-size") + 1], "16")
         self.assertEqual(received[0][1], 4)
         np_testing.assert_allclose(
             received[0][0], source.astype(np.float32) / 32768.0

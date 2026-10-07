@@ -1,12 +1,13 @@
 """Integration coverage on the ROS/aiortc host; cleanly skipped elsewhere."""
 import json
-from unittest.mock import Mock
+import asyncio
+from unittest.mock import Mock, patch
 
 import pytest
 
 pytest.importorskip("rclpy")
 pytest.importorskip("aiortc")
-from nodes.remote_webrtc_gateway_node import CameraVideoTrack, RemoteWebRtcGateway
+from nodes.remote_webrtc_gateway_node import CameraVideoTrack, RobotAudioTrack, RemoteWebRtcGateway
 from services.remote.realtime_control import ChannelSequenceGate
 
 
@@ -53,3 +54,17 @@ def test_low_video_profile_is_applied_and_placeholder_keeps_dimensions():
     assert value._video_track.profile == "low"
     frame = CameraVideoTrack._make_frame(b"", 320, 240)
     assert (frame.width, frame.height) == (320, 240)
+
+
+def test_media_timestamps_follow_elapsed_time_after_cpu_stall():
+    async def scenario():
+        with patch("nodes.remote_webrtc_gateway_node.time.monotonic", return_value=100):
+            audio = RobotAudioTrack()
+            video = CameraVideoTrack(Mock(latest_camera_frame=lambda: b""))
+        with patch("nodes.remote_webrtc_gateway_node.time.monotonic", return_value=102):
+            audio_frame = await audio.recv()
+            video_frame = await video.recv()
+        assert audio_frame.pts == 96000
+        assert video_frame.pts == 180000
+        audio.stop(); video.stop()
+    asyncio.run(scenario())

@@ -167,6 +167,7 @@ class CameraVideoTrack(VideoStreamTrack):
         super().__init__()
         self._gateway = gateway
         self._next_frame_at = time.monotonic()
+        self._started_at = self._next_frame_at
         self._pts = 0
         self.profile = "normal"
 
@@ -178,8 +179,10 @@ class CameraVideoTrack(VideoStreamTrack):
         self._next_frame_at += 1.0 / fps
         if self._next_frame_at < time.monotonic():
             self._next_frame_at = time.monotonic()
-        pts = self._pts
-        self._pts += VIDEO_CLOCK_RATE // fps
+        # Frame-count timestamps fall behind wall time when an encoder stalls,
+        # making browser A/V synchronisation add growing audio delay.
+        pts = max(self._pts, round((time.monotonic() - self._started_at) * VIDEO_CLOCK_RATE))
+        self._pts = pts + 1
         time_base = Fraction(1, VIDEO_CLOCK_RATE)
         jpeg = self._gateway.latest_camera_frame()
         try:
@@ -218,6 +221,7 @@ class RobotAudioTrack(AudioStreamTrack):
         self._lock = threading.Lock()
         self._pts = 0
         self._next_frame_at = time.monotonic()
+        self._started_at = self._next_frame_at
 
     def push(self, pcm: bytes, sample_rate: int = ROBOT_AUDIO_SAMPLE_RATE) -> None:
         if not pcm:
@@ -240,6 +244,7 @@ class RobotAudioTrack(AudioStreamTrack):
             await asyncio.sleep(self._next_frame_at - now)
         elif now - self._next_frame_at > frame_duration * 2:
             self._next_frame_at = now
+            self._pts = max(self._pts, round((now - self._started_at) * ROBOT_AUDIO_SAMPLE_RATE))
         self._next_frame_at += frame_duration
         needed = ROBOT_AUDIO_FRAME_SAMPLES * 2
         with self._lock:
