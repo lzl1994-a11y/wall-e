@@ -38,6 +38,7 @@ from aiortc import (
     VideoStreamTrack,
 )
 from aiortc.sdp import candidate_from_sdp
+from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler, VideoFrame
 
 from services.action.action_command import ACTION_REQUEST_TOPIC, new_action_request_id
@@ -180,27 +181,30 @@ class CameraVideoTrack(VideoStreamTrack):
         time_base = Fraction(1, VIDEO_CLOCK_RATE)
         jpeg = self._gateway.latest_camera_frame()
         try:
-            if jpeg:
-                with Image.open(BytesIO(jpeg)) as image:
-                    rgb = image.convert("RGB")
-                    if rgb.size != (VIDEO_WIDTH, VIDEO_HEIGHT):
-                        rgb = rgb.resize(
-                            (VIDEO_WIDTH, VIDEO_HEIGHT),
-                            Image.Resampling.BILINEAR,
-                        )
-                    frame = VideoFrame.from_image(rgb)
-            else:
-                frame = VideoFrame.from_image(
-                    Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (4, 15, 19))
-                )
+            # JPEG decode, resize and colorspace conversion are CPU work. Keep
+            # them off aiortc's event loop so camera frames cannot stall audio,
+            # ICE timers or data-channel control.
+            frame = await asyncio.to_thread(self._make_frame, jpeg)
         except (OSError, ValueError) as exc:
             self._gateway.report_camera_error(exc)
-            frame = VideoFrame.from_image(
-                Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (4, 15, 19))
-            )
+            frame = await asyncio.to_thread(self._make_frame, b"")
         frame.pts = pts
         frame.time_base = time_base
         return frame
+
+    @staticmethod
+    def _make_frame(jpeg: bytes) -> VideoFrame:
+        if not jpeg:
+            image = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (4, 15, 19))
+        else:
+            with Image.open(BytesIO(jpeg)) as source:
+                image = source.convert("RGB")
+                if image.size != (VIDEO_WIDTH, VIDEO_HEIGHT):
+                    image = image.resize(
+                        (VIDEO_WIDTH, VIDEO_HEIGHT),
+                        Image.Resampling.BILINEAR,
+                    )
+        return VideoFrame.from_image(image)
 
 
 class RobotAudioTrack(AudioStreamTrack):
@@ -763,14 +767,12 @@ class RemoteWebRtcGateway:
         while not self._stopping.is_set() and track.readyState == "live":
             try:
                 frame = await track.recv()
+            except MediaStreamError:
+                self._remote_audio_ended("手机麦克风音轨结束")
+                return
             except Exception as exc:
-                self.node.get_logger().warning(f"远程音频轨道结束: {exc}")
-                self._send_event({
-                    "type": "error",
-                    "message": "远程音频轨道异常，连接已进入安全状态",
-                })
-                self._stop_robot_outputs()
-                self._schedule_peer_close()
+                self.node.get_logger().warning(f"远程音频接收失败: {exc}")
+                self._remote_audio_ended("手机麦克风音频接收异常")
                 return
             if not (self._remote_voice_active or self._remote_call_active):
                 continue
@@ -787,13 +789,23 @@ class RemoteWebRtcGateway:
                     self._remote_audio_pub.publish(message)
             except (AttributeError, TypeError, ValueError) as exc:
                 self.node.get_logger().warning(f"远程音频帧解析失败: {exc}")
-                self._send_event({
-                    "type": "error",
-                    "message": "远程音频帧解析失败，连接已进入安全状态",
-                })
-                self._stop_robot_outputs()
-                self._schedule_peer_close()
+                self._remote_audio_ended("手机麦克风音频处理异常")
                 return
+
+    def _remote_audio_ended(self, reason: str) -> None:
+        """Stop the failed audio direction while preserving video and control."""
+        peer = self._peer
+        state = peer.connectionState if peer is not None else "no-peer"
+        self.node.get_logger().warning(
+            f"{reason} (PeerConnection={state})；保留视频和控制连接"
+        )
+        self._publish_audio_control("remote_audio_track_ended")
+        self._set_remote_voice(False)
+        self._set_remote_call(False)
+        self._send_event({
+            "type": "warning",
+            "message": "手机麦克风音轨已中断；视频和遥控仍保持连接",
+        })
 
     def _send_event_threadsafe(self, event: dict) -> None:
         loop = self._loop
