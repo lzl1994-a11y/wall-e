@@ -192,8 +192,8 @@ def test_late_peer_teardown_does_not_reset_the_new_session():
 def test_deployed_turn_tcp_allocation_and_bidirectional_relay():
     """No ROS publishers, controller seat, microphone or actuator is touched.
 
-    Explicit public candidate selection ensures test payloads traverse both TCP
-    allocations; this is a TURN probe, not a browser/mobile WebRTC benchmark.
+    Disable host address gathering and perform ICE in both directions so both
+    TURN permissions exist before data is sent. This is not a mobile benchmark.
     """
     import aioice
     stage = "configuration"
@@ -202,7 +202,8 @@ def test_deployed_turn_tcp_allocation_and_bidirectional_relay():
         nonlocal stage
         kwargs = connection_kwargs(_ice_servers_for_transport(_ice_servers(_remote_config()), "tcp"))
         kwargs.pop("stun_server", None)
-        peers = [aioice.Connection(ice_controlling=role, transport_policy=aioice.TransportPolicy.RELAY, **kwargs)
+        peers = [aioice.Connection(ice_controlling=role, use_ipv4=False, use_ipv6=False,
+                                  transport_policy=aioice.TransportPolicy.RELAY, **kwargs)
                  for role in (True, False)]
         completed = False
         try:
@@ -214,9 +215,13 @@ def test_deployed_turn_tcp_allocation_and_bidirectional_relay():
             relays = [next(candidate for candidate in peer.local_candidates if candidate.type == "relay")
                       for peer in peers]
             for index, peer in enumerate(peers):
+                peer.remote_username = peers[1 - index].local_username
+                peer.remote_password = peers[1 - index].local_password
                 await peer.add_remote_candidate(relays[1 - index])
                 await peer.add_remote_candidate(None)
-                peer.set_selected_pair(1, relays[index].foundation, relays[1 - index].foundation)
+                assert all(candidate.type == "relay" for candidate in peer.local_candidates)
+            stage = "ice-handshake"
+            await asyncio.wait_for(asyncio.gather(*(peer.connect() for peer in peers)), 15)
             samples = []
             for seq in range(20):
                 payload = f"turn-tcp-probe-{seq}".encode()
