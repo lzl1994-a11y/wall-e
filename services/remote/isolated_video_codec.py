@@ -37,6 +37,7 @@ class IsolatedX3VideoCodec:
         self._process = None
         self._connection = None
         self._closed = False
+        self._failed = False
         local = child = None
         try:
             local, child = socket.socketpair()
@@ -77,7 +78,11 @@ class IsolatedX3VideoCodec:
             if not data:
                 raise HardwareVideoError("X3 codec process returned an empty frame")
             return data
+        except HardwareVideoError:
+            self._failed = True
+            raise
         except (OSError, EOFError, struct.error) as exc:
+            self._failed = True
             raise HardwareVideoError(f"X3 codec process transport failed: {exc}") from exc
 
     def close(self):
@@ -87,12 +92,13 @@ class IsolatedX3VideoCodec:
         failure = None
         try:
             if self._process is not None and self._process.poll() is None:
-                try:
-                    self._connection.sendall(_REQUEST.pack(0, 0, 0, 0, 0))
-                    self._response()
-                except (OSError, EOFError, HardwareVideoError) as exc:
-                    failure = exc
-                    self._process.terminate()
+                if not self._failed:
+                    try:
+                        self._connection.sendall(_REQUEST.pack(0, 0, 0, 0, 0))
+                        self._response()
+                    except (OSError, EOFError, HardwareVideoError) as exc:
+                        failure = exc
+                        self._process.terminate()
                 try:
                     self._process.wait(timeout=2)
                 except subprocess.TimeoutExpired:

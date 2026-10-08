@@ -67,6 +67,7 @@ from services.remote.remote_protocol import (
 from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
 from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
 from services.remote.opus_audio_jitter import install_opus_audio_jitter
+from services.remote.remote_audio_publisher import RemoteAudioPublisher
 from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
@@ -398,9 +399,9 @@ class RemoteWebRtcGateway:
         self._camera_command_pub = node.create_publisher(String, CAMERA_COMMAND_TOPIC, 10)
         self._motor_pub = node.create_publisher(String, MOTOR_REMOTE_TOPIC, 10)
         self._action_pub = node.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
-        self._remote_audio_pub = node.create_publisher(
+        self._remote_audio_pub = RemoteAudioPublisher(node, node.create_publisher(
             UInt8MultiArray, REMOTE_AUDIO_PLAYBACK_TOPIC, qos_profile_sensor_data
-        )
+        ))
         self._intercom_state_pub = node.create_publisher(
             String, REMOTE_INTERCOM_STATE_TOPIC, 10
         )
@@ -978,6 +979,9 @@ class RemoteWebRtcGateway:
                 result["robot_audio"] = source
             result["processing_ms_per_frame"] = round(stats.get("processing_ms", 0) / max(1, stats["decoded_frames"]), 2)
             result["max_decode_clock_lag_ms"] = round(stats.get("max_decode_clock_lag_ms", 0), 2)
+            publisher = getattr(self, "_remote_audio_pub", None)
+            if isinstance(publisher, RemoteAudioPublisher):
+                result["ros_audio_queue_peak_frames"] = publisher.peak_pending_frames
             for transceiver in peer.getTransceivers():
                 if transceiver.kind == "audio":
                     jitter = getattr(transceiver.receiver, "_RTCRtpReceiver__jitter_buffer", None)
