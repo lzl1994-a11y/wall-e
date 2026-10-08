@@ -55,6 +55,8 @@ def test_hardware_answer_selects_h264_when_browser_offers_vp8_first():
             assert codecs[0].mimeType == "video/H264"
             assert codecs[0].parameters["profile-level-id"] == "42001f"
         finally:
+            # Let aiortc's queued transport startup run before teardown.
+            await asyncio.sleep(0)
             await browser.close()
             if value._peer is not None:
                 await value._peer.close()

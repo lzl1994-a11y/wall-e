@@ -684,13 +684,16 @@ class RemoteWebRtcGateway:
             if peer.connectionState in {"failed", "closed", "disconnected"}:
                 await self._close_peer(peer)
 
-        await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
         if use_hardware:
+            # aiortc applies these preferences while processing the offer.
+            # Applying them afterwards leaves VP8 first in the answer, although
+            # this track already supplies encoded H264 packets.
             codecs = [c for c in RTCRtpSender.getCapabilities("video").codecs
                       if c.mimeType == "video/H264" and c.parameters.get("profile-level-id") == "42001f"]
             for transceiver in peer.getTransceivers():
                 if transceiver.kind == "video":
                     transceiver.setCodecPreferences(codecs)
+        await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
         answer = await peer.createAnswer()
         await peer.setLocalDescription(answer)
         await self._wait_ice_complete(peer)
