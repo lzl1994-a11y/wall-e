@@ -68,6 +68,7 @@ from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceG
 from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
 from services.remote.opus_audio_jitter import install_opus_audio_jitter
 from services.remote.remote_audio_publisher import RemoteAudioPublisher
+from services.remote.transport_diagnostics import install_transport_diagnostics
 from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
@@ -741,6 +742,7 @@ class RemoteWebRtcGateway:
                 if transceiver.kind == "video":
                     transceiver.setCodecPreferences(codecs)
         await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
+        self._transport_diagnostics = install_transport_diagnostics(peer)
         answer = await peer.createAnswer()
         if install_opus_audio_jitter(peer, answer.sdp):
             self._audio_track.enable_opus_packets()
@@ -947,6 +949,8 @@ class RemoteWebRtcGateway:
             if incoming is None:
                 return
             if start:
+                for diagnostic in getattr(self, "_transport_diagnostics", []):
+                    diagnostic.reset()
                 for transceiver in peer.getTransceivers():
                     if transceiver.kind == "audio":
                         jitter = getattr(transceiver.receiver, "_RTCRtpReceiver__jitter_buffer", None)
@@ -978,6 +982,7 @@ class RemoteWebRtcGateway:
                 source["packets"] = outgoing.packetsSent - stats["robot_packets_start"] if outgoing and stats["robot_packets_start"] is not None else None
                 result["robot_audio"] = source
             result["processing_ms_per_frame"] = round(stats.get("processing_ms", 0) / max(1, stats["decoded_frames"]), 2)
+            result["transport_processing"] = [diagnostic.snapshot() for diagnostic in getattr(self, "_transport_diagnostics", [])]
             result["max_decode_clock_lag_ms"] = round(stats.get("max_decode_clock_lag_ms", 0), 2)
             publisher = getattr(self, "_remote_audio_pub", None)
             if isinstance(publisher, RemoteAudioPublisher):
