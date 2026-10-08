@@ -15,5 +15,5 @@ sounddevice>=0.4,<1
 # Optional phone-control transport: WebRTC media/data tracks and signaling client.
 # Opus receive-buffer integration is explicitly verified against this release.
 aiortc==1.15.0
-uvloop==0.22.1; platform_system == "Linux"
+av==17.1.0
 websockets>=12,<16

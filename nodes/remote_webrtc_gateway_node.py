@@ -14,7 +14,6 @@ import json
 import os
 import threading
 import time
-import sys
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
@@ -42,7 +41,6 @@ from aiortc import (
 from aiortc.sdp import candidate_from_sdp
 from aiortc.rtcicetransport import parse_stun_turn_uri
 from aiortc.mediastreams import MediaStreamError
-from aiortc.codecs.opus import OpusEncoder
 from av import AudioFrame, AudioResampler, VideoFrame, Packet
 
 from services.action.action_command import ACTION_REQUEST_TOPIC, new_action_request_id
@@ -68,7 +66,6 @@ from services.remote.remote_protocol import (
 from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
 from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
 from services.remote.opus_audio_jitter import install_opus_audio_jitter
-from services.remote.remote_audio_publisher import RemoteAudioPublisher
 from services.remote.transport_diagnostics import install_transport_diagnostics
 from services.remote.mono_opus_encoder import MonoOpusEncoder
 from services.remote.ros_media_loop import run_ros_media
@@ -403,9 +400,9 @@ class RemoteWebRtcGateway:
         self._camera_command_pub = node.create_publisher(String, CAMERA_COMMAND_TOPIC, 10)
         self._motor_pub = node.create_publisher(String, MOTOR_REMOTE_TOPIC, 10)
         self._action_pub = node.create_publisher(String, ACTION_REQUEST_TOPIC, 10)
-        self._remote_audio_pub = RemoteAudioPublisher(node, node.create_publisher(
+        self._remote_audio_pub = node.create_publisher(
             UInt8MultiArray, REMOTE_AUDIO_PLAYBACK_TOPIC, qos_profile_sensor_data
-        ))
+        )
         self._intercom_state_pub = node.create_publisher(
             String, REMOTE_INTERCOM_STATE_TOPIC, 10
         )
@@ -531,11 +528,7 @@ class RemoteWebRtcGateway:
 
     def _run_thread(self) -> None:
         try:
-            if sys.platform == "linux":
-                import uvloop
-                uvloop.run(run_ros_media(self.node, self._run_loop, self._stopping))
-            else:
-                asyncio.run(run_ros_media(self.node, self._run_loop, self._stopping))
+            asyncio.run(run_ros_media(self.node, self._run_loop, self._stopping))
         except Exception as exc:
             self.node.get_logger().error(f"WebRTC 网关退出: {exc}")
 
@@ -991,9 +984,6 @@ class RemoteWebRtcGateway:
             result["processing_ms_per_frame"] = round(stats.get("processing_ms", 0) / max(1, stats["decoded_frames"]), 2)
             result["transport_processing"] = [diagnostic.snapshot() for diagnostic in getattr(self, "_transport_diagnostics", [])]
             result["max_decode_clock_lag_ms"] = round(stats.get("max_decode_clock_lag_ms", 0), 2)
-            publisher = getattr(self, "_remote_audio_pub", None)
-            if isinstance(publisher, RemoteAudioPublisher):
-                result["ros_audio_queue_peak_frames"] = publisher.peak_pending_frames
             for transceiver in peer.getTransceivers():
                 if transceiver.kind == "audio":
                     jitter = getattr(transceiver.receiver, "_RTCRtpReceiver__jitter_buffer", None)

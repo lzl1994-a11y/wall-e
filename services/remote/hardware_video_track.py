@@ -11,8 +11,7 @@ from aiortc import VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
 from aiortc.sdp import SessionDescription
 
-from services.remote.x3_video import HardwareVideoError, require_codec_library
-from services.remote.isolated_video_codec import IsolatedX3VideoCodec as X3VideoCodec
+from services.remote.x3_video import X3VideoCodec, HardwareVideoError, require_codec_library
 
 
 def hardware_h264_offered(sdp: str) -> bool:
