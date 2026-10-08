@@ -236,12 +236,12 @@ class CameraVideoTrack(VideoStreamTrack):
                 # camera resolution wastes CPU on pixels we immediately resize.
                 source.draft("RGB", (width, height))
                 image = source.convert("RGB")
-                if image.size != (width, height):
-                    image = image.resize(
-                        (width, height),
-                        Image.Resampling.BILINEAR,
-                    )
-        return VideoFrame.from_image(image)
+        # VP8/H264 need YUV420. Use the existing native scaler for resizing
+        # and colorspace conversion together, rather than resizing RGB in
+        # Pillow and converting it again in the encoder worker.
+        return VideoFrame.from_image(image).reformat(
+            width=width, height=height, format="yuv420p", interpolation="BILINEAR",
+        )
 
 
 class RobotAudioTrack(AudioStreamTrack):

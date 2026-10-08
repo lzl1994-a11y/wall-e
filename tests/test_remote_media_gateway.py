@@ -63,6 +63,7 @@ def test_low_video_profile_is_applied_and_placeholder_keeps_dimensions():
     assert value._video_track.profile == "low"
     frame = CameraVideoTrack._make_frame(b"", 320, 240)
     assert (frame.width, frame.height) == (320, 240)
+    assert frame.format.name == "yuv420p"
 
 
 def test_media_timestamps_follow_elapsed_time_after_cpu_stall():
@@ -100,6 +101,51 @@ def test_large_jpeg_uses_native_downsampling_before_load_and_preserves_orientati
     pixels = frame.to_ndarray(format="rgb24")
     assert pixels[:60, :, 0].mean() > 240
     assert pixels[-60:, :, 2].mean() > 240
+
+
+@pytest.mark.parametrize("size", [(320, 240), (480, 360)])
+@pytest.mark.parametrize("source_size", [(640, 480), (1920, 1080), (160, 120)])
+def test_video_resize_and_encoder_colorspace_are_prepared_together(size, source_size):
+    image = Image.new("RGB", source_size, "red")
+    w, h = source_size
+    image.paste("lime", (w // 2, 0, w, h // 2))
+    image.paste("blue", (0, h // 2, w // 2, h))
+    image.paste("white", (w // 2, h // 2, w, h))
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=95)
+    # The resize must not return to Pillow, even when draft() cannot reduce
+    # the input or the source needs upscaling.
+    with patch.object(Image.Image, "resize", side_effect=AssertionError("RGB resize")):
+        frame = CameraVideoTrack._make_frame(output.getvalue(), *size)
+    assert (frame.width, frame.height) == size
+    assert frame.format.name == "yuv420p"
+    # Encoder receives this frame directly: another conversion is a no-op.
+    assert frame.reformat(format="yuv420p") is frame
+    pixels = frame.to_ndarray(format="rgb24")
+    width, height = size
+    quadrants = [pixels[height // 8:height // 4, width // 8:width // 4],
+                 pixels[height // 8:height // 4, width * 5 // 8:width * 3 // 4],
+                 pixels[height * 5 // 8:height * 3 // 4, width // 8:width // 4],
+                 pixels[height * 5 // 8:height * 3 // 4, width * 5 // 8:width * 3 // 4]]
+    assert quadrants[0][:, :, 0].mean() > 240  # Top-left remains red.
+    assert quadrants[1][:, :, 1].mean() > 240  # Top-right remains green.
+    assert quadrants[2][:, :, 2].mean() > 240  # Bottom-left remains blue.
+    assert quadrants[3].mean() > 240  # Bottom-right remains white.
+
+
+def test_invalid_jpeg_uses_native_placeholder_and_reports_error():
+    async def scenario():
+        value = Mock(latest_camera_frame=lambda: b"not a jpeg")
+        track = CameraVideoTrack(value)
+        frame = await track.recv()
+        value.report_camera_error.assert_called_once()
+        assert (frame.width, frame.height) == (480, 360)
+        assert frame.format.name == "yuv420p"
+        assert frame.pts is not None
+        assert frame.time_base.numerator == 1
+        assert frame.time_base.denominator == 90000
+        track.stop()
+    asyncio.run(scenario())
 
 
 def test_tcp_retry_selects_a_turn_url_the_sdk_actually_uses():
