@@ -65,6 +65,7 @@ from services.remote.remote_protocol import (
 )
 from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
 from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
+from services.remote.opus_audio_jitter import install_opus_audio_jitter
 from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
@@ -698,6 +699,8 @@ class RemoteWebRtcGateway:
                     transceiver.setCodecPreferences(codecs)
         await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
         answer = await peer.createAnswer()
+        if install_opus_audio_jitter(peer, answer.sdp):
+            self.node.get_logger().info("Opus 接收缓冲已启用有限乱序窗口，缺包不阻塞后续音频")
         await peer.setLocalDescription(answer)
         await self._wait_ice_complete(peer)
         local = peer.localDescription

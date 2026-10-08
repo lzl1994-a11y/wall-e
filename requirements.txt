@@ -13,5 +13,6 @@ pyserial>=3.5,<4
 PyYAML>=6,<7
 sounddevice>=0.4,<1
 # Optional phone-control transport: WebRTC media/data tracks and signaling client.
-aiortc>=1.9,<2
+# Opus receive-buffer integration is explicitly verified against this release.
+aiortc==1.15.0
 websockets>=12,<16
