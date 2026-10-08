@@ -27,7 +27,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String, UInt8MultiArray
+from std_msgs.msg import MultiArrayDimension, String, UInt8MultiArray
 
 from aiortc import (
     AudioStreamTrack,
@@ -64,6 +64,7 @@ from services.remote.remote_protocol import (
     encode_voice_state,
 )
 from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
+from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
 from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
@@ -346,6 +347,7 @@ class RemoteWebRtcGateway:
         self._servo_gate = ChangedTargetGate(min_interval_sec=0.1)
         self._remote_voice_active = False
         self._remote_call_active = False
+        self._remote_audio_epoch = 0
         self._camera_client_id = f"webrtc:{robot_id}"[:96]
         self._neck_kinematics = load_neck_kinematics()
 
@@ -838,9 +840,11 @@ class RemoteWebRtcGateway:
     def _set_remote_voice(self, active: bool) -> None:
         if active == self._remote_voice_active:
             return
+        if active and not (self._remote_voice_active or self._remote_call_active):
+            self._remote_audio_epoch = max(self._remote_audio_epoch + 1, time.monotonic_ns())
         self._remote_voice_active = active
         self._intercom_state_pub.publish(
-            String(data=encode_voice_state("start" if active else "stop"))
+            String(data=encode_voice_state("start" if active else "stop", epoch=self._remote_audio_epoch))
         )
         self.node.get_logger().info(
             f"远程控制端上行语音{'开始' if active else '停止'}"
@@ -849,11 +853,13 @@ class RemoteWebRtcGateway:
     def _set_remote_call(self, active: bool) -> None:
         if active == self._remote_call_active:
             return
+        if active and not (self._remote_voice_active or self._remote_call_active):
+            self._remote_audio_epoch = max(self._remote_audio_epoch + 1, time.monotonic_ns())
         self._remote_call_active = active
         if not active:
             self._publish_audio_control("remote_call_end")
         self._intercom_state_pub.publish(
-            String(data=encode_call_state("start" if active else "end"))
+            String(data=encode_call_state("start" if active else "end", epoch=self._remote_audio_epoch))
         )
         self.node.get_logger().info(
             f"远程全双工通话{'开始' if active else '结束'}"
@@ -877,12 +883,17 @@ class RemoteWebRtcGateway:
                 return
             if not (self._remote_voice_active or self._remote_call_active):
                 continue
+            epoch = self._remote_audio_epoch
             try:
                 for converted in resampler.resample(frame):
                     samples = converted.to_ndarray().reshape(-1)
                     if samples.size == 0:
                         continue
                     message = UInt8MultiArray()
+                    message.layout.dim = [MultiArrayDimension(
+                        label=f"{REMOTE_AUDIO_EPOCH_LABEL_PREFIX}{epoch}",
+                        size=int(samples.size), stride=int(samples.size),
+                    )]
                     message.data = array(
                         "B",
                         samples.astype(np.int16, copy=False).tobytes(),

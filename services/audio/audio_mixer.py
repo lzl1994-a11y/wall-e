@@ -33,6 +33,7 @@ class _Lane:
             part.size for part in self.parts if not isinstance(part, _End)
         )
         excess = max(0, buffered - limit)
+        dropped = excess
         while self.parts and excess > 0:
             part = self.parts[0]
             if isinstance(part, _End):
@@ -44,6 +45,7 @@ class _Lane:
             else:
                 self.parts[0] = part[excess:]
                 excess = 0
+        return dropped
 
     def read(self, count):
         output = np.zeros(count, dtype=np.float32)
@@ -75,6 +77,7 @@ class AudioMixer:
         self.music_gain = 1.0
         self._tail_frames = 0
         self._pending_end = None
+        self.realtime_stats = None
 
     @property
     def active(self):
@@ -85,8 +88,12 @@ class AudioMixer:
         self.speech.push(samples)
 
     def play_realtime(self, samples, max_buffer_frames):
+        if self.realtime_stats is None:
+            self.realtime_stats = dict(received_samples=0, rendered_samples=0,
+                                       padded_samples=0, dropped_samples=0)
+        self.realtime_stats["received_samples"] += np.asarray(samples).size
         self.speech.push(samples)
-        self.speech.trim_to(max_buffer_frames)
+        self.realtime_stats["dropped_samples"] += self.speech.trim_to(max_buffer_frames)
 
     def end_speech(self, token="dialogue"):
         self.speech.parts.append(_End(token))
@@ -97,6 +104,7 @@ class AudioMixer:
         self.speech.active = False
         self._pending_end = None
         self._tail_frames = 0
+        self.realtime_stats = None
 
     def play_music(self, samples):
         self.music.push(samples)
@@ -122,6 +130,9 @@ class AudioMixer:
                 self._tail_frames = max(1, int(self.sample_rate * (max(0.0, output_latency) + 0.1)))
 
         music, _, _ = self.music.read(frames)
+        if self.realtime_stats is not None:
+            self.realtime_stats["rendered_samples"] += frames
+            self.realtime_stats["padded_samples"] += frames - voice_count
         duck = (voice_count > 0 or speech_was_active or self.speech.active
                 or self._pending_end is not None)
         target = self.duck_gain if duck else 1.0

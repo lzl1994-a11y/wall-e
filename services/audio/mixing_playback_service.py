@@ -18,6 +18,9 @@ class MixingPlaybackService(PlaybackService):
         self._mixer = None
         self._next_device_attempt = 0.0
         self._interrupt_requested = threading.Event()
+        self._output_underflows = 0
+        self._realtime_started_at = None
+        self._realtime_underflow_base = 0
         self.on_wake_complete = on_wake_complete
         self.on_system_complete = on_system_complete
         # The base constructor starts the worker; it waits until initialization.
@@ -36,11 +39,14 @@ class MixingPlaybackService(PlaybackService):
 
     def play_realtime(self, samples, max_buffer_sec=0.12):
         if samples is not None:
-            self._submit(
-                "play_realtime",
-                samples,
-                max(1, round(self.sample_rate * float(max_buffer_sec))),
-            )
+            with self._mix_lock:
+                if self._mixer.realtime_stats is None:
+                    self._realtime_started_at = time.monotonic()
+                    self._realtime_underflow_base = self._output_underflows
+                self._mixer.play_realtime(
+                    samples, max(1, round(self.sample_rate * float(max_buffer_sec)))
+                )
+            self._ready.set()
 
     def mark_turn_end(self):
         self._submit("end_speech", "dialogue")
@@ -49,6 +55,14 @@ class MixingPlaybackService(PlaybackService):
         """Abort foreground speech on a barge-in while keeping music alive."""
         with self._mix_lock:
             if self._mixer is not None:
+                stats = self._mixer.realtime_stats
+                if stats is not None:
+                    elapsed = time.monotonic() - self._realtime_started_at
+                    print("[Playback Service] 实时对讲播放统计: "
+                          f"seconds={elapsed:.3f} "
+                          + " ".join(f"{key}={value}" for key, value in stats.items())
+                          + f" output_underflows={self._output_underflows - self._realtime_underflow_base}",
+                          flush=True)
                 self._mixer.stop_speech()
         self._interrupt_requested.set()
         self._ready.set()
@@ -111,7 +125,10 @@ class MixingPlaybackService(PlaybackService):
             )
         try:
             if opened:
-                self._stream.write(audio.reshape(-1, 1))
+                if self._stream.write(audio.reshape(-1, 1)) is True:
+                    self._output_underflows += 1
+                    if self._output_underflows == 1:
+                        print("[Playback Service] 混音输出缓冲欠载", flush=True)
             else:
                 self._stopped.wait(self.BLOCK_SEC)
         finally:

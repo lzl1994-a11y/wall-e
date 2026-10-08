@@ -4,7 +4,6 @@
 只负责 ROS I/O。播放与降音逻辑在 services/audio/mixing_playback_service.py。
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -40,6 +39,7 @@ from services.remote.remote_protocol import (
     REMOTE_AUDIO_PLAYBACK_TOPIC,
     REMOTE_INTERCOM_STATE_TOPIC,
 )
+from services.remote.audio_playback_gate import AudioPlaybackGate, audio_message_epoch
 
 
 class AudioPlaybackNode(Node):
@@ -65,6 +65,7 @@ class AudioPlaybackNode(Node):
             on_system_complete=self._on_system_complete,
         )
         self._last_tts_sequence = 0
+        self._remote_audio_gate = AudioPlaybackGate()
         self._received_tts_chunks = 0
         self._missing_tts_chunks = 0
         self._network_prompts = None
@@ -129,24 +130,23 @@ class AudioPlaybackNode(Node):
         control = decode_audio_control(msg.data)
         if control is None:
             return
+        if control["source"] in {"remote_safety", "remote_audio_track_ended"}:
+            self._remote_audio_gate.close()
         self._player.stop_speech()
         self.get_logger().info(
             f"前景音频已停止 (source={control['source']})"
         )
 
     def _on_remote_audio(self, msg):
-        if not msg.data:
+        if (not msg.data or len(msg.data) % 2
+                or not self._remote_audio_gate.accepts(audio_message_epoch(msg))):
             return
         self._player.play_realtime(
             np.frombuffer(bytes(msg.data), dtype=np.int16)
         )
 
     def _on_remote_intercom_state(self, msg):
-        try:
-            payload = json.loads(msg.data)
-        except (TypeError, json.JSONDecodeError):
-            return
-        if isinstance(payload, dict) and payload.get("state") in {"stop", "end"}:
+        if self._remote_audio_gate.update(msg.data) and not self._remote_audio_gate.active:
             self._player.stop_speech()
             self.get_logger().info("实时对讲接收已停止")
 

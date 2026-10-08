@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from typing import Any
+from services.remote.audio_playback_gate import valid_audio_epoch
 
 
 # Legacy remote-ASR topics are kept for the local voice pipelines. The WebRTC
@@ -139,17 +140,27 @@ def decode_remote_message(raw: str | bytes) -> dict[str, Any] | None:
     return None
 
 
-def encode_voice_state(state: str) -> str:
+def encode_voice_state(state: str, *, epoch: int | None = None) -> str:
     if state not in {"start", "stop"}:
         raise ValueError("voice state must be start or stop")
-    return json.dumps({"state": state}, separators=(",", ":"), ensure_ascii=False)
+    payload = {"state": state}
+    if epoch is not None:
+        if not valid_audio_epoch(epoch):
+            raise ValueError("invalid audio epoch")
+        payload["epoch"] = epoch
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
-def encode_call_state(state: str) -> str:
+def encode_call_state(state: str, *, epoch: int | None = None) -> str:
     if state not in {"start", "end"}:
         raise ValueError("call state must be start or end")
+    payload = {"state": state, "mode": "session"}
+    if epoch is not None:
+        if not valid_audio_epoch(epoch):
+            raise ValueError("invalid audio epoch")
+        payload["epoch"] = epoch
     return json.dumps(
-        {"state": state, "mode": "session"},
+        payload,
         separators=(",", ":"),
         ensure_ascii=False,
     )
