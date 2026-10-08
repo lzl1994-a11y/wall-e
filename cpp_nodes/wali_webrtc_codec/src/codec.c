@@ -3,6 +3,7 @@
  * No frame dumps, process-global hooks, or SDK source modifications.
  */
 #include <stdint.h>
+#include <sys/types.h>
 #include <string.h>
 #include "hb_vdec.h"
 #include "hb_venc.h"
