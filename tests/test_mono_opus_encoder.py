@@ -11,7 +11,7 @@ from services.remote.mono_opus_encoder import MonoOpusEncoder
 
 def frame(pts, *, samples=960, layout="mono", rate=48000):
     result = AudioFrame(format="s16", layout=layout, samples=samples)
-    signal = (np.sin(np.arange(samples) * 2 * np.pi * 440 / 48000) * 6000).astype("int16")
+    signal = (np.sin((np.arange(samples) + pts) * 2 * np.pi * 440 / 48000) * 6000).astype("int16")
     data = signal.tobytes() * (2 if layout == "stereo" else 1)
     result.planes[0].update(data)
     result.sample_rate = rate

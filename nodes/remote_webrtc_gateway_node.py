@@ -14,6 +14,7 @@ import json
 import os
 import threading
 import time
+import sys
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
@@ -529,7 +530,7 @@ class RemoteWebRtcGateway:
 
     def _run_thread(self) -> None:
         try:
-            if os.name == "posix":
+            if sys.platform == "linux":
                 import uvloop
                 uvloop.run(self._run_loop())
             else:
