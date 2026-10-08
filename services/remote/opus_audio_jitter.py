@@ -9,8 +9,35 @@ sequence positions (including losses) rather than consecutive good frames.
 from __future__ import annotations
 
 import aiortc
+import queue
+from aiortc.codecs import get_decoder
 from aiortc.jitterbuffer import JitterBuffer, JitterFrame
 from aiortc.sdp import SessionDescription
+
+
+class AudioDecoderQueue(queue.Queue):
+    """Decode small audio blocks on the receiver loop without a thread hop.
+
+    The SDK worker waits on this queue only for its normal shutdown sentinel.
+    Video retains its worker. Audio frames go directly to the existing track
+    queue on the same event loop that receives their encoded RTP packets.
+    """
+    def __init__(self, output):
+        super().__init__()
+        self._output = output
+        self._decoder = None
+        self._codec_name = None
+
+    def put(self, task, block=True, timeout=None):
+        if task is None:
+            self._decoder = None
+            return super().put(task, block=block, timeout=timeout)
+        codec, encoded = task
+        if codec.name != self._codec_name:
+            self._decoder = get_decoder(codec)
+            self._codec_name = codec.name
+        for frame in self._decoder.decode(encoded):
+            self._output.put_nowait(frame)
 
 
 class OpusAudioJitterBuffer:
@@ -89,6 +116,12 @@ def install_opus_audio_jitter(peer, answer_sdp: str) -> int:
             continue
         if type(previous) is not JitterBuffer or previous.capacity != 16 or previous._origin is not None:
             raise RuntimeError("Unexpected aiortc audio jitter buffer state")
+        decoder_queue = getattr(receiver, "_RTCRtpReceiver__decoder_queue", None)
+        if (type(decoder_queue) is not queue.Queue or not decoder_queue.empty()
+                or getattr(receiver, "_RTCRtpReceiver__decoder_thread", None) is not None
+                or receiver.track is None or not hasattr(receiver.track, "_queue")):
+            raise RuntimeError("Unexpected aiortc audio decoder state")
+        receiver._RTCRtpReceiver__decoder_queue = AudioDecoderQueue(receiver.track._queue)
         setattr(receiver, field, OpusAudioJitterBuffer())
         installed += 1
     return installed
