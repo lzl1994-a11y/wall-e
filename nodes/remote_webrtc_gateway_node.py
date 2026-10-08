@@ -528,7 +528,11 @@ class RemoteWebRtcGateway:
 
     def _run_thread(self) -> None:
         try:
-            asyncio.run(self._run_loop())
+            if os.name == "posix":
+                import uvloop
+                uvloop.run(self._run_loop())
+            else:
+                asyncio.run(self._run_loop())
         except Exception as exc:
             self.node.get_logger().error(f"WebRTC 网关退出: {exc}")
 
