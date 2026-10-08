@@ -9,9 +9,12 @@ from services.audio.playback_service import PlaybackService
 
 class MixingPlaybackService(PlaybackService):
     BLOCK_SEC = 0.02
+    OUTPUT_LATENCY_SEC = 0.08
 
     def __init__(self, *args, on_wake_complete=None, on_system_complete=None, **kwargs):
-        kwargs.setdefault("latency", "low")
+        # Device "low" latency can be shorter than a 20 ms write block. On
+        # the X3, scheduler pauses repeatedly exhausted that hardware buffer.
+        kwargs.setdefault("latency", self.OUTPUT_LATENCY_SEC)
         self._mix_lock = threading.Lock()
         self._ready = threading.Event()
         self._stopped = threading.Event()
@@ -118,6 +121,8 @@ class MixingPlaybackService(PlaybackService):
             # Back off only an unavailable device, never a successful open.
             # A new PTT turn must be playable immediately after an abort.
             self._next_device_attempt = 0.0 if opened else time.monotonic() + 1.0
+            if opened:
+                print(f"[Playback Service] 混音输出实际延迟: {self._stream.latency:.3f}s", flush=True)
         latency = float(self._stream.latency) if opened else 0.0
         with self._mix_lock:
             audio, completed = self._mixer.render(

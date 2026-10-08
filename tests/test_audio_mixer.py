@@ -8,6 +8,40 @@ from services.audio.mixing_playback_service import MixingPlaybackService
 
 
 class AudioMixerTests(unittest.TestCase):
+    def test_output_has_reserve_for_a_60ms_scheduler_pause(self):
+        """A blocking sink catches up after pauses instead of losing PCM."""
+        clock = [100.0]
+        underflows = []
+
+        class Sink:
+            def __init__(self, *, latency, **kwargs):
+                # Model a device whose default low reserve is only 10 ms.
+                self.latency = 0.01 if latency == "low" else float(latency)
+                self.deadline = clock[0]
+
+            def start(self):
+                self.deadline = clock[0] + self.latency
+
+            def write(self, audio):
+                underflow = clock[0] > self.deadline
+                underflows.append(underflow)
+                self.deadline = max(self.deadline, clock[0]) + len(audio) / 1000
+                clock[0] = max(clock[0], self.deadline - self.latency)
+                return underflow
+
+        with patch("services.audio.playback_service.threading.Thread"):
+            player = MixingPlaybackService(sample_rate=1000)
+        with patch.object(player, "_refresh_device", return_value=True), patch(
+            "services.audio.playback_service.sd.OutputStream", Sink
+        ):
+            player.play_realtime(np.full(120, 1000, dtype=np.int16))
+            player._play_mix_block()
+            clock[0] += 0.06
+            for _ in range(5):
+                player._play_mix_block()
+        self.assertEqual(underflows, [False] * 6)
+        self.assertEqual(player._output_underflows, 0)
+
     def test_quick_second_ptt_reopens_speaker_without_dropping_audio(self):
         with patch("services.audio.playback_service.threading.Thread"):
             player = MixingPlaybackService(sample_rate=1000)
