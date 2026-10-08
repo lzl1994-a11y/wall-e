@@ -9,6 +9,7 @@ sequence positions (including losses) rather than consecutive good frames.
 from __future__ import annotations
 
 import aiortc
+import asyncio
 import queue
 from aiortc.codecs.opus import OpusDecoder
 import time
@@ -41,6 +42,22 @@ class AudioDecoderQueue(queue.Queue):
             self._decoder.codec.layout = "mono"
         for frame in self._decoder.decode(encoded):
             self._output.put_nowait(frame)
+
+
+def install_audio_transport_fairness(transport):
+    if getattr(transport, "_walle_audio_fairness", False):
+        return
+    original = transport._recv_next
+
+    async def receive_one():
+        await original()
+        # Queue.get() does not suspend when ICE already buffered a datagram.
+        # Yield between datagrams so a burst cannot starve PCM consumers,
+        # the 20 ms audio sender, video pacing or reliable stop messages.
+        await asyncio.sleep(0)
+
+    transport._recv_next = receive_one
+    transport._walle_audio_fairness = True
 
 
 class OpusAudioJitterBuffer:
@@ -137,6 +154,7 @@ def install_opus_audio_jitter(peer, answer_sdp: str) -> int:
             raise RuntimeError("Unexpected aiortc audio decoder state")
         if receiver.track is not None:
             receiver._RTCRtpReceiver__decoder_queue = AudioDecoderQueue(receiver.track._queue)
+            install_audio_transport_fairness(receiver.transport)
         setattr(receiver, field, OpusAudioJitterBuffer())
         installed += 1
     return installed

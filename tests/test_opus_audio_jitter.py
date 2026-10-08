@@ -88,6 +88,7 @@ def receiver(kind="audio", value=None):
     obj = SimpleNamespace(track=SimpleNamespace(kind=kind, _queue=asyncio.Queue()))
     obj._RTCRtpReceiver__decoder_queue = queue.Queue()
     obj._RTCRtpReceiver__decoder_thread = None
+    obj.transport = SimpleNamespace(_recv_next=None)
     setattr(obj, "_RTCRtpReceiver__jitter_buffer", value if value is not None else JitterBuffer(16, 4))
     return obj
 

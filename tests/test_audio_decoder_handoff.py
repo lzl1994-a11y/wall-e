@@ -46,3 +46,42 @@ def test_decode_queue_cannot_build_unbounded_playback_delay():
     with pytest.raises(RuntimeError, match="bounded"):
         AudioDecoderQueue(output).put((object(), object()))
     assert output.qsize() == 16
+
+
+def test_buffered_datagrams_do_not_starve_playback_and_audio_sender():
+    from types import SimpleNamespace
+    from services.remote.opus_audio_jitter import install_audio_transport_fairness
+
+    async def scenario():
+        output = asyncio.Queue()
+        received = []
+        played = []
+        sent = []
+
+        async def read_one():
+            index = len(received)
+            received.append(index)
+            output.put_nowait(index)
+            if output.qsize() > 16:
+                raise RuntimeError("PCM burst starved its consumer")
+
+        transport = SimpleNamespace(_recv_next=read_one)
+        install_audio_transport_fairness(transport)
+        installed = transport._recv_next
+        install_audio_transport_fairness(transport)
+        assert transport._recv_next is installed
+
+        async def receive():
+            for _ in range(100):
+                await transport._recv_next()
+
+        async def play_and_send():
+            for _ in range(100):
+                played.append(await output.get())
+                sent.append(len(received))
+
+        await asyncio.gather(receive(), play_and_send())
+        assert played == list(range(100))
+        assert sent[0] < 16  # Sending runs during a burst, before it finishes.
+
+    asyncio.run(scenario())
