@@ -69,6 +69,7 @@ from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
 from services.remote.opus_audio_jitter import install_opus_audio_jitter
 from services.remote.remote_audio_publisher import RemoteAudioPublisher
 from services.remote.transport_diagnostics import install_transport_diagnostics
+from services.remote.mono_opus_encoder import MonoOpusEncoder
 from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
@@ -285,7 +286,7 @@ class RobotAudioTrack(AudioStreamTrack):
             return
         if self._diagnostics["frames"]:
             raise RuntimeError("Cannot change audio encoding after streaming starts")
-        self._opus_encoder = OpusEncoder()
+        self._opus_encoder = MonoOpusEncoder()
 
     def push(self, pcm: bytes, sample_rate: int = ROBOT_AUDIO_SAMPLE_RATE) -> None:
         if not pcm:
@@ -1039,21 +1040,23 @@ class RemoteWebRtcGateway:
                             stats["pts_gap_samples"] += max(0, pts - stats["previous_end_pts"])
                         stats["previous_end_pts"] = pts + round(frame.samples * ROBOT_AUDIO_SAMPLE_RATE / frame.sample_rate)
                 for converted in resampler.resample(frame):
-                    samples = converted.to_ndarray().reshape(-1)
-                    if samples.size == 0:
+                    if converted.samples == 0:
                         continue
                     message = UInt8MultiArray()
                     message.layout.dim = [MultiArrayDimension(
                         label=f"{REMOTE_AUDIO_EPOCH_LABEL_PREFIX}{epoch}",
-                        size=int(samples.size), stride=int(samples.size),
+                        size=converted.samples, stride=converted.samples,
                     )]
                     message.data = array(
                         "B",
-                        samples.astype(np.int16, copy=False).tobytes(),
+                        bytes(converted.planes[0])[:converted.samples * 2],
                     )
                     self._remote_audio_pub.publish(message)
                 if stats is not None:
                     stats["processing_ms"] = stats.get("processing_ms", 0) + (time.monotonic() - processing_started) * 1000
+                # A queued decoder burst must give paced senders and control
+                # tasks a turn between frames, rather than draining all PCM.
+                await asyncio.sleep(0)
             except (AttributeError, TypeError, ValueError) as exc:
                 self.node.get_logger().warning(f"远程音频帧解析失败: {exc}")
                 self._remote_audio_ended("手机麦克风音频处理异常")
