@@ -73,7 +73,8 @@ def test_profile_switch_reopens_encoder_and_rejects_bad_input():
         finally:codec.close()
 
 
-def test_real_x3_jpeg_encode_switch_orientation_and_release():
+@pytest.mark.parametrize("isolated", [False, True])
+def test_real_x3_jpeg_encode_switch_orientation_and_release(isolated):
     import os
     if os.environ.get("WALLE_TEST_X3_VIDEO") != "1":
         pytest.skip("opt-in X3 SDK hardware test")
@@ -85,8 +86,10 @@ def test_real_x3_jpeg_encode_switch_orientation_and_release():
     stream=BytesIO();image.save(stream,format="JPEG",quality=95)
     jpeg=stream.getvalue()
     library=require_codec_library(Path(__file__).resolve().parents[1])
+    from services.remote.isolated_video_codec import IsolatedX3VideoCodec
+    codec_factory = IsolatedX3VideoCodec if isolated else X3VideoCodec
     for _ in range(2):
-        codec=X3VideoCodec(library)
+        codec=codec_factory(library)
         try:
             for w,h,fps in [(480,360,10),(320,240,5),(480,360,10)]:
                 bitstream=b''.join(codec.encode(jpeg,w,h,fps,i*9000) for i in range(12))
