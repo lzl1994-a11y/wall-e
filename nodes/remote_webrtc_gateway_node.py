@@ -348,6 +348,7 @@ class RemoteWebRtcGateway:
         self._remote_voice_active = False
         self._remote_call_active = False
         self._remote_audio_epoch = 0
+        self._remote_audio_stats = None
         self._camera_client_id = f"webrtc:{robot_id}"[:96]
         self._neck_kinematics = load_neck_kinematics()
 
@@ -842,7 +843,10 @@ class RemoteWebRtcGateway:
             return
         if active and not (self._remote_voice_active or self._remote_call_active):
             self._remote_audio_epoch = max(self._remote_audio_epoch + 1, time.monotonic_ns())
+            self._begin_remote_audio_stats()
         self._remote_voice_active = active
+        if not (self._remote_voice_active or self._remote_call_active):
+            self._finish_remote_audio_stats()
         self._intercom_state_pub.publish(
             String(data=encode_voice_state("start" if active else "stop", epoch=self._remote_audio_epoch))
         )
@@ -855,7 +859,10 @@ class RemoteWebRtcGateway:
             return
         if active and not (self._remote_voice_active or self._remote_call_active):
             self._remote_audio_epoch = max(self._remote_audio_epoch + 1, time.monotonic_ns())
+            self._begin_remote_audio_stats()
         self._remote_call_active = active
+        if not (self._remote_voice_active or self._remote_call_active):
+            self._finish_remote_audio_stats()
         if not active:
             self._publish_audio_control("remote_call_end")
         self._intercom_state_pub.publish(
@@ -864,6 +871,47 @@ class RemoteWebRtcGateway:
         self.node.get_logger().info(
             f"远程全双工通话{'开始' if active else '结束'}"
         )
+
+    def _begin_remote_audio_stats(self) -> None:
+        self._remote_audio_stats = dict(decoded_frames=0, decoded_samples=0,
+                                       max_frame_gap_ms=0.0, pts_gap_samples=0,
+                                       previous_at=None, previous_end_pts=None,
+                                       rtp_start=None)
+        self._queue_remote_audio_stats(self._remote_audio_stats, start=True)
+
+    def _finish_remote_audio_stats(self) -> None:
+        stats = self._remote_audio_stats
+        self._remote_audio_stats = None
+        if stats is not None:
+            self._queue_remote_audio_stats(stats, start=False)
+
+    def _queue_remote_audio_stats(self, stats, *, start) -> None:
+        loop, peer = self._loop, self._peer
+        if loop is not None and loop.is_running() and peer is not None:
+            loop.call_soon_threadsafe(lambda: loop.create_task(
+                self._report_remote_audio_stats(peer, stats, start=start)
+            ))
+
+    async def _report_remote_audio_stats(self, peer, stats, *, start) -> None:
+        try:
+            report = await peer.getStats()
+            incoming = next((entry for entry in report.values()
+                             if entry.type == "inbound-rtp" and entry.kind == "audio"), None)
+            if incoming is None:
+                return
+            if start:
+                stats["rtp_start"] = (incoming.packetsReceived, incoming.packetsLost)
+                return
+            baseline = stats["rtp_start"]
+            result = {key: stats[key] for key in
+                      ("decoded_frames", "decoded_samples", "max_frame_gap_ms", "pts_gap_samples")}
+            result["max_frame_gap_ms"] = round(result["max_frame_gap_ms"], 2)
+            result["rtp_received"] = incoming.packetsReceived - baseline[0] if baseline else None
+            result["rtp_lost"] = incoming.packetsLost - baseline[1] if baseline else None
+            result["rtp_jitter_ms"] = round(incoming.jitter / 48, 2)
+            self.node.get_logger().info("远程音频接收统计: " + json.dumps(result))
+        except Exception as exc:
+            self.node.get_logger().warning(f"远程音频接收统计不可用: {type(exc).__name__}")
 
     async def _consume_remote_audio(self, track) -> None:
         resampler = AudioResampler(
@@ -885,6 +933,19 @@ class RemoteWebRtcGateway:
                 continue
             epoch = self._remote_audio_epoch
             try:
+                stats = self._remote_audio_stats
+                if stats is not None:
+                    now = time.monotonic()
+                    stats["decoded_frames"] += 1
+                    stats["decoded_samples"] += frame.samples
+                    if stats["previous_at"] is not None:
+                        stats["max_frame_gap_ms"] = max(stats["max_frame_gap_ms"], (now - stats["previous_at"]) * 1000)
+                    stats["previous_at"] = now
+                    if frame.pts is not None and frame.time_base is not None and frame.sample_rate > 0:
+                        pts = round(frame.pts * frame.time_base * ROBOT_AUDIO_SAMPLE_RATE)
+                        if stats["previous_end_pts"] is not None:
+                            stats["pts_gap_samples"] += max(0, pts - stats["previous_end_pts"])
+                        stats["previous_end_pts"] = pts + round(frame.samples * ROBOT_AUDIO_SAMPLE_RATE / frame.sample_rate)
                 for converted in resampler.resample(frame):
                     samples = converted.to_ndarray().reshape(-1)
                     if samples.size == 0:

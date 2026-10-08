@@ -21,6 +21,27 @@ from nodes.remote_webrtc_gateway_node import (
 from services.remote.realtime_control import ChannelSequenceGate
 
 
+def test_receive_diagnostics_separate_rtp_loss_from_decoded_sample_gaps():
+    from types import SimpleNamespace
+    value = RemoteWebRtcGateway.__new__(RemoteWebRtcGateway)
+    value.node = Mock()
+    peer = Mock(getStats=AsyncMock(return_value={"audio": SimpleNamespace(
+        type="inbound-rtp", kind="audio", packetsReceived=100, packetsLost=20, jitter=960,
+    )}))
+    stats = dict(decoded_frames=50, decoded_samples=48000, max_frame_gap_ms=100.0,
+                 pts_gap_samples=9600, rtp_start=None)
+    asyncio.run(value._report_remote_audio_stats(peer, stats, start=True))
+    peer.getStats.return_value["audio"].packetsReceived = 170
+    peer.getStats.return_value["audio"].packetsLost = 50
+    asyncio.run(value._report_remote_audio_stats(peer, stats, start=False))
+    result = json.loads(value.node.get_logger.return_value.info.call_args.args[0].split(": ", 1)[1])
+    assert result["rtp_received"] == 70
+    assert result["rtp_lost"] == 30
+    assert result["rtp_jitter_ms"] == 20
+    assert result["decoded_samples"] == 48000
+    assert result["pts_gap_samples"] == 9600
+
+
 def test_hardware_answer_selects_h264_when_browser_offers_vp8_first():
     """Exercise the gateway's real answer path, including aiortc negotiation."""
     from aiortc import RTCPeerConnection, RTCConfiguration, VideoStreamTrack
