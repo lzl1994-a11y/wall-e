@@ -12,6 +12,7 @@ import asyncio
 from array import array
 import json
 import os
+import sys
 import threading
 import time
 from fractions import Fraction
@@ -1190,6 +1191,11 @@ class RemoteWebRtcNode(Node):
 
 
 def main(args=None):
+    # CFFI crypto releases the GIL for ~40 us operations. With competing ROS
+    # and video threads, the default 5 ms slice turns these into millisecond
+    # waits on every packet and builds an audio receive backlog. The measured
+    # X3 SRTP p95 drops from 5.9 ms to 0.34 ms with a 0.1 ms slice.
+    sys.setswitchinterval(0.0001)
     rclpy.init(args=args)
     node = None
     try:
