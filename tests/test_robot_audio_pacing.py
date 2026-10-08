@@ -69,3 +69,47 @@ def test_long_pause_without_source_does_not_send_seconds_of_stale_frames():
         assert not frame.to_ndarray().any()
         track.stop()
     asyncio.run(scenario())
+
+
+def test_preencoded_opus_survives_catchup_and_decodes_in_stock_receiver():
+    from av import Packet
+    from aiortc.codecs.opus import OpusDecoder, OpusEncoder
+    from aiortc.jitterbuffer import JitterFrame
+
+    async def scenario():
+        with clock(100):
+            track = RobotAudioTrack()
+            track.enable_opus_packets()
+            track.enable_opus_packets()
+            signal = (np.sin(np.arange(960 * 4) * 2 * np.pi * 440 / 48000) * 6000).astype(np.int16)
+            track.push(signal.tobytes())
+        with clock(100.08):
+            packets = [await track.recv() for _ in range(4)]
+        assert all(isinstance(packet, Packet) for packet in packets)
+        assert [packet.pts for packet in packets] == [0, 960, 1920, 2880]
+        decoder = OpusDecoder()
+        packer = OpusEncoder()
+        decoded = []
+        for packet in packets:
+            payloads, timestamp = packer.pack(packet)
+            decoded.extend(decoder.decode(JitterFrame(payloads[0], timestamp)))
+        assert sum(frame.samples for frame in decoded) == 960 * 4
+        samples = np.concatenate([frame.to_ndarray().reshape(-1, 2)[:, 0] for frame in decoded])
+        # Verify intelligible signal survives the real encoder/decoder, including
+        # the Opus algorithmic delay, rather than merely checking object shape.
+        frequency = np.fft.rfftfreq(len(samples), 1 / 48000)[np.argmax(abs(np.fft.rfft(samples)))]
+        assert abs(frequency - 440) < 15
+        assert np.sqrt(np.mean(samples.astype(float) ** 2)) > 1000
+        track.stop()
+    asyncio.run(scenario())
+
+
+def test_encoding_mode_cannot_change_after_first_audio_frame():
+    async def scenario():
+        with clock(100):
+            track = RobotAudioTrack()
+            await track.recv()
+            with pytest.raises(RuntimeError, match="after streaming starts"):
+                track.enable_opus_packets()
+        track.stop()
+    asyncio.run(scenario())

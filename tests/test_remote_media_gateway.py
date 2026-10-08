@@ -78,6 +78,7 @@ def test_hardware_answer_selects_h264_when_browser_offers_vp8_first():
             from services.remote.opus_audio_jitter import OpusAudioJitterBuffer
             audio = next(t.receiver for t in value._peer.getTransceivers() if t.kind == "audio")
             assert isinstance(audio._RTCRtpReceiver__jitter_buffer, OpusAudioJitterBuffer)
+            assert value._audio_track._opus_encoder is not None
         finally:
             # Let aiortc's queued transport startup run before teardown.
             await asyncio.sleep(0)

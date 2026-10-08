@@ -41,7 +41,8 @@ from aiortc import (
 from aiortc.sdp import candidate_from_sdp
 from aiortc.rtcicetransport import parse_stun_turn_uri
 from aiortc.mediastreams import MediaStreamError
-from av import AudioFrame, AudioResampler, VideoFrame
+from aiortc.codecs.opus import OpusEncoder
+from av import AudioFrame, AudioResampler, VideoFrame, Packet
 
 from services.action.action_command import ACTION_REQUEST_TOPIC, new_action_request_id
 from services.audio.audio_control_protocol import (
@@ -263,12 +264,26 @@ class RobotAudioTrack(AudioStreamTrack):
         self._next_frame_at = time.monotonic()
         self._started_at = self._next_frame_at
         self._last_return_at = None
+        self._opus_encoder = None
         self._diagnostics = dict(frames=0, pushed_samples=0, source_dropped_samples=0,
                                  caller_gap_ms=0.0, pacer_wait_ms=0.0, clock_resets=0)
 
     def diagnostics_snapshot(self):
         with self._lock:
             return dict(self._diagnostics)
+
+    def enable_opus_packets(self):
+        """Use the negotiated Opus codec through aiortc's encoded Packet API.
+
+        Encoding a 20 ms block takes about 2 ms on X3. Doing it here avoids
+        a default-executor round trip between every block on the media loop.
+        Other negotiated codecs keep the regular AudioFrame path.
+        """
+        if self._opus_encoder is not None:
+            return
+        if self._diagnostics["frames"]:
+            raise RuntimeError("Cannot change audio encoding after streaming starts")
+        self._opus_encoder = OpusEncoder()
 
     def push(self, pcm: bytes, sample_rate: int = ROBOT_AUDIO_SAMPLE_RATE) -> None:
         if not pcm:
@@ -318,6 +333,14 @@ class RobotAudioTrack(AudioStreamTrack):
         frame.time_base = Fraction(1, ROBOT_AUDIO_SAMPLE_RATE)
         frame.pts = self._pts
         self._pts += ROBOT_AUDIO_FRAME_SAMPLES
+        if self._opus_encoder is not None:
+            payloads, timestamp = self._opus_encoder.encode(frame)
+            if len(payloads) != 1 or timestamp is None:
+                raise RuntimeError("Expected one Opus packet per 20 ms audio block")
+            packet = Packet(payloads[0])
+            packet.pts = packet.dts = timestamp
+            packet.time_base = frame.time_base
+            frame = packet
         self._diagnostics["frames"] += 1
         self._last_return_at = time.monotonic()
         return frame
@@ -719,6 +742,7 @@ class RemoteWebRtcGateway:
         await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
         answer = await peer.createAnswer()
         if install_opus_audio_jitter(peer, answer.sdp):
+            self._audio_track.enable_opus_packets()
             self.node.get_logger().info("Opus 接收缓冲已启用有限乱序窗口，缺包不阻塞后续音频")
         await peer.setLocalDescription(answer)
         await self._wait_ice_complete(peer)
