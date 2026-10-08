@@ -3,6 +3,7 @@ import json
 import asyncio
 import os
 import time
+import threading
 from io import BytesIO
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -18,6 +19,48 @@ from nodes.remote_webrtc_gateway_node import (
     _ice_servers, _remote_config,
 )
 from services.remote.realtime_control import ChannelSequenceGate
+
+
+def test_hardware_answer_selects_h264_when_browser_offers_vp8_first():
+    """Exercise the gateway's real answer path, including aiortc negotiation."""
+    from aiortc import RTCPeerConnection, RTCConfiguration, VideoStreamTrack
+    from aiortc.sdp import SessionDescription
+
+    async def scenario():
+        browser = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        browser.addTransceiver("video", direction="recvonly")
+        value = gateway()
+        value._peer = None
+        value._controller_peer_id = None
+        value._ice_servers = []
+        value._video_backend = "x3"
+        value._frame_lock = threading.Lock()
+        value.robot_id = "test-robot"
+        value._channels = {}
+        value._socket = Mock(send=AsyncMock())
+        value._close_peer = AsyncMock()
+        value._acquire_camera = Mock()
+        value._wait_ice_complete = AsyncMock()
+        track = VideoStreamTrack()
+        try:
+            offer = await browser.createOffer()
+            offered = SessionDescription.parse(offer.sdp).media[0].rtp.codecs
+            assert offered[0].mimeType == "video/VP8"
+            with patch("nodes.remote_webrtc_gateway_node.HardwareCameraVideoTrack.create", return_value=track):
+                await value._accept_offer(offer.sdp, sender="test-browser")
+            response = json.loads(value._socket.send.call_args.args[0])
+            codecs = SessionDescription.parse(response["signal"]["sdp"]).media[0].rtp.codecs
+            assert len(codecs) == 1
+            assert codecs[0].mimeType == "video/H264"
+            assert codecs[0].parameters["profile-level-id"] == "42001f"
+        finally:
+            await browser.close()
+            if value._peer is not None:
+                await value._peer.close()
+            track.stop()
+            if getattr(value, "_audio_track", None) is not None:
+                value._audio_track.stop()
+    asyncio.run(scenario())
 
 
 def gateway():
