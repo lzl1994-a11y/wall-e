@@ -12,6 +12,7 @@ import asyncio
 from array import array
 import json
 import os
+import sys
 import threading
 import time
 from fractions import Fraction
@@ -1175,6 +1176,9 @@ class RemoteWebRtcNode(Node):
 
 
 def main(args=None):
+    # ROS callbacks, the media loop and codec workers share one interpreter.
+    # A 5 ms GIL slice across these threads can exceed a 20 ms audio deadline.
+    sys.setswitchinterval(0.001)
     rclpy.init(args=args)
     node = None
     try:
