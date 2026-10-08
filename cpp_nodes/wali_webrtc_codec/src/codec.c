@@ -59,6 +59,7 @@ int walle_decode(const uint8_t *jpeg, int length, uint8_t *out, int capacity, in
         attr.stAttrJpeg.enRotation = CODEC_ROTATION_0;
         int r = HB_VDEC_CreateChn(DECODER, &attr); if (r) return r;
         dec_created = 1;
+        r = HB_VDEC_SetChnAttr(DECODER, &attr); if (r) return r;
         r = HB_SYS_Alloc(&jpeg_physical, &jpeg_pixels, MAX_JPEG); if (r) return r;
         r = HB_VDEC_StartRecvStream(DECODER); if (r) return r;
         dec_started = 1;
