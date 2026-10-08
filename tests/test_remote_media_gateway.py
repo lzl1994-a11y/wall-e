@@ -29,6 +29,7 @@ def test_hardware_answer_selects_h264_when_browser_offers_vp8_first():
     async def scenario():
         browser = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         browser.addTransceiver("video", direction="recvonly")
+        browser.addTransceiver("audio", direction="sendrecv")
         value = gateway()
         value._peer = None
         value._controller_peer_id = None
