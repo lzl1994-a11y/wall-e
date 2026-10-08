@@ -262,6 +262,13 @@ class RobotAudioTrack(AudioStreamTrack):
         self._pts = 0
         self._next_frame_at = time.monotonic()
         self._started_at = self._next_frame_at
+        self._last_return_at = None
+        self._diagnostics = dict(frames=0, pushed_samples=0, source_dropped_samples=0,
+                                 caller_gap_ms=0.0, pacer_wait_ms=0.0, clock_resets=0)
+
+    def diagnostics_snapshot(self):
+        with self._lock:
+            return dict(self._diagnostics)
 
     def push(self, pcm: bytes, sample_rate: int = ROBOT_AUDIO_SAMPLE_RATE) -> None:
         if not pcm:
@@ -272,22 +279,28 @@ class RobotAudioTrack(AudioStreamTrack):
         samples = np.frombuffer(raw, dtype=np.int16)
         samples = _resample_mono(samples, sample_rate, ROBOT_AUDIO_SAMPLE_RATE)
         with self._lock:
+            self._diagnostics["pushed_samples"] += samples.size
             self._buffer.extend(samples.tobytes())
             max_bytes = int(ROBOT_AUDIO_SAMPLE_RATE * 2 * self.MAX_BUFFER_SEC)
             if len(self._buffer) > max_bytes:
+                self._diagnostics["source_dropped_samples"] += (len(self._buffer) - max_bytes) // 2
                 del self._buffer[:-max_bytes]
 
     async def recv(self):
         frame_duration = ROBOT_AUDIO_FRAME_SAMPLES / ROBOT_AUDIO_SAMPLE_RATE
         now = time.monotonic()
+        if self._last_return_at is not None:
+            self._diagnostics["caller_gap_ms"] += (now - self._last_return_at) * 1000
         if self._next_frame_at > now:
             await asyncio.sleep(self._next_frame_at - now)
+            self._diagnostics["pacer_wait_ms"] += (time.monotonic() - now) * 1000
         elif now - self._next_frame_at > self.MAX_BUFFER_SEC:
             # Catch up ordinary scheduler pauses using the bounded source
             # queue. Skipping the clock after only 40 ms made the browser
             # conceal good audio that was already waiting here. Long stalls
             # still resynchronise rather than accumulating seconds of delay.
             self._next_frame_at = now
+            self._diagnostics["clock_resets"] += 1
             self._pts = max(self._pts, round((now - self._started_at) * ROBOT_AUDIO_SAMPLE_RATE))
         self._next_frame_at += frame_duration
         needed = ROBOT_AUDIO_FRAME_SAMPLES * 2
@@ -305,6 +318,8 @@ class RobotAudioTrack(AudioStreamTrack):
         frame.time_base = Fraction(1, ROBOT_AUDIO_SAMPLE_RATE)
         frame.pts = self._pts
         self._pts += ROBOT_AUDIO_FRAME_SAMPLES
+        self._diagnostics["frames"] += 1
+        self._last_return_at = time.monotonic()
         return frame
 
 
@@ -908,6 +923,11 @@ class RemoteWebRtcGateway:
                 return
             if start:
                 stats["rtp_start"] = (incoming.packetsReceived, incoming.packetsLost)
+                audio_track = getattr(self, "_audio_track", None)
+                stats["robot_audio_start"] = audio_track.diagnostics_snapshot() if audio_track else None
+                outgoing = next((entry for entry in report.values()
+                                 if entry.type == "outbound-rtp" and entry.kind == "audio"), None)
+                stats["robot_packets_start"] = outgoing.packetsSent if outgoing else None
                 return
             baseline = stats["rtp_start"]
             result = {key: stats[key] for key in
@@ -916,6 +936,18 @@ class RemoteWebRtcGateway:
             result["rtp_received"] = incoming.packetsReceived - baseline[0] if baseline else None
             result["rtp_lost"] = incoming.packetsLost - baseline[1] if baseline else None
             result["rtp_jitter_ms"] = round(incoming.jitter / 48, 2)
+            robot_base = stats.get("robot_audio_start")
+            audio_track = getattr(self, "_audio_track", None)
+            if robot_base is not None and audio_track is not None:
+                source = audio_track.diagnostics_snapshot()
+                source = {key: value - robot_base[key] for key, value in source.items()}
+                for key in ("caller_gap_ms", "pacer_wait_ms"):
+                    source[key] = round(source[key] / max(1, source["frames"]), 2)
+                outgoing = next((entry for entry in report.values()
+                                 if entry.type == "outbound-rtp" and entry.kind == "audio"), None)
+                source["packets"] = outgoing.packetsSent - stats["robot_packets_start"] if outgoing and stats["robot_packets_start"] is not None else None
+                result["robot_audio"] = source
+            result["processing_ms_per_frame"] = round(stats.get("processing_ms", 0) / max(1, stats["decoded_frames"]), 2)
             self.node.get_logger().info("远程音频接收统计: " + json.dumps(result))
         except Exception as exc:
             self.node.get_logger().warning(f"远程音频接收统计不可用: {type(exc).__name__}")
@@ -940,6 +972,7 @@ class RemoteWebRtcGateway:
                 continue
             epoch = self._remote_audio_epoch
             try:
+                processing_started = time.monotonic()
                 stats = self._remote_audio_stats
                 if stats is not None:
                     now = time.monotonic()
@@ -967,6 +1000,8 @@ class RemoteWebRtcGateway:
                         samples.astype(np.int16, copy=False).tobytes(),
                     )
                     self._remote_audio_pub.publish(message)
+                if stats is not None:
+                    stats["processing_ms"] = stats.get("processing_ms", 0) + (time.monotonic() - processing_started) * 1000
             except (AttributeError, TypeError, ValueError) as exc:
                 self.node.get_logger().warning(f"远程音频帧解析失败: {exc}")
                 self._remote_audio_ended("手机麦克风音频处理异常")
