@@ -119,9 +119,11 @@ def install_opus_audio_jitter(peer, answer_sdp: str) -> int:
         decoder_queue = getattr(receiver, "_RTCRtpReceiver__decoder_queue", None)
         if (type(decoder_queue) is not queue.Queue or not decoder_queue.empty()
                 or getattr(receiver, "_RTCRtpReceiver__decoder_thread", None) is not None
-                or receiver.track is None or not hasattr(receiver.track, "_queue")):
+                or (receiver.track is not None and not hasattr(receiver.track, "_queue"))):
             raise RuntimeError("Unexpected aiortc audio decoder state")
-        receiver._RTCRtpReceiver__decoder_queue = AudioDecoderQueue(receiver.track._queue)
+        # A browser receiving only robot audio has no incoming audio track.
+        if receiver.track is not None:
+            receiver._RTCRtpReceiver__decoder_queue = AudioDecoderQueue(receiver.track._queue)
         setattr(receiver, field, OpusAudioJitterBuffer())
         installed += 1
     return installed
