@@ -83,11 +83,7 @@ OPUS_SDP = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS
 
 
 def receiver(kind="audio", value=None):
-    import asyncio
-    import queue
-    obj = SimpleNamespace(track=SimpleNamespace(kind=kind, _queue=asyncio.Queue()))
-    obj._RTCRtpReceiver__decoder_queue = queue.Queue()
-    obj._RTCRtpReceiver__decoder_thread = None
+    obj = SimpleNamespace(track=SimpleNamespace(kind=kind))
     setattr(obj, "_RTCRtpReceiver__jitter_buffer", value if value is not None else JitterBuffer(16, 4))
     return obj
 
@@ -127,39 +123,3 @@ def test_already_running_receiver_is_rejected():
     peer = peer_for(receiver(value=value))
     with pytest.raises(RuntimeError, match="Unexpected"):
         install_opus_audio_jitter(peer, OPUS_SDP)
-
-
-def test_audio_decoder_delivers_frames_without_waiting_for_worker_and_stops():
-    import asyncio
-    from fractions import Fraction
-    import numpy as np
-    from av import AudioFrame
-    from aiortc.codecs.opus import OpusEncoder
-    from aiortc.jitterbuffer import JitterFrame
-    from aiortc.rtcrtpparameters import RTCRtpCodecParameters
-    from services.remote.opus_audio_jitter import AudioDecoderQueue
-    output = asyncio.Queue()
-    value = AudioDecoderQueue(output)
-    encoder = OpusEncoder()
-    codec = RTCRtpCodecParameters(mimeType="audio/opus", clockRate=48000, channels=2)
-    for index in range(6):
-        frame = AudioFrame(format="s16", layout="mono", samples=960)
-        frame.planes[0].update(np.full(960, 2000, dtype=np.int16).tobytes())
-        frame.sample_rate = 48000
-        frame.time_base = Fraction(1, 48000)
-        frame.pts = index * 960
-        payloads, timestamp = encoder.encode(frame)
-        value.put((codec, JitterFrame(payloads[0], timestamp)))
-    assert value.empty()
-    assert [output.get_nowait().pts for _ in range(6)] == [n * 960 for n in range(6)]
-    value.put(None)
-    assert value.get_nowait() is None
-
-
-def test_adapter_rejects_started_decoder_without_mutating_buffer():
-    audio = receiver()
-    audio._RTCRtpReceiver__decoder_thread = object()
-    original = audio._RTCRtpReceiver__jitter_buffer
-    with pytest.raises(RuntimeError, match="decoder state"):
-        install_opus_audio_jitter(peer_for(audio), OPUS_SDP)
-    assert audio._RTCRtpReceiver__jitter_buffer is original

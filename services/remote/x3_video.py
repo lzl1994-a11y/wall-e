@@ -86,7 +86,10 @@ class X3VideoCodec:
             import numpy as np
             source = np.frombuffer(pixels, dtype=np.uint8).reshape((source_height * 3 // 2, source_width))
             frame = av.VideoFrame.from_ndarray(source, format="nv12")
-            pixels = frame.reformat(width=width, height=height, format="nv12").to_ndarray().tobytes()
+            # Auto scaling creates a CPU-sized pool on every fresh VideoFrame.
+            # One scaling thread is faster for these small frames on X3 and
+            # leaves the realtime media loop room to receive audio.
+            pixels = frame.reformat(width=width, height=height, format="nv12", threads=1).to_ndarray().tobytes()
         profile = (width, height, fps)
         if profile != self._profile:
             self._check(self._lib.walle_encoder_close(), "encoder close for profile change")
