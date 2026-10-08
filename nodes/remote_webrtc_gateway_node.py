@@ -34,6 +34,7 @@ from aiortc import (
     RTCConfiguration,
     RTCIceServer,
     RTCPeerConnection,
+    RTCRtpSender,
     RTCSessionDescription,
     VideoStreamTrack,
 )
@@ -63,9 +64,12 @@ from services.remote.remote_protocol import (
     encode_voice_state,
 )
 from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
+from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
+    CAMERA_SOURCE_TOPIC,
+    RAW_CAMERA_CLIENT_PREFIX,
     CAMERA_STATUS_TOPIC,
     encode_camera_command,
 )
@@ -308,11 +312,15 @@ class RemoteWebRtcGateway:
         token: str = "",
         servo_step_size: float = 50.0,
         ice_servers: list[RTCIceServer] | None = None,
+        video_backend: str = "software",
     ):
         self.node = node
         self.signaling_url = signaling_url
         self.robot_id = robot_id
         self.token = token
+        if video_backend not in {"software", "x3"}:
+            raise ValueError("webrtc_remote.video_backend must be software or x3")
+        self._video_backend = video_backend
         self.servo_step_size = max(0.1, min(65535.0, float(servo_step_size)))
         self._ice_servers = list(ice_servers or [])
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -329,6 +337,8 @@ class RemoteWebRtcGateway:
         self._camera_renew_task: asyncio.Task | None = None
         self._audio_tasks: set[asyncio.Task] = set()
         self._last_jpeg = b""
+        self._last_raw_jpeg = b""
+        self._raw_frame_at = 0.0
         self._frame_lock = threading.Lock()
         self._camera_error_reported = False
         self._sequence_gate = ChannelSequenceGate()
@@ -354,6 +364,9 @@ class RemoteWebRtcGateway:
             CAMERA_FRAME_TOPIC,
             self._on_camera_frame,
             qos_profile_sensor_data,
+        )
+        self._raw_camera_sub = node.create_subscription(
+            CompressedImage, CAMERA_SOURCE_TOPIC, self._on_raw_camera_frame, qos_profile_sensor_data
         )
         self._camera_status_sub = node.create_subscription(
             String,
@@ -416,6 +429,23 @@ class RemoteWebRtcGateway:
             "type": "warning",
             "message": "摄像头帧异常，当前发送占位画面",
         })
+
+    def latest_raw_camera_frame(self) -> tuple[bytes, float]:
+        with self._frame_lock:
+            return self._last_raw_jpeg, self._raw_frame_at
+
+    def _on_raw_camera_frame(self, message: CompressedImage) -> None:
+        # One latest slot: no ROS input backlog is fed to the encoder.
+        if self._video_backend == "x3" and message.data:
+            with self._frame_lock:
+                self._last_raw_jpeg = bytes(message.data)
+                self._raw_frame_at = time.monotonic()
+
+    def report_hardware_video_error(self, exc: Exception) -> None:
+        self.node.get_logger().error(f"WebRTC 硬件视频失败，关闭会话: {exc}")
+        self._send_event_threadsafe({"type": "error", "message": "硬件视频失败，连接已进入安全状态"})
+        self._stop_robot_outputs()
+        self._schedule_peer_close()
 
     def _on_camera_frame(self, message: CompressedImage) -> None:
         jpeg = bytes(message.data or b"")
@@ -590,7 +620,14 @@ class RemoteWebRtcGateway:
         )
         if turn_transport:
             self.node.get_logger().info("初次 ICE 失败后明确选择 TURN TCP 备用配置")
-        self._video_track = CameraVideoTrack(self)
+        use_hardware = self._video_backend == "x3" and hardware_h264_offered(sdp)
+        with self._frame_lock:
+            self._last_raw_jpeg = b""
+            self._raw_frame_at = 0.0
+        self._camera_client_id = f"{RAW_CAMERA_CLIENT_PREFIX if use_hardware else 'webrtc:'}{self.robot_id}"[:96]
+        self._video_track = HardwareCameraVideoTrack.create(self) if use_hardware else CameraVideoTrack(self)
+        if self._video_backend == "x3" and not use_hardware:
+            self.node.get_logger().info("浏览器未提供 H264 Baseline 42001f，选择兼容软件视频")
         self._audio_track = RobotAudioTrack()
         peer.addTrack(self._video_track)
         peer.addTrack(self._audio_track)
@@ -648,6 +685,12 @@ class RemoteWebRtcGateway:
                 await self._close_peer(peer)
 
         await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
+        if use_hardware:
+            codecs = [c for c in RTCRtpSender.getCapabilities("video").codecs
+                      if c.mimeType == "video/H264" and c.parameters.get("profile-level-id") == "42001f"]
+            for transceiver in peer.getTransceivers():
+                if transceiver.kind == "video":
+                    transceiver.setCodecPreferences(codecs)
         answer = await peer.createAnswer()
         await peer.setLocalDescription(answer)
         await self._wait_ice_complete(peer)
@@ -922,6 +965,7 @@ class RemoteWebRtcGateway:
         self._channel = None
         self._controller_peer_id = None
         self._negotiation_id = None
+        video_track = self._video_track
         self._video_track = None
         self._audio_track = None
         self._servo_gate.reset()
@@ -935,6 +979,11 @@ class RemoteWebRtcGateway:
         if peer is not None:
             await peer.close()
             self.node.get_logger().info("PeerConnection 已关闭并进入安全状态")
+        if isinstance(video_track, HardwareCameraVideoTrack):
+            try:
+                await video_track.aclose()
+            except Exception as exc:
+                self.node.get_logger().error(f"WebRTC 硬件资源释放失败: {exc}")
 
 
 class RemoteWebRtcNode(Node):
@@ -969,6 +1018,7 @@ class RemoteWebRtcNode(Node):
             token=token,
             servo_step_size=step_size,
             ice_servers=ice_servers,
+            video_backend=config.get("video_backend", "software"),
         )
         self._gateway.start()
         self.get_logger().info(

@@ -231,6 +231,24 @@ class CameraCaptureNodeTests(unittest.TestCase):
         self.assertEqual(frames[0].format, "jpeg")
         self.assertEqual(frames[0].data, b"frame")
 
+    def test_hardware_only_lease_skips_jpeg_normalization_but_tracks_source_health(self):
+        module = _load_camera_capture_module()
+        with patch.object(module, "jpeg_from_ros_image", return_value=b"frame") as convert:
+            node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "webrtc-h264:WALLY-01", 5)))
+            node._on_source_image(_FakeCompressedImage(format="jpeg", data=b"frame"))
+            self.assertFalse(convert.call_args.kwargs["flip_vertical"])
+            self.assertEqual(node.publishers["/camera_frame"].messages, [])
+            self.assertGreater(node._last_source_frame, 0)
+            self.assertGreater(node._last_output_frame, 0)
+            node._on_command(_FakeString(encode_camera_command("acquire", "tft", 5)))
+            node._on_source_image(_FakeCompressedImage(format="jpeg", data=b"frame"))
+            self.assertTrue(convert.call_args.kwargs["flip_vertical"])
+            self.assertEqual(len(node.publishers["/camera_frame"].messages), 1)
+            node._on_command(_FakeString(encode_camera_command("release", "tft")))
+            node._on_source_image(_FakeCompressedImage(format="jpeg", data=b"frame"))
+            self.assertFalse(convert.call_args.kwargs["flip_vertical"])
+
     def test_compressed_source_image_is_relayed(self):
         module = _load_camera_capture_module()
         source = _FakeCompressedImage(

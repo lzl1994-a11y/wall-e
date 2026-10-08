@@ -119,12 +119,14 @@ class CameraCaptureNode(Node):
             or now - self._last_decode_validation
             >= self.DECODE_VALIDATION_INTERVAL_SEC
         )
-        # The camera is mounted upside down. Normalize the shared stream once
-        # so AI, WebRTC, and photos share the same camera orientation.
+        self._leases.purge(now=now)
+        normalize = self._leases.needs_normalized_frames
+        # Hardware-only remote calls consume /image and flip in the encoder.
+        # AI/photos/TFT and software WebRTC still receive normalized JPEG.
         jpeg = jpeg_from_ros_image(
             message,
             validate_decode=validate_decode,
-            flip_vertical=True,
+            flip_vertical=normalize,
         )
         if not jpeg:
             return
@@ -137,13 +139,14 @@ class CameraCaptureNode(Node):
             state = "standby" if self._capture_enabled is False else "stopping"
             self._publish_status(state, source=CAMERA_SOURCE_TOPIC)
             return
-        self._frame_pub.publish(
-            CompressedImage(
-                header=message.header,
-                format="jpeg",
-                data=jpeg,
+        if normalize:
+            self._frame_pub.publish(
+                CompressedImage(
+                    header=message.header,
+                    format="jpeg",
+                    data=jpeg,
+                )
             )
-        )
         self._last_output_frame = time.monotonic()
         self._publish_status("streaming", source=CAMERA_SOURCE_TOPIC)
 

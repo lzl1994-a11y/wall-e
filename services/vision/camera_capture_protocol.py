@@ -19,6 +19,7 @@ CAMERA_CAPTURE_SERVICE = "/set_capture"
 # Tracking consumes it directly; the capture manager adapts it to the public
 # CompressedImage preview topic for legacy preview/photo consumers.
 CAMERA_SOURCE_TOPIC = "/image"
+RAW_CAMERA_CLIENT_PREFIX = "webrtc-h264:"
 TRACKING_IMAGE_TOPIC = CAMERA_SOURCE_TOPIC  # Backwards-compatible import name.
 DEFAULT_ROS_SETUP = Path("/opt/tros/humble/setup.bash")
 
@@ -81,6 +82,12 @@ class CameraLeaseBook:
     @property
     def count(self) -> int:
         return len(self._leases)
+
+    @property
+    def needs_normalized_frames(self) -> bool:
+        # Existing consumers keep their JPEG contract. Only the explicit raw
+        # hardware lease opts out; unknown/new clients remain conservative.
+        return any(not client.startswith(RAW_CAMERA_CLIENT_PREFIX) for client in self._leases)
 
 
 class CameraWatchdogAction(str, Enum):

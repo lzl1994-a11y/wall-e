@@ -1,5 +1,30 @@
 # Wali X3 Brain 🧠
 
+### X3 WebRTC 硬件视频（可选）
+
+在 X3 运行端先执行 `bash tools/build_webrtc_codec.sh`，再在本地及运行端私密
+`core/config.yaml` 的 `webrtc_remote` 下设置 `video_backend: x3`。默认仍为
+`software`。不要在服务启动时编译；应用源码只能本地修改，经 GitHub 拉取后构建。
+
+硬件模式使用摄像头原始 JPEG、JPU 解码和 VPU H264 Baseline 编码，编码器执行
+上下翻转，保持左右方向。正常档保持 480×360/10fps/500kbps 目标码率，低档为
+320×240/5fps/150kbps 目标码率；缩放仍由 PyAV 完成，尚未接入硬件缩放。
+只开硬件远控时，相机入口不再执行每帧 JPEG 翻转重编码。AI、拍照、TFT 或软件
+远控同时租用相机时，仍发布它们需要的原有归一化 `/camera_frame` JPEG。
+
+浏览器须提供 H264 Baseline `42001f`、packetization-mode 1；不满足时在协商前
+明确记录并选择兼容软件路径。SDK 失败关闭当前会话，不自动重连或静默转软件。
+硬件通道 2/3 留给 WebRTC，AI 使用通道 1。编解码在单独工作线程运行，输入只保留
+最新帧；取消后等待在途调用结束再释放资源。浏览器健康反馈仍切换档位。
+aiortc 的已编码 Packet 公共接口不暴露 PLI/REMB 回调，因此当前用约每秒 IDR
+限制解码恢复等待，不宣称已实现精细 RTCP 码率反馈。
+
+板上回归：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 WALLE_TEST_X3_VIDEO=1 python3 -m pytest
+tests/test_x3_video.py tests/test_hardware_video_track.py tests/test_remote_media_gateway.py
+tests/test_camera_capture_protocol.py tests/test_camera_capture_node.py -q`。
+硬件测试需没有正在使用硬件视频的控制会话。重启后应确认信令上线、真实 H264
+视频日志和网页实际画面，而不能仅检查 systemd active。
+
 这是一个基于 ROS2 (Humble) 和 地平线旭日 X3 派 (Sunrise X3 Pi) 打造的仿生机器人大脑中枢。本项目为“瓦力”机器人赋予了视觉追踪、多模态语音交互、手柄接管以及物理防碰撞的能力。
 
 ## 🌟 核心特性
