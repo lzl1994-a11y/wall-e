@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import aiortc
 import queue
+import time
 from aiortc.codecs import get_decoder
 from aiortc.jitterbuffer import JitterBuffer, JitterFrame
 from aiortc.sdp import SessionDescription
@@ -52,8 +53,19 @@ class OpusAudioJitterBuffer:
         self.late_packets = 0
         self.duplicate_packets = 0
         self.overflow_packets = 0
+        self.reset_timing()
+
+    def reset_timing(self):
+        self._timing_origin = None
+        self.max_timestamp_lag_ms = 0.0
 
     def add(self, packet):
+        now = time.monotonic()
+        if self._timing_origin is None:
+            self._timing_origin = (now, packet.timestamp)
+        elapsed = ((packet.timestamp - self._timing_origin[1]) & 0xffffffff) / 48000
+        self.max_timestamp_lag_ms = max(self.max_timestamp_lag_ms,
+                                       ((now - self._timing_origin[0]) - elapsed) * 1000)
         sequence = packet.sequence_number
         if self._latest is None:
             self._origin = self._latest = sequence

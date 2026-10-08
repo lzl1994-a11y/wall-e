@@ -946,6 +946,11 @@ class RemoteWebRtcGateway:
             if incoming is None:
                 return
             if start:
+                for transceiver in peer.getTransceivers():
+                    if transceiver.kind == "audio":
+                        jitter = getattr(transceiver.receiver, "_RTCRtpReceiver__jitter_buffer", None)
+                        if hasattr(jitter, "reset_timing"):
+                            jitter.reset_timing()
                 stats["rtp_start"] = (incoming.packetsReceived, incoming.packetsLost)
                 audio_track = getattr(self, "_audio_track", None)
                 stats["robot_audio_start"] = audio_track.diagnostics_snapshot() if audio_track else None
@@ -972,6 +977,12 @@ class RemoteWebRtcGateway:
                 source["packets"] = outgoing.packetsSent - stats["robot_packets_start"] if outgoing and stats["robot_packets_start"] is not None else None
                 result["robot_audio"] = source
             result["processing_ms_per_frame"] = round(stats.get("processing_ms", 0) / max(1, stats["decoded_frames"]), 2)
+            result["max_decode_clock_lag_ms"] = round(stats.get("max_decode_clock_lag_ms", 0), 2)
+            for transceiver in peer.getTransceivers():
+                if transceiver.kind == "audio":
+                    jitter = getattr(transceiver.receiver, "_RTCRtpReceiver__jitter_buffer", None)
+                    if hasattr(jitter, "max_timestamp_lag_ms"):
+                        result["max_rtp_clock_lag_ms"] = round(jitter.max_timestamp_lag_ms, 2)
             self.node.get_logger().info("远程音频接收统计: " + json.dumps(result))
         except Exception as exc:
             self.node.get_logger().warning(f"远程音频接收统计不可用: {type(exc).__name__}")
@@ -1007,6 +1018,10 @@ class RemoteWebRtcGateway:
                     stats["previous_at"] = now
                     if frame.pts is not None and frame.time_base is not None and frame.sample_rate > 0:
                         pts = round(frame.pts * frame.time_base * ROBOT_AUDIO_SAMPLE_RATE)
+                        if "clock_origin" not in stats:
+                            stats["clock_origin"] = (now, pts)
+                        stats["max_decode_clock_lag_ms"] = max(stats.get("max_decode_clock_lag_ms", 0),
+                            ((now - stats["clock_origin"][0]) - (pts - stats["clock_origin"][1]) / ROBOT_AUDIO_SAMPLE_RATE) * 1000)
                         if stats["previous_end_pts"] is not None:
                             stats["pts_gap_samples"] += max(0, pts - stats["previous_end_pts"])
                         stats["previous_end_pts"] = pts + round(frame.samples * ROBOT_AUDIO_SAMPLE_RATE / frame.sample_rate)

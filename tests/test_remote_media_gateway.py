@@ -25,7 +25,7 @@ def test_receive_diagnostics_separate_rtp_loss_from_decoded_sample_gaps():
     from types import SimpleNamespace
     value = RemoteWebRtcGateway.__new__(RemoteWebRtcGateway)
     value.node = Mock()
-    peer = Mock(getStats=AsyncMock(return_value={"audio": SimpleNamespace(
+    peer = Mock(getTransceivers=Mock(return_value=[]), getStats=AsyncMock(return_value={"audio": SimpleNamespace(
         type="inbound-rtp", kind="audio", packetsReceived=100, packetsLost=20, jitter=960,
     )}))
     stats = dict(decoded_frames=50, decoded_samples=48000, max_frame_gap_ms=100.0,
