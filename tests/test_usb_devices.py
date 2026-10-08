@@ -36,6 +36,31 @@ class UsbDeviceSelectionTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def test_selector_reloads_changed_config(self):
+        first = {"vendor_id": "1234", "product_id": "5678", "serial_number": "first"}
+        second = {**first, "serial_number": "second"}
+        self.write_selector("voice", first)
+        self.assertEqual(usb_devices.load_usb_selector("voice", self.config_path), first)
+        self.write_selector("voice", second)
+        self.assertEqual(usb_devices.load_usb_selector("voice", self.config_path), second)
+
+    def test_selector_safe_loader_rejects_python_objects(self):
+        self.config_path.write_text(
+            "usb_devices: !!python/object/apply:builtins.dict []\n", encoding="utf-8"
+        )
+        self.assertIsNone(usb_devices.load_usb_selector("voice", self.config_path))
+
+    def test_selector_without_libyaml_keeps_safe_loading(self):
+        selector = {"vendor_id": "1234", "product_id": "5678"}
+        self.write_selector("voice", selector)
+        with patch.dict(yaml.__dict__):
+            yaml.__dict__.pop("CSafeLoader", None)
+            self.assertEqual(usb_devices.load_usb_selector("voice", self.config_path), selector)
+            self.config_path.write_text(
+                "usb_devices: !!python/object/apply:builtins.dict []\n", encoding="utf-8"
+            )
+            self.assertIsNone(usb_devices.load_usb_selector("voice", self.config_path))
+
     @patch("services.hardware.usb_devices.list_usb_devices")
     def test_selected_serial_role_resolves_current_port(self, list_devices):
         selector = {"vendor_id": "303a", "product_id": "1001", "serial_number": "screen"}

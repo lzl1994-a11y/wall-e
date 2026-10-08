@@ -160,7 +160,12 @@ def load_usb_selector(
     if role not in USB_ROLES:
         raise ValueError(f"Unknown USB role: {role}")
     try:
-        config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        # This runs when each PTT turn opens the speaker. Parsing the entire
+        # robot config in Python blocked realtime output for ~150 ms on X3.
+        # Keep safe YAML semantics and live config reads, using libyaml when
+        # available instead of adding a stale device/config cache.
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+        config = yaml.load(Path(config_path).read_text(encoding="utf-8"), Loader=loader) or {}
     except (OSError, yaml.YAMLError):
         return None
     usb_devices = config.get("usb_devices")
