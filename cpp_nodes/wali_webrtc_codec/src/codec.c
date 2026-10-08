@@ -119,6 +119,12 @@ int walle_encoder_open(int width, int height, int fps, int kbps) {
     int r = HB_VENC_CreateChn(ENCODER, &a); if (r) return r;
     enc_created = 1;
     r = HB_VENC_SetChnAttr(ENCODER, &a); if (r) return r;
+    /* SDK defaults to CABAC even with profile=BP. Baseline forbids CABAC;
+     * tolerant software decoders hide this, browser decoders show corruption.
+     */
+    VENC_H264_ENTROPY_S entropy = {0};
+    entropy.u32EntropyEncMode = 0; /* CAVLC */
+    r = HB_VENC_SetH264Entropy(ENCODER, &entropy); if (r) return r;
     r = HB_SYS_Alloc(&enc_physical, &enc_pixels, width * height * 3 / 2); if (r) return r;
     VENC_RECV_PIC_PARAM_S recv = {0};
     r = HB_VENC_StartRecvFrame(ENCODER, &recv); if (r) return r;

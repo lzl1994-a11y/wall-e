@@ -90,6 +90,20 @@ def test_real_x3_jpeg_encode_switch_orientation_and_release():
         try:
             for w,h,fps in [(480,360,10),(320,240,5),(480,360,10)]:
                 bitstream=b''.join(codec.encode(jpeg,w,h,fps,i*9000) for i in range(12))
+                # Checking only SPS profile misses SDK's default CABAC PPS,
+                # which software decoders accept but Baseline browsers cannot.
+                from aiortc.codecs.h264 import H264Encoder
+                nals=list(H264Encoder._split_bitstream(bitstream))
+                sps=next(n for n in nals if n[0]&31==7)
+                assert sps[1:4].hex()=='42001f'
+                for pps in (n for n in nals if n[0]&31==8):
+                    rbsp=pps[1:].replace(b'\x00\x00\x03',b'\x00\x00')
+                    bits=''.join(f'{b:08b}' for b in rbsp);offset=0
+                    for _ in range(2): # pic_parameter_set_id, seq_parameter_set_id
+                        zeros=0
+                        while bits[offset]=='0':zeros+=1;offset+=1
+                        offset+=1+zeros
+                    assert bits[offset]=='0', 'Baseline must use CAVLC, not CABAC'
                 decoder=av.CodecContext.create('h264','r');frames=[]
                 for packet in decoder.parse(bitstream):frames.extend(decoder.decode(packet))
                 for packet in decoder.parse(b''):frames.extend(decoder.decode(packet))
