@@ -71,6 +71,7 @@ from services.remote.opus_audio_jitter import install_opus_audio_jitter
 from services.remote.remote_audio_publisher import RemoteAudioPublisher
 from services.remote.transport_diagnostics import install_transport_diagnostics
 from services.remote.mono_opus_encoder import MonoOpusEncoder
+from services.remote.ros_media_loop import run_ros_media
 from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
@@ -532,9 +533,9 @@ class RemoteWebRtcGateway:
         try:
             if sys.platform == "linux":
                 import uvloop
-                uvloop.run(self._run_loop())
+                uvloop.run(run_ros_media(self.node, self._run_loop, self._stopping))
             else:
-                asyncio.run(self._run_loop())
+                asyncio.run(run_ros_media(self.node, self._run_loop, self._stopping))
         except Exception as exc:
             self.node.get_logger().error(f"WebRTC 网关退出: {exc}")
 
@@ -1211,7 +1212,9 @@ def main(args=None):
     node = None
     try:
         node = RemoteWebRtcNode()
-        rclpy.spin(node)
+        # ROS callbacks are owned by the media thread. This main thread waits
+        # without acquiring the GIL repeatedly around ROS wait-set operations.
+        node._gateway._thread.join()
     except KeyboardInterrupt:
         pass
     finally:
