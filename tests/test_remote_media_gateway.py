@@ -104,6 +104,25 @@ def gateway():
     return value
 
 
+def test_shutdown_after_ros_context_closes_still_clears_local_audio_without_publishing():
+    value = gateway()
+    value.node.context.ok.return_value = False
+    value._remote_voice_active = value._remote_call_active = True
+    value._remote_audio_stats = {}
+    value._camera_renew_task = None
+    value._loop = None
+    value._camera_client_id = "test-camera"
+    value._camera_command_pub = Mock()
+    value._motor_pub = Mock()
+    value._action_pub = Mock()
+    RemoteWebRtcGateway._stop_robot_outputs(value)
+    assert value._remote_voice_active is False and value._remote_call_active is False
+    assert value._remote_audio_stats is None
+    value._camera_command_pub.publish.assert_not_called()
+    value._motor_pub.publish.assert_not_called()
+    value._action_pub.publish.assert_not_called()
+
+
 def control(seq):
     return json.dumps({"type": "control", "seq": seq,
                        "vector": dict(forward=0, turn=0, yaw=0, pitch=0)})

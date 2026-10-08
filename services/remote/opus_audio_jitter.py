@@ -11,7 +11,7 @@ from __future__ import annotations
 import aiortc
 import asyncio
 import queue
-from aiortc.codecs.opus import OpusDecoder
+from aiortc.codecs import get_decoder
 import time
 from aiortc.jitterbuffer import JitterBuffer, JitterFrame
 from aiortc.sdp import SessionDescription
@@ -27,6 +27,7 @@ class AudioDecoderQueue(queue.Queue):
         super().__init__()
         self._output = output
         self._decoder = None
+        self._codec_name = None
 
     def put(self, task, block=True, timeout=None):
         if task is None:
@@ -35,11 +36,11 @@ class AudioDecoderQueue(queue.Queue):
         if self._output.qsize() >= 16:
             raise RuntimeError("Opus PCM exceeded its bounded playback queue")
         codec, encoded = task
-        if codec.name.lower() != "opus":
-            raise ValueError("Mono speech receiver requires negotiated Opus")
-        if self._decoder is None:
-            self._decoder = OpusDecoder()
-            self._decoder.codec.layout = "mono"
+        if codec.name != self._codec_name:
+            self._decoder = get_decoder(codec)
+            self._codec_name = codec.name
+            if codec.name.lower() == "opus":
+                self._decoder.codec.layout = "mono"
         for frame in self._decoder.decode(encoded):
             self._output.put_nowait(frame)
 

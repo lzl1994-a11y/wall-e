@@ -105,7 +105,7 @@ class IsolatedX3VideoCodec:
                     self._process.kill()
                     self._process.wait(timeout=2)
                     failure = HardwareVideoError("X3 codec process did not exit after close")
-            elif self._process is not None and self._process.returncode:
+            if self._process is not None and self._process.returncode and failure is None:
                 failure = HardwareVideoError(f"X3 codec process exited: {self._process.returncode}")
         finally:
             if self._connection is not None:

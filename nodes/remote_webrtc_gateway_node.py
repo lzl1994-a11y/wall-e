@@ -66,7 +66,6 @@ from services.remote.remote_protocol import (
 from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
 from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
 from services.remote.opus_audio_jitter import install_opus_audio_jitter
-from services.remote.transport_diagnostics import install_transport_diagnostics
 from services.remote.mono_opus_encoder import MonoOpusEncoder
 from services.remote.ros_media_loop import run_ros_media
 from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardware_h264_offered
@@ -277,8 +276,8 @@ class RobotAudioTrack(AudioStreamTrack):
     def enable_opus_packets(self):
         """Use the negotiated Opus codec through aiortc's encoded Packet API.
 
-        Encoding a 20 ms block takes about 2 ms on X3. Doing it here avoids
-        a default-executor round trip between every block on the media loop.
+        Encode the already framed mono speech here to avoid a default-executor
+        round trip and stereo resampling between every block on the media loop.
         Other negotiated codecs keep the regular AudioFrame path.
         """
         if self._opus_encoder is not None:
@@ -742,7 +741,6 @@ class RemoteWebRtcGateway:
                 if transceiver.kind == "video":
                     transceiver.setCodecPreferences(codecs)
         await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
-        self._transport_diagnostics = install_transport_diagnostics(peer)
         answer = await peer.createAnswer()
         if install_opus_audio_jitter(peer, answer.sdp):
             self._audio_track.enable_opus_packets()
@@ -863,6 +861,13 @@ class RemoteWebRtcGateway:
 
     def _stop_robot_outputs(self) -> None:
         self._sequence_gate.stopped = True
+        if not self.node.context.ok():
+            # ROS's signal handler can close the context before media teardown.
+            # Local teardown must still cancel/close all session resources.
+            self._remote_voice_active = self._remote_call_active = False
+            self._remote_audio_stats = None
+            self._release_camera()
+            return
         self._motor_pub.publish(String(data=json.dumps(STOP_COMMAND, separators=(",", ":"))))
         self._action_pub.publish(String(data=json.dumps({
             "name": "stop_all",
@@ -949,8 +954,6 @@ class RemoteWebRtcGateway:
             if incoming is None:
                 return
             if start:
-                for diagnostic in getattr(self, "_transport_diagnostics", []):
-                    diagnostic.reset()
                 for transceiver in peer.getTransceivers():
                     if transceiver.kind == "audio":
                         jitter = getattr(transceiver.receiver, "_RTCRtpReceiver__jitter_buffer", None)
@@ -982,7 +985,6 @@ class RemoteWebRtcGateway:
                 source["packets"] = outgoing.packetsSent - stats["robot_packets_start"] if outgoing and stats["robot_packets_start"] is not None else None
                 result["robot_audio"] = source
             result["processing_ms_per_frame"] = round(stats.get("processing_ms", 0) / max(1, stats["decoded_frames"]), 2)
-            result["transport_processing"] = [diagnostic.snapshot() for diagnostic in getattr(self, "_transport_diagnostics", [])]
             result["max_decode_clock_lag_ms"] = round(stats.get("max_decode_clock_lag_ms", 0), 2)
             for transceiver in peer.getTransceivers():
                 if transceiver.kind == "audio":
@@ -1113,9 +1115,10 @@ class RemoteWebRtcGateway:
             else:
                 task.cancel()
         self.node.get_logger().info("释放 WebRTC 摄像头 lease")
-        self._camera_command_pub.publish(String(data=encode_camera_command(
-            "release", self._camera_client_id
-        )))
+        if self.node.context.ok():
+            self._camera_command_pub.publish(String(data=encode_camera_command(
+                "release", self._camera_client_id
+            )))
 
     async def _close_peer(self, expected_peer: RTCPeerConnection | None = None) -> None:
         if expected_peer is not None and self._peer is not expected_peer:

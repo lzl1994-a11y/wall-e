@@ -59,3 +59,17 @@ def test_failed_launch_closes_sockets_and_releases_owner():
     child.close.assert_called_once()
     assert _owner.acquire(blocking=False)
     _owner.release()
+
+
+def test_child_crash_after_close_ack_is_reported_and_owner_is_released():
+    codec = codec_with_response(_RESPONSE.pack(0, 0))
+    codec._closed = False
+    codec._failed = False
+    codec._process = Mock(poll=Mock(return_value=None), returncode=None)
+    codec._process.wait.side_effect = lambda **kwargs: setattr(codec._process, "returncode", 17)
+    assert _owner.acquire(blocking=False)
+    with pytest.raises(HardwareVideoError, match="exited: 17"):
+        codec.close()
+    codec._connection.close.assert_called_once()
+    assert _owner.acquire(blocking=False)
+    _owner.release()
