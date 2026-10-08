@@ -9,9 +9,38 @@ sequence positions (including losses) rather than consecutive good frames.
 from __future__ import annotations
 
 import aiortc
+import queue
+from aiortc.codecs.opus import OpusDecoder
 import time
 from aiortc.jitterbuffer import JitterBuffer, JitterFrame
 from aiortc.sdp import SessionDescription
+
+
+class AudioDecoderQueue(queue.Queue):
+    """Deliver short mono speech blocks on the receiving event loop.
+
+    The existing SDK worker waits only for its normal shutdown sentinel.
+    Keeping PCM on this loop avoids per-frame cross-thread future creation.
+    """
+    def __init__(self, output):
+        super().__init__()
+        self._output = output
+        self._decoder = None
+
+    def put(self, task, block=True, timeout=None):
+        if task is None:
+            self._decoder = None
+            return super().put(task, block=block, timeout=timeout)
+        if self._output.qsize() >= 16:
+            raise RuntimeError("Opus PCM exceeded its bounded playback queue")
+        codec, encoded = task
+        if codec.name.lower() != "opus":
+            raise ValueError("Mono speech receiver requires negotiated Opus")
+        if self._decoder is None:
+            self._decoder = OpusDecoder()
+            self._decoder.codec.layout = "mono"
+        for frame in self._decoder.decode(encoded):
+            self._output.put_nowait(frame)
 
 
 class OpusAudioJitterBuffer:
@@ -79,8 +108,8 @@ class OpusAudioJitterBuffer:
 def install_opus_audio_jitter(peer, answer_sdp: str) -> int:
     """Install before setLocalDescription starts the receiver transports.
 
-    aiortc has no public jitter-buffer hook. Isolate the one private attribute
-    here and require the tested/pinned release and original buffer shape;
+    aiortc has no public jitter-buffer or decoder scheduling hook. Isolate
+    the adapters here and require the tested/pinned release and buffer shape;
     never silently run an unverified SDK integration. Video and other codecs
     retain their normal receivers. No installed dependency files are edited.
     """
@@ -101,6 +130,13 @@ def install_opus_audio_jitter(peer, answer_sdp: str) -> int:
             continue
         if type(previous) is not JitterBuffer or previous.capacity != 16 or previous._origin is not None:
             raise RuntimeError("Unexpected aiortc audio jitter buffer state")
+        decoder_queue = getattr(receiver, "_RTCRtpReceiver__decoder_queue", None)
+        if (type(decoder_queue) is not queue.Queue or not decoder_queue.empty()
+                or getattr(receiver, "_RTCRtpReceiver__decoder_thread", None) is not None
+                or (receiver.track is not None and not hasattr(receiver.track, "_queue"))):
+            raise RuntimeError("Unexpected aiortc audio decoder state")
+        if receiver.track is not None:
+            receiver._RTCRtpReceiver__decoder_queue = AudioDecoderQueue(receiver.track._queue)
         setattr(receiver, field, OpusAudioJitterBuffer())
         installed += 1
     return installed

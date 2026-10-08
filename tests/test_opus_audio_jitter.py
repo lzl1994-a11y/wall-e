@@ -83,7 +83,11 @@ OPUS_SDP = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS
 
 
 def receiver(kind="audio", value=None):
-    obj = SimpleNamespace(track=SimpleNamespace(kind=kind))
+    import asyncio
+    import queue
+    obj = SimpleNamespace(track=SimpleNamespace(kind=kind, _queue=asyncio.Queue()))
+    obj._RTCRtpReceiver__decoder_queue = queue.Queue()
+    obj._RTCRtpReceiver__decoder_thread = None
     setattr(obj, "_RTCRtpReceiver__jitter_buffer", value if value is not None else JitterBuffer(16, 4))
     return obj
 
@@ -123,3 +127,12 @@ def test_already_running_receiver_is_rejected():
     peer = peer_for(receiver(value=value))
     with pytest.raises(RuntimeError, match="Unexpected"):
         install_opus_audio_jitter(peer, OPUS_SDP)
+
+
+def test_started_decoder_is_rejected_before_replacing_the_jitter_buffer():
+    audio = receiver()
+    audio._RTCRtpReceiver__decoder_thread = object()
+    previous = audio._RTCRtpReceiver__jitter_buffer
+    with pytest.raises(RuntimeError, match="decoder state"):
+        install_opus_audio_jitter(peer_for(audio), OPUS_SDP)
+    assert audio._RTCRtpReceiver__jitter_buffer is previous
