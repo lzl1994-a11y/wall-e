@@ -253,6 +253,8 @@ class CameraVideoTrack(VideoStreamTrack):
 class RobotAudioTrack(AudioStreamTrack):
     """Pace the robot's existing 48 kHz PCM output into WebRTC audio frames."""
 
+    MAX_BUFFER_SEC = 0.2
+
     def __init__(self):
         super().__init__()
         self._buffer = bytearray()
@@ -271,7 +273,7 @@ class RobotAudioTrack(AudioStreamTrack):
         samples = _resample_mono(samples, sample_rate, ROBOT_AUDIO_SAMPLE_RATE)
         with self._lock:
             self._buffer.extend(samples.tobytes())
-            max_bytes = int(ROBOT_AUDIO_SAMPLE_RATE * 2 * 0.2)
+            max_bytes = int(ROBOT_AUDIO_SAMPLE_RATE * 2 * self.MAX_BUFFER_SEC)
             if len(self._buffer) > max_bytes:
                 del self._buffer[:-max_bytes]
 
@@ -280,14 +282,16 @@ class RobotAudioTrack(AudioStreamTrack):
         now = time.monotonic()
         if self._next_frame_at > now:
             await asyncio.sleep(self._next_frame_at - now)
-        elif now - self._next_frame_at > frame_duration * 2:
+        elif now - self._next_frame_at > self.MAX_BUFFER_SEC:
+            # Catch up ordinary scheduler pauses using the bounded source
+            # queue. Skipping the clock after only 40 ms made the browser
+            # conceal good audio that was already waiting here. Long stalls
+            # still resynchronise rather than accumulating seconds of delay.
             self._next_frame_at = now
             self._pts = max(self._pts, round((now - self._started_at) * ROBOT_AUDIO_SAMPLE_RATE))
         self._next_frame_at += frame_duration
         needed = ROBOT_AUDIO_FRAME_SAMPLES * 2
         with self._lock:
-            if len(self._buffer) > needed * 4:
-                del self._buffer[: len(self._buffer) - needed * 2]
             payload = bytes(self._buffer[:needed])
             del self._buffer[:len(payload)]
         payload = payload.ljust(needed, b"\x00")
