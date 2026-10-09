@@ -80,7 +80,10 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
                     raise HardwareVideoError("camera input missing/stalled")
             width, height, fps = (320, 240, 5) if self.profile == "low" else (480, 360, 10)
             now = time.monotonic()
-            self._next_at = max(self._next_at + 1 / fps, now)
+            if self.profile == "low":
+                self._next_at = max(self._next_at + 1 / fps, now)
+            else:
+                self._next_at = now
             pts = max(self._pts + 1, round((now - self._started_at) * 90000))
             self._pts = pts
             data = await asyncio.get_running_loop().run_in_executor(

@@ -132,6 +132,39 @@ def test_stop_ends_wait_for_fresh_source_without_another_encode():
     asyncio.run(run())
 
 
+def test_uncapped_frames_do_not_accumulate_future_wait_when_switching_to_low():
+    async def run():
+        clock = [100.0]
+        sleeps = []
+
+        async def sleep(delay):
+            sleeps.append(delay)
+            clock[0] += delay
+
+        gateway = Mock(latest_raw_camera_frame=lambda: (b"jpeg", clock[0]))
+        codec = Mock(encode=Mock(return_value=b"packet"))
+        with patch("services.remote.hardware_video_track.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("services.remote.hardware_video_track.asyncio.sleep", side_effect=sleep), \
+                patch("services.remote.hardware_video_track.X3VideoCodec", return_value=codec):
+            track = HardwareCameraVideoTrack(gateway, Path("unused"))
+            try:
+                for _ in range(100):
+                    clock[0] += 1 / 15
+                    await track.recv()
+                assert sleeps == []
+                track.profile = "low"
+                clock[0] += 1 / 15
+                await track.recv()
+                assert sleeps == [0]
+                await track.recv()
+                assert sleeps == pytest.approx([0, 2 / 15])
+                await track.recv()
+                assert sleeps == pytest.approx([0, 2 / 15, .2])
+            finally:
+                await track.aclose()
+    asyncio.run(run())
+
+
 def test_low_mode_keeps_five_fps_wait():
     async def run():
         clock = [100.0]
