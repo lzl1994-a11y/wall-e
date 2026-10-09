@@ -3,6 +3,7 @@ import socket
 import sys
 import time
 import unittest
+import uuid
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -105,10 +106,11 @@ class EchoReferenceTests(unittest.TestCase):
         apm._native = Mock()
         apm._native.capture.return_value = b"processed near-end speech"
         apm._reference = Mock(frames=1, dropped=0)
-        apm._reference.drain.return_value = [(bytes(1920), 80, time.monotonic())]
+        apm._reference.drain.return_value = [(bytes(1920), 80, 100.0)]
         apm._queue.put(bytes(1920))
         apm._queue.put(None)
-        apm._write_native()
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.0):
+            apm._write_native()
         self.assertEqual(output, [b"processed near-end speech"])
         apm._native.render.assert_called_once_with(bytes(1920))
         apm._native.capture.assert_called_once_with(bytes(1920), 100)
@@ -130,6 +132,10 @@ class EchoReferenceTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "linux", "Linux abstract UNIX socket/credentials")
     def test_local_ipc_pcm_saturation_end_and_restart(self):
+        with patch("services.audio.echo_reference.address", return_value="\0walle.echo-test." + uuid.uuid4().hex):
+            self._check_local_ipc()
+
+    def _check_local_ipc(self):
         receiver = EchoReferenceReceiver()
         sender = EchoReferenceSender()
         try:
