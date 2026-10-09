@@ -36,6 +36,7 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
         self._close_future = None
         self._started_at = time.monotonic()
         self._next_at = self._started_at
+        self._last_captured_at = None
         self._pts = -1
         self._reported = False
         self.profile = "normal"
@@ -57,7 +58,8 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
             raise MediaStreamError
         try:
             now = time.monotonic()
-            await asyncio.sleep(max(0, self._next_at - now))
+            if self.profile == "low":
+                await asyncio.sleep(max(0, self._next_at - now))
             # Startup may need camera enumeration. Never encode a previous call's frame.
             jpeg, captured_at = self._gateway.latest_raw_camera_frame()
             while not jpeg and time.monotonic() - self._started_at < 45:
@@ -67,6 +69,15 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
                 jpeg, captured_at = self._gateway.latest_raw_camera_frame()
             if not jpeg or time.monotonic() - captured_at > 1.5:
                 raise HardwareVideoError("camera input missing/stalled")
+            # Normal mode follows fresh camera input, rather than a 10 FPS
+            # timer. Do not inflate FPS by encoding the same source frame.
+            while captured_at == self._last_captured_at:
+                if self._closing.is_set():
+                    raise MediaStreamError
+                await asyncio.sleep(.002)
+                jpeg, captured_at = self._gateway.latest_raw_camera_frame()
+                if not jpeg or time.monotonic() - captured_at > 1.5:
+                    raise HardwareVideoError("camera input missing/stalled")
             width, height, fps = (320, 240, 5) if self.profile == "low" else (480, 360, 10)
             now = time.monotonic()
             self._next_at = max(self._next_at + 1 / fps, now)
@@ -77,6 +88,7 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
             )
             if self._closing.is_set():
                 raise MediaStreamError
+            self._last_captured_at = captured_at
             packet = Packet(data)
             packet.pts = packet.dts = pts
             packet.time_base = Fraction(1, 90000)
