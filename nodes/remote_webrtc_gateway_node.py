@@ -206,12 +206,18 @@ class CameraVideoTrack(VideoStreamTrack):
         self._started_at = self._next_frame_at
         self._pts = 0
         self.profile = "normal"
+        self.manual_video = None
+
+    def configure_video(self, *, profile="normal", manual=None):
+        self.profile = profile
+        self.manual_video = manual
+        self._next_frame_at = time.monotonic()
 
     async def recv(self):
         now = time.monotonic()
         if self._next_frame_at > now:
             await asyncio.sleep(self._next_frame_at - now)
-        width, height, fps = (320, 240, 5) if self.profile == "low" else (VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
+        width, height, fps = self.manual_video or ((320, 240, 5) if self.profile == "low" else (VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS))
         self._next_frame_at += 1.0 / fps
         if self._next_frame_at < time.monotonic():
             self._next_frame_at = time.monotonic()
@@ -819,8 +825,14 @@ class RemoteWebRtcGateway:
         elif message_type == "call":
             self._set_remote_call(message["state"] == "start")
         elif message_type == "media" and self._video_track is not None:
-            self._video_track.profile = message["video"]
-            self._send_event({"type": "status", "value": f"视频档位：{message['video']}"})
+            manual = (message["width"], message["height"], message["fps"]) if message.get("mode") == "manual" else None
+            profile = message.get("video", "normal")
+            self._video_track.configure_video(profile=profile, manual=manual)
+            settings = ({"mode": "manual", "width": manual[0], "height": manual[1], "fps": manual[2]}
+                        if manual else {"mode": "auto"})
+            self._send_event({"type": "video", "settings": settings})
+            label = f"手动 {manual[0]}×{manual[1]} / {manual[2]} FPS" if manual else f"自动（{'低档' if profile == 'low' else '正常档'}）"
+            self._send_event({"type": "status", "value": f"视频设置已应用：{label}"})
 
     def _publish_control(self, vector: dict[str, float]) -> None:
         forward = float(vector["forward"])

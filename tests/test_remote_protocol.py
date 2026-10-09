@@ -60,3 +60,23 @@ def test_media_profile_is_bounded_and_allowlisted():
         assert decode_remote_message(json.dumps(message)) == message
     for profile in ("4k", None, 5, {}, ["low"]):
         assert decode_remote_message(json.dumps({"type": "media", "seq": 1, "video": profile})) is None
+
+
+def test_manual_video_accepts_only_source_supported_sizes_and_frame_rates():
+    for width, height in [(320, 240), (480, 360), (640, 480)]:
+        for fps in (5, 10, 15):
+            message = dict(type="media", seq=7, mode="manual", width=width, height=height, fps=fps)
+            assert decode_remote_message(json.dumps(message)) == message
+    message = dict(type="media", seq=7, mode="manual", width=480, height=360, fps=15)
+    for key, value in [("width", 1920), ("height", 480), ("fps", 30), ("fps", 0), ("fps", True),
+                       ("fps", 15.0), ("width", []), ("mode", "unknown")]:
+        assert decode_remote_message(json.dumps({**message, key: value})) is None
+    assert decode_remote_message(json.dumps({**message, "extra": 1})) is None
+    assert decode_remote_message(json.dumps({key: value for key, value in message.items() if key != "fps"})) is None
+
+
+def test_explicit_automatic_video_and_legacy_profiles_are_compatible():
+    for profile in ("low", "normal"):
+        message = dict(type="media", seq=7, mode="auto", video=profile)
+        assert decode_remote_message(json.dumps(message)) == message
+    assert decode_remote_message(json.dumps(dict(type="media", seq=7, mode="auto", width=480, height=360, fps=15))) is None

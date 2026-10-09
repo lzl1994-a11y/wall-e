@@ -21,6 +21,8 @@ REMOTE_SOURCE = "remote"
 REMOTE_SAFETY_SOURCE = "remote_safety"
 MAX_REMOTE_MESSAGE_BYTES = 64 * 1024
 MAX_REMOTE_SEQUENCE = 2**63 - 1
+VIDEO_RESOLUTIONS = frozenset({(320, 240), (480, 360), (640, 480)})
+VIDEO_FRAME_RATES = frozenset({5, 10, 15})
 ALLOWED_ACTIONS = frozenset({
     "wave_hello",
     "raise_hand",
@@ -131,11 +133,20 @@ def decode_remote_message(raw: str | bytes) -> dict[str, Any] | None:
         return {"type": "voice", "seq": seq, "state": state}
 
     if message_type == "media":
-        if set(message) != {"type", "seq", "video"}:
-            return None
-        if message.get("video") not in ("normal", "low"):
-            return None
-        return {"type": "media", "seq": seq, "video": message["video"]}
+        keys = set(message)
+        if keys == {"type", "seq", "video"} or (
+            keys == {"type", "seq", "mode", "video"} and message.get("mode") == "auto"
+        ):
+            if message.get("video") not in ("normal", "low"):
+                return None
+            return dict(message)
+        if keys == {"type", "seq", "mode", "width", "height", "fps"} and message.get("mode") == "manual":
+            if not all(type(message[key]) is int for key in ("width", "height", "fps")):
+                return None
+            if (message["width"], message["height"]) not in VIDEO_RESOLUTIONS or message["fps"] not in VIDEO_FRAME_RATES:
+                return None
+            return dict(message)
+        return None
 
     return None
 

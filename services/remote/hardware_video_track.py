@@ -40,6 +40,12 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
         self._pts = -1
         self._reported = False
         self.profile = "normal"
+        self.manual_video = None
+
+    def configure_video(self, *, profile="normal", manual=None):
+        self.profile = profile
+        self.manual_video = manual
+        self._next_at = time.monotonic()
 
     @classmethod
     def create(cls, gateway):
@@ -58,7 +64,7 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
             raise MediaStreamError
         try:
             now = time.monotonic()
-            if self.profile == "low":
+            if self.manual_video is not None or self.profile == "low":
                 await asyncio.sleep(max(0, self._next_at - now))
             # Startup may need camera enumeration. Never encode a previous call's frame.
             jpeg, captured_at = self._gateway.latest_raw_camera_frame()
@@ -78,9 +84,9 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
                 jpeg, captured_at = self._gateway.latest_raw_camera_frame()
                 if not jpeg or time.monotonic() - captured_at > 1.5:
                     raise HardwareVideoError("camera input missing/stalled")
-            width, height, fps = (320, 240, 5) if self.profile == "low" else (480, 360, 10)
+            width, height, fps = self.manual_video or ((320, 240, 5) if self.profile == "low" else (480, 360, 10))
             now = time.monotonic()
-            if self.profile == "low":
+            if self.manual_video is not None or self.profile == "low":
                 self._next_at = max(self._next_at + 1 / fps, now)
             else:
                 self._next_at = now

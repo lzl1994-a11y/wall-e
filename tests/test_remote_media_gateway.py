@@ -150,10 +150,32 @@ def test_emergency_stop_blocks_in_flight_motion_before_async_close():
 def test_low_video_profile_is_applied_and_placeholder_keeps_dimensions():
     value = gateway()
     value._on_data_message('{"type":"media","seq":1,"video":"low"}')
-    assert value._video_track.profile == "low"
+    value._video_track.configure_video.assert_called_once_with(profile="low", manual=None)
     frame = CameraVideoTrack._make_frame(b"", 320, 240)
     assert (frame.width, frame.height) == (320, 240)
     assert frame.format.name == "yuv420p"
+
+
+def test_manual_video_switches_both_tracks_and_auto_clears_manual_settings():
+    value = gateway()
+    value._on_data_message('{"type":"media","seq":1,"mode":"manual","width":640,"height":480,"fps":15}')
+    value._video_track.configure_video.assert_called_once_with(profile="normal", manual=(640, 480, 15))
+    assert value._send_event.call_args_list[0].args[0] == {
+        "type": "video", "settings": {"mode": "manual", "width": 640, "height": 480, "fps": 15},
+    }
+    value._on_data_message('{"type":"media","seq":2,"mode":"auto","video":"low"}')
+    value._video_track.configure_video.assert_called_with(profile="low", manual=None)
+    value._schedule_peer_close.assert_not_called()
+
+    track = CameraVideoTrack(Mock(latest_camera_frame=lambda: b""))
+    track.configure_video(manual=(640, 480, 15))
+    frame = asyncio.run(track.recv())
+    assert (frame.width, frame.height) == (640, 480)
+    track.configure_video(profile="low")
+    assert track.manual_video is None
+    frame = asyncio.run(track.recv())
+    assert (frame.width, frame.height) == (320, 240)
+    track.stop()
 
 
 def test_media_timestamps_follow_elapsed_time_after_cpu_stall():

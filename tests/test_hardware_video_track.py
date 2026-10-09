@@ -191,6 +191,39 @@ def test_low_mode_keeps_five_fps_wait():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("size,fps", [((320, 240), 5), ((480, 360), 10), ((640, 480), 15)])
+def test_manual_video_resizes_and_paces_then_returns_to_fresh_frame_auto(size, fps):
+    async def run():
+        clock = [100.0]
+        sleeps = []
+
+        async def sleep(delay):
+            sleeps.append(delay)
+            clock[0] += delay
+
+        gateway = Mock(latest_raw_camera_frame=lambda: (b"jpeg", clock[0]))
+        codec = Mock(encode=Mock(return_value=b"packet"))
+        with patch("services.remote.hardware_video_track.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("services.remote.hardware_video_track.asyncio.sleep", side_effect=sleep), \
+                patch("services.remote.hardware_video_track.X3VideoCodec", return_value=codec):
+            track = HardwareCameraVideoTrack(gateway, Path("unused"))
+            try:
+                track.configure_video(manual=(*size, fps))
+                await track.recv()
+                await track.recv()
+                assert sleeps == pytest.approx([0, 1 / fps])
+                assert all(call.args[1:4] == (*size, fps) for call in codec.encode.call_args_list)
+                track.configure_video()
+                assert track.manual_video is None
+                clock[0] += 1 / 15
+                await track.recv()
+                assert sleeps == pytest.approx([0, 1 / fps])
+                assert codec.encode.call_args.args[1:4] == (480, 360, 10)
+            finally:
+                await track.aclose()
+    asyncio.run(run())
+
+
 def test_repeated_source_frame_stalls_explicitly_and_does_not_reencode():
     async def run():
         clock = [100.0]
