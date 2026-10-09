@@ -26,6 +26,8 @@ class ArecordInputStream:
     arecord talks to the selected PCM directly and avoids that global timer.
     """
 
+    BUFFER_PERIODS = 4
+
     def __init__(
         self,
         *,
@@ -66,7 +68,7 @@ class ArecordInputStream:
             "-c",
             str(self.channels),
             "--period-size", str(self.blocksize),
-            "--buffer-size", str(self.blocksize * 4),
+            "--buffer-size", str(self.blocksize * self.BUFFER_PERIODS),
         ]
         self._stop_event.clear()
         self._process = subprocess.Popen(

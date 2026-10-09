@@ -26,10 +26,16 @@ class EchoReferenceSender:
         self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self._socket.setblocking(False)
         self.dropped = 0
+        self.device_gain = 1
+
+    def configure_device(self, name):
+        # Ear S3 firmware i2s_mic_driver_write_tx: saturating int16 * 4.
+        # Other USB speakers retain the ordinary unity reference.
+        self.device_gain = 4 if str(name).startswith("Walle Ear S3:") else 1
 
     def send(self, audio, latency):
         # Exactly the clipped final float32 mixture passed to the sound card.
-        pcm = np.rint(np.clip(audio, -1, 32767 / 32768) * 32768).astype("<i2").tobytes()
+        pcm = np.rint(np.clip(audio * self.device_gain, -1, 32767 / 32768) * 32768).astype("<i2").tobytes()
         if len(pcm) != FRAME_BYTES:
             raise ValueError("echo reference must be 48 kHz mono / 20 ms")
         self._send(pcm, latency)

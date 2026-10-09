@@ -239,6 +239,8 @@ class AudioPipeline:
                 self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db,
                 output_rate=self.SAMPLE_RATE, frame_ms=self.FRAME_MS,
                 echo_cancel=self._raw_only,
+                capture_delay_ms=(ArecordInputStream.BUFFER_PERIODS - 1) * self.FRAME_MS
+                if native_capture_available() else self.FRAME_MS,
             )
             self._apm.start(self.DEVICE_SAMPLE_RATE)
         self._apm_disable_scheduled = False

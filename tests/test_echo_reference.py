@@ -63,6 +63,31 @@ class EchoReferenceTests(unittest.TestCase):
                 NativeEchoApm._samples(pcm)
         self.assertEqual(NativeEchoApm._samples(bytes(1920)), 960)
 
+    def test_ear_s3_reference_includes_firmware_gain(self):
+        sender = EchoReferenceSender.__new__(EchoReferenceSender)
+        sender._send = Mock()
+        sender.configure_device("Walle Ear S3: USB Audio (hw:0,0)")
+        sender.send(np.full(960, .1, dtype=np.float32), .08)
+        self.assertTrue(np.all(np.frombuffer(sender._send.call_args.args[0], "<i2") == 13107))
+        sender.configure_device("Other USB Audio")
+        sender.send(np.full(960, .1, dtype=np.float32), .08)
+        self.assertTrue(np.all(np.frombuffer(sender._send.call_args.args[0], "<i2") == 3277))
+
+    def test_loud_ear_s3_mix_is_limited_before_dac_and_reference(self):
+        with patch("services.audio.playback_service.threading.Thread"):
+            player = MixingPlaybackService(sample_rate=1000)
+        player._echo_reference = Mock(device_gain=4)
+        player._stream = Mock(latency=.08)
+        player.play(np.full(20, 20000, np.int16))
+        player._play_mix_block()
+        actual = player._stream.write.call_args.args[0].reshape(-1)
+        self.assertLessEqual(float(np.max(np.abs(actual))) * 4, 32767 / 32768 + 1e-7)
+        np.testing.assert_array_equal(player._echo_reference.send.call_args.args[0], actual)
+        previous_gain = player._speaker_gain
+        player.play(np.full(20, 1000, np.int16))
+        player._play_mix_block()
+        self.assertAlmostEqual(player._speaker_gain, previous_gain + .1)
+
     def test_native_aec_start_failure_is_explicit_and_releases_processor(self):
         apm = WebRTCApm(lambda _: None, output_rate=48000, frame_ms=20, echo_cancel=True)
         native = Mock()
@@ -89,6 +114,19 @@ class EchoReferenceTests(unittest.TestCase):
         apm._native.capture.assert_called_once_with(bytes(1920), 100)
         apm._native.close.assert_called_once()
         apm._reference.close.assert_called_once()
+
+    def test_native_delay_includes_capture_buffer_and_processing_queue(self):
+        apm = WebRTCApm(lambda _: None, output_rate=48000, frame_ms=20,
+                       echo_cancel=True, capture_delay_ms=60)
+        apm._running = True
+        apm._native = Mock()
+        apm._reference = Mock(frames=1, dropped=0)
+        apm._reference.drain.return_value = [(bytes(1920), 80, 100.0)]
+        apm._queue.put((bytes(1920), 99.96))
+        apm._queue.put(None)
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.0):
+            apm._write_native()
+        apm._native.capture.assert_called_once_with(bytes(1920), 180)
 
     @unittest.skipUnless(sys.platform == "linux", "Linux abstract UNIX socket/credentials")
     def test_local_ipc_pcm_saturation_end_and_restart(self):

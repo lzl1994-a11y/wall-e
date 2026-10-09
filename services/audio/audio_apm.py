@@ -17,12 +17,16 @@ class WebRTCApm:
     MAX_OUTPUT_STALL_SEC = 0.25
 
     def __init__(self, on_pcm: Callable[[bytes], None], *, pre_gain_db: float = 6.0,
-                 output_rate: int = 16000, frame_ms: int = 30, echo_cancel: bool = False):
+                 output_rate: int = 16000, frame_ms: int = 30, echo_cancel: bool = False,
+                 capture_delay_ms: int = 20):
         if output_rate not in (16000, 48000) or frame_ms not in (10, 20, 30):
             raise ValueError("unsupported APM PCM format")
         self.output_rate = output_rate
         self.frame_ms = frame_ms
         self.echo_cancel = echo_cancel
+        if not 0 <= capture_delay_ms <= 500:
+            raise ValueError("invalid capture delay")
+        self.capture_delay_ms = capture_delay_ms
         self._native = None
         self._reference = None
         self._on_pcm = on_pcm
@@ -30,7 +34,7 @@ class WebRTCApm:
         self._running = False
         self._input_rate = 0
         self._process: subprocess.Popen | None = None
-        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=self.MAX_PENDING_FRAMES)
+        self._queue: queue.Queue[bytes | tuple[bytes, float] | None] = queue.Queue(maxsize=self.MAX_PENDING_FRAMES)
         self._writer: threading.Thread | None = None
         self._reader: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -87,7 +91,7 @@ class WebRTCApm:
                 self._reader = threading.Thread(target=self._read, name="wali-apm-output", daemon=True)
                 self._reader.start()
         print(f"[AudioPipeline] WebRTC APM 常驻: {input_rate}Hz -> {self.output_rate}Hz, "
-              f"pre-gain={self.pre_gain_db:g}dB, AEC={'ON (native, delay-agnostic)' if self.echo_cancel else 'OFF'}", flush=True)
+              f"pre-gain={self.pre_gain_db:g}dB, AEC={'ON (native, device latency)' if self.echo_cancel else 'OFF'}", flush=True)
         return True
 
     def stop(self) -> None:
@@ -135,7 +139,7 @@ class WebRTCApm:
             return False
         self._last_input_at = now
         try:
-            self._queue.put_nowait(pcm)
+            self._queue.put_nowait((pcm, now) if self.echo_cancel else pcm)
             return True
         except queue.Full:
             # A capture burst is not a wedged processor. Keep only current
@@ -149,7 +153,7 @@ class WebRTCApm:
                 print("[AudioPipeline] APM 突发输入，丢弃旧帧以保持实时")
             if not self._running:
                 return False
-            self._queue.put_nowait(pcm)
+            self._queue.put_nowait((pcm, now) if self.echo_cancel else pcm)
             return True
 
     def _command(self, input_rate: int) -> list[str]:
@@ -182,11 +186,16 @@ class WebRTCApm:
         delay_ms = 0
         active = False
         silence = bytes(1920)
+        processed = 0
+        last_report = time.monotonic()
         try:
             while self._running:
                 pcm = self._queue.get()
                 if pcm is None:
                     return
+                queued_at = time.monotonic()
+                if isinstance(pcm, tuple):
+                    pcm, queued_at = pcm
                 for render, delay, sent_at in reference.drain():
                     if render:
                         native.render(render)
@@ -198,10 +207,17 @@ class WebRTCApm:
                 if (not active or last_render_at is None or
                         time.monotonic() - last_render_at > delay_ms / 1000 + 0.04):
                     native.render(silence)
-                result = native.capture(pcm, min(500, delay_ms + self.frame_ms))
+                queue_delay = max(0, round((time.monotonic() - queued_at) * 1000))
+                result = native.capture(pcm, min(500, delay_ms + self.capture_delay_ms + queue_delay))
+                processed += 1
                 if self._running and not self.overloaded:
                     self._last_output_at = time.monotonic()
                     self._on_pcm(result)
+                if time.monotonic() - last_report >= 10:
+                    print(f"[AudioPipeline] AEC 运行统计: capture_frames={processed} "
+                          f"reference_frames={reference.frames} reference_drops={reference.dropped} "
+                          f"queue_drops={self.dropped_frames} metrics={native.metrics()}", flush=True)
+                    last_report = time.monotonic()
         except Exception as exc:
             self._overloaded.set()
             print(f"[AudioPipeline] AEC 处理失败，回声消除已失效: {exc}", flush=True)

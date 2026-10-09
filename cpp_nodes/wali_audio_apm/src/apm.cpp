@@ -19,7 +19,9 @@ void* wali_apm_create(float pre_gain_db) {
     return nullptr;
   webrtc::Config config;
   config.Set<webrtc::ExtendedFilter>(new webrtc::ExtendedFilter(true));
-  config.Set<webrtc::DelayAgnostic>(new webrtc::DelayAgnostic(true));
+  // Use the known output latency + capture buffer delay. On Ear S3 the old
+  // delay-agnostic estimator converges slowly despite regular PCM delivery.
+  config.Set<webrtc::DelayAgnostic>(new webrtc::DelayAgnostic(false));
   auto p = std::unique_ptr<Processor>(new Processor);
   p->apm.reset(webrtc::AudioProcessing::Create(config));
   if (!p->apm) return nullptr;

@@ -4,6 +4,9 @@ import threading
 import time
 import sys
 
+import numpy as np
+import sounddevice as sd
+
 from services.audio.audio_mixer import AudioMixer
 from services.audio.playback_service import PlaybackService
 
@@ -26,6 +29,7 @@ class MixingPlaybackService(PlaybackService):
         self._realtime_started_at = None
         self._realtime_underflow_base = 0
         self._echo_reference = None
+        self._speaker_gain = 1.0
         self.on_wake_complete = on_wake_complete
         self.on_system_complete = on_system_complete
         # The base constructor starts the worker; it waits until initialization.
@@ -128,11 +132,21 @@ class MixingPlaybackService(PlaybackService):
             self._next_device_attempt = 0.0 if opened else time.monotonic() + 1.0
             if opened:
                 print(f"[Playback Service] 混音输出实际延迟: {self._stream.latency:.3f}s", flush=True)
+                if self._echo_reference:
+                    self._echo_reference.configure_device(sd.query_devices(self._device, "output")["name"])
         latency = float(self._stream.latency) if opened else 0.0
         with self._mix_lock:
             audio, completed = self._mixer.render(
                 max(1, round(self.sample_rate * self.BLOCK_SEC)), latency
             )
+        if self._echo_reference and self._echo_reference.device_gain == 4:
+            # Firmware multiplies by four before its DAC. Keep that operation
+            # linear: an immediate peak attack and 200 ms release preserve quiet
+            # samples without allowing loud speech/music to clip in the device.
+            peak = float(np.max(np.abs(audio)))
+            required = min(1.0, (32767 / 32768 / 4) / max(peak, 1e-9))
+            self._speaker_gain = min(required, self._speaker_gain + self.BLOCK_SEC / 0.2)
+            audio = audio * self._speaker_gain
         try:
             if opened:
                 if self._stream.write(audio.reshape(-1, 1)) is True:
