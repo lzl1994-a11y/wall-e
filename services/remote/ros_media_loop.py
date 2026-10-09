@@ -2,15 +2,17 @@
 import asyncio
 
 
-async def run_ros_media(node, media, stopping):
+async def run_ros_media(node, media, stopping, *, media_active=None):
     from rclpy.executors import SingleThreadedExecutor, ExternalShutdownException
 
     executor = SingleThreadedExecutor(context=node.context)
     executor.add_node(node)
 
     async def ros_callbacks():
-        # Poll a nonblocking ROS wait set at 1/10 of the audio block period.
-        # No ROS thread competes with media for the GIL after native I/O.
+        # A peer needs polling at 1/10 of its 20 ms audio block period.
+        # Without a peer, one block is enough for status callbacks; rebuilding
+        # an empty ROS wait set every 2 ms otherwise burns CPU while idle.
+        # Keep one owner thread so native I/O cannot reintroduce GIL contention.
         while node.context.ok() and not stopping.is_set():
             try:
                 executor.spin_once(timeout_sec=0)
@@ -18,7 +20,8 @@ async def run_ros_media(node, media, stopping):
                 if node.context.ok():
                     raise
                 return
-            await asyncio.sleep(0.002)
+            active = media_active is None or media_active()
+            await asyncio.sleep(0.002 if active else 0.020)
 
     tasks = [asyncio.create_task(ros_callbacks()), asyncio.create_task(media())]
     try:

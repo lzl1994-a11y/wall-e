@@ -9,6 +9,47 @@ pytest.importorskip("rclpy")
 from services.remote.ros_media_loop import run_ros_media
 
 
+def test_idle_polling_slows_down_and_peer_lifecycle_restores_audio_cadence():
+    state = dict(polls=0, active=False)
+    delays = []
+    stopped = threading.Event()
+    node = SimpleNamespace(context=SimpleNamespace(ok=lambda: state["polls"] < 3))
+    real_sleep = asyncio.sleep
+
+    class Executor:
+        def __init__(self, *, context):
+            pass
+
+        def add_node(self, value):
+            pass
+
+        def spin_once(self, *, timeout_sec):
+            assert timeout_sec == 0
+            state["polls"] += 1
+            state["active"] = state["polls"] == 2
+
+        def remove_node(self, value):
+            pass
+
+        def shutdown(self, *, timeout_sec):
+            pass
+
+    async def sleep(delay):
+        delays.append(delay)
+        await real_sleep(0)
+
+    async def media():
+        await asyncio.Event().wait()
+
+    with patch("rclpy.executors.SingleThreadedExecutor", Executor), patch(
+        "services.remote.ros_media_loop.asyncio.sleep", sleep
+    ):
+        asyncio.run(run_ros_media(node, media, stopped,
+                                  media_active=lambda: state["active"]))
+    assert delays == [.020, .002, .020]
+    assert stopped.is_set()
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_ros_callbacks_share_media_thread_and_failures_close_both_owners(fail):
     events = []

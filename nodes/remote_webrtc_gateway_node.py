@@ -527,7 +527,10 @@ class RemoteWebRtcGateway:
 
     def _run_thread(self) -> None:
         try:
-            asyncio.run(run_ros_media(self.node, self._run_loop, self._stopping))
+            asyncio.run(run_ros_media(
+                self.node, self._run_loop, self._stopping,
+                media_active=lambda: self._peer is not None,
+            ))
         except Exception as exc:
             self.node.get_logger().error(f"WebRTC 网关退出: {exc}")
 
