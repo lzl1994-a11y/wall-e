@@ -10,7 +10,6 @@ constexpr int kRate = 48000;
 constexpr int kSamples = 480;  // WebRTC requires exactly 10 ms.
 struct Processor {
   std::unique_ptr<webrtc::AudioProcessing> apm;
-  float gain;
 };
 }
 
@@ -33,10 +32,15 @@ void* wali_apm_create(float pre_gain_db) {
       apm->noise_suppression()->set_level(webrtc::NoiseSuppression::kModerate) ||
       apm->noise_suppression()->Enable(true) ||
       apm->gain_control()->set_mode(webrtc::GainControl::kFixedDigital) ||
+      // Apply the requested gain in the post-AEC digital compressor. Clipping
+      // amplified microphone samples BEFORE AEC destroys the linear echo path.
+      apm->gain_control()->set_compression_gain_db(
+          std::max(0, static_cast<int>(std::round(9 + pre_gain_db)))) ||
       apm->gain_control()->set_target_level_dbfs(3) ||
       apm->gain_control()->enable_limiter(true) ||
       apm->gain_control()->Enable(true)) return nullptr;
-  p->gain = std::pow(10.0f, pre_gain_db / 20.0f);
+  apm->echo_cancellation()->enable_metrics(true);
+  apm->echo_cancellation()->enable_delay_logging(true);
   return p.release();
 }
 
@@ -66,7 +70,7 @@ int wali_apm_capture(void* context, const int16_t* pcm, int16_t* output,
   for (int offset = 0; offset < count; offset += kSamples) {
     float samples[kSamples];
     for (int i = 0; i < kSamples; ++i)
-      samples[i] = std::max(-1.0f, std::min(1.0f, pcm[offset + i] / 32768.0f * p->gain));
+      samples[i] = pcm[offset + i] / 32768.0f;
     const float* src[] = {samples};
     float* dst[] = {samples};
     int rc = p->apm->set_stream_delay_ms(delay_ms);
@@ -77,5 +81,16 @@ int wali_apm_capture(void* context, const int16_t* pcm, int16_t* output,
           std::min(32767.0f, std::round(samples[i] * 32768.0f))));
   }
   return 0;
+}
+
+int wali_apm_metrics(void* context, int* delay, int* deviation, float* poor,
+                     int* erle) {
+  if (!context || !delay || !deviation || !poor || !erle) return -1;
+  auto* ec = static_cast<Processor*>(context)->apm->echo_cancellation();
+  int rc = ec->GetDelayMetrics(delay, deviation, poor);
+  webrtc::EchoCancellation::Metrics metrics;
+  if (!rc) rc = ec->GetMetrics(&metrics);
+  if (!rc) *erle = metrics.echo_return_loss_enhancement.average;
+  return rc;
 }
 }

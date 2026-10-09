@@ -206,7 +206,8 @@ class WebRTCApm:
             self._overloaded.set()
             print(f"[AudioPipeline] AEC 处理失败，回声消除已失效: {exc}", flush=True)
         finally:
-            print(f"[AudioPipeline] AEC 参考统计: frames={reference.frames} dropped={reference.dropped}", flush=True)
+            print(f"[AudioPipeline] AEC 参考统计: frames={reference.frames} dropped={reference.dropped} "
+                  f"metrics={native.metrics()}", flush=True)
             reference.close()
             native.close()
 

@@ -17,6 +17,9 @@ class NativeEchoApm:
         lib.wali_apm_render.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
         lib.wali_apm_capture.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p,
                                        ctypes.c_int, ctypes.c_int]
+        lib.wali_apm_metrics.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+                                       ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float),
+                                       ctypes.POINTER(ctypes.c_int)]
         self._lib = lib
         self._context = lib.wali_apm_create(pre_gain_db)
         if not self._context:
@@ -44,3 +47,10 @@ class NativeEchoApm:
         if self._context:
             self._lib.wali_apm_destroy(self._context)
             self._context = None
+
+    def metrics(self):
+        delay, deviation, poor, erle = ctypes.c_int(), ctypes.c_int(), ctypes.c_float(), ctypes.c_int()
+        rc = self._lib.wali_apm_metrics(self._context, ctypes.byref(delay), ctypes.byref(deviation),
+                                       ctypes.byref(poor), ctypes.byref(erle))
+        return {"delay_ms": delay.value, "delay_deviation_ms": deviation.value,
+                "poor_delay_fraction": round(poor.value, 3), "erle_db": erle.value} if rc == 0 else {"code": rc}
