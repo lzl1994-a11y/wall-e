@@ -33,6 +33,7 @@ class WebRTCApm:
         self._lock = threading.RLock()
         self._overloaded = threading.Event()
         self._first_input_at: float | None = None
+        self._last_input_at: float | None = None
         self._last_output_at: float | None = None
         self.dropped_frames = 0
 
@@ -59,7 +60,7 @@ class WebRTCApm:
             self._running, self._input_rate = True, input_rate
             self._queue = queue.Queue(maxsize=self.MAX_PENDING_FRAMES)
             self._overloaded.clear()
-            self._first_input_at = self._last_output_at = None
+            self._first_input_at = self._last_input_at = self._last_output_at = None
             self.dropped_frames = 0
             self._writer = threading.Thread(target=self._write, name="wali-apm-input", daemon=True)
             self._reader = threading.Thread(target=self._read, name="wali-apm-output", daemon=True)
@@ -95,13 +96,21 @@ class WebRTCApm:
     def submit(self, pcm: bytes) -> bool:
         if not self._running or self.overloaded: return False
         now = time.monotonic()
-        if self._first_input_at is None:
+        # An input gap is not evidence that the native processor stalled.
+        # If it produced output after the previous input, start a new budget
+        # for this frame instead of timing the source's idle interval.
+        caught_up = (self._last_input_at is None or (
+            self._last_output_at is not None and self._last_output_at >= self._last_input_at
+        ))
+        if caught_up:
             self._first_input_at = now
-        last_progress = self._last_output_at if self._last_output_at is not None else self._first_input_at
+        last_progress = max(self._first_input_at,
+                            self._last_output_at if self._last_output_at is not None else self._first_input_at)
         if now - last_progress > self.MAX_OUTPUT_STALL_SEC:
             self._overloaded.set()
             print("[AudioPipeline] APM 输出停滞超过实时预算，切换到直采样回退")
             return False
+        self._last_input_at = now
         try:
             self._queue.put_nowait(pcm)
             return True

@@ -52,6 +52,34 @@ class WebRTCApmBackpressureTests(unittest.TestCase):
             self.assertFalse(apm.submit(b"late"))
         self.assertTrue(apm.overloaded)
 
+    def test_source_pause_does_not_disable_processor_that_finished_previous_input(self):
+        apm = WebRTCApm(lambda _pcm: None)
+        apm._running = True
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100):
+            self.assertTrue(apm.submit(b"first"))
+        apm._last_output_at = 100.02
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.35):
+            self.assertTrue(apm.submit(b"resumed"))
+        self.assertFalse(apm.overloaded)
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.37):
+            self.assertTrue(apm.submit(b"next_frame"))
+        # The resumed frame still has the same bounded processing budget.
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.61):
+            self.assertFalse(apm.submit(b"still_stalled"))
+        self.assertTrue(apm.overloaded)
+
+    def test_old_output_does_not_mask_unprocessed_new_input(self):
+        apm = WebRTCApm(lambda _pcm: None)
+        apm._running = True
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100):
+            self.assertTrue(apm.submit(b"first"))
+        apm._last_output_at = 100.02
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.04):
+            self.assertTrue(apm.submit(b"second"))
+        with patch("services.audio.audio_apm.time.monotonic", return_value=100.3):
+            self.assertFalse(apm.submit(b"late"))
+        self.assertTrue(apm.overloaded)
+
     def test_audio_callback_schedules_nonblocking_fallback(self):
         pipeline = AudioPipeline.__new__(AudioPipeline)
         pipeline._is_running = True
