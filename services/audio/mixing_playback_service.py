@@ -14,6 +14,10 @@ from services.audio.playback_service import PlaybackService
 class MixingPlaybackService(PlaybackService):
     BLOCK_SEC = 0.02
     OUTPUT_LATENCY_SEC = 0.08
+    # Ear S3 keeps I2S TX clocked after USB alt=0. Overwrite its whole retained
+    # ring before closing: 8 * 1536 / 48000 = 256 ms DMA, plus up to 96 ms USB
+    # FIFO, rounded up to 20 ms blocks. This is PCM, not a scheduler sleep.
+    STOP_SILENCE_SEC = 0.36
 
     def __init__(self, *args, on_wake_complete=None, on_system_complete=None, **kwargs):
         # Device "low" latency can be shorter than a 20 ms write block. On
@@ -76,7 +80,7 @@ class MixingPlaybackService(PlaybackService):
                           + f" output_underflows={self._output_underflows - self._realtime_underflow_base}",
                           flush=True)
                 self._mixer.stop_speech()
-        self._interrupt_requested.set()
+            self._interrupt_requested.set()
         self._ready.set()
 
     def play_wake(self, samples, request_id):
@@ -105,22 +109,41 @@ class MixingPlaybackService(PlaybackService):
                 active = self._mixer.active
                 if not active:
                     self._ready.clear()
-            if not active:
-                self._close_stream(drain=True)
-                continue
             try:
-                self._play_mix_block()
+                # stop_speech() makes the mixer idle. Consume its abort before
+                # the idle drain, or queued foreground speech plays on release.
+                if active or self._interrupt_requested.is_set():
+                    self._play_mix_block()
+                else:
+                    self._close_stream(drain=True)
             except Exception as exc:
                 print(f"[Playback Service] 混音播放失败: {exc}")
-                self._close_stream(drain=False)
+                try:
+                    self._close_stream(drain=False)
+                except Exception as close_exc:
+                    print(f"[Playback Service] 停止输出失败: {close_exc}", flush=True)
                 self._stopped.wait(self.BLOCK_SEC)
-        self._close_stream(drain=True)
+        try:
+            self._close_stream(drain=True)
+        except Exception as exc:
+            print(f"[Playback Service] 关闭输出失败: {exc}", flush=True)
 
     def _play_mix_block(self):
         if self._interrupt_requested.is_set():
             self._interrupt_requested.clear()
-            self._close_stream(drain=False)
-            return
+            with self._mix_lock:
+                active = self._mixer.active
+            if active and self._stream is not None:
+                # Music (or an already queued new turn) keeps USB TX running.
+                # Drop the old host buffer and immediately render the live mix;
+                # inserting a shutdown silence here would interrupt the music.
+                self._stream.abort()
+                self._stream.start()
+                if self._echo_reference:
+                    self._echo_reference.end()
+            else:
+                self._close_stream(drain=False)
+                return
         opened = self._stream is not None
         if not opened and time.monotonic() >= self._next_device_attempt:
             try:
@@ -170,12 +193,28 @@ class MixingPlaybackService(PlaybackService):
                     self.on_turn_complete()
 
     def _close_stream(self, drain=False):
-        had_stream = self._stream is not None
+        stream = self._stream
+        self._stream = None
+        if stream is None:
+            return
         try:
-            super()._close_stream(drain=drain)
+            if not drain:
+                # Discard queued speech before sending zeros, so release and
+                # disconnect do not drain the remainder of the old PTT turn.
+                stream.abort()
+                stream.start()
+            silence = np.zeros(max(1, round(self.sample_rate * self.BLOCK_SEC)), np.float32)
+            for _ in range(round(self.STOP_SILENCE_SEC / self.BLOCK_SEC)):
+                stream.write(silence.reshape(-1, 1))
+                if self._echo_reference:
+                    self._echo_reference.send(silence, float(stream.latency))
+            stream.stop()
         finally:
-            if had_stream and self._echo_reference:
-                self._echo_reference.end()
+            try:
+                stream.close()
+            finally:
+                if self._echo_reference:
+                    self._echo_reference.end()
 
     def close(self):
         self._stopped.set()

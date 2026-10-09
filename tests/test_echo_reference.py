@@ -51,7 +51,7 @@ class EchoReferenceTests(unittest.TestCase):
         with patch("services.audio.playback_service.threading.Thread"):
             player = MixingPlaybackService(sample_rate=1000)
         player._echo_reference = Mock()
-        stream = player._stream = Mock()
+        stream = player._stream = Mock(latency=.08)
         player._close_stream(drain=False)
         stream.abort.assert_called_once()
         player._echo_reference.end.assert_called_once()
