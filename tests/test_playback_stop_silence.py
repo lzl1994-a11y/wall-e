@@ -117,7 +117,9 @@ class PlaybackStopSilenceTests(unittest.TestCase):
         np.testing.assert_allclose(sink.ring[:20], 2000 / 32768)
 
     def test_production_silence_is_full_20ms_reference_blocks(self):
-        with patch("services.audio.playback_service.threading.Thread"):
+        with patch("services.audio.playback_service.threading.Thread"), patch(
+            "services.audio.echo_reference.EchoReferenceSender"
+        ):
             player = MixingPlaybackService(sample_rate=48000)
         sink = player._stream = Mock(latency=.08)
         player._close_stream(drain=True)
