@@ -2,6 +2,7 @@
 
 import threading
 import time
+import sys
 
 from services.audio.audio_mixer import AudioMixer
 from services.audio.playback_service import PlaybackService
@@ -24,11 +25,15 @@ class MixingPlaybackService(PlaybackService):
         self._output_underflows = 0
         self._realtime_started_at = None
         self._realtime_underflow_base = 0
+        self._echo_reference = None
         self.on_wake_complete = on_wake_complete
         self.on_system_complete = on_system_complete
         # The base constructor starts the worker; it waits until initialization.
         super().__init__(*args, **kwargs)
         self._mixer = AudioMixer(self.sample_rate)
+        if sys.platform == "linux" and self.sample_rate == 48000:
+            from services.audio.echo_reference import EchoReferenceSender
+            self._echo_reference = EchoReferenceSender()
         self._ready.set()
 
     def _submit(self, method, *args):
@@ -134,6 +139,8 @@ class MixingPlaybackService(PlaybackService):
                     self._output_underflows += 1
                     if self._output_underflows == 1:
                         print("[Playback Service] 混音输出缓冲欠载", flush=True)
+                if self._echo_reference:
+                    self._echo_reference.send(audio, latency)
             else:
                 self._stopped.wait(self.BLOCK_SEC)
         finally:
@@ -148,7 +155,17 @@ class MixingPlaybackService(PlaybackService):
                 elif self.on_turn_complete:
                     self.on_turn_complete()
 
+    def _close_stream(self, drain=False):
+        had_stream = self._stream is not None
+        try:
+            super()._close_stream(drain=drain)
+        finally:
+            if had_stream and self._echo_reference:
+                self._echo_reference.end()
+
     def close(self):
         self._stopped.set()
         self._ready.set()
         self._worker.join(timeout=2.0)
+        if self._echo_reference and not self._worker.is_alive():
+            self._echo_reference.close()

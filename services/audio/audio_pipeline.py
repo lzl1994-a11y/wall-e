@@ -238,6 +238,7 @@ class AudioPipeline:
             self._apm = WebRTCApm(
                 self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db,
                 output_rate=self.SAMPLE_RATE, frame_ms=self.FRAME_MS,
+                echo_cancel=self._raw_only,
             )
             self._apm.start(self.DEVICE_SAMPLE_RATE)
         self._apm_disable_scheduled = False

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(wali_audio_apm CXX)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(APM REQUIRED IMPORTED_TARGET webrtc-audio-processing)
+add_library(wali_audio_apm SHARED src/apm.cpp)
+target_compile_features(wali_audio_apm PRIVATE cxx_std_14)
+target_compile_options(wali_audio_apm PRIVATE -O2 -Wall -Wextra -Werror)
+target_link_libraries(wali_audio_apm PRIVATE PkgConfig::APM)
