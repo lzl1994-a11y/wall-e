@@ -398,7 +398,13 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
 #### 启动参数选项 (`launch_nodes.py`)
 - `--tracking`：开启视觉追踪节点（监听地平线 BPU 输出）。
 - `--voice-chat`：使用大模型端到端语音交互（Qwen-Omni）。
-- `--remote-intercom`：启动无 AI、无录音的 WebRTC 实时对讲采集链路。
+- `--remote-intercom`：仅诊断用，启动无 AI、无录音的 WebRTC 实时对讲采集链路。
+  日常使用不要加此参数。配置 `pipeline.mode: intercom` 或 `multimodal` 并启用
+  WebRTC 时，共用一个 48 kHz 麦克风采集/AEC 入口：没有控制端连接时运行本地
+  唤醒和 LLM；真实 PeerConnection 连接后暂停本地语音，断开后恢复并等待新的
+  唤醒词。关闭网页“发送语音”开关只关闭下行说话，连接仍占用对讲用途。
+  网关每秒报告连接状态，连续三个周期没有报告时释放麦克风用途，防止崩溃后
+  本地语音永久暂停。`intercom` 原有后台视觉跟踪启停规则保持不变。
 - `--real-stt`：启动 `ASR → LLM → TTS` 链路，实际 ASR 引擎由 `core/config.yaml` 或 Web 页面中的 `asr.mode`、`provider` / `engine` 决定。
 - `--keyboard-stt`：使用键盘输入文字模拟语音识别（调试用）。
 - `--no-serial`：不启动屏幕/下位机串口节点；板载 I²C 后端仍可运行。
@@ -479,7 +485,7 @@ remote_control:
 启动方式：
 
 ```bash
-python launch_nodes.py --remote-control --remote-intercom
+python launch_nodes.py --remote-control
 ```
 
 公网连接还必须给手机端配置可访问的 STUN/TURN ICE server；signaling 只交换 SDP/ICE，

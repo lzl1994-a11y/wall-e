@@ -17,6 +17,7 @@ import threading
 import time
 import traceback
 import uuid
+from functools import wraps
 from pathlib import Path
 
 import rclpy
@@ -98,7 +99,20 @@ from services.audio.audio_control_protocol import (
 from services.remote.remote_protocol import (
     REMOTE_AUDIO_PCM_TOPIC,
     REMOTE_VOICE_STATE_TOPIC,
+    ROBOT_AUDIO_PCM_TOPIC,
 )
+from services.remote.microphone_mode import RemoteMicrophoneLease, REMOTE_CONNECTION_TOPIC
+
+
+def local_voice_callback(callback):
+    """Serialize local output against controller takeover, including worker callbacks."""
+    @wraps(callback)
+    def guarded(self, *args, **kwargs):
+        with getattr(self, "_voice_mode_lock", threading.RLock()):
+            if getattr(self, "_remote_connected", False):
+                return
+            return callback(self, *args, **kwargs)
+    return guarded
 
 OUTPUT_ECHO_GUARD_SECONDS = 0.35
 GAME_COMMENTARY_PROMPT = (
@@ -208,7 +222,11 @@ class VoiceChatNode(Node):
 
         self.get_logger().info("正在预热唤醒词 + Qwen-Omni 引擎...")
 
-        self.vc = VoiceChatService()
+        shared_capture = os.environ.get("WALI_SHARED_MICROPHONE") == "1"
+        self._voice_mode_lock = threading.RLock()
+        self._remote_connected = shared_capture
+        self._remote_lease = RemoteMicrophoneLease() if shared_capture else None
+        self.vc = VoiceChatService(shared_capture=shared_capture)
         self.vc.on_wake_word = self._on_wake_word
         self.vc.on_speech_start = self._on_vad_speech_start
         self.vc.on_speech_end = self._on_vad_speech_end
@@ -234,7 +252,51 @@ class VoiceChatNode(Node):
         self._wake_play_lock = threading.Lock()
 
         self.vc.start()
+        if shared_capture:
+            from rclpy.qos import qos_profile_sensor_data
+
+            self.vc.set_remote_connected(True)
+            self.create_subscription(
+                UInt8MultiArray, ROBOT_AUDIO_PCM_TOPIC,
+                lambda msg: self.vc.accept_shared_pcm(bytes(msg.data)),
+                qos_profile_sensor_data,
+            )
+            self.create_subscription(
+                String, REMOTE_CONNECTION_TOPIC, self._on_remote_connection, 1,
+            )
+            self.create_timer(0.5, self._check_remote_connection)
         self.get_logger().info("语音直聊节点已上线")
+
+    def _on_remote_connection(self, message):
+        try:
+            payload = json.loads(message.data)
+            self._remote_lease.update(payload["connected"])
+        except (TypeError, ValueError, KeyError):
+            return
+        self._check_remote_connection()
+
+    def _check_remote_connection(self):
+        with self._voice_mode_lock:
+            connected = self._remote_lease.remote_active
+            if connected == self._remote_connected:
+                return
+            self._remote_connected = connected
+            self.vc.set_remote_connected(connected)
+            if connected:
+                with self._timer_lock:
+                    if self._resume_timer is not None:
+                        self._resume_timer.cancel()
+                        self._resume_timer = None
+                self._output_controller = DialogOutputController()
+                self._turn_controller = DialogTurnController()
+                self.audio_control_pub.publish(
+                    String(data=encode_stop_speech_control("remote_connection"))
+                )
+                self.get_logger().info("远程已连接，麦克风用于对讲，本地唤醒暂停")
+            else:
+                if self._game_commentary.mode == "robot" and self._output().can_resume_capture():
+                    self.vc.resume()
+                self.get_logger().info("远程已断开，恢复本地唤醒和语音对话")
 
     def _on_remote_voice_state(self, message):
         try:
@@ -283,7 +345,8 @@ class VoiceChatNode(Node):
             return
         if not decision.resume_voice:
             return
-        self.vc.resume()
+        if not getattr(self, "_remote_connected", False):
+            self.vc.resume()
 
     def _on_game_frame(self, message):
         frame = decode_game_frame(bytes(message.data))
@@ -292,6 +355,8 @@ class VoiceChatNode(Node):
         self._game_commentary.accept_frame(frame)
 
     def _game_commentary_tick(self):
+        if getattr(self, "_remote_connected", False):
+            return
         frame = self._game_commentary.take_due_frame()
         if frame is None:
             return
@@ -338,6 +403,7 @@ class VoiceChatNode(Node):
         )
 
     # ── 唤醒词回调 ──
+    @local_voice_callback
     def _on_wake_word(self):
         """唤醒词触发：播放预合成语音 + 切 TFT 到聊天页。"""
         self.get_logger().info("唤醒词触发")
@@ -400,7 +466,11 @@ class VoiceChatNode(Node):
                 if not len(audio):
                     return
                 payload = encode_wake_audio(request_id, audio.raw_data)
-                self.wake_audio_pub.publish(String(data=payload))
+                with getattr(self, "_voice_mode_lock", threading.RLock()):
+                    if (getattr(self, "_remote_connected", False)
+                            or not self._output().wake_is_active(request_id)):
+                        return
+                    self.wake_audio_pub.publish(String(data=payload))
                 submitted = True
                 self._schedule_wake_watchdog(request_id)
             except ImportError:
@@ -460,7 +530,8 @@ class VoiceChatNode(Node):
     def _schedule_capture_resume(self):
         """Discard the speaker's acoustic tail before reopening capture."""
         if (
-            self._game_commentary.mode != "robot"
+            getattr(self, "_remote_connected", False)
+            or self._game_commentary.mode != "robot"
             or not self._output().can_resume_capture()
         ):
             return
@@ -474,6 +545,7 @@ class VoiceChatNode(Node):
             self._resume_timer.daemon = True
             self._resume_timer.start()
 
+    @local_voice_callback
     def _resume_capture_after_output(self):
         if self._game_commentary.mode != "robot":
             return
@@ -486,6 +558,8 @@ class VoiceChatNode(Node):
 
     # ── LLM 回调 ──
     def _on_tool_call(self, name, arguments):
+        if getattr(self, "_remote_connected", False):
+            return "Local dialogue is suspended during remote intercom."
         return self._tools().dispatch(name, arguments)
 
     def _execute_regular_tool_action(self, name, arguments):
@@ -755,6 +829,7 @@ class VoiceChatNode(Node):
             self._photo_capture_workflow = workflow
         return workflow
 
+    @local_voice_callback
     def _on_llm_chunk(self, text):
         """流式文本块：跳过纠错首行，2 标点攒一句 → tts_text。"""
         decision = self._turn().consume_chunk(text)
@@ -763,6 +838,7 @@ class VoiceChatNode(Node):
         self.tts_pub.publish(String(data=decision.tts_text))
         self.get_logger().info(f"TTS: {decision.tts_text[:80]}")
 
+    @local_voice_callback
     def _on_llm_reply(self, text):
         """最终完整回复 → 解析 you/ai → screen_dialog。"""
         decision = self._turn().finish_reply(text)
@@ -829,6 +905,7 @@ class VoiceChatNode(Node):
 
         return json.dumps(payload, ensure_ascii=False)
 
+    @local_voice_callback
     def _on_llm_done(self):
         """关闭本轮 TTS；播放节点会在音频真正播完后结束回合。"""
         turn_id = self._turn().finish()

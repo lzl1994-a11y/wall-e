@@ -47,6 +47,32 @@ def launcher_args(
 
 
 class LaunchNodesTests(unittest.TestCase):
+    def test_multimodal_remote_control_shares_one_capture_owner(self):
+        config = {"pipeline": {"mode": "multimodal"}, "webrtc_remote": {"enabled": True}}
+        with patch("launch_nodes.load_config", return_value=config):
+            nodes = launch_nodes.build_node_list(launcher_args())
+        self.assertEqual(sum(n.name == "remote_intercom" for n in nodes), 1)
+        voice = next(n for n in nodes if n.name == "voice_chat")
+        self.assertEqual(voice.environment["WALI_SHARED_MICROPHONE"], "1")
+        self.assertNotIn("llm", [n.name for n in nodes])
+
+    def test_configured_intercom_preserves_local_voice_and_tracking_selection(self):
+        config = {"pipeline": {"mode": "intercom"}, "webrtc_remote": {"enabled": True},
+                  "launch": {"tracking": True}}
+        with patch("launch_nodes.load_config", return_value=config):
+            nodes = launch_nodes.build_node_list(launcher_args())
+        names = [n.name for n in nodes]
+        self.assertIn("voice_chat", names)
+        self.assertIn("remote_intercom", names)
+        self.assertNotIn("tracking", names)
+        self.assertEqual(next(n for n in nodes if n.name == "voice_chat").environment["WALI_SHARED_MICROPHONE"], "1")
+
+    def test_local_only_multimodal_keeps_its_existing_capture(self):
+        with patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "multimodal"}}):
+            nodes = launch_nodes.build_node_list(launcher_args(no_remote_control=True))
+        voice = next(n for n in nodes if n.name == "voice_chat")
+        self.assertNotIn("WALI_SHARED_MICROPHONE", voice.environment)
+        self.assertNotIn("remote_intercom", [n.name for n in nodes])
     def test_launcher_lock_rejects_a_second_instance_for_same_checkout(self):
         with tempfile.TemporaryDirectory(prefix="wali-launch-lock-") as temp_dir:
             lock_dir = Path(temp_dir)

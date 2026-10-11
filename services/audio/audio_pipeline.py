@@ -155,11 +155,17 @@ class AudioPipeline:
         config_path: str = "core/config.yaml",
         *,
         raw_only: bool = False,
+        shared_capture: bool = False,
     ):
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         self._raw_only = bool(raw_only)
+        if raw_only and shared_capture:
+            raise ValueError("raw capture cannot also consume shared capture")
+        self._shared_capture = bool(shared_capture)
+        self._shared_lock = threading.Lock()
+        self._shared_resampler = None
         if self._raw_only:
             # ASR keeps its 16 kHz / 30 ms contract; live intercom does not
             # downsample and upsample the same USB microphone unnecessarily.
@@ -168,6 +174,7 @@ class AudioPipeline:
             self.FRAME_SIZE = self.SAMPLE_RATE * self.FRAME_MS // 1000
             self.FRAME_BYTES = self.FRAME_SIZE * 2
         self._ww = WakeWordDetector({} if self._raw_only else config)
+        self._wake_lock = threading.Lock()
         self._config_path = config_path
         
         self._vad_cfg = {} if self._raw_only else config.get("vad", {})
@@ -234,7 +241,7 @@ class AudioPipeline:
     def start(self):
         self._is_running = True
         self._paused_event.clear()
-        if self._apm_enabled:
+        if self._apm_enabled and not self._shared_capture:
             self._apm = WebRTCApm(
                 self._queue_processed_pcm, pre_gain_db=self._apm_pre_gain_db,
                 output_rate=self.SAMPLE_RATE, frame_ms=self.FRAME_MS,
@@ -247,8 +254,9 @@ class AudioPipeline:
         if not self._raw_only:
             self._listen_thread = threading.Thread(target=self._run, daemon=True)
             self._listen_thread.start()
-        self._device_thread = threading.Thread(target=self._device_monitor, daemon=True)
-        self._device_thread.start()
+        if not self._shared_capture:
+            self._device_thread = threading.Thread(target=self._device_monitor, daemon=True)
+            self._device_thread.start()
         mode = "raw-only" if self._raw_only else "speech"
         print(
             f"[AudioPipeline] started (mode={mode}, "
@@ -280,6 +288,9 @@ class AudioPipeline:
         self._is_paused = True
         self._paused_event.set()
         self._drain_queue()
+        if getattr(self, "_shared_capture", False):
+            with self._shared_lock:
+                self._shared_resampler = None
         print("[AudioPipeline] 已暂停")
 
     def resume(self):
@@ -288,6 +299,33 @@ class AudioPipeline:
         self._paused_event.clear()
         self._reset_vad_state()
         print("[AudioPipeline] 已恢复")
+
+    def accept_shared_pcm(self, pcm: bytes):
+        """Consume the sole capture owner's post-AEC 48 kHz mono PCM.
+
+        Stateful libswresample filtering preserves continuity across 20 ms
+        messages and supplies the existing 16 kHz / 30 ms speech contract.
+        Pausing local speech never pauses the capture owner or remote audio.
+        """
+        if not self._shared_capture or not self._is_running or self._is_paused:
+            return
+        if not pcm or len(pcm) % 2:
+            return
+        from av import AudioFrame, AudioResampler
+
+        with self._shared_lock:
+            if self._is_paused:
+                return
+            if self._shared_resampler is None:
+                self._shared_resampler = AudioResampler(
+                    format="s16", layout="mono", rate=self.SAMPLE_RATE,
+                    frame_size=self.FRAME_SIZE,
+                )
+            frame = AudioFrame(format="s16", layout="mono", samples=len(pcm) // 2)
+            frame.sample_rate = self.DEVICE_SAMPLE_RATE
+            frame.planes[0].update(pcm)
+            for converted in self._shared_resampler.resample(frame):
+                self._queue_processed_pcm(bytes(converted.planes[0])[:converted.samples * 2])
 
     def begin_external_turn(self) -> bool:
         """Start a push-to-talk turn supplied by a remote transport.
@@ -634,7 +672,12 @@ class AudioPipeline:
         """Keep the loaded model idle whenever microphone processing is paused."""
         if self._is_paused or self._paused_event.is_set() or not self._ww.enabled:
             return False
-        return self._ww.check(frame)
+        with getattr(self, "_wake_lock", threading.Lock()):
+            return self._ww.check(frame)
+
+    def reset_wake_word(self):
+        with self._wake_lock:
+            self._ww.reset()
 
     def _resample_fallback(self, samples: np.ndarray) -> np.ndarray:
         """Keep 16 kHz VAD/ASR working if the optional APM process is absent."""

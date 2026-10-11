@@ -6,6 +6,24 @@ from services.llm.voice_chat_service import VoiceChatService, _State
 
 
 class VoiceChatCaptureGuardTests(unittest.TestCase):
+    def test_connected_controller_cancels_local_turn_and_blocks_delayed_resume(self):
+        service = self._service(_State.LLM_PENDING)
+        service.set_remote_connected(True)
+        self.assertEqual(service._state, _State.IDLE)
+        self.assertTrue(service._cancel_llm.is_set())
+        service._pipe.set_awake.assert_called_once_with(False)
+        service.resume()
+        self.assertFalse(service.complete_output_playback())
+        service._pipe.resume.assert_not_called()
+        with patch("threading.Thread") as worker:
+            service._dispatch_llm("late encoded audio")
+        worker.assert_not_called()
+        self.assertTrue(service._cancel_llm.is_set())
+        service.set_remote_connected(False)
+        self.assertEqual(service._state, _State.IDLE)
+        service.resume()
+        service._pipe.resume.assert_called_once()
+
     def _service(self, state):
         service = VoiceChatService.__new__(VoiceChatService)
         service._state = state

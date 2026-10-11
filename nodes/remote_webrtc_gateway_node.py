@@ -64,6 +64,7 @@ from services.remote.remote_protocol import (
     encode_voice_state,
 )
 from services.remote.realtime_control import ChangedTargetGate, ChannelSequenceGate
+from services.remote.microphone_mode import REMOTE_CONNECTION_TOPIC, CONNECTION_HEARTBEAT_SEC
 from services.remote.audio_playback_gate import REMOTE_AUDIO_EPOCH_LABEL_PREFIX
 from services.remote.opus_audio_jitter import install_opus_audio_jitter
 from services.remote.mono_opus_encoder import MonoOpusEncoder
@@ -411,6 +412,10 @@ class RemoteWebRtcGateway:
         self._intercom_state_pub = node.create_publisher(
             String, REMOTE_INTERCOM_STATE_TOPIC, 10
         )
+        self._connection_pub = node.create_publisher(String, REMOTE_CONNECTION_TOPIC, 1)
+        self._connection_timer = node.create_timer(
+            CONNECTION_HEARTBEAT_SEC, self._publish_connection_state
+        )
         self._audio_control_pub = node.create_publisher(String, AUDIO_CONTROL_TOPIC, 10)
         self._camera_sub = node.create_subscription(
             CompressedImage,
@@ -441,6 +446,13 @@ class RemoteWebRtcGateway:
             daemon=True,
         )
         self._thread.start()
+
+    def _publish_connection_state(self):
+        peer = self._peer
+        connected = peer is not None and peer.connectionState == "connected"
+        publisher = getattr(self, "_connection_pub", None)
+        if publisher is not None and self.node.context.ok():
+            publisher.publish(String(data=json.dumps({"connected": connected})))
 
     def stop(self) -> None:
         self._stopping.set()
@@ -737,6 +749,8 @@ class RemoteWebRtcGateway:
             self.node.get_logger().info(
                 f"PeerConnection 状态: {peer.connectionState}"
             )
+            if self._peer is peer:
+                self._publish_connection_state()
             if peer.connectionState in {"failed", "closed", "disconnected"}:
                 await self._close_peer(peer)
 
@@ -1157,6 +1171,7 @@ class RemoteWebRtcGateway:
         if (peer is not None or video_track is not None
                 or self._remote_voice_active or self._remote_call_active):
             self._stop_robot_outputs()
+        self._publish_connection_state()
         self._channels.clear()
         self._sequence_gate.reset()
         for task in tasks:

@@ -13,6 +13,50 @@ from services.dialog.dialog_output import DialogOutputController
 
 
 class VoiceChatTurnEndTests(unittest.TestCase):
+    def test_controller_takeover_blocks_late_output_and_disconnect_restores_wake(self):
+        from services.remote.microphone_mode import RemoteMicrophoneLease
+        from services.game.game_commentary import GameCommentaryController
+
+        node = self._make_wake_node()
+        node._voice_mode_lock = threading.RLock()
+        node._remote_connected = False
+        node._remote_lease = RemoteMicrophoneLease()
+        node._game_commentary = GameCommentaryController()
+        node.audio_control_pub = MagicMock()
+        node.tts_pub = MagicMock()
+        node._on_remote_connection(types.SimpleNamespace(data='{"connected":true}'))
+        self.assertTrue(node._remote_connected)
+        node.vc.set_remote_connected.assert_called_once_with(True)
+        self.assertFalse(node._output().wake_response_active)
+        node._on_wake_word()
+        node._on_llm_chunk("late speech")
+        node._on_llm_done()
+        node._resume_capture_after_output()
+        node.tts_pub.publish.assert_not_called()
+        node.vc.complete_output_playback.assert_not_called()
+        node._on_remote_connection(types.SimpleNamespace(data='{"connected":false}'))
+        self.assertFalse(node._remote_connected)
+        node.vc.resume.assert_called_once()
+
+    def test_game_resume_and_lease_expiry_do_not_override_other_capture_guards(self):
+        from services.remote.microphone_mode import RemoteMicrophoneLease
+        from services.game.game_commentary import GameCommentaryController
+
+        node = self._make_wake_node()
+        node._voice_mode_lock = threading.RLock()
+        node._remote_connected = True
+        clock = MagicMock(return_value=0.0)
+        node._remote_lease = RemoteMicrophoneLease(clock=clock)
+        node._game_commentary = GameCommentaryController()
+        node._game_commentary.set_mode("playing")
+        node._on_game_state(types.SimpleNamespace(data='{"mode":"robot"}'))
+        node.vc.resume.assert_not_called()
+        # Wake playback is still active, so expiration must not reopen capture.
+        clock.return_value = 3.0
+        node._check_remote_connection()
+        self.assertFalse(node._remote_connected)
+        node.vc.resume.assert_not_called()
+
     @staticmethod
     def _load_node_class():
         fake_rclpy = types.ModuleType("rclpy")

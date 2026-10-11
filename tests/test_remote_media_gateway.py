@@ -386,6 +386,16 @@ def test_signaling_failure_without_a_media_session_does_not_stop_local_robot():
     assert not value._channels
 
 
+def test_only_a_connected_media_peer_claims_local_microphone():
+    value = gateway()
+    value._connection_pub = Mock()
+    for state in (None, "new", "connecting", "connected", "disconnected"):
+        value._peer = None if state is None else Mock(connectionState=state)
+        value._publish_connection_state()
+        payload = json.loads(value._connection_pub.publish.call_args.args[0].data)
+        assert payload == {"connected": state == "connected"}
+
+
 def test_detached_but_active_voice_still_receives_safety_stop():
     value = gateway()
     value._peer = None

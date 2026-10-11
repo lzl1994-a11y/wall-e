@@ -243,12 +243,19 @@ def build_node_list(args):
             ROOT / "nodes" / "remote_webrtc_gateway_node.py",
         ))
 
-    if pipeline == "intercom":
+    # Configured intercom is an additional capability: idle robots still wake
+    # and converse. Only the explicit diagnostic flag requests capture alone.
+    if pipeline == "intercom" and getattr(args, "remote_intercom", False):
         nodes.append(NodeEntry(
             "remote_intercom",
             ROOT / "nodes" / "remote_intercom_node.py",
         ))
-    elif pipeline == "multimodal":
+    elif pipeline in {"multimodal", "intercom"}:
+        if any(n.name == "remote_webrtc" for n in nodes):
+            nodes.append(NodeEntry(
+                "remote_intercom", ROOT / "nodes" / "remote_intercom_node.py",
+            ))
+            voice_debug_env["WALI_SHARED_MICROPHONE"] = "1"
         nodes.append(NodeEntry(
             "voice_chat",
             ROOT / "nodes" / "voice_chat_ros_node.py",

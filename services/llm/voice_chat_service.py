@@ -85,7 +85,7 @@ class VoiceChatService:
     FALLBACK_REPLY = "这次我没听清，请再说一遍。"
     ERROR_REPLY = "模型请求失败，请检查模型、接口地址和 API Key 配置后重试。"
 
-    def __init__(self, config_path="core/config.yaml"):
+    def __init__(self, config_path="core/config.yaml", *, shared_capture=False):
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
@@ -110,7 +110,7 @@ class VoiceChatService:
         self._wake_response_wav = ww_cfg.get("response_wav", "assets/wake_response.wav")
 
         # ── AudioPipeline：统一处理采集+唤醒词+VAD断句 ──
-        self._pipe = AudioPipeline(config_path)
+        self._pipe = AudioPipeline(config_path, shared_capture=shared_capture)
         self._pipe.on_wake_word = self._on_wake_detected
         self._pipe.on_sentence = self._on_sentence
         self._pipe.on_speech_start = self._on_speech_start
@@ -119,6 +119,7 @@ class VoiceChatService:
         # ── 状态机 ──
         self._state = _State.IDLE
         self._state_lock = threading.Lock()
+        self._remote_connected = False
         self._last_llm_activity = 0.0
         self._cancel_llm = threading.Event()
         self._llm_thread = None
@@ -171,8 +172,25 @@ class VoiceChatService:
         print("[VoiceChat] 已暂停")
 
     def resume(self):
-        self._pipe.resume()
+        with self._state_lock:
+            if getattr(self, "_remote_connected", False):
+                return
+            self._pipe.resume()
         print("[VoiceChat] 已恢复")
+
+    def set_remote_connected(self, connected):
+        """Suspend local dialogue for a controller; restore only on fresh wake."""
+        with self._state_lock:
+            self._remote_connected = connected
+            self._state = _State.IDLE
+            self._pipe.set_awake(False)
+            if connected:
+                self._cancel_llm.set()
+                self._pipe.pause()
+        self._pipe.reset_wake_word()
+
+    def accept_shared_pcm(self, pcm):
+        self._pipe.accept_shared_pcm(pcm)
 
     def begin_remote_turn(self) -> bool:
         """Enter the awake state for a browser push-to-talk session."""
@@ -299,6 +317,8 @@ class VoiceChatService:
     def complete_output_playback(self):
         """Resume capture after playback and the acoustic echo tail are over."""
         with self._state_lock:
+            if getattr(self, "_remote_connected", False):
+                return False
             if self._state != _State.SPEAKING:
                 return False
             self._state = _State.AWAKE
@@ -324,6 +344,8 @@ class VoiceChatService:
 
         # 进入 AWAKE
         with self._state_lock:
+            if getattr(self, "_remote_connected", False):
+                return
             self._state = _State.AWAKE
         self._last_llm_activity = now
 
@@ -423,6 +445,9 @@ class VoiceChatService:
 
     def _on_timeout(self):
         """LLM 超时，回到 IDLE。"""
+        with self._state_lock:
+            if getattr(self, "_remote_connected", False):
+                return
         print("[VoiceChat] LLM 40s 无回复，超时回到待机")
         self._cancel_llm.set()
         with self._state_lock:
@@ -464,7 +489,10 @@ class VoiceChatService:
     # ================================================================
     def _dispatch_llm(self, audio_b64: str):
         """将已编码音频派发给后台 LLM 线程。"""
-        self._cancel_llm.clear()
+        with self._state_lock:
+            if getattr(self, "_remote_connected", False):
+                return
+            self._cancel_llm.clear()
         self._llm_thread = threading.Thread(
             target=self._send_to_llm, args=(audio_b64,), daemon=True
         )
