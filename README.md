@@ -406,7 +406,8 @@ ros2 launch wali_x3_brain launch_nodes.py --tracking
   `intercom` 复用原有 ASR → LLM → TTS 链路；需要音频直连模型时显式选择
   `multimodal`，不能将只支持文本/图片的 Kimi 模型用于音频直连。
   网关每秒报告连接状态，连续三个周期没有报告时释放麦克风用途，防止崩溃后
-  本地语音永久暂停。`intercom` 原有后台视觉跟踪启停规则保持不变。
+  本地语音永久暂停。日常 `intercom` 配置仍按 `launch.tracking` 加载视觉跟踪能力，
+  支持“看着我”“跟着我”；只有显式 `--remote-intercom` 诊断模式默认跳过跟踪。
 - `--real-stt`：启动 `ASR → LLM → TTS` 链路，实际 ASR 引擎由 `core/config.yaml` 或 Web 页面中的 `asr.mode`、`provider` / `engine` 决定。
 - `--keyboard-stt`：使用键盘输入文字模拟语音识别（调试用）。
 - `--no-serial`：不启动屏幕/下位机串口节点；板载 I²C 后端仍可运行。

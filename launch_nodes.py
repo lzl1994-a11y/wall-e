@@ -278,9 +278,11 @@ def build_node_list(args):
     else:
         nodes.append(NodeEntry("keyboard_stt", ROOT / "nodes" / "keyboard_stt_node.py"))
 
-    # tracking: CLI --tracking 覆盖 config
+    # Remote intercom remains an additional capability. Only the explicit
+    # capture-only diagnostic flag suppresses configured tracking support.
     tracking_enabled = args.tracking or (
-        launch_cfg.get("tracking", False) and pipeline != "intercom"
+        launch_cfg.get("tracking", False)
+        and not getattr(args, "remote_intercom", False)
     )
     if tracking_enabled:
         nodes.append(NodeEntry("hobot_vision", ROOT / "nodes" / "hobot_vision_node.py"))

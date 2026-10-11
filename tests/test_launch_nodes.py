@@ -65,7 +65,8 @@ class LaunchNodesTests(unittest.TestCase):
         self.assertIn("stt", names)
         self.assertIn("llm", names)
         self.assertIn("remote_intercom", names)
-        self.assertNotIn("tracking", names)
+        self.assertIn("tracking", names)
+        self.assertIn("hobot_vision", names)
         self.assertEqual(next(n for n in nodes if n.name == "stt").environment["WALI_SHARED_MICROPHONE"], "1")
         self.assertEqual(next(n for n in nodes if n.name == "llm").environment["WALI_SHARED_MICROPHONE"], "1")
 
@@ -256,14 +257,37 @@ class LaunchNodesTests(unittest.TestCase):
             "launch": {"tracking": True},
         },
     )
-    def test_intercom_mode_skips_background_tracking_unless_explicit(self, _load_config):
+    def test_configured_intercom_preserves_enabled_tracking(self, _load_config):
         automatic = launch_nodes.build_node_list(launcher_args())
-        explicit = launch_nodes.build_node_list(launcher_args(tracking=True))
+
+        self.assertIn("hobot_vision", [entry.name for entry in automatic])
+        self.assertIn("tracking", [entry.name for entry in automatic])
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={"pipeline": {"mode": "intercom"}, "launch": {"tracking": True}},
+    )
+    def test_explicit_intercom_diagnostic_skips_tracking_unless_requested(self, _load_config):
+        automatic = launch_nodes.build_node_list(launcher_args(remote_intercom=True))
+        explicit = launch_nodes.build_node_list(launcher_args(remote_intercom=True, tracking=True))
 
         self.assertNotIn("hobot_vision", [entry.name for entry in automatic])
         self.assertNotIn("tracking", [entry.name for entry in automatic])
         self.assertIn("hobot_vision", [entry.name for entry in explicit])
         self.assertIn("tracking", [entry.name for entry in explicit])
+
+    @patch(
+        "launch_nodes.load_config",
+        return_value={"pipeline": {"mode": "intercom"}, "launch": {"tracking": False}},
+    )
+    def test_configured_intercom_respects_disabled_tracking_and_cli_override(self, _load_config):
+        automatic = launch_nodes.build_node_list(launcher_args())
+        explicit = launch_nodes.build_node_list(launcher_args(tracking=True))
+
+        self.assertNotIn("tracking", [entry.name for entry in automatic])
+        self.assertNotIn("hobot_vision", [entry.name for entry in automatic])
+        self.assertIn("tracking", [entry.name for entry in explicit])
+        self.assertIn("hobot_vision", [entry.name for entry in explicit])
 
     def test_remote_gateway_uses_pyav_resampler_before_ndarray_conversion(self):
         source = (
