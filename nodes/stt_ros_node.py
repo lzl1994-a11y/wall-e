@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import rclpy
 from rclpy.node import Node
 try:
@@ -22,7 +23,10 @@ from services.dialog.dialog_motion_protocol import (
 from services.remote.remote_protocol import (
     REMOTE_AUDIO_PCM_TOPIC,
     REMOTE_VOICE_STATE_TOPIC,
+    ROBOT_AUDIO_PCM_TOPIC,
 )
+from services.remote.microphone_mode import REMOTE_CONNECTION_TOPIC, RemoteMicrophoneLease
+from services.audio.audio_control_protocol import AUDIO_CONTROL_TOPIC, encode_stop_speech_control
 
 class STTNode(Node):
     def __init__(self):
@@ -36,6 +40,11 @@ class STTNode(Node):
         self._game_active = False
         self._llm_busy = False
         self._recording_paused = False
+        self._shared_capture = os.environ.get("WALI_SHARED_MICROPHONE") == "1"
+        self._remote_connected = self._shared_capture
+        self._remote_lease = RemoteMicrophoneLease() if self._shared_capture else None
+        self._shared_audio_sub = None
+        self._audio_control_pub = self.create_publisher(String, AUDIO_CONTROL_TOPIC, 10)
         self.create_subscription(String, GAME_MODE_STATE_TOPIC, self._on_game_state, 10)
         self.create_subscription(
             UInt8MultiArray,
@@ -60,11 +69,17 @@ class STTNode(Node):
         try:
             # 2. 启动底层引擎，并把“发布消息”的动作作为回调函数塞进去
             self.stt_engine = STTService(
-                on_sentence_received=self.on_speech_detected
+                on_sentence_received=self.on_speech_detected,
+                shared_capture=self._shared_capture,
             )
             self.stt_engine.on_speech_start = self._on_vad_speech_start
             self.stt_engine.on_speech_end = self._on_vad_speech_end
             self.stt_engine.start()
+            if self._shared_capture:
+                self.stt_engine.set_remote_connected(True)
+                self._sync_recording()
+                self.create_subscription(String, REMOTE_CONNECTION_TOPIC, self._on_remote_connection, 1)
+                self.create_timer(0.5, self._check_remote_connection)
             self.get_logger().info('✅ 听觉节点已上线，正在全天候监听环境声音...')
         except Exception as e:
             self.get_logger().error(f'🔴 底层引擎启动失败: {e}')
@@ -73,7 +88,7 @@ class STTNode(Node):
         """
         传动轴函数：底层一旦断句成功，立刻触发这里
         """
-        if self._game_active or self._llm_busy:
+        if self._game_active or self._llm_busy or getattr(self, "_remote_connected", False):
             return
         self.get_logger().info(f'👂 捕捉到人声: "{text}"')
         
@@ -81,6 +96,42 @@ class STTNode(Node):
         msg = String()
         msg.data = text
         self.publisher_.publish(msg)
+
+    def _on_remote_connection(self, message):
+        try:
+            self._remote_lease.update(json.loads(message.data)["connected"])
+        except (TypeError, ValueError, KeyError):
+            return
+        self._check_remote_connection()
+
+    def _check_remote_connection(self):
+        connected = self._remote_lease.remote_active
+        if connected == self._remote_connected:
+            return
+        self._remote_connected = connected
+        self.stt_engine.set_remote_connected(connected)
+        if connected:
+            # The interrupted local turn no longer owns the busy state.
+            self._llm_busy = False
+            self._audio_control_pub.publish(String(data=encode_stop_speech_control("remote_connection")))
+        self._sync_recording()
+        self.get_logger().info(
+            "远程已连接，麦克风用于对讲，本地唤醒暂停" if connected
+            else "远程已断开，恢复本地唤醒和 ASR → LLM 对话"
+        )
+
+    def _set_shared_microphone_input(self, enabled):
+        if not enabled and self._shared_audio_sub is not None:
+            self.destroy_subscription(self._shared_audio_sub)
+            self._shared_audio_sub = None
+        elif enabled and self._shared_audio_sub is None:
+            from rclpy.qos import qos_profile_sensor_data
+
+            self._shared_audio_sub = self.create_subscription(
+                UInt8MultiArray, ROBOT_AUDIO_PCM_TOPIC,
+                lambda msg: self.stt_engine.accept_shared_pcm(bytes(msg.data)),
+                qos_profile_sensor_data,
+            )
 
     def _on_vad_speech_start(self):
         self.dialog_motion_pub.publish(String(data=VAD_SPEECH_STARTED))
@@ -136,13 +187,15 @@ class STTNode(Node):
 
     def _sync_recording(self):
         """Keep the loaded wake model idle while any audio policy blocks recording."""
-        paused = self._game_active or self._llm_busy
+        paused = self._game_active or self._llm_busy or getattr(self, "_remote_connected", False)
         if paused == self._recording_paused:
             return
         engine = getattr(self, "stt_engine", None)
         if engine is None:
             return
         self._recording_paused = paused
+        if getattr(self, "_shared_capture", False):
+            self._set_shared_microphone_input(not paused)
         if paused:
             self.get_logger().info('🔇 录音暂停，唤醒词模型进入热备')
             engine.pause()

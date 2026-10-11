@@ -5,6 +5,25 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 class STTNodeAudioPolicyTests(unittest.TestCase):
+    def test_remote_connection_is_an_independent_blocker_and_clears_old_busy_turn(self):
+        from services.remote.microphone_mode import RemoteMicrophoneLease
+        node, message = self._node()
+        node._remote_connected = False
+        node._remote_lease = RemoteMicrophoneLease()
+        node._llm_busy = True
+        node._audio_control_pub = MagicMock()
+        node.publisher_ = MagicMock()
+        node._on_remote_connection(message('{"connected":true}'))
+        node._on_llm_busy(message('idle'))
+        node.on_speech_detected('late ASR result')
+        node.publisher_.publish.assert_not_called()
+        node.stt_engine.resume.assert_not_called()
+        node._on_game_state(message('{"mode":"playing"}'))
+        node._on_remote_connection(message('{"connected":false}'))
+        node.stt_engine.resume.assert_not_called()
+        node._on_game_state(message('{"mode":"robot"}'))
+        node.stt_engine.resume.assert_called_once()
+
     @staticmethod
     def _node():
         fake_rclpy = types.ModuleType("rclpy")

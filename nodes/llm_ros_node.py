@@ -18,6 +18,7 @@ English:
 """
 
 import json
+import os
 import queue
 import re
 import threading
@@ -30,6 +31,9 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, UInt8MultiArray
+from services.remote.microphone_mode import (
+    RemoteMicrophoneLease, REMOTE_CONNECTION_TOPIC, local_voice_callback,
+)
 
 # Action, plan, and Behavior Tree protocol & execution services.
 # 动作、计划以及行为树协议与执行服务。
@@ -184,6 +188,14 @@ class LLMBrainNode(Node):
         # 任务请求队列与工作线程生命周期标记。
         self._request_queue = queue.Queue(maxsize=8)
         self._worker_running = False
+        self._voice_mode_lock = threading.RLock()
+        self._voice_context = threading.local()
+        self._voice_epoch = 0
+        self._remote_connected = os.environ.get("WALI_SHARED_MICROPHONE") == "1"
+        self._remote_lease = RemoteMicrophoneLease() if self._remote_connected else None
+        if self._remote_lease is not None:
+            self.create_subscription(String, REMOTE_CONNECTION_TOPIC, self._on_remote_connection, 1)
+            self.create_timer(0.5, self._check_remote_connection)
 
         # Game commentary mode and controller.
         # 游戏解说模式与控制器。
@@ -307,6 +319,26 @@ class LLMBrainNode(Node):
         if previous != "robot":
             self._game_commentary.finish_commentary()
 
+    def _on_remote_connection(self, message):
+        try:
+            self._remote_lease.update(json.loads(message.data)["connected"])
+        except (TypeError, ValueError, KeyError):
+            return
+        self._check_remote_connection()
+
+    def _check_remote_connection(self):
+        with self._voice_mode_lock:
+            connected = self._remote_lease.remote_active
+            if connected != self._remote_connected:
+                self._remote_connected = connected
+                self._voice_epoch += 1
+
+    def _voice_task_cancelled(self):
+        context = getattr(self, "_voice_context", None)
+        epoch = getattr(context, "epoch", None)
+        return (getattr(self, "_remote_connected", False)
+                or (epoch is not None and epoch != getattr(self, "_voice_epoch", 0)))
+
     def _on_game_frame(self, message):
         """Buffer incoming game video frames for commentary inference.
 
@@ -318,6 +350,8 @@ class LLMBrainNode(Node):
         self._game_commentary.accept_frame(frame)
 
     def _game_commentary_tick(self):
+        if getattr(self, "_remote_connected", False):
+            return
         """Periodic timer callback to extract a due game frame and enqueue vision task.
 
         定时器周期回调：提取到达解说间隔的游戏画面帧，编码后入队视觉推理任务。
@@ -344,6 +378,7 @@ class LLMBrainNode(Node):
         except queue.Full:
             self._game_commentary.finish_commentary()
 
+    @local_voice_callback
     def voice_callback(self, msg):
         """Queue the request so the ROS callback thread is never blocked by LLM I/O.
 
@@ -371,6 +406,7 @@ class LLMBrainNode(Node):
             self._request_queue.put_nowait({
                 'turn_id': turn_id,
                 'user_prompt': user_prompt,
+                'voice_epoch': getattr(self, '_voice_epoch', 0),
             })
         except queue.Full:
             self.get_logger().error('LLM request queue is full; dropped this voice input.')
@@ -391,6 +427,9 @@ class LLMBrainNode(Node):
                 continue
 
             try:
+                self._voice_context.epoch = task.get('voice_epoch', self._voice_epoch)
+                if self._voice_task_cancelled():
+                    continue
                 if task.get('kind') == 'game_vision':
                     self._process_game_vision_task(task)
                 else:
@@ -408,6 +447,7 @@ class LLMBrainNode(Node):
                 )
                 self._finish_tts_turn(task.get('turn_id', ''))
             finally:
+                self._voice_context.epoch = None
                 if task.get('kind') == 'game_vision':
                     self._game_commentary.finish_commentary()
                 self._request_queue.task_done()
@@ -457,6 +497,8 @@ class LLMBrainNode(Node):
         """
         # Notify STT node to pause speech recognition while processing.
         # 通知 STT 节点暂停 ASR 拾音，避免机器人自言自语被误拾取。
+        if self._voice_task_cancelled():
+            return
         busy_msg = String()
         busy_msg.data = "busy"
         self.busy_publisher.publish(busy_msg)
@@ -519,6 +561,8 @@ class LLMBrainNode(Node):
         )
 
         def publish_corrected(value):
+            if self._voice_task_cancelled():
+                return
             # Publish normalized ASR text on the corrected_text topic.
             # 发布归一化纠错后的文本到 corrected_text 话题。
             corrected = state.normalize_corrected_text(value)
@@ -530,6 +574,8 @@ class LLMBrainNode(Node):
             )
 
         def publish_spoken(value):
+            if self._voice_task_cancelled():
+                return
             # Publish streaming TTS clause and ensure a default expression is shown.
             # 发布流式 TTS 从句播报，并确保首个播报句前触发默认表情。
             if state.needs_default_expression:
@@ -577,6 +623,10 @@ class LLMBrainNode(Node):
             )
 
             for data in stream:
+                if self._voice_task_cancelled():
+                    if hasattr(stream, "close"):
+                        stream.close()
+                    return
                 decision = state.process_event(data)
 
                 # Streaming TTS sub-clause output.
@@ -688,6 +738,8 @@ class LLMBrainNode(Node):
 
         # Execute physical action sequence (via Behavior Tree or legacy direct dispatch).
         # 执行物理动作序列（优先通过行为树调度，或平滑回退直接派发）。
+        if self._voice_task_cancelled():
+            return
         if state.pending_actions:
             sequence = self._execute_dialog_action_sequence(
                 state.pending_actions,
@@ -728,6 +780,8 @@ class LLMBrainNode(Node):
 
         # Publish complete reply text.
         # 发布模型完整纯文本回复。
+        if self._voice_task_cancelled():
+            return
         if clean_text:
             full_msg = String()
             full_msg.data = clean_text
@@ -757,6 +811,8 @@ class LLMBrainNode(Node):
         执行单个对话物理动作：在工作线程中阻塞等待执行回执，防止连续动作互相冲撞打断。
         """
         def publish(payload):
+            if self._voice_task_cancelled():
+                return
             command = json.loads(payload)
             command['turn_id'] = turn_id
             self.action_publisher.publish(String(data=json.dumps(command, ensure_ascii=False)))
@@ -770,6 +826,7 @@ class LLMBrainNode(Node):
             source='llm_dialog',
             cancelled=lambda: (
                 not getattr(self, '_worker_running', True)
+                or self._voice_task_cancelled()
                 or getattr(self, '_game_mode', 'robot') != 'robot'
             ),
         )
@@ -794,6 +851,7 @@ class LLMBrainNode(Node):
         if workflow is None:
             cancelled = lambda: (
                 not getattr(self, '_worker_running', True)
+                or self._voice_task_cancelled()
                 or getattr(self, '_game_mode', 'robot') != 'robot'
             )
             workflow = LLMActionPlanWorkflow(
@@ -1229,6 +1287,7 @@ class LLMBrainNode(Node):
         """
         return LLMResponsePolicy.clean_visual_answer(text)
 
+    @local_voice_callback
     def _publish_tts(self, text, turn_id=''):
         """Sanitize text and publish to TTS topic.
 
@@ -1241,6 +1300,7 @@ class LLMBrainNode(Node):
         self.get_logger().info(f'[{turn_id}] Published TTS sentence: {safe}')
         return safe
 
+    @local_voice_callback
     def _finish_tts_turn(self, turn_id):
         """Publish turn-end delimiter for audio playback node lifecycle.
 
@@ -1351,6 +1411,7 @@ class LLMBrainNode(Node):
         """
         return LLMResponsePolicy.strip_answer_prefix(text)
 
+    @local_voice_callback
     def _publish_screen_dialog(self, turn_id, corrected_text, ai_text, actions, error=None):
         """Publish atomic JSON message for the robot screen dialogue UI.
 

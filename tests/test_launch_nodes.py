@@ -62,10 +62,12 @@ class LaunchNodesTests(unittest.TestCase):
         with patch("launch_nodes.load_config", return_value=config):
             nodes = launch_nodes.build_node_list(launcher_args())
         names = [n.name for n in nodes]
-        self.assertIn("voice_chat", names)
+        self.assertIn("stt", names)
+        self.assertIn("llm", names)
         self.assertIn("remote_intercom", names)
         self.assertNotIn("tracking", names)
-        self.assertEqual(next(n for n in nodes if n.name == "voice_chat").environment["WALI_SHARED_MICROPHONE"], "1")
+        self.assertEqual(next(n for n in nodes if n.name == "stt").environment["WALI_SHARED_MICROPHONE"], "1")
+        self.assertEqual(next(n for n in nodes if n.name == "llm").environment["WALI_SHARED_MICROPHONE"], "1")
 
     def test_local_only_multimodal_keeps_its_existing_capture(self):
         with patch("launch_nodes.load_config", return_value={"pipeline": {"mode": "multimodal"}}):

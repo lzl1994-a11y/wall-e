@@ -190,7 +190,7 @@ def build_node_list(args):
             "config_web", ROOT / "services" / "integrations" / "web_server.py"
         ))
 
-    if pipeline != "intercom":
+    if pipeline != "intercom" or not getattr(args, "remote_intercom", False):
         nodes.append(NodeEntry(
             "llm",
             ROOT / "nodes" / "llm_ros_node.py",
@@ -250,7 +250,7 @@ def build_node_list(args):
             "remote_intercom",
             ROOT / "nodes" / "remote_intercom_node.py",
         ))
-    elif pipeline in {"multimodal", "intercom"}:
+    elif pipeline == "multimodal":
         if any(n.name == "remote_webrtc" for n in nodes):
             nodes.append(NodeEntry(
                 "remote_intercom", ROOT / "nodes" / "remote_intercom_node.py",
@@ -263,7 +263,13 @@ def build_node_list(args):
             environment_setup=ros2_action_setup,
         ))
         nodes = [n for n in nodes if n.name != "llm"]
-    elif pipeline == "asr_llm":
+    elif pipeline in {"asr_llm", "intercom"}:
+        if any(n.name == "remote_webrtc" for n in nodes):
+            nodes.append(NodeEntry(
+                "remote_intercom", ROOT / "nodes" / "remote_intercom_node.py",
+            ))
+            voice_debug_env["WALI_SHARED_MICROPHONE"] = "1"
+            next(n for n in nodes if n.name == "llm").environment["WALI_SHARED_MICROPHONE"] = "1"
         nodes.append(NodeEntry(
             "stt",
             ROOT / "nodes" / "stt_ros_node.py",

@@ -164,6 +164,34 @@ class STTTimerLifecycleTests(unittest.TestCase):
 
 
 class LLMEmptyAnswerTests(unittest.TestCase):
+    def test_controller_takeover_cancels_stream_and_old_output_after_disconnect(self):
+        from services.remote.microphone_mode import RemoteMicrophoneLease
+        import threading
+        import types
+
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node._voice_mode_lock = threading.RLock()
+        node._voice_context = threading.local()
+        node._voice_context.epoch = 0
+        node._voice_epoch = 0
+        node._remote_connected = False
+        node._remote_lease = RemoteMicrophoneLease()
+        node.tts_publisher = MagicMock()
+        node.screen_dialog_publisher = MagicMock()
+        node._on_remote_connection(types.SimpleNamespace(data='{"connected":true}'))
+        node._on_remote_connection(types.SimpleNamespace(data='{"connected":false}'))
+        self.assertFalse(node._remote_connected)
+        self.assertTrue(node._voice_task_cancelled())
+        node._publish_tts('late answer', 'old-turn')
+        node._finish_tts_turn('old-turn')
+        node._publish_screen_dialog('old-turn', '', 'late answer', [])
+        node.tts_publisher.publish.assert_not_called()
+        node.screen_dialog_publisher.publish.assert_not_called()
+        node._voice_context.epoch = node._voice_epoch
+        self.assertFalse(node._voice_task_cancelled())
+        sys.modules.pop("nodes.llm_ros_node", None)
+
     @staticmethod
     def _acknowledge_actions(node):
         node._action_executor = CorrelatedActionExecutor()

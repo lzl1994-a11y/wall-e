@@ -6,6 +6,20 @@ voice node waits for a report before it can wake during an existing call.
 """
 
 import time
+import threading
+from functools import wraps
+
+
+def local_voice_callback(callback):
+    """Serialize local output against controller takeover and canceled turns."""
+    @wraps(callback)
+    def guarded(self, *args, **kwargs):
+        with getattr(self, "_voice_mode_lock", threading.RLock()):
+            if (getattr(self, "_remote_connected", False)
+                    or getattr(self, "_voice_task_cancelled", lambda: False)()):
+                return
+            return callback(self, *args, **kwargs)
+    return guarded
 
 REMOTE_CONNECTION_TOPIC = "/remote_connection_state"
 CONNECTION_HEARTBEAT_SEC = 1.0

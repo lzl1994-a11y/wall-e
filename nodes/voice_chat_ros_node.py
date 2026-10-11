@@ -17,7 +17,6 @@ import threading
 import time
 import traceback
 import uuid
-from functools import wraps
 from pathlib import Path
 
 import rclpy
@@ -101,18 +100,9 @@ from services.remote.remote_protocol import (
     REMOTE_VOICE_STATE_TOPIC,
     ROBOT_AUDIO_PCM_TOPIC,
 )
-from services.remote.microphone_mode import RemoteMicrophoneLease, REMOTE_CONNECTION_TOPIC
-
-
-def local_voice_callback(callback):
-    """Serialize local output against controller takeover, including worker callbacks."""
-    @wraps(callback)
-    def guarded(self, *args, **kwargs):
-        with getattr(self, "_voice_mode_lock", threading.RLock()):
-            if getattr(self, "_remote_connected", False):
-                return
-            return callback(self, *args, **kwargs)
-    return guarded
+from services.remote.microphone_mode import (
+    RemoteMicrophoneLease, REMOTE_CONNECTION_TOPIC, local_voice_callback,
+)
 
 OUTPUT_ECHO_GUARD_SECONDS = 0.35
 GAME_COMMENTARY_PROMPT = (

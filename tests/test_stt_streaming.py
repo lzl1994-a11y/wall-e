@@ -9,6 +9,20 @@ from services.speech.stt_service import STTService
 
 
 class STTStreamingTests(unittest.TestCase):
+    def test_asr_result_from_before_controller_takeover_is_discarded_after_disconnect(self):
+        adapter = MagicMock(supports_streaming=False)
+        service = self.service(adapter)
+        service._pipe = MagicMock()
+        def recognize(*args):
+            service.set_remote_connected(True)
+            service.set_remote_connected(False)
+            return 'stale local words'
+        adapter.recognize.side_effect = recognize
+        service._on_sentence(bytes(16000))
+        service.on_sentence_received.assert_not_called()
+        self.assertFalse(service._awake)
+        self.assertEqual(service._input_generation, 2)
+
     def setUp(self):
         self.debug_dir = tempfile.TemporaryDirectory(prefix="wali-stt-stream-")
         self.addCleanup(self.debug_dir.cleanup)

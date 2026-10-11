@@ -34,7 +34,7 @@ class STTService:
 
     SAMPLE_RATE = AudioPipeline.SAMPLE_RATE
 
-    def __init__(self, config_path="core/config.yaml", on_sentence_received=None):
+    def __init__(self, config_path="core/config.yaml", on_sentence_received=None, *, shared_capture=False):
         self.on_sentence_received = on_sentence_received
         self.asr_adapter = create_asr(config_path)
         self._voice_debug = RollingVoiceDebugStore()
@@ -44,7 +44,7 @@ class STTService:
         ww_cfg = config.get("wake_word", {})
         self._awake_timeout = ww_cfg.get("awake_timeout", 8.0)
 
-        self._pipe = AudioPipeline(config_path)
+        self._pipe = AudioPipeline(config_path, shared_capture=shared_capture)
         self._pipe.on_sentence = self._on_sentence
         self._pipe.on_speech_start = self._on_speech_start
         self._pipe.on_speech_audio = self._on_speech_audio
@@ -59,6 +59,8 @@ class STTService:
 
         # 唤醒词守门
         self._awake = False
+        self._remote_connected = False
+        self._input_generation = 0
         self._awake_timer = None
         self._awake_lock = threading.Lock()
         self._awake_timer_generation = 0
@@ -71,6 +73,8 @@ class STTService:
         self._cancel_streaming()
         self._warmup_asr()
         with self._awake_lock:
+            if getattr(self, "_remote_connected", False):
+                return
             self._awake = True
             self._reset_awake_timer()
         print(f"[STT] 唤醒词触发，进入监听 (超时 {self._awake_timeout:.0f}s)")
@@ -104,12 +108,29 @@ class STTService:
         print("[STT] 麦克风已暂停，唤醒超时计时已挂起")
 
     def resume(self):
+        if getattr(self, "_remote_connected", False):
+            return
         self._pipe.resume()
         self._warmup_asr()
         with self._awake_lock:
             if self._awake:
                 self._reset_awake_timer()
         print("[STT] 麦克风已恢复，重新开始唤醒超时计时")
+
+    def accept_shared_pcm(self, pcm):
+        self._pipe.accept_shared_pcm(pcm)
+
+    def set_remote_connected(self, connected):
+        with self._awake_lock:
+            self._remote_connected = connected
+            self._input_generation = getattr(self, "_input_generation", 0) + 1
+            self._awake = False
+            self._cancel_awake_timer_locked()
+        self._pipe.set_awake(False)
+        if connected:
+            self._cancel_streaming()
+            self._pipe.pause()
+        self._pipe.reset_wake_word()
 
     def begin_remote_turn(self) -> bool:
         """Start a browser push-to-talk turn without a local wake word."""
@@ -309,6 +330,7 @@ class STTService:
         """VAD 断句回调：实时会话取最终文本，其他引擎识别完整 WAV。"""
         with self._awake_lock:
             awake = self._awake
+            generation = getattr(self, "_input_generation", 0)
         if not awake:
             return  # 未唤醒，静默丢弃
 
@@ -359,9 +381,12 @@ class STTService:
             print(f"[STT] ASR 耗时 {time.monotonic() - started:.2f}s")
 
             if text and self.on_sentence_received:
-                print(f"[STT] {text}")
-                self.on_sentence_received(text)
-                delivered = True
+                with self._awake_lock:
+                    if (not getattr(self, "_remote_connected", False)
+                            and generation == getattr(self, "_input_generation", 0)):
+                        print(f"[STT] {text}")
+                        self.on_sentence_received(text)
+                        delivered = True
             else:
                 print("[STT] ASR 未识别出文字")
 
