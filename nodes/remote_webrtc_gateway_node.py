@@ -1151,7 +1151,12 @@ class RemoteWebRtcGateway:
         self._video_track = None
         self._audio_track = None
         self._servo_gate.reset()
-        self._stop_robot_outputs()
+        # A rejected signaling join never owned robot outputs. Do not interrupt
+        # local dialogue/actions on every reconnect unless a media session (or
+        # active remote audio) actually needs the safety stop.
+        if (peer is not None or video_track is not None
+                or self._remote_voice_active or self._remote_call_active):
+            self._stop_robot_outputs()
         self._channels.clear()
         self._sequence_gate.reset()
         for task in tasks:

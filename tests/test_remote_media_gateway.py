@@ -371,6 +371,34 @@ def test_late_peer_teardown_does_not_reset_the_new_session():
     asyncio.run(scenario())
 
 
+def test_signaling_failure_without_a_media_session_does_not_stop_local_robot():
+    value = gateway()
+    value._peer = None
+    value._remote_voice_active = value._remote_call_active = False
+    value._video_track = value._audio_track = None
+    value._audio_tasks = set()
+    value._channels = {}
+    value._servo_gate = Mock()
+    for _ in range(3):
+        asyncio.run(value._close_peer())
+    value._stop_robot_outputs.assert_not_called()
+    assert value._peer is None and value._controller_peer_id is None
+    assert not value._channels
+
+
+def test_detached_but_active_voice_still_receives_safety_stop():
+    value = gateway()
+    value._peer = None
+    value._remote_voice_active = True
+    value._remote_call_active = False
+    value._video_track = value._audio_track = None
+    value._audio_tasks = set()
+    value._channels = {}
+    value._servo_gate = Mock()
+    asyncio.run(value._close_peer())
+    value._stop_robot_outputs.assert_called_once()
+
+
 @pytest.mark.skipif(os.getenv("WALLE_TEST_TURN_TCP") != "1", reason="Opt-in network probe uses deployment TURN credentials")
 def test_deployed_turn_tcp_allocation_and_bidirectional_relay():
     """No ROS publishers, controller seat, microphone or actuator is touched.
