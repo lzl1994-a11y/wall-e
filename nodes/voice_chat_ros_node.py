@@ -223,6 +223,8 @@ class VoiceChatNode(Node):
         self.get_logger().info("正在预热唤醒词 + Qwen-Omni 引擎...")
 
         shared_capture = os.environ.get("WALI_SHARED_MICROPHONE") == "1"
+        self._shared_capture = shared_capture
+        self._shared_audio_sub = None
         self._voice_mode_lock = threading.RLock()
         self._remote_connected = shared_capture
         self._remote_lease = RemoteMicrophoneLease() if shared_capture else None
@@ -253,19 +255,27 @@ class VoiceChatNode(Node):
 
         self.vc.start()
         if shared_capture:
-            from rclpy.qos import qos_profile_sensor_data
-
             self.vc.set_remote_connected(True)
-            self.create_subscription(
-                UInt8MultiArray, ROBOT_AUDIO_PCM_TOPIC,
-                lambda msg: self.vc.accept_shared_pcm(bytes(msg.data)),
-                qos_profile_sensor_data,
-            )
             self.create_subscription(
                 String, REMOTE_CONNECTION_TOPIC, self._on_remote_connection, 1,
             )
             self.create_timer(0.5, self._check_remote_connection)
         self.get_logger().info("语音直聊节点已上线")
+
+    def _set_shared_microphone_input(self, enabled):
+        # Do not deserialize 50 PCM messages/s into a suspended voice node.
+        # The independent capture owner and gateway keep streaming throughout.
+        if not enabled and self._shared_audio_sub is not None:
+            self.destroy_subscription(self._shared_audio_sub)
+            self._shared_audio_sub = None
+        elif enabled and self._shared_audio_sub is None:
+            from rclpy.qos import qos_profile_sensor_data
+
+            self._shared_audio_sub = self.create_subscription(
+                UInt8MultiArray, ROBOT_AUDIO_PCM_TOPIC,
+                lambda msg: self.vc.accept_shared_pcm(bytes(msg.data)),
+                qos_profile_sensor_data,
+            )
 
     def _on_remote_connection(self, message):
         try:
@@ -281,6 +291,8 @@ class VoiceChatNode(Node):
             if connected == self._remote_connected:
                 return
             self._remote_connected = connected
+            if getattr(self, "_shared_capture", False):
+                self._set_shared_microphone_input(not connected)
             self.vc.set_remote_connected(connected)
             if connected:
                 with self._timer_lock:

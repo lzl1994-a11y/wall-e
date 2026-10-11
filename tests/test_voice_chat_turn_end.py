@@ -13,6 +13,24 @@ from services.dialog.dialog_output import DialogOutputController
 
 
 class VoiceChatTurnEndTests(unittest.TestCase):
+    def test_suspended_local_voice_does_not_subscribe_to_continuous_pcm(self):
+        node = self._make_wake_node()
+        node._shared_audio_sub = None
+        node.create_subscription = MagicMock(side_effect=["first", "second"])
+        node.destroy_subscription = MagicMock()
+        qos = types.ModuleType("rclpy.qos")
+        qos.qos_profile_sensor_data = object()
+        with patch.dict(sys.modules, {"rclpy.qos": qos}):
+            node._set_shared_microphone_input(True)
+            node._set_shared_microphone_input(True)
+            self.assertEqual(node.create_subscription.call_count, 1)
+            node._set_shared_microphone_input(False)
+            node._set_shared_microphone_input(False)
+            node.destroy_subscription.assert_called_once_with("first")
+            node._set_shared_microphone_input(True)
+            self.assertEqual(node._shared_audio_sub, "second")
+            self.assertEqual(node.create_subscription.call_count, 2)
+
     def test_controller_takeover_blocks_late_output_and_disconnect_restores_wake(self):
         from services.remote.microphone_mode import RemoteMicrophoneLease
         from services.game.game_commentary import GameCommentaryController
