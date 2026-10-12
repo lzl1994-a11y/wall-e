@@ -85,7 +85,11 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
                     break
                 if not changing and ((not jpeg and time.monotonic() - self._started_at >= 45)
                                      or (jpeg and time.monotonic() - captured_at > DEFAULT_FRAME_TIMEOUT_SEC)):
-                    raise HardwareVideoError("camera input missing/stalled")
+                    raise HardwareVideoError(
+                        f"camera input missing/stalled (has_frame={bool(jpeg)}, "
+                        f"frame_age={time.monotonic() - captured_at:.3f}s, "
+                        f"stream_age={time.monotonic() - self._started_at:.3f}s)"
+                    )
                 await asyncio.sleep(.02 if changing or not jpeg else .002)
             width, height, fps = self.manual_video or ((320, 240, 5) if self.profile == "low" else (640, 480, 10))
             now = time.monotonic()
