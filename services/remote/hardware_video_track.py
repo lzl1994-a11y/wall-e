@@ -63,13 +63,12 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
         if self.readyState != "live" or self._closing.is_set():
             raise MediaStreamError
         try:
-            now = time.monotonic()
             while self._gateway.camera_reconfiguring() is True:
                 if self._closing.is_set():
                     raise MediaStreamError
                 await asyncio.sleep(.02)
             if self.manual_video is not None or self.profile == "low":
-                await asyncio.sleep(max(0, self._next_at - now))
+                await asyncio.sleep(max(0, self._next_at - time.monotonic()))
             # Startup may need camera enumeration. Never encode a previous call's frame.
             jpeg, captured_at = self._gateway.latest_raw_camera_frame()
             # Normal mode follows fresh camera input, rather than a 10 FPS

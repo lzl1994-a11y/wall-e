@@ -24,6 +24,42 @@ def test_hardware_requires_matching_profile_and_packetization():
     assert not hardware_h264_offered(offer(mode='0'))
 
 
+def test_second_setting_during_camera_wait_does_not_sleep_again_after_frame_is_ready():
+    async def run():
+        clock = [100.0]
+        changing = [True]
+        sleeps = []
+        holder = {}
+
+        async def sleep(delay):
+            sleeps.append(delay)
+            if changing[0]:
+                clock[0] = 110.0
+                holder['track'].configure_video(manual=(640, 480, 15))
+                clock[0] = 130.0
+                changing[0] = False
+            else:
+                clock[0] += delay
+
+        gateway = Mock(camera_reconfiguring=lambda: changing[0],
+                       latest_raw_camera_frame=lambda: (b'jpeg', clock[0]))
+        codec = Mock(encode=Mock(return_value=b'packet'))
+        with patch('services.remote.hardware_video_track.time.monotonic', side_effect=lambda: clock[0]), \
+                patch('services.remote.hardware_video_track.asyncio.sleep', side_effect=sleep), \
+                patch('services.remote.hardware_video_track.X3VideoCodec', return_value=codec):
+            track = HardwareCameraVideoTrack(gateway, Path('unused'))
+            holder['track'] = track
+            try:
+                track.configure_video(manual=(1280, 720, 15))
+                await track.recv()
+                assert clock[0] == 130.0
+                assert sleeps == [.02, 0]
+                assert codec.encode.call_args.args[1:4] == (640, 480, 15)
+            finally:
+                await track.aclose()
+    asyncio.run(run())
+
+
 def test_packet_pts_tracks_elapsed_time_and_profile():
     async def run():
         gateway=Mock(latest_raw_camera_frame=lambda:(b'jpeg',time.monotonic()))
