@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.vision.camera_capture_protocol import (
     CAMERA_CAPTURE_SERVICE,
+    CAMERA_FIRST_FRAME_TIMEOUT_SEC,
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
     CAMERA_SOURCE_TOPIC,
@@ -48,7 +49,7 @@ class CameraCaptureNode(Node):
     # On the X3 board the ROS wrapper and UVC control probing can take more
     # than 15 seconds while the rest of the robot starts.  Keep the timeout
     # bounded, but allow the supported camera mode to finish initialization.
-    FIRST_FRAME_TIMEOUT_SEC = 45.0
+    FIRST_FRAME_TIMEOUT_SEC = CAMERA_FIRST_FRAME_TIMEOUT_SEC
 
     def __init__(self) -> None:
         super().__init__("camera_capture_node")

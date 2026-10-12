@@ -17,6 +17,7 @@ TRACKING_CAMERA_CLIENT_ID = "tracking-vision"
 CAMERA_COMMAND_TOPIC = "/camera_capture_cmd"
 CAMERA_STATUS_TOPIC = "/camera_capture_status"
 CAMERA_CAPTURE_SERVICE = "/set_capture"
+CAMERA_FIRST_FRAME_TIMEOUT_SEC = 45.0
 # The one canonical stream produced by the only ``hobot_usb_cam`` process.
 # The capture manager adapts it to preview and lease-gated tracking topics.
 CAMERA_SOURCE_TOPIC = "/image"

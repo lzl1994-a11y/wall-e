@@ -310,6 +310,27 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
+    def test_resolution_change_waits_for_driver_startup_instead_of_short_frame_timeout(self):
+        provider, node, image_type = self._provider()
+        import sys
+        import threading
+        import time
+        from unittest.mock import patch
+        module = sys.modules[provider.__class__.__module__]
+        result = []
+        with patch.object(module, "CAMERA_FIRST_FRAME_TIMEOUT_SEC", 0.5, create=True):
+            thread = threading.Thread(target=lambda: result.append(provider.capture(timeout=0.05)))
+            thread.start()
+            time.sleep(0.01)
+            node.callbacks["/camera_capture_status"](type("Status", (), {
+                "data": '{"state":"starting","reconfiguring":true}'
+            })())
+            time.sleep(0.25)
+            self.assertTrue(thread.is_alive())
+            node.callbacks["/camera_frame"](image_type())
+            thread.join(timeout=1)
+        self.assertEqual(result, [b"camera-jpeg"])
+
     def test_photo_is_rejected_during_tracking_and_does_not_acquire_high_resolution(self):
         provider, node, _image_type = self._provider()
         provider._status_tracking = True

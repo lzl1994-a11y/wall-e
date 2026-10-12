@@ -73,6 +73,7 @@ from services.remote.hardware_video_track import HardwareCameraVideoTrack, hardw
 from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
+    CAMERA_FIRST_FRAME_TIMEOUT_SEC,
     CAMERA_SOURCE_TOPIC,
     RAW_CAMERA_CLIENT_PREFIX,
     CAMERA_STATUS_TOPIC,
@@ -533,7 +534,7 @@ class RemoteWebRtcGateway:
             return
         self._tracking_active = payload.get("tracking") is True
         if payload.get("reconfiguring") is True and not getattr(self, "_camera_transition_until", 0.0):
-            self._camera_transition_until = time.monotonic() + 45.0
+            self._camera_transition_until = time.monotonic() + CAMERA_FIRST_FRAME_TIMEOUT_SEC
         if payload.get("state") == "streaming":
             self._camera_transition_until = 0.0
         if payload.get("state") != "error":
@@ -862,7 +863,7 @@ class RemoteWebRtcGateway:
             self._video_track.configure_video(profile=profile, manual=manual)
             resolution = (1280, 720) if manual and manual[:2] == (1280, 720) else (640, 480)
             if resolution != getattr(self, "_camera_resolution", (640, 480)):
-                self._camera_transition_until = time.monotonic() + 45.0
+                self._camera_transition_until = time.monotonic() + CAMERA_FIRST_FRAME_TIMEOUT_SEC
                 with self._frame_lock:
                     self._last_raw_jpeg = b""
                     self._last_jpeg = b""

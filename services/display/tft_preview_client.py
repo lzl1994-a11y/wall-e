@@ -18,6 +18,7 @@ from services.display.tft_preview_protocol import (
     encode_camera_preview_request,
 )
 from services.display.tft_preview_server import PreviewResult
+from services.vision.camera_capture_protocol import CAMERA_FIRST_FRAME_TIMEOUT_SEC
 
 
 class TftPreviewClient:
@@ -66,7 +67,7 @@ class TftPreviewClient:
         wait_seconds = (
             max(1.0, float(timeout))
             if timeout is not None
-            else 20.0 + (max(100, int(duration_ms)) + max(0, int(hold_ms))) / 1000.0
+            else CAMERA_FIRST_FRAME_TIMEOUT_SEC + 2.0 + (max(100, int(duration_ms)) + max(0, int(hold_ms))) / 1000.0
         )
         deadline = time.monotonic() + wait_seconds
         with self._condition:

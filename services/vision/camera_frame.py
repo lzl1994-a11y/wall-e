@@ -23,6 +23,7 @@ from services.vision.camera_capture_protocol import (
     CAMERA_COMMAND_TOPIC,
     CAMERA_FRAME_TOPIC,
     CAMERA_STATUS_TOPIC,
+    CAMERA_FIRST_FRAME_TIMEOUT_SEC,
     encode_camera_command,
     jpeg_from_ros_image,
 )
@@ -105,6 +106,7 @@ class CameraFrameProvider:
         self._status_time = 0.0
         self._status_error = ""
         self._status_tracking = False
+        self._status_reconfiguring = False
         self._command_pub = None
         self._subscriptions: list[Any] = []
 
@@ -142,6 +144,7 @@ class CameraFrameProvider:
             self._status_state = str(status.get("state", ""))
             self._status_error = str(status.get("error", ""))
             self._status_tracking = status.get("tracking") is True
+            self._status_reconfiguring = status.get("reconfiguring") is True
             self._status_time = time.monotonic()
             self._condition.notify_all()
 
@@ -200,7 +203,7 @@ class CameraFrameProvider:
                         and self._status_state in {"starting", "streaming"}
                     ):
                         manager_acknowledged = True
-                        deadline = now + frame_wait_seconds
+                        deadline = now + (CAMERA_FIRST_FRAME_TIMEOUT_SEC if self._status_reconfiguring else frame_wait_seconds)
                     remaining = deadline - now
                     if remaining <= 0:
                         return None
@@ -277,7 +280,7 @@ class CameraFrameProvider:
                         and self._status_state in {"starting", "streaming"}
                     ):
                         manager_acknowledged = True
-                        deadline = now + frame_wait_seconds
+                        deadline = now + (CAMERA_FIRST_FRAME_TIMEOUT_SEC if self._status_reconfiguring else frame_wait_seconds)
                     remaining = deadline - now
                     if remaining <= 0:
                         return None
