@@ -275,7 +275,7 @@ def test_invalid_jpeg_uses_native_placeholder_and_reports_error():
         track = CameraVideoTrack(value)
         frame = await track.recv()
         value.report_camera_error.assert_called_once()
-        assert (frame.width, frame.height) == (480, 360)
+        assert (frame.width, frame.height) == (640, 480)
         assert frame.format.name == "yuv420p"
         assert frame.pts is not None
         assert frame.time_base.numerator == 1
