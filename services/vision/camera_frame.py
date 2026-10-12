@@ -166,7 +166,9 @@ class CameraFrameProvider:
                 if pending is not None and pending["resolution"] == (request.get("width"), request.get("height")):
                     if not pending["acknowledged_at"]:
                         pending["acknowledged_at"] = self._status_time
-                    if self._status_reconfiguring and not pending["reconfiguring_at"]:
+                    # A newly started driver has no previous size to switch
+                    # from, but still needs the same initialization budget.
+                    if (self._status_reconfiguring or self._status_state == "starting") and not pending["reconfiguring_at"]:
                         pending["reconfiguring_at"] = self._status_time
             self._condition.notify_all()
 

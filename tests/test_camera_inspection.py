@@ -310,6 +310,25 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
+    def test_new_driver_starting_ack_uses_initialization_budget_without_reconfiguration_flag(self):
+        import threading
+        import time
+        from services.vision import camera_frame
+        provider, node, image_type = self._provider()
+        result = []
+        with patch.object(camera_frame, "CAMERA_FIRST_FRAME_TIMEOUT_SEC", 0.6):
+            thread = threading.Thread(target=lambda: result.append(provider.capture(timeout=0.2)))
+            thread.start()
+            until = time.monotonic() + 1
+            while not node.publisher.messages and time.monotonic() < until:
+                time.sleep(0.005)
+            node.callbacks["/camera_capture_status"](self._ack(node))
+            time.sleep(0.25)
+            self.assertTrue(thread.is_alive())
+            node.callbacks["/camera_frame"](image_type())
+            thread.join(timeout=1)
+        self.assertEqual(result, [b"camera-jpeg"])
+
     def test_stale_streaming_then_current_reconfiguration_keeps_full_budget(self):
         import threading
         import time
@@ -638,7 +657,7 @@ class CameraFrameProviderTests(unittest.TestCase):
         )
         thread.start()
         __import__("time").sleep(0.2)
-        status_message = self._ack(node)
+        status_message = self._ack(node, state="streaming")
         node.callbacks["/camera_capture_status"](status_message)
         __import__("time").sleep(0.15)
         node.callbacks["/camera_frame"](image_type())
@@ -659,7 +678,7 @@ class CameraFrameProviderTests(unittest.TestCase):
         )
         thread.start()
         __import__("time").sleep(0.03)
-        status_message = self._ack(node)
+        status_message = self._ack(node, state="streaming")
         node.callbacks["/camera_capture_status"](status_message)
         __import__("time").sleep(0.1)
         node.callbacks["/camera_capture_status"](status_message)
