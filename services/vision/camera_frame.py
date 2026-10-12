@@ -104,6 +104,7 @@ class CameraFrameProvider:
         self._status_state = ""
         self._status_time = 0.0
         self._status_error = ""
+        self._status_tracking = False
         self._command_pub = None
         self._subscriptions: list[Any] = []
 
@@ -140,14 +141,15 @@ class CameraFrameProvider:
         with self._condition:
             self._status_state = str(status.get("state", ""))
             self._status_error = str(status.get("error", ""))
+            self._status_tracking = status.get("tracking") is True
             self._status_time = time.monotonic()
             self._condition.notify_all()
 
-    def _publish_command(self, action: str, client_id: str, lease_sec: float = 0.0) -> None:
+    def _publish_command(self, action: str, client_id: str, lease_sec: float = 0.0, *, resolution: tuple[int, int] = (1280, 720)) -> None:
         if self._command_pub is None or String is None:
             return
         self._command_pub.publish(
-            String(data=encode_camera_command(action, client_id, lease_sec))
+            String(data=encode_camera_command(action, client_id, lease_sec, resolution=resolution))
         )
 
     def capture(
@@ -176,6 +178,8 @@ class CameraFrameProvider:
         try:
             with self._condition:
                 while True:
+                    if self._status_tracking:
+                        raise RuntimeError("请先退出注视或跟随模式再拍照")
                     if self._frame is not None and self._frame_time >= requested_at:
                         if not first_fresh_frame_time:
                             first_fresh_frame_time = self._frame_time
@@ -215,6 +219,7 @@ class CameraFrameProvider:
         on_source_frame: Callable[[bytes, int], None] | None = None,
         on_no_new_frame: Callable[[], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        resolution: tuple[int, int] = (1280, 720),
         timeout: float = 8.0,
         request_timeout: float | None = None,
     ) -> bytes | None:
@@ -247,6 +252,8 @@ class CameraFrameProvider:
         try:
             with self._condition:
                 while first_frame is None:
+                    if resolution == (1280, 720) and self._status_tracking:
+                        raise RuntimeError("请先退出注视或跟随模式再拍照")
                     if should_stop is not None and should_stop():
                         return None
                     if self._frame is not None and self._frame_time >= requested_at:
@@ -274,7 +281,7 @@ class CameraFrameProvider:
                     remaining = deadline - now
                     if remaining <= 0:
                         return None
-                    self._publish_command(action, client_id, lease_seconds)
+                    self._publish_command(action, client_id, lease_seconds, resolution=resolution)
                     action = "renew"
                     self._condition.wait(timeout=min(0.5, remaining))
 
@@ -314,7 +321,7 @@ class CameraFrameProvider:
 
                 now = time.monotonic()
                 if now - last_renewed_at >= 0.5:
-                    self._publish_command("renew", client_id, lease_seconds)
+                    self._publish_command("renew", client_id, lease_seconds, resolution=resolution)
                     last_renewed_at = now
                 next_frame_at += frame_interval
                 if next_frame_at <= now:

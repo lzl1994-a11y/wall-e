@@ -32,6 +32,24 @@ class _JpegImage:
 
 
 class CameraCaptureProtocolTests(unittest.TestCase):
+    def test_high_resolution_lease_restores_default_and_keeps_tracking_small(self):
+        command = decode_camera_command(encode_camera_command("acquire", "photo", 5, resolution=(1280, 720)))
+        self.assertEqual(command["resolution"], (1280, 720))
+        leases = CameraLeaseBook()
+        leases.acquire("photo", 5, now=10, resolution=command["resolution"])
+        self.assertEqual(leases.resolution, (1280, 720))
+        leases.acquire("tracking-vision", 2, now=10)
+        self.assertEqual(leases.resolution, (640, 480))
+        leases.release("tracking-vision")
+        self.assertEqual(leases.resolution, (1280, 720))
+        leases.purge(now=15)
+        self.assertEqual(leases.resolution, (640, 480))
+        for width, height in [(1280, 960), (True, 480), (1280.0, 720)]:
+            self.assertIsNone(decode_camera_command(encode_camera_command("acquire", "photo", 5, resolution=(width, height))))
+        command = build_hobot_camera_command("/dev/video8", ros_setup=None, resolution=(1280, 720))
+        self.assertIn("image_width:=1280", command)
+        self.assertIn("image_height:=720", command)
+
     def test_command_round_trip_and_lease_clamping(self):
         command = decode_camera_command(encode_camera_command("acquire", "client-1", 99))
         self.assertEqual(command["action"], "acquire")

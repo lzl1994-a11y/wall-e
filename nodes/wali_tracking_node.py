@@ -362,7 +362,10 @@ class WaliTrackingNode(Node):
             status = json.loads(message.data)
         except (AttributeError, TypeError, json.JSONDecodeError):
             return
-        if not isinstance(status, dict) or self.mode == self.MODE_IDLE:
+        if not isinstance(status, dict):
+            return
+        self._high_resolution_camera = status.get("high_resolution") is True
+        if self.mode == self.MODE_IDLE:
             return
         state = str(status.get("state", ""))
         if state == "streaming":
@@ -412,6 +415,9 @@ class WaliTrackingNode(Node):
         mode = self.MODE_ALIASES.get(mode_key, mode_key)
 
         if mode in (self.MODE_BODY_FOLLOW, self.MODE_FACE_FOLLOW):
+            if getattr(self, "_high_resolution_camera", False):
+                self.get_logger().warn("请先结束高清拍照或切回 640×480，再开启注视或跟随")
+                return False
             self.mode = mode
             self._tracking_controller.reset(gaze=mode == self.MODE_FACE_FOLLOW)
             self._stop_motor()

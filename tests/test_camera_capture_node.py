@@ -176,6 +176,26 @@ def _load_camera_capture_module():
 
 
 class CameraCaptureNodeTests(unittest.TestCase):
+    def test_photo_resolution_changes_only_the_single_camera_owner_and_restores(self):
+        module = _load_camera_capture_module()
+        processes = [_FakeProcess(), _FakeProcess(), _FakeProcess()]
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video8"),
+            patch.object(module.subprocess, "Popen", side_effect=processes) as popen,
+        ):
+            node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "photo", 5, resolution=(1280, 720))))
+            self.assertTrue(processes[0].terminated)
+            self.assertIs(node._camera_process, processes[1])
+            self.assertIn("image_width:=1280", popen.call_args.args[0])
+            self.assertEqual(node._camera_size, (1280, 720))
+            node._on_command(_FakeString(encode_camera_command("renew", "photo", 5, resolution=(1280, 720))))
+            self.assertEqual(popen.call_count, 2)
+            node._on_command(_FakeString(encode_camera_command("release", "photo")))
+            self.assertTrue(processes[1].terminated)
+            self.assertEqual(node._camera_size, (640, 480))
+            self.assertEqual(popen.call_count, 3)
+
     def test_detection_frames_require_tracking_lease_without_stopping_preview(self):
         module = _load_camera_capture_module()
         with patch.object(module, "jpeg_from_ros_image", return_value=b"frame"):

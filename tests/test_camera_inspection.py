@@ -310,6 +310,14 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
+    def test_photo_is_rejected_during_tracking_and_does_not_acquire_high_resolution(self):
+        provider, node, _image_type = self._provider()
+        provider._status_tracking = True
+        with self.assertRaisesRegex(RuntimeError, "退出"):
+            provider.capture(timeout=0.2)
+        commands = [__import__("json").loads(message.data) for message in node.publisher.messages]
+        self.assertEqual([command["action"] for command in commands], ["release"])
+
     def _provider(self):
         from services.vision import camera_frame
 
@@ -408,6 +416,7 @@ class CameraFrameProviderTests(unittest.TestCase):
         ]
         self.assertEqual(result, [b"camera-jpeg"])
         self.assertEqual(commands[0]["action"], "acquire")
+        self.assertEqual((commands[0]["width"], commands[0]["height"]), (1280, 720))
         self.assertEqual(commands[-1]["action"], "release")
 
     def test_capture_timeout_releases_without_uvc_fallback(self):

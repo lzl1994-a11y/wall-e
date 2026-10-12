@@ -88,8 +88,8 @@ ROBOT_AUDIO_SAMPLE_RATE = 48_000
 ROBOT_AUDIO_FRAME_SAMPLES = 960
 VIDEO_CLOCK_RATE = 90_000
 VIDEO_FPS = 10
-VIDEO_WIDTH = 480
-VIDEO_HEIGHT = 360
+VIDEO_WIDTH = 640
+VIDEO_HEIGHT = 480
 
 
 def _safe_signaling_url(url: str) -> str:
@@ -401,6 +401,9 @@ class RemoteWebRtcGateway:
         self._remote_audio_epoch = 0
         self._remote_audio_stats = None
         self._camera_client_id = f"webrtc:{robot_id}"[:96]
+        self._camera_resolution = (640, 480)
+        self._camera_transition_until = 0.0
+        self._tracking_active = False
         self._neck_kinematics = load_neck_kinematics()
 
         self._camera_command_pub = node.create_publisher(String, CAMERA_COMMAND_TOPIC, 10)
@@ -499,6 +502,9 @@ class RemoteWebRtcGateway:
         with self._frame_lock:
             return self._last_raw_jpeg, self._raw_frame_at
 
+    def camera_reconfiguring(self) -> bool:
+        return time.monotonic() < getattr(self, "_camera_transition_until", 0.0)
+
     def _on_raw_camera_frame(self, message: CompressedImage) -> None:
         # One latest slot: no ROS input backlog is fed to the encoder.
         if self._video_backend == "x3" and message.data:
@@ -523,7 +529,14 @@ class RemoteWebRtcGateway:
             payload = json.loads(message.data)
         except (TypeError, json.JSONDecodeError):
             return
-        if not isinstance(payload, dict) or payload.get("state") != "error":
+        if not isinstance(payload, dict):
+            return
+        self._tracking_active = payload.get("tracking") is True
+        if payload.get("reconfiguring") is True and not getattr(self, "_camera_transition_until", 0.0):
+            self._camera_transition_until = time.monotonic() + 45.0
+        if payload.get("state") == "streaming":
+            self._camera_transition_until = 0.0
+        if payload.get("state") != "error":
             return
         error = str(payload.get("error") or "摄像头状态异常")[:200]
         self.node.get_logger().error(f"WebRTC 摄像头不可用: {error}")
@@ -693,6 +706,8 @@ class RemoteWebRtcGateway:
             self._last_raw_jpeg = b""
             self._raw_frame_at = 0.0
         self._camera_client_id = f"{RAW_CAMERA_CLIENT_PREFIX if use_hardware else 'webrtc:'}{self.robot_id}"[:96]
+        self._camera_resolution = (640, 480)
+        self._camera_transition_until = 0.0
         self._video_track = HardwareCameraVideoTrack.create(self) if use_hardware else CameraVideoTrack(self)
         if self._video_backend == "x3" and not use_hardware:
             self.node.get_logger().info("浏览器未提供 H264 Baseline 42001f，选择兼容软件视频")
@@ -840,8 +855,22 @@ class RemoteWebRtcGateway:
             self._set_remote_call(message["state"] == "start")
         elif message_type == "media" and self._video_track is not None:
             manual = (message["width"], message["height"], message["fps"]) if message.get("mode") == "manual" else None
+            if manual and manual[:2] == (1280, 720) and getattr(self, "_tracking_active", False):
+                self._send_event({"type": "status", "value": "请先退出注视或跟随模式，再设置高清画面"})
+                return
             profile = message.get("video", "normal")
             self._video_track.configure_video(profile=profile, manual=manual)
+            resolution = (1280, 720) if manual and manual[:2] == (1280, 720) else (640, 480)
+            if resolution != getattr(self, "_camera_resolution", (640, 480)):
+                self._camera_transition_until = time.monotonic() + 45.0
+                with self._frame_lock:
+                    self._last_raw_jpeg = b""
+                    self._last_jpeg = b""
+                    self._raw_frame_at = 0.0
+            self._camera_resolution = resolution
+            self._camera_command_pub.publish(String(data=encode_camera_command(
+                "renew", self._camera_client_id, CAMERA_LEASE_SEC, resolution=self._camera_resolution
+            )))
             settings = ({"mode": "manual", "width": manual[0], "height": manual[1], "fps": manual[2]}
                         if manual else {"mode": "auto"})
             self._send_event({"type": "video", "settings": settings})
@@ -1121,7 +1150,8 @@ class RemoteWebRtcGateway:
     def _acquire_camera(self) -> None:
         self.node.get_logger().info("申请 WebRTC 摄像头 lease")
         self._camera_command_pub.publish(String(data=encode_camera_command(
-            "acquire", self._camera_client_id, CAMERA_LEASE_SEC
+            "acquire", self._camera_client_id, CAMERA_LEASE_SEC,
+            resolution=getattr(self, "_camera_resolution", (640, 480))
         )))
         if self._loop:
             self._camera_renew_task = self._loop.create_task(self._renew_camera())
@@ -1131,7 +1161,8 @@ class RemoteWebRtcGateway:
             await asyncio.sleep(CAMERA_RENEW_SEC)
             if self._peer is not None:
                 self._camera_command_pub.publish(String(data=encode_camera_command(
-                    "renew", self._camera_client_id, CAMERA_LEASE_SEC
+                    "renew", self._camera_client_id, CAMERA_LEASE_SEC,
+                    resolution=self._camera_resolution
                 )))
 
     def _release_camera(self) -> None:

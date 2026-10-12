@@ -67,6 +67,7 @@ class TrackingTftPreviewTests(unittest.TestCase):
         self.assertEqual(server.streams[0].frames, [b"camera-jpeg"])
         self.assertEqual(provider.calls[0]["duration_ms"], 60_000)
         self.assertEqual(provider.calls[0]["fps"], 30)
+        self.assertEqual(provider.calls[0]["resolution"], (640, 480))
 
         preview.set_command("stop")
         self.assertTrue(server.streams[0].stopped.wait(timeout=1.0))

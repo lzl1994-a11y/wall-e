@@ -55,6 +55,8 @@ class CameraCaptureNode(Node):
         self._leases = CameraLeaseBook()
         self._camera_process: subprocess.Popen | None = None
         self._camera_device = ""
+        self._camera_size = (640, 480)
+        self._reconfiguring = False
         self._last_source_frame = 0.0
         self._last_output_frame = 0.0
         self._last_decode_validation = 0.0
@@ -113,7 +115,7 @@ class CameraCaptureNode(Node):
         if command["action"] == "release":
             self._leases.release(command["client_id"])
         else:
-            self._leases.acquire(command["client_id"], command["lease_sec"])
+            self._leases.acquire(command["client_id"], command["lease_sec"], resolution=command["resolution"])
         self._tick()
 
     def _on_source_image(self, message: CompressedImage) -> None:
@@ -131,12 +133,14 @@ class CameraCaptureNode(Node):
             message,
             validate_decode=validate_decode,
             flip_vertical=normalize,
+            expected_size=self._camera_size,
         )
         if not jpeg:
             return
         # A running process alone is not healthy: only a complete, decodable
         # JPEG counts as a source frame for the first-frame watchdog.
         self._last_source_frame = now
+        self._reconfiguring = False
         if validate_decode:
             self._last_decode_validation = now
         if not self._leases.active:
@@ -161,6 +165,14 @@ class CameraCaptureNode(Node):
         now = time.monotonic()
         self._leases.purge(now=now)
         process = self._camera_process
+        if process is not None and process.poll() is None and self._camera_size != self._leases.resolution:
+            # The driver applies dimensions at startup. Keep one device owner;
+            # only restart it when the shared lease requirement changes.
+            self._reconfiguring = True
+            self._publish_status("starting", source=CAMERA_SOURCE_TOPIC, force=True)
+            self._stop_camera_process()
+            self._start_camera_process()
+            return
         if process is not None and process.poll() is not None:
             code = process.returncode
             self._camera_process = None
@@ -340,7 +352,8 @@ class CameraCaptureNode(Node):
             return
 
         ros_setup = os.environ.get("WALI_CAMERA_ROS_SETUP", "/opt/tros/humble/setup.bash")
-        command = build_hobot_camera_command(device, ros_setup=ros_setup)
+        self._camera_size = self._leases.resolution
+        command = build_hobot_camera_command(device, ros_setup=ros_setup, resolution=self._camera_size)
         try:
             self._camera_process = subprocess.Popen(
                 command,
@@ -419,6 +432,9 @@ class CameraCaptureNode(Node):
             "device": self._camera_device,
             "clients": self._leases.count,
             "error": error,
+            "reconfiguring": self._reconfiguring,
+            "tracking": self._leases.tracking_active,
+            "high_resolution": self._leases.resolution == (1280, 720),
         }
         self._status_pub.publish(
             String(data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")))

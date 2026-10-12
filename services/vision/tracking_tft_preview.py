@@ -120,6 +120,7 @@ class TrackingTftPreview:
                         should_stop=lambda: self._stop_event.is_set() or stream.closed,
                         timeout=10.0,
                         request_timeout=15.0,
+                        resolution=(640, 480),
                     )
                     if not last_frame and not stream.closed:
                         self._stop_event.wait(0.5)

@@ -64,27 +64,28 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
             raise MediaStreamError
         try:
             now = time.monotonic()
+            while self._gateway.camera_reconfiguring() is True:
+                if self._closing.is_set():
+                    raise MediaStreamError
+                await asyncio.sleep(.02)
             if self.manual_video is not None or self.profile == "low":
                 await asyncio.sleep(max(0, self._next_at - now))
             # Startup may need camera enumeration. Never encode a previous call's frame.
             jpeg, captured_at = self._gateway.latest_raw_camera_frame()
-            while not jpeg and time.monotonic() - self._started_at < 45:
-                if self._closing.is_set():
-                    raise MediaStreamError
-                await asyncio.sleep(.05)
-                jpeg, captured_at = self._gateway.latest_raw_camera_frame()
-            if not jpeg or time.monotonic() - captured_at > 1.5:
-                raise HardwareVideoError("camera input missing/stalled")
             # Normal mode follows fresh camera input, rather than a 10 FPS
             # timer. Do not inflate FPS by encoding the same source frame.
-            while captured_at == self._last_captured_at:
+            while (not jpeg or time.monotonic() - captured_at > 1.5
+                   or captured_at == self._last_captured_at
+                   or self._gateway.camera_reconfiguring() is True):
                 if self._closing.is_set():
                     raise MediaStreamError
-                await asyncio.sleep(.002)
-                jpeg, captured_at = self._gateway.latest_raw_camera_frame()
-                if not jpeg or time.monotonic() - captured_at > 1.5:
+                changing = self._gateway.camera_reconfiguring() is True
+                if not changing and ((not jpeg and time.monotonic() - self._started_at >= 45)
+                                     or (jpeg and time.monotonic() - captured_at > 1.5)):
                     raise HardwareVideoError("camera input missing/stalled")
-            width, height, fps = self.manual_video or ((320, 240, 5) if self.profile == "low" else (480, 360, 10))
+                await asyncio.sleep(.02 if changing or not jpeg else .002)
+                jpeg, captured_at = self._gateway.latest_raw_camera_frame()
+            width, height, fps = self.manual_video or ((320, 240, 5) if self.profile == "low" else (640, 480, 10))
             now = time.monotonic()
             if self.manual_video is not None or self.profile == "low":
                 self._next_at = max(self._next_at + 1 / fps, now)

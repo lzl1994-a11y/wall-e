@@ -74,7 +74,10 @@ class X3VideoCodec:
                 or source_width % 2 or source_height % 2):
             raise ValueError("unsupported JPEG dimensions")
         if self._source_size is not None and self._source_size != (source_width, source_height):
-            raise HardwareVideoError("camera dimensions changed during hardware session")
+            self._check(self._lib.walle_close(), "close for camera size change")
+            self._check(self._lib.walle_init(), "initialize for camera size change")
+            self._decoded = None
+            self._profile = None
         self._source_size = (source_width, source_height)
         if self._decoded is None:
             self._decoded = ctypes.create_string_buffer(source_width * source_height * 3 // 2)
@@ -93,7 +96,7 @@ class X3VideoCodec:
         profile = (width, height, fps)
         if profile != self._profile:
             self._check(self._lib.walle_encoder_close(), "encoder close for profile change")
-            self._check(self._lib.walle_encoder_open(width, height, fps, 150 if fps == 5 else 500),
+            self._check(self._lib.walle_encoder_open(width, height, fps, 1500 if width == 1280 else (150 if fps == 5 else 500)),
                         "encoder open")
             self._profile = profile
         size = self._lib.walle_encode(pixels, len(pixels), self._output, len(self._output), pts // 90)

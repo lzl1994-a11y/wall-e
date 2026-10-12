@@ -3,6 +3,12 @@ import json
 from services.remote.remote_protocol import action_request_for, decode_remote_message
 
 
+def test_manual_video_accepts_720p_but_rejects_960p():
+    message = dict(type="media", seq=1, mode="manual", width=1280, height=720, fps=15)
+    assert decode_remote_message(json.dumps(message)) == message
+    assert decode_remote_message(json.dumps(dict(message, height=960))) is None
+
+
 def test_decode_remote_control_clamps_protocol_shape_without_mutating_values():
     message = decode_remote_message(json.dumps({
         "type": "control",

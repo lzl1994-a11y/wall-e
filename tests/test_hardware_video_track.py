@@ -105,7 +105,7 @@ def test_normal_mode_follows_fresh_source_without_ten_fps_wait():
                 assert sleeps == [.002]
                 assert third.pts > second.pts
                 assert [call.args[0] for call in codec.encode.call_args_list] == [b"first", b"next", b"second"]
-                assert all(call.args[1:4] == (480, 360, 10) for call in codec.encode.call_args_list)
+                assert all(call.args[1:4] == (640, 480, 10) for call in codec.encode.call_args_list)
             finally:
                 await track.aclose()
     asyncio.run(run())
@@ -218,7 +218,7 @@ def test_manual_video_resizes_and_paces_then_returns_to_fresh_frame_auto(size, f
                 clock[0] += 1 / 15
                 await track.recv()
                 assert sleeps == pytest.approx([0, 1 / fps])
-                assert codec.encode.call_args.args[1:4] == (480, 360, 10)
+                assert codec.encode.call_args.args[1:4] == (640, 480, 10)
             finally:
                 await track.aclose()
     asyncio.run(run())

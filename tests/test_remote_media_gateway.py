@@ -101,6 +101,10 @@ def gateway():
     value._schedule_peer_close = Mock()
     value._send_event = Mock()
     value._video_track = Mock()
+    value._camera_command_pub = Mock()
+    value._camera_client_id = "webrtc:test"
+    value._camera_resolution = (640, 480)
+    value._frame_lock = threading.Lock()
     return value
 
 
@@ -154,6 +158,26 @@ def test_low_video_profile_is_applied_and_placeholder_keeps_dimensions():
     frame = CameraVideoTrack._make_frame(b"", 320, 240)
     assert (frame.width, frame.height) == (320, 240)
     assert frame.format.name == "yuv420p"
+
+
+def test_720p_requests_real_camera_resolution_and_auto_restores_default():
+    value = gateway()
+    value._on_data_message('{"type":"media","seq":1,"mode":"manual","width":1280,"height":720,"fps":15}')
+    command = json.loads(value._camera_command_pub.publish.call_args.args[0].data)
+    assert (command['width'], command['height']) == (1280, 720)
+    assert value.camera_reconfiguring()
+    value._on_data_message('{"type":"media","seq":2,"mode":"auto","video":"normal"}')
+    command = json.loads(value._camera_command_pub.publish.call_args.args[0].data)
+    assert 'width' not in command
+    assert value._camera_resolution == (640, 480)
+
+
+def test_720p_is_not_applied_while_tracking_is_active():
+    value = gateway()
+    value._tracking_active = True
+    value._on_data_message('{"type":"media","seq":1,"mode":"manual","width":1280,"height":720,"fps":15}')
+    value._video_track.configure_video.assert_not_called()
+    value._camera_command_pub.publish.assert_not_called()
 
 
 def test_manual_video_switches_both_tracks_and_auto_clears_manual_settings():

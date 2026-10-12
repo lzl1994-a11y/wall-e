@@ -73,6 +73,25 @@ def test_profile_switch_reopens_encoder_and_rejects_bad_input():
         finally:codec.close()
 
 
+def test_camera_size_switch_reinitializes_codec_and_allocates_matching_buffer():
+    Image = pytest.importorskip("PIL.Image")
+    from io import BytesIO
+    lib = sdk()
+    with patch("services.remote.x3_video.ctypes.CDLL", return_value=lib):
+        codec = X3VideoCodec(Path("test.so"))
+        try:
+            for width, height in [(640, 480), (1280, 720), (640, 480)]:
+                stream = BytesIO()
+                Image.new("RGB", (width, height)).save(stream, format="JPEG")
+                codec.encode(stream.getvalue(), width, height, 15, 0)
+                assert len(codec._decoded) == width * height * 3 // 2
+            assert lib.walle_init.call_count == 3
+            assert lib.walle_close.call_count == 2
+            assert lib.walle_encoder_open.call_args_list[1].args == (1280, 720, 15, 1500)
+        finally:
+            codec.close()
+
+
 @pytest.mark.parametrize("isolated", [False, True])
 def test_real_x3_jpeg_encode_switch_orientation_and_release(isolated):
     import os

@@ -99,6 +99,15 @@ def _load_tracking_module():
 
 
 class WaliTrackingNodeTests(unittest.TestCase):
+    def test_high_resolution_capture_blocks_tracking_until_released(self):
+        module = _load_tracking_module()
+        node = module.WaliTrackingNode()
+        node._on_camera_status(_FakeString(json.dumps({"state": "streaming", "high_resolution": True})))
+        self.assertFalse(node._set_tracking_mode("look_at_me"))
+        self.assertEqual(node.mode, node.MODE_IDLE)
+        node._on_camera_status(_FakeString(json.dumps({"state": "standby", "high_resolution": False})))
+        self.assertTrue(node._set_tracking_mode("look_at_me"))
+
     def test_stop_all_returns_tracking_to_idle(self):
         module = _load_tracking_module()
         node = module.WaliTrackingNode()

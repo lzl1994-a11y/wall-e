@@ -21,7 +21,7 @@ REMOTE_SOURCE = "remote"
 REMOTE_SAFETY_SOURCE = "remote_safety"
 MAX_REMOTE_MESSAGE_BYTES = 64 * 1024
 MAX_REMOTE_SEQUENCE = 2**63 - 1
-VIDEO_RESOLUTIONS = frozenset({(320, 240), (480, 360), (640, 480)})
+VIDEO_RESOLUTIONS = frozenset({(320, 240), (480, 360), (640, 480), (1280, 720)})
 VIDEO_FRAME_RATES = frozenset({5, 10, 15})
 ALLOWED_ACTIONS = frozenset({
     "wave_hello",

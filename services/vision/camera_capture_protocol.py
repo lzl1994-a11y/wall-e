@@ -25,13 +25,15 @@ TRACKING_IMAGE_TOPIC = CAMERA_SOURCE_TOPIC  # Backwards-compatible import name.
 DEFAULT_ROS_SETUP = Path("/opt/tros/humble/setup.bash")
 
 
-def encode_camera_command(action: str, client_id: str, lease_sec: float = 0.0) -> str:
+def encode_camera_command(action: str, client_id: str, lease_sec: float = 0.0, *, resolution: tuple[int, int] = (640, 480)) -> str:
     payload: dict[str, Any] = {
         "action": str(action),
         "client_id": str(client_id),
     }
     if lease_sec > 0:
         payload["lease_sec"] = float(lease_sec)
+    if action != "release" and resolution != (640, 480):
+        payload["width"], payload["height"] = resolution
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -46,6 +48,10 @@ def decode_camera_command(raw: str) -> dict[str, Any] | None:
     client_id = str(payload.get("client_id", "")).strip()
     if action not in {"acquire", "renew", "release"} or not client_id:
         return None
+    resolution = (payload.get("width", 640), payload.get("height", 480))
+    if (not all(type(value) is int for value in resolution)
+            or resolution not in {(640, 480), (1280, 720)}):
+        return None
     try:
         lease_sec = float(payload.get("lease_sec", 5.0))
     except (TypeError, ValueError):
@@ -54,6 +60,7 @@ def decode_camera_command(raw: str) -> dict[str, Any] | None:
         "action": action,
         "client_id": client_id[:96],
         "lease_sec": min(30.0, max(1.0, lease_sec)),
+        "resolution": resolution,
     }
 
 
@@ -62,19 +69,22 @@ class CameraLeaseBook:
 
     def __init__(self) -> None:
         self._leases: dict[str, float] = {}
+        self._resolutions: dict[str, tuple[int, int]] = {}
 
-    def acquire(self, client_id: str, lease_sec: float, *, now: float | None = None) -> None:
+    def acquire(self, client_id: str, lease_sec: float, *, now: float | None = None, resolution: tuple[int, int] = (640, 480)) -> None:
         current = time.monotonic() if now is None else float(now)
         self._leases[client_id] = current + min(30.0, max(1.0, float(lease_sec)))
+        self._resolutions[client_id] = resolution
 
     def release(self, client_id: str) -> None:
         self._leases.pop(client_id, None)
+        self._resolutions.pop(client_id, None)
 
     def purge(self, *, now: float | None = None) -> None:
         current = time.monotonic() if now is None else float(now)
         expired = [client_id for client_id, deadline in self._leases.items() if deadline <= current]
         for client_id in expired:
-            self._leases.pop(client_id, None)
+            self.release(client_id)
 
     @property
     def active(self) -> bool:
@@ -93,6 +103,12 @@ class CameraLeaseBook:
     @property
     def tracking_active(self) -> bool:
         return TRACKING_CAMERA_CLIENT_ID in self._leases
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        if not self.tracking_active and (1280, 720) in self._resolutions.values():
+            return (1280, 720)
+        return (640, 480)
 
 
 class CameraWatchdogAction(str, Enum):
@@ -190,6 +206,7 @@ def build_hobot_camera_command(
     device: str,
     *,
     ros_setup: str | Path | None = DEFAULT_ROS_SETUP,
+    resolution: tuple[int, int] = (640, 480),
 ) -> list[str]:
     command = [
         "ros2",
@@ -202,11 +219,11 @@ def build_hobot_camera_command(
         "-p",
         f"video_device:={device}",
         "-p",
-        "image_width:=640",
+        f"image_width:={resolution[0]}",
         "-p",
-        "image_height:=480",
+        f"image_height:={resolution[1]}",
         "-p",
-        # The ESP UVC camera exposes 640x480 MJPEG at 15 fps.  The driver's
+        # Both tested ESP UVC MJPEG modes run at 15 fps. The driver's
         # 30 fps default is not a supported mode and never produces /image.
         "framerate:=15",
     ]
@@ -229,6 +246,7 @@ def jpeg_from_ros_image(
     quality: int = 85,
     validate_decode: bool = True,
     flip_vertical: bool = False,
+    expected_size: tuple[int, int] | None = None,
 ) -> bytes | None:
     """Convert an Image or CompressedImage payload to JPEG bytes.
 
@@ -256,6 +274,15 @@ def jpeg_from_ros_image(
         if eoi < 2:
             return None
         jpeg = raw[:eoi + 2]
+        if expected_size is not None:
+            from io import BytesIO
+            from PIL import Image
+            try:
+                with Image.open(BytesIO(jpeg)) as image:
+                    if image.size != expected_size:
+                        return None
+            except (OSError, ValueError):
+                return None
         if not validate_decode and not flip_vertical:
             return jpeg
         try:
