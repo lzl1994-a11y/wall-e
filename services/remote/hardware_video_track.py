@@ -13,6 +13,7 @@ from aiortc.sdp import SessionDescription
 
 from services.remote.x3_video import HardwareVideoError, require_codec_library
 from services.remote.isolated_video_codec import IsolatedX3VideoCodec as X3VideoCodec
+from services.vision.camera_capture_protocol import DEFAULT_FRAME_TIMEOUT_SEC
 
 
 def hardware_h264_offered(sdp: str) -> bool:
@@ -83,7 +84,7 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
                         and captured_at != self._last_captured_at):
                     break
                 if not changing and ((not jpeg and time.monotonic() - self._started_at >= 45)
-                                     or (jpeg and time.monotonic() - captured_at > 1.5)):
+                                     or (jpeg and time.monotonic() - captured_at > DEFAULT_FRAME_TIMEOUT_SEC)):
                     raise HardwareVideoError("camera input missing/stalled")
                 await asyncio.sleep(.02 if changing or not jpeg else .002)
             width, height, fps = self.manual_video or ((320, 240, 5) if self.profile == "low" else (640, 480, 10))

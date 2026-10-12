@@ -9,7 +9,7 @@
 #include "hb_venc.h"
 #include "hb_vp_api.h"
 
-enum { DECODER = 2, ENCODER = 3, TIMEOUT_MS = 400, MAX_JPEG = 2097152 };
+enum { DECODER = 2, ENCODER = 3, TIMEOUT_MS = 400, ENCODE_TIMEOUT_MS = 1000, MAX_JPEG = 2097152 };
 static int vp, enc_module, dec_module, enc_created, enc_started, dec_created, dec_started;
 static int enc_width, enc_height;
 static uint64_t enc_physical, jpeg_physical;
@@ -142,9 +142,9 @@ int walle_encode(const uint8_t *input, int length, uint8_t *out, int capacity, i
     frame.stVFrame.vir_ptr[0] = enc_pixels;
     frame.stVFrame.vir_ptr[1] = (char *)enc_pixels + enc_width * enc_height;
     frame.stVFrame.pts = pts_ms;
-    int r = HB_VENC_SendFrame(ENCODER, &frame, TIMEOUT_MS); if (r) return r;
+    int r = HB_VENC_SendFrame(ENCODER, &frame, ENCODE_TIMEOUT_MS); if (r) return r;
     VIDEO_STREAM_S stream = {0};
-    r = HB_VENC_GetStream(ENCODER, &stream, TIMEOUT_MS); if (r) return r;
+    r = HB_VENC_GetStream(ENCODER, &stream, ENCODE_TIMEOUT_MS); if (r) return r;
     int size = stream.pstPack.size;
     if (size <= 0 || size > capacity || !stream.pstPack.vir_ptr) {
         HB_VENC_ReleaseStream(ENCODER, &stream); return -2;
