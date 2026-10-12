@@ -70,20 +70,22 @@ class HardwareCameraVideoTrack(VideoStreamTrack):
             if self.manual_video is not None or self.profile == "low":
                 await asyncio.sleep(max(0, self._next_at - time.monotonic()))
             # Startup may need camera enumeration. Never encode a previous call's frame.
-            jpeg, captured_at = self._gateway.latest_raw_camera_frame()
             # Normal mode follows fresh camera input, rather than a 10 FPS
             # timer. Do not inflate FPS by encoding the same source frame.
-            while (not jpeg or time.monotonic() - captured_at > 1.5
-                   or captured_at == self._last_captured_at
-                   or self._gateway.camera_reconfiguring() is True):
+            while True:
                 if self._closing.is_set():
                     raise MediaStreamError
+                # Read readiness before the frame snapshot: the ROS callback
+                # may finish a transition between these two reads.
                 changing = self._gateway.camera_reconfiguring() is True
+                jpeg, captured_at = self._gateway.latest_raw_camera_frame()
+                if (not changing and jpeg and time.monotonic() - captured_at <= 1.5
+                        and captured_at != self._last_captured_at):
+                    break
                 if not changing and ((not jpeg and time.monotonic() - self._started_at >= 45)
                                      or (jpeg and time.monotonic() - captured_at > 1.5)):
                     raise HardwareVideoError("camera input missing/stalled")
                 await asyncio.sleep(.02 if changing or not jpeg else .002)
-                jpeg, captured_at = self._gateway.latest_raw_camera_frame()
             width, height, fps = self.manual_video or ((320, 240, 5) if self.profile == "low" else (640, 480, 10))
             now = time.monotonic()
             if self.manual_video is not None or self.profile == "low":

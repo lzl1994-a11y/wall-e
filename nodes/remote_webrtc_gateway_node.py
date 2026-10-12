@@ -519,10 +519,10 @@ class RemoteWebRtcGateway:
                 )
                 if not jpeg:
                     return
-                self._camera_transition_until = 0.0
             with self._frame_lock:
                 self._last_raw_jpeg = jpeg
                 self._raw_frame_at = time.monotonic()
+                self._camera_transition_until = 0.0
 
     def report_hardware_video_error(self, exc: Exception) -> None:
         self.node.get_logger().error(f"WebRTC 硬件视频失败，关闭会话: {exc}")

@@ -76,6 +76,49 @@ def test_packet_pts_tracks_elapsed_time_and_profile():
     asyncio.run(run())
 
 
+def test_transition_finishing_between_status_and_frame_reads_does_not_report_stall():
+    async def run():
+        clock = [100.0]
+        source = [b'old', 100.0]
+        changing = [False]
+        ready = [False]
+
+        def status():
+            if ready[0]:
+                source[:] = [b'new', clock[0]]
+                changing[0] = False
+            return changing[0]
+
+        def frame():
+            result = tuple(source)
+            if not result[0]:
+                ready[0] = True
+            return result
+
+        async def sleep(delay):
+            clock[0] += delay
+            if not ready[0]:
+                changing[0] = True
+                source[:] = [b'', 0.0]
+
+        gateway = Mock(camera_reconfiguring=status, latest_raw_camera_frame=frame)
+        codec = Mock(encode=Mock(return_value=b'packet'))
+        with patch('services.remote.hardware_video_track.time.monotonic', side_effect=lambda: clock[0]), \
+                patch('services.remote.hardware_video_track.asyncio.sleep', side_effect=sleep), \
+                patch('services.remote.hardware_video_track.X3VideoCodec', return_value=codec):
+            track = HardwareCameraVideoTrack(gateway, Path('unused'))
+            track._started_at -= 60
+            track._last_captured_at = 100.0
+            try:
+                packet = await track.recv()
+                assert packet.size > 0
+                assert codec.encode.call_args.args[0] == b'new'
+                gateway.report_hardware_video_error.assert_not_called()
+            finally:
+                await track.aclose()
+    asyncio.run(run())
+
+
 def test_cancelled_encode_is_finished_before_sdk_memory_is_released():
     async def run():
         started=threading.Event();finish=threading.Event();order=[]
