@@ -12,12 +12,13 @@ from typing import Any
 
 
 CAMERA_FRAME_TOPIC = "/camera_frame"
+TRACKING_CAMERA_FRAME_TOPIC = "/tracking_camera_frame"
+TRACKING_CAMERA_CLIENT_ID = "tracking-vision"
 CAMERA_COMMAND_TOPIC = "/camera_capture_cmd"
 CAMERA_STATUS_TOPIC = "/camera_capture_status"
 CAMERA_CAPTURE_SERVICE = "/set_capture"
 # The one canonical stream produced by the only ``hobot_usb_cam`` process.
-# Tracking consumes it directly; the capture manager adapts it to the public
-# CompressedImage preview topic for legacy preview/photo consumers.
+# The capture manager adapts it to preview and lease-gated tracking topics.
 CAMERA_SOURCE_TOPIC = "/image"
 RAW_CAMERA_CLIENT_PREFIX = "webrtc-h264:"
 TRACKING_IMAGE_TOPIC = CAMERA_SOURCE_TOPIC  # Backwards-compatible import name.
@@ -88,6 +89,10 @@ class CameraLeaseBook:
         # Existing consumers keep their JPEG contract. Only the explicit raw
         # hardware lease opts out; unknown/new clients remain conservative.
         return any(not client.startswith(RAW_CAMERA_CLIENT_PREFIX) for client in self._leases)
+
+    @property
+    def tracking_active(self) -> bool:
+        return TRACKING_CAMERA_CLIENT_ID in self._leases
 
 
 class CameraWatchdogAction(str, Enum):

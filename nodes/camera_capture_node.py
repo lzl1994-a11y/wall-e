@@ -26,6 +26,7 @@ from services.vision.camera_capture_protocol import (
     CAMERA_FRAME_TOPIC,
     CAMERA_SOURCE_TOPIC,
     CAMERA_STATUS_TOPIC,
+    TRACKING_CAMERA_FRAME_TOPIC,
     CameraLeaseBook,
     CameraWatchdogAction,
     build_hobot_camera_command,
@@ -69,8 +70,8 @@ class CameraCaptureNode(Node):
         # ``hobot_usb_cam`` is launched only here and publishes the canonical
         # JPEG stream on /image.  The deployed TogetherROS hobot_usb_cam
         # publishes that MJPEG as CompressedImage.
-        # The detector consumes the same source directly. This node adapts it to the established
-        # CompressedImage preview topic, so photo/TFT/web consumers never open
+        # This node adapts it to preview and lease-gated detection topics,
+        # so photo/TFT/web consumers never open
         # the V4L2 device themselves.
         self._frame_pub = self.create_publisher(
             CompressedImage,
@@ -81,6 +82,9 @@ class CameraCaptureNode(Node):
             10,
         )
         self._status_pub = self.create_publisher(String, CAMERA_STATUS_TOPIC, 10)
+        self._tracking_frame_pub = self.create_publisher(
+            CompressedImage, TRACKING_CAMERA_FRAME_TOPIC, 10
+        )
         self._capture_client = self.create_client(SetBool, CAMERA_CAPTURE_SERVICE)
         self.create_subscription(String, CAMERA_COMMAND_TOPIC, self._on_command, 10)
         # ROS 2 Humble does not allow one node to subscribe to the same topic
@@ -140,13 +144,16 @@ class CameraCaptureNode(Node):
             self._publish_status(state, source=CAMERA_SOURCE_TOPIC)
             return
         if normalize:
-            self._frame_pub.publish(
-                CompressedImage(
-                    header=message.header,
-                    format="jpeg",
-                    data=jpeg,
-                )
+            frame = CompressedImage(
+                header=message.header,
+                format="jpeg",
+                data=jpeg,
             )
+            self._frame_pub.publish(frame)
+            # Preview leases must not feed the hot-standby detector. Reuse
+            # tracking's existing expiring lease instead of another gate state.
+            if self._leases.tracking_active:
+                self._tracking_frame_pub.publish(frame)
         self._last_output_frame = time.monotonic()
         self._publish_status("streaming", source=CAMERA_SOURCE_TOPIC)
 

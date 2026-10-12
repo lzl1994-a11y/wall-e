@@ -76,7 +76,8 @@ LLM / 多模态 -> /tft_preview_request -> tft_tcp_service_node
                                       ├-> 末帧视觉 LLM
                                       └-> 末帧本地照片
               -> Config Web preview
-              -> 热备 BPU 检测进程（仅有租约时收到帧）
+
+/tracking_camera_frame -> 热备 BPU 检测进程（仅 tracking-vision 租约有效时发布）
 ```
 
 `camera_capture_node` 启动时即拉起唯一的 `hobot_usb_cam`，并检查进程退出以及取流期间的首帧、
@@ -101,7 +102,7 @@ wali_tracking_node  -> /servo_targets/tracking -> sequence_ros_node -> /servo_cm
 sequence_ros_node   -> /motor_cmd/autonomy ├-> motion_arbiter_node -> /motor_cmd
 joy_control_node    -> /motor_cmd/joystick ┘                         ├─ serial_mcu: hardware_bridge_node -> serial_ros_node -> ESP32
                                                                     └─ ubuntu_i2c: i2c_hardware_node -> 板载 I2C -> PCA9685
-                    -> /vision_pipeline_cmd -> hobot_vision_node -> 热备 RDK BPU 检测（订阅 `/camera_frame`）
+                    -> /vision_pipeline_cmd -> hobot_vision_node -> 热备 RDK BPU 检测（订阅 `/tracking_camera_frame`）
         ^
         ├─ /hobot_mono2d_body_detection  (RDK BPU 感知)
         ├─ /action_cmd                    (仲裁后的模式切换)
@@ -112,9 +113,9 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 
 | 脚本 | ROS 节点名 | 启动条件 | 订阅话题 | 发布话题 | 作用 |
 | --- | --- | --- | --- | --- | --- |
-| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：保持 `hobot_usb_cam` 进程热备并自愈，按租约切换 V4L2 取流并将 `/image` 适配为预览 JPEG。 |
+| `nodes/camera_capture_node.py` | `camera_capture_node` | 始终 | `/camera_capture_cmd`, `/image` | `/camera_frame`, `/tracking_camera_frame`, `/camera_capture_status` | 唯一物理摄像头所有者：按租约切换取流；仅跟踪租约有效时向检测分支发布帧，拍照预览不会触发检测。 |
 | `nodes/wali_tracking_node.py` | `wali_tracking_node` | `--tracking` | `/hobot_mono2d_body_detection`, `/action_cmd`, `/doa_angle` | `/servo_targets/tracking`, `/motor_cmd/tracking`, `/vision_pipeline_cmd`, `/camera_capture_cmd` | 视觉跟踪中枢。跟随/注视时持有摄像头租约，并控制检测管线。 |
-| `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd`, `/camera_frame` | `/hobot_mono2d_body_detection` | 热备 RDK 编解码、补边和 `mono2d_body_detection`；跟踪命令只切换结果使用状态，不反复加载模型。 |
+| `nodes/hobot_vision_node.py` | `hobot_vision_control` | `--tracking` | `/vision_pipeline_cmd`, `/tracking_camera_frame` | `/hobot_mono2d_body_detection` | 热备 RDK 解码、补边和检测；检测输入由跟踪租约控制，不反复加载模型。 |
 | `nodes/motion_arbiter_node.py` | `motion_arbiter_node` | 运动控制启用时 | `/motor_cmd/joystick`, `/motor_cmd/tracking`, `/motor_cmd/autonomy` | `/motor_cmd` | 唯一电机命令仲裁器，执行手柄 > 跟踪 > 自主动作的优先级，并在上游命令超时后停车。 |
 | `nodes/hardware_bridge_node.py` | `hardware_bridge_node` | `hardware.backend=serial_mcu` | `/servo_cmd`, `/motor_cmd` | `/pca9685_raw` | 把舵机与电机状态合并后交给串口下位机；300ms 收不到仲裁心跳时强制写入停车状态。 |
 | `nodes/i2c_hardware_node.py` | `i2c_hardware_node` | `hardware.backend=ubuntu_i2c` | `/servo_cmd`, `/motor_cmd` | 无 | 单实例持有板载 I²C，直接驱动 PCA9685；300ms 收不到仲裁心跳时直接停车。 |
@@ -126,7 +127,8 @@ joy_control_node    -> /motor_cmd/joystick ┘                         ├─ se
 | --- | --- | --- | --- |
 | `/camera_capture_cmd` | `CameraFrameProvider`, Web preview worker | `camera_capture_node` | JSON 租约命令：`acquire`、`renew`、`release`。 |
 | `/image` | `hobot_usb_cam`（由 `camera_capture_node` 启动） | `camera_capture_node` | 摄像头唯一原始 JPEG 图像源，类型为 `sensor_msgs/msg/CompressedImage`。 |
-| `/camera_frame` | `camera_capture_node` | TFT、Web preview、RDK 解码器 | 从 `/image` 按租约转发的 `sensor_msgs/msg/CompressedImage`；热备检测进程空闲时不收帧。 |
+| `/camera_frame` | `camera_capture_node` | TFT、Web preview、软件远程视频 | 从 `/image` 按租约转发的归一化 JPEG，不直接送入本地检测。 |
+| `/tracking_camera_frame` | `camera_capture_node` | RDK 解码器 | 与预览方向一致的 JPEG；仅注视、跟随的 `tracking-vision` 租约有效时发布，释放或过期后停止新帧。 |
 | `/camera_capture_status` | `camera_capture_node` | Web preview worker | 摄像头启动、真实停流热备、错误和当前客户端数量。 |
 | `/servo_targets/tracking` | `wali_tracking_node` | `sequence_ros_node` | 深度为 1 的最新头颈目标；只更新插值目标，不打断高层动作。 |
 | `/servo_cmd` | `sequence_ros_node` | 当前硬件后端 | JSON: `{"name":"head_yaw","pwm":5000}`，也兼容 `angle` |

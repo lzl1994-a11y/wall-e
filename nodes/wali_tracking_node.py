@@ -32,6 +32,7 @@ from services.vision.vision_pipeline_protocol import (
     VISION_PIPELINE_STOP,
 )
 from services.vision.camera_capture_protocol import (
+    TRACKING_CAMERA_CLIENT_ID,
     CAMERA_COMMAND_TOPIC,
     CAMERA_STATUS_TOPIC,
     encode_camera_command,
@@ -65,7 +66,7 @@ class WaliTrackingNode(Node):
     SEARCH_STOP_DELAY_SEC = 5.0
     TRACKING_SHUTDOWN_DELAY_SEC = 60.0
     PIPELINE_STARTUP_TIMEOUT_SEC = 180.0
-    CAMERA_CLIENT_ID = "tracking-vision"
+    CAMERA_CLIENT_ID = TRACKING_CAMERA_CLIENT_ID
     CAMERA_LEASE_SEC = 30.0
     CAMERA_RENEW_SEC = 10.0
     DETECTION_WARNING_INTERVAL_SEC = 5.0

@@ -27,7 +27,7 @@ from services.vision.vision_pipeline_protocol import (
     decode_vision_pipeline_command,
 )
 from services.vision.vision_runtime import VisionArtifactError, require_nv12_padder
-from services.vision.camera_capture_protocol import CAMERA_FRAME_TOPIC
+from services.vision.camera_capture_protocol import TRACKING_CAMERA_FRAME_TOPIC
 
 
 class VisionPipelineControl(Node):
@@ -37,7 +37,7 @@ class VisionPipelineControl(Node):
         super().__init__("hobot_vision_control")
         # The detector process group is started by main() and remains hot. The
         # command only marks whether tracking currently consumes its results;
-        # camera leases independently gate CAMERA_FRAME_TOPIC input frames.
+        # the tracking camera lease gates TRACKING_CAMERA_FRAME_TOPIC input.
         self.enabled = False
         self.decoded_frames = 0
         self.padded_frames = 0
@@ -129,7 +129,7 @@ def _start_pipeline(padder_bin: Path | None = None):
     
     pipeline_script = (
         "source /opt/tros/humble/setup.bash && { "
-        f"ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:={CAMERA_FRAME_TOPIC} -p pub_topic:=/image_nv12 & "
+        f"ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:={TRACKING_CAMERA_FRAME_TOPIC} -p pub_topic:=/image_nv12 & "
         # camera_capture_node already normalizes the shared JPEG stream
         # vertically; keep the detector's existing horizontal correction only.
         f"{shlex.quote(str(padder_bin))} --ros-args --log-level WARN -p input_topic:=/image_nv12 -p output_topic:=/image_padded_nv12 -p target_width:=960 -p target_height:=544 -p flip_vertical:=false -p flip_horizontal:=true & "
@@ -146,7 +146,7 @@ def _start_pipeline(padder_bin: Path | None = None):
     
     print(
         "[hobot_vision_node] Starting hot-standby detector pipeline from "
-        f"{CAMERA_FRAME_TOPIC}..."
+        f"{TRACKING_CAMERA_FRAME_TOPIC}..."
     )
     try:
         return subprocess.Popen(cmd, env=env, preexec_fn=os.setsid)

@@ -63,7 +63,7 @@ class HotStandbyVisionTests(unittest.TestCase):
         self.assertIn('WALI_BUILD_JOBS:-1', build_script)
         self.assertNotIn('parallel "$(nproc)"', build_script)
 
-    def test_detector_subscribes_to_leased_camera_frame_topic(self):
+    def test_detector_subscribes_only_to_tracking_camera_frame_topic(self):
         module = _load_module()
         process = object()
         with (
@@ -77,7 +77,8 @@ class HotStandbyVisionTests(unittest.TestCase):
         self.assertIs(result, process)
         command = popen.call_args.args[0]
         self.assertEqual(command[:2], ["bash", "-c"])
-        self.assertIn("sub_topic:=/camera_frame", command[2])
+        self.assertIn("sub_topic:=/tracking_camera_frame", command[2])
+        self.assertNotIn("sub_topic:=/camera_frame", command[2])
         self.assertNotIn("sub_topic:=/image ", command[2])
 
     def test_stop_command_disables_result_use_without_owning_processes(self):

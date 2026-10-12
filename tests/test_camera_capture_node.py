@@ -176,6 +176,36 @@ def _load_camera_capture_module():
 
 
 class CameraCaptureNodeTests(unittest.TestCase):
+    def test_detection_frames_require_tracking_lease_without_stopping_preview(self):
+        module = _load_camera_capture_module()
+        with patch.object(module, "jpeg_from_ros_image", return_value=b"frame"):
+            node = module.CameraCaptureNode()
+            source = _FakeCompressedImage(header=object(), format="jpeg", data=b"frame")
+            for client in ("tft-photo", "webrtc:WALLY-01", "webrtc-h264:WALLY-01"):
+                node._on_command(_FakeString(encode_camera_command("acquire", client, 5)))
+            node._on_source_image(source)
+            self.assertEqual(node.publishers["/tracking_camera_frame"].messages, [])
+            self.assertEqual(len(node.publishers["/camera_frame"].messages), 1)
+
+            node._on_command(_FakeString(encode_camera_command("acquire", "tracking-vision", 5)))
+            node._on_source_image(source)
+            detection_frames = node.publishers["/tracking_camera_frame"].messages
+            self.assertEqual(len(detection_frames), 1)
+            self.assertIs(detection_frames[0], node.publishers["/camera_frame"].messages[-1])
+            node._on_command(_FakeString(encode_camera_command("release", "tracking-vision")))
+            node._on_source_image(source)
+            self.assertEqual(len(detection_frames), 1)
+            self.assertEqual(len(node.publishers["/camera_frame"].messages), 3)
+
+            node._on_command(_FakeString(encode_camera_command("acquire", "tracking-vision", 5)))
+            node._on_source_image(source)
+            self.assertEqual(len(detection_frames), 2)
+            node._leases.acquire("tracking-vision", 1, now=time.monotonic() - 2)
+            node._on_source_image(source)
+            self.assertEqual(len(detection_frames), 2)
+            self.assertEqual(len(node.publishers["/camera_frame"].messages), 5)
+            self.assertEqual(node.publisher_qos["/tracking_camera_frame"], 10)
+
     def test_camera_starts_on_node_init_and_release_keeps_it_warm(self):
         module = _load_camera_capture_module()
         process = _FakeProcess()
