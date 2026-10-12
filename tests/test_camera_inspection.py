@@ -310,6 +310,100 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
+    def test_stale_streaming_then_current_reconfiguration_keeps_full_budget(self):
+        import threading
+        import time
+        from services.vision import camera_frame
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                provider, node, image_type = self._provider()
+                result = []
+                emitted = []
+                def capture():
+                    result.append(provider.capture_stream(duration_ms=100, fps=15, on_frame=emitted.append,
+                                  timeout=0.2, request_timeout=0.2) if streaming else provider.capture(timeout=0.2))
+                with patch.object(camera_frame, "CAMERA_FIRST_FRAME_TIMEOUT_SEC", 0.6):
+                    thread = threading.Thread(target=capture)
+                    thread.start()
+                    until = time.monotonic() + 1
+                    while not node.publisher.messages and time.monotonic() < until:
+                        time.sleep(0.005)
+                    node.callbacks["/camera_capture_status"](type("Status", (), {
+                        "data": '{"state":"streaming","reconfiguring":false}'
+                    })())
+                    node.callbacks["/camera_capture_status"](self._ack(node, state="streaming"))
+                    time.sleep(0.02)
+                    node.callbacks["/camera_capture_status"](self._ack(node, reconfiguring=True))
+                    time.sleep(0.25)
+                    self.assertTrue(thread.is_alive())
+                    node.callbacks["/camera_frame"](image_type(b"wrong-size"))
+                    time.sleep(0.02)
+                    self.assertTrue(thread.is_alive())
+                    node.callbacks["/camera_frame"](image_type())
+                    thread.join(timeout=1)
+                self.assertEqual(result, [b"camera-jpeg"])
+                if streaming:
+                    self.assertTrue(emitted)
+                    self.assertNotIn(b"wrong-size", emitted)
+                self.assertEqual(json.loads(node.publisher.messages[-1].data)["action"], "release")
+                self.assertEqual(provider._requests, {})
+
+    def test_foreign_or_wrong_resolution_status_does_not_acknowledge_request(self):
+        import threading
+        import time
+        from services.vision import camera_frame
+        for streaming in (False, True):
+            for mismatch in ("client", "resolution"):
+                with self.subTest(streaming=streaming, mismatch=mismatch):
+                    provider, node, _ = self._provider()
+                    result = []
+                    def capture():
+                        result.append(provider.capture_stream(duration_ms=100, fps=15, on_frame=lambda _: None,
+                                      timeout=0.2) if streaming else provider.capture(timeout=0.2))
+                    with patch.object(camera_frame, "CAMERA_FIRST_FRAME_TIMEOUT_SEC", 0.6):
+                        started = time.monotonic()
+                        thread = threading.Thread(target=capture)
+                        thread.start()
+                        until = time.monotonic() + 1
+                        while not node.publisher.messages and time.monotonic() < until:
+                            time.sleep(0.005)
+                        status = self._ack(node, reconfiguring=True,
+                                           client_id="another-request" if mismatch == "client" else None,
+                                           resolution=(640, 480) if mismatch == "resolution" else None)
+                        node.callbacks["/camera_capture_status"](status)
+                        thread.join(timeout=0.4)
+                        self.assertEqual(result, [None])
+                        self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_repeated_reconfiguration_ack_does_not_reset_total_wait(self):
+        import threading
+        import time
+        from services.vision import camera_frame
+        provider, node, _ = self._provider()
+        result = []
+        with patch.object(camera_frame, "CAMERA_FIRST_FRAME_TIMEOUT_SEC", 0.6):
+            thread = threading.Thread(target=lambda: result.append(provider.capture(timeout=0.2)))
+            thread.start()
+            until = time.monotonic() + 1
+            while not node.publisher.messages and time.monotonic() < until:
+                time.sleep(0.005)
+            status = self._ack(node, reconfiguring=True)
+            node.callbacks["/camera_capture_status"](status)
+            for _ in range(4):
+                time.sleep(0.1)
+                node.callbacks["/camera_capture_status"](status)
+            thread.join(timeout=0.4)
+            self.assertEqual(result, [None])
+
+    def _ack(self, node, *, state="starting", reconfiguring=False, client_id=None, resolution=None):
+        import json
+        command = json.loads(node.publisher.messages[0].data)
+        width, height = resolution or (command.get("width", 640), command.get("height", 480))
+        return type("Status", (), {"data": json.dumps({
+            "state": state, "reconfiguring": reconfiguring,
+            "request": {"client_id": client_id or command["client_id"], "width": width, "height": height},
+        })})()
+
     def test_resolution_change_waits_for_driver_startup_instead_of_short_frame_timeout(self):
         provider, node, image_type = self._provider()
         import sys
@@ -322,9 +416,7 @@ class CameraFrameProviderTests(unittest.TestCase):
             thread = threading.Thread(target=lambda: result.append(provider.capture(timeout=0.05)))
             thread.start()
             time.sleep(0.01)
-            node.callbacks["/camera_capture_status"](type("Status", (), {
-                "data": '{"state":"starting","reconfiguring":true}'
-            })())
+            node.callbacks["/camera_capture_status"](self._ack(node, reconfiguring=True))
             time.sleep(0.25)
             self.assertTrue(thread.is_alive())
             node.callbacks["/camera_frame"](image_type())
@@ -390,9 +482,17 @@ class CameraFrameProviderTests(unittest.TestCase):
         image_patch.start()
         string_patch.start()
         jpeg_patch.start()
+        def open_image(stream):
+            context = MagicMock()
+            context.__enter__.return_value.size = (640, 480) if stream.getvalue() == b"wrong-size" else (1280, 720)
+            return context
+
+        dimensions_patch = patch.object(camera_frame.Image, "open", side_effect=open_image)
+        dimensions_patch.start()
         self.addCleanup(image_patch.stop)
         self.addCleanup(string_patch.stop)
         self.addCleanup(jpeg_patch.stop)
+        self.addCleanup(dimensions_patch.stop)
         return (
             camera_frame.CameraFrameProvider(
                 node,
@@ -538,9 +638,7 @@ class CameraFrameProviderTests(unittest.TestCase):
         )
         thread.start()
         __import__("time").sleep(0.2)
-        status_message = type("Status", (), {
-            "data": '{"state":"starting","source":"/camera_frame"}'
-        })()
+        status_message = self._ack(node)
         node.callbacks["/camera_capture_status"](status_message)
         __import__("time").sleep(0.15)
         node.callbacks["/camera_frame"](image_type())
@@ -553,9 +651,6 @@ class CameraFrameProviderTests(unittest.TestCase):
         provider, node, _image_type = self._provider()
         result = []
         started_at = __import__("time").monotonic()
-        status_message = type("Status", (), {
-            "data": '{"state":"starting","source":"/camera_frame"}'
-        })()
 
         thread = __import__("threading").Thread(
             target=lambda: result.append(
@@ -564,6 +659,7 @@ class CameraFrameProviderTests(unittest.TestCase):
         )
         thread.start()
         __import__("time").sleep(0.03)
+        status_message = self._ack(node)
         node.callbacks["/camera_capture_status"](status_message)
         __import__("time").sleep(0.1)
         node.callbacks["/camera_capture_status"](status_message)

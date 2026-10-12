@@ -180,6 +180,23 @@ def _load_camera_capture_module():
 
 
 class CameraCaptureNodeTests(unittest.TestCase):
+    def test_status_ack_identifies_current_request_and_requested_resolution(self):
+        import json
+        module = _load_camera_capture_module()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video8"),
+            patch.object(module.subprocess, "Popen", side_effect=[_FakeProcess(), _FakeProcess()]),
+        ):
+            node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "llm-test", 10,
+                                                              resolution=(1280, 720))))
+            payload = json.loads(node._status_pub.messages[-1].data)
+            self.assertEqual(payload["request"], {"client_id": "llm-test", "width": 1280, "height": 720})
+            self.assertTrue(payload["reconfiguring"])
+            node._on_command(_FakeString(encode_camera_command("renew", "llm-test", 10,
+                                                              resolution=(1280, 720))))
+            self.assertEqual(json.loads(node._status_pub.messages[-1].data)["request"], payload["request"])
+
     def test_lost_capture_response_is_replaced_with_latest_lease_request(self):
         module = _load_camera_capture_module()
         from unittest.mock import Mock

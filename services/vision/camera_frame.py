@@ -7,8 +7,11 @@ import re
 import threading
 import time
 import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
+
+from PIL import Image
 
 try:
     from rclpy.qos import qos_profile_sensor_data
@@ -98,8 +101,10 @@ class CameraFrameProvider:
         del config_path  # Device selection belongs exclusively to camera_capture_node.
         self._condition = threading.Condition()
         self._frame: bytes | None = None
+        self._frame_resolution: tuple[int, int] | None = None
         self._frame_time = 0.0
         self._frame_sequence = 0
+        self._resolution_frame_sequences = {(640, 480): 0, (1280, 720): 0}
         self._warmup_seconds = max(0.0, float(warmup_seconds))
         self._warmup_frames = max(1, int(warmup_frames))
         self._status_state = ""
@@ -109,6 +114,7 @@ class CameraFrameProvider:
         self._status_reconfiguring = False
         self._command_pub = None
         self._subscriptions: list[Any] = []
+        self._requests: dict[str, dict] = {}
 
         if CompressedImage is None or String is None:
             return
@@ -127,10 +133,18 @@ class CameraFrameProvider:
         jpeg = jpeg_from_ros_image(message, quality=85, validate_decode=False)
         if not jpeg:
             return
+        try:
+            with Image.open(BytesIO(jpeg)) as image:
+                resolution = image.size
+        except (OSError, ValueError):
+            return
         with self._condition:
             self._frame = jpeg
+            self._frame_resolution = resolution
             self._frame_time = time.monotonic()
             self._frame_sequence += 1
+            if resolution in self._resolution_frame_sequences:
+                self._resolution_frame_sequences[resolution] += 1
             self._condition.notify_all()
 
     def _on_status(self, message: Any) -> None:
@@ -146,7 +160,22 @@ class CameraFrameProvider:
             self._status_tracking = status.get("tracking") is True
             self._status_reconfiguring = status.get("reconfiguring") is True
             self._status_time = time.monotonic()
+            request = status.get("request")
+            if isinstance(request, dict) and isinstance(request.get("client_id"), str) and self._status_state in {"starting", "streaming"}:
+                pending = self._requests.get(request.get("client_id"))
+                if pending is not None and pending["resolution"] == (request.get("width"), request.get("height")):
+                    if not pending["acknowledged_at"]:
+                        pending["acknowledged_at"] = self._status_time
+                    if self._status_reconfiguring and not pending["reconfiguring_at"]:
+                        pending["reconfiguring_at"] = self._status_time
             self._condition.notify_all()
+
+    def _request_deadline(self, request: dict, initial_deadline: float, frame_wait_seconds: float) -> float:
+        if request["reconfiguring_at"]:
+            return max(initial_deadline, request["reconfiguring_at"] + CAMERA_FIRST_FRAME_TIMEOUT_SEC)
+        if request["acknowledged_at"]:
+            return request["acknowledged_at"] + frame_wait_seconds
+        return initial_deadline
 
     def _publish_command(self, action: str, client_id: str, lease_sec: float = 0.0, *, resolution: tuple[int, int] = (1280, 720)) -> None:
         if self._command_pub is None or String is None:
@@ -173,23 +202,24 @@ class CameraFrameProvider:
         client_id = f"llm-{uuid.uuid4().hex}"
         requested_at = time.monotonic()
         deadline = requested_at + request_wait_seconds
-        manager_acknowledged = False
+        request = {"resolution": (1280, 720), "acknowledged_at": 0.0, "reconfiguring_at": 0.0}
         first_fresh_frame_time = 0.0
         first_fresh_frame_sequence = 0
         lease_seconds = request_wait_seconds + frame_wait_seconds + 2.0
         action = "acquire"
         try:
             with self._condition:
+                self._requests[client_id] = request
                 while True:
                     if self._status_tracking:
                         raise RuntimeError("请先退出注视或跟随模式再拍照")
-                    if self._frame is not None and self._frame_time >= requested_at:
+                    if self._frame is not None and self._frame_time >= requested_at and self._frame_resolution == request["resolution"]:
                         if not first_fresh_frame_time:
                             first_fresh_frame_time = self._frame_time
-                            first_fresh_frame_sequence = self._frame_sequence
+                            first_fresh_frame_sequence = self._resolution_frame_sequences[request["resolution"]]
                         warmup_elapsed = self._frame_time - first_fresh_frame_time
                         warmup_frame_count = (
-                            self._frame_sequence - first_fresh_frame_sequence + 1
+                            self._resolution_frame_sequences[request["resolution"]] - first_fresh_frame_sequence + 1
                         )
                         if (
                             warmup_elapsed >= self._warmup_seconds
@@ -197,20 +227,15 @@ class CameraFrameProvider:
                         ):
                             return self._frame
                     now = time.monotonic()
-                    if (
-                        not manager_acknowledged
-                        and self._status_time >= requested_at
-                        and self._status_state in {"starting", "streaming"}
-                    ):
-                        manager_acknowledged = True
-                        deadline = now + (CAMERA_FIRST_FRAME_TIMEOUT_SEC if self._status_reconfiguring else frame_wait_seconds)
-                    remaining = deadline - now
+                    remaining = self._request_deadline(request, deadline, frame_wait_seconds) - now
                     if remaining <= 0:
                         return None
                     self._publish_command(action, client_id, lease_seconds)
                     action = "renew"
                     self._condition.wait(timeout=min(0.5, remaining))
         finally:
+            with self._condition:
+                self._requests.pop(client_id, None)
             self._publish_command("release", client_id)
 
     def capture_stream(
@@ -245,7 +270,7 @@ class CameraFrameProvider:
         client_id = f"tft-{uuid.uuid4().hex}"
         requested_at = time.monotonic()
         deadline = requested_at + request_wait_seconds
-        manager_acknowledged = False
+        request = {"resolution": resolution, "acknowledged_at": 0.0, "reconfiguring_at": 0.0}
         first_fresh_frame_time = 0.0
         first_fresh_frame_sequence = 0
         lease_seconds = request_wait_seconds + frame_wait_seconds + duration_seconds + 2.0
@@ -254,18 +279,19 @@ class CameraFrameProvider:
 
         try:
             with self._condition:
+                self._requests[client_id] = request
                 while first_frame is None:
                     if resolution == (1280, 720) and self._status_tracking:
                         raise RuntimeError("请先退出注视或跟随模式再拍照")
                     if should_stop is not None and should_stop():
                         return None
-                    if self._frame is not None and self._frame_time >= requested_at:
+                    if self._frame is not None and self._frame_time >= requested_at and self._frame_resolution == resolution:
                         if not first_fresh_frame_time:
                             first_fresh_frame_time = self._frame_time
-                            first_fresh_frame_sequence = self._frame_sequence
+                            first_fresh_frame_sequence = self._resolution_frame_sequences[resolution]
                         warmup_elapsed = self._frame_time - first_fresh_frame_time
                         warmup_frame_count = (
-                            self._frame_sequence - first_fresh_frame_sequence + 1
+                            self._resolution_frame_sequences[resolution] - first_fresh_frame_sequence + 1
                         )
                         if (
                             warmup_elapsed >= self._warmup_seconds
@@ -274,14 +300,7 @@ class CameraFrameProvider:
                             first_frame = self._frame
                             break
                     now = time.monotonic()
-                    if (
-                        not manager_acknowledged
-                        and self._status_time >= requested_at
-                        and self._status_state in {"starting", "streaming"}
-                    ):
-                        manager_acknowledged = True
-                        deadline = now + (CAMERA_FIRST_FRAME_TIMEOUT_SEC if self._status_reconfiguring else frame_wait_seconds)
-                    remaining = deadline - now
+                    remaining = self._request_deadline(request, deadline, frame_wait_seconds) - now
                     if remaining <= 0:
                         return None
                     self._publish_command(action, client_id, lease_seconds, resolution=resolution)
@@ -312,6 +331,8 @@ class CameraFrameProvider:
                 with self._condition:
                     source_frame = self._frame
                     source_sequence = self._frame_sequence
+                    if self._frame_resolution != resolution:
+                        source_frame = None
                 if source_frame is not None and source_sequence != last_delivered_sequence:
                     last_frame = source_frame
                     last_delivered_sequence = source_sequence
@@ -336,10 +357,12 @@ class CameraFrameProvider:
             # newest complete source frame for photo/vision consumers without
             # sending it outside the requested stream cadence.
             with self._condition:
-                if self._frame is not None and self._frame_sequence > last_delivered_sequence:
+                if self._frame is not None and self._frame_sequence > last_delivered_sequence and self._frame_resolution == resolution:
                     last_frame = self._frame
             return last_frame
         finally:
+            with self._condition:
+                self._requests.pop(client_id, None)
             self._publish_command("release", client_id)
 
 

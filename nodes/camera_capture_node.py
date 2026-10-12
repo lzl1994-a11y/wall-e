@@ -121,6 +121,9 @@ class CameraCaptureNode(Node):
         else:
             self._leases.acquire(command["client_id"], command["lease_sec"], resolution=command["resolution"])
         self._tick()
+        if command["action"] != "release":
+            state, source, error, *_ = self._last_status_signature
+            self._publish_status(state, source=source, error=error, force=True, request=command)
 
     def _on_source_image(self, message: CompressedImage) -> None:
         now = time.monotonic()
@@ -455,6 +458,7 @@ class CameraCaptureNode(Node):
         source: str,
         error: str = "",
         force: bool = False,
+        request: dict | None = None,
     ) -> None:
         now = time.monotonic()
         signature = (state, source, error, self._leases.count, self._camera_device)
@@ -470,6 +474,12 @@ class CameraCaptureNode(Node):
             "tracking": self._leases.tracking_active,
             "high_resolution": self._leases.resolution == (1280, 720),
         }
+        if request is not None:
+            payload["request"] = {
+                "client_id": request["client_id"],
+                "width": request["resolution"][0],
+                "height": request["resolution"][1],
+            }
         self._status_pub.publish(
             String(data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         )
