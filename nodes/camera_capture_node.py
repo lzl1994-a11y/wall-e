@@ -41,6 +41,7 @@ from services.hardware.usb_devices import resolve_camera_device
 class CameraCaptureNode(Node):
     RETRY_DELAY_SEC = 1.0
     FRAME_TIMEOUT_SEC = 3.0
+    CAPTURE_REQUEST_TIMEOUT_SEC = 5.0
     DECODE_VALIDATION_INTERVAL_SEC = 1.0
     # ros2 run + hobot_usb_cam may spend several seconds enumerating V4L2
     # nodes before it publishes the first ROS image. Keep this watchdog longer
@@ -68,6 +69,8 @@ class CameraCaptureNode(Node):
         self._capture_enabled: bool | None = None
         self._capture_request = None
         self._capture_request_target: bool | None = None
+        self._capture_request_started_at = 0.0
+        self._capture_transition_started_at = 0.0
         self._capture_service_warning_at = 0.0
 
         # ``hobot_usb_cam`` is launched only here and publishes the canonical
@@ -190,6 +193,8 @@ class CameraCaptureNode(Node):
 
         if self._camera_process is not None:
             self._sync_capture_state(now=now)
+            if self._camera_process is None:
+                return
             if not self._leases.active:
                 state = (
                     "standby"
@@ -254,12 +259,27 @@ class CameraCaptureNode(Node):
 
     def _sync_capture_state(self, *, now: float | None = None) -> None:
         """Drive hobot_usb_cam's V4L2 stream without restarting its process."""
-        if self._camera_process is None or self._capture_request is not None:
+        if self._camera_process is None:
             return
+        current_time = time.monotonic() if now is None else now
+        if self._capture_request is not None:
+            if current_time - self._capture_request_started_at < self.CAPTURE_REQUEST_TIMEOUT_SEC:
+                return
+            # A request sent while the driver restarts can lose its response.
+            # Drop that future and reconcile against the latest lease state.
+            waiting_since = self._capture_transition_started_at
+            self._reset_capture_state()
+            if current_time - waiting_since >= self.FIRST_FRAME_TIMEOUT_SEC:
+                self._stop_camera_process()
+                self._retry_after = current_time + self.RETRY_DELAY_SEC
+                self._publish_status("error", source=CAMERA_SOURCE_TOPIC,
+                                     error="摄像头采集服务持续无响应，已停止驱动等待恢复", force=True)
+                return
+            self._capture_transition_started_at = waiting_since
+            self.get_logger().warn("摄像头采集服务响应超时，清理旧请求并重新同步采集状态")
         desired = self._leases.active
         if self._capture_enabled is desired:
             return
-        current_time = time.monotonic() if now is None else now
         if not self._capture_client.service_is_ready():
             if current_time - self._capture_service_warning_at >= 10.0:
                 self._capture_service_warning_at = current_time
@@ -277,6 +297,9 @@ class CameraCaptureNode(Node):
             return
         self._capture_request = future
         self._capture_request_target = desired
+        self._capture_request_started_at = current_time
+        if not self._capture_transition_started_at:
+            self._capture_transition_started_at = current_time
         future.add_done_callback(self._on_capture_response)
 
     def _on_capture_response(self, future) -> None:
@@ -285,6 +308,8 @@ class CameraCaptureNode(Node):
         target = self._capture_request_target
         self._capture_request = None
         self._capture_request_target = None
+        self._capture_request_started_at = 0.0
+        self._capture_transition_started_at = 0.0
         try:
             response = future.result()
         except Exception as exc:
@@ -320,9 +345,15 @@ class CameraCaptureNode(Node):
         self._sync_capture_state(now=now)
 
     def _reset_capture_state(self) -> None:
+        pending = self._capture_request
         self._capture_enabled = None
         self._capture_request = None
         self._capture_request_target = None
+        self._capture_request_started_at = 0.0
+        self._capture_transition_started_at = 0.0
+        if pending is not None:
+            self._capture_client.remove_pending_request(pending)
+            pending.cancel()
 
     def _camera_topic_diagnostic(self) -> str:
         """Report graph state without assuming the camera message type."""
@@ -378,6 +409,8 @@ class CameraCaptureNode(Node):
         self._capture_enabled = True
         self._capture_request = None
         self._capture_request_target = None
+        self._capture_request_started_at = 0.0
+        self._capture_transition_started_at = 0.0
         self._publish_status("starting", source=CAMERA_SOURCE_TOPIC, force=True)
         self.get_logger().info(
             f"启动唯一 hobot_usb_cam: {device} -> {CAMERA_SOURCE_TOPIC}"

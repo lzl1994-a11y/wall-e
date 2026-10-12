@@ -74,6 +74,10 @@ class _FakeClient:
     def __init__(self):
         self.requests = []
         self.ready = True
+        self.removed_requests = []
+
+    def remove_pending_request(self, future):
+        self.removed_requests.append(future)
 
     def service_is_ready(self):
         return self.ready
@@ -176,6 +180,75 @@ def _load_camera_capture_module():
 
 
 class CameraCaptureNodeTests(unittest.TestCase):
+    def test_lost_capture_response_is_replaced_with_latest_lease_request(self):
+        module = _load_camera_capture_module()
+        from unittest.mock import Mock
+        process = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video8"),
+            patch.object(module.subprocess, "Popen", return_value=process) as popen,
+        ):
+            node = module.CameraCaptureNode()
+            client = node._capture_client
+            lost = Mock()
+            with patch.object(client, "call_async", return_value=lost):
+                node._tick()  # Stop request to the driver that has no reply.
+            self.assertFalse(node._capture_request_target)
+            node._leases.acquire("webrtc-h264:test", 60.0)
+            node._tick()
+            self.assertIs(node._capture_request, lost)
+            self.assertEqual(client.requests, [])
+            node._capture_request_started_at = time.monotonic() - 6.0
+            node._tick()
+            self.assertEqual(client.removed_requests, [lost])
+            lost.cancel.assert_called_once()
+            self.assertEqual(client.requests, [True])
+            self.assertTrue(node._capture_enabled)
+            self.assertIsNone(node._capture_request)
+            # A late old stop response cannot undo the new start response.
+            node._on_capture_response(lost)
+            self.assertTrue(node._capture_enabled)
+            self.assertEqual(popen.call_count, 1)
+
+    def test_driver_restart_removes_pending_capture_future(self):
+        module = _load_camera_capture_module()
+        from unittest.mock import Mock
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video8"),
+            patch.object(module.subprocess, "Popen", side_effect=[_FakeProcess(), _FakeProcess()]),
+        ):
+            node = module.CameraCaptureNode()
+            lost = Mock()
+            with patch.object(node._capture_client, "call_async", return_value=lost):
+                node._tick()
+            node._leases.acquire("webrtc-h264:test", 60.0, resolution=(1280, 720))
+            node._tick()
+            self.assertEqual(node._capture_client.removed_requests, [lost])
+            lost.cancel.assert_called_once()
+            self.assertIsNone(node._capture_request)
+            self.assertEqual(node._camera_size, (1280, 720))
+
+    def test_capture_service_recovery_has_a_total_deadline(self):
+        module = _load_camera_capture_module()
+        from unittest.mock import Mock
+        process = _FakeProcess()
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video8"),
+            patch.object(module.subprocess, "Popen", return_value=process),
+        ):
+            node = module.CameraCaptureNode()
+            lost = Mock()
+            with patch.object(node._capture_client, "call_async", return_value=lost):
+                node._tick()
+            node._capture_request_started_at -= node.CAPTURE_REQUEST_TIMEOUT_SEC + 1.0
+            node._capture_transition_started_at -= node.FIRST_FRAME_TIMEOUT_SEC + 1.0
+            node._tick()
+            self.assertTrue(process.terminated)
+            self.assertIsNone(node._camera_process)
+            self.assertIsNone(node._capture_request)
+            self.assertIn('"state":"error"', node._status_pub.messages[-1].data)
+            self.assertIn("持续无响应", node._status_pub.messages[-1].data)
+
     def test_photo_resolution_changes_only_the_single_camera_owner_and_restores(self):
         module = _load_camera_capture_module()
         processes = [_FakeProcess(), _FakeProcess(), _FakeProcess()]
