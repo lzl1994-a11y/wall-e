@@ -473,6 +473,8 @@ class CameraCaptureNode(Node):
             "reconfiguring": self._reconfiguring,
             "tracking": self._leases.tracking_active,
             "high_resolution": self._leases.resolution == (1280, 720),
+            "width": self._camera_size[0],
+            "height": self._camera_size[1],
         }
         if request is not None:
             payload["request"] = {

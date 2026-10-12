@@ -193,6 +193,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
             payload = json.loads(node._status_pub.messages[-1].data)
             self.assertEqual(payload["request"], {"client_id": "llm-test", "width": 1280, "height": 720})
             self.assertTrue(payload["reconfiguring"])
+            self.assertEqual((payload["width"], payload["height"]), node._camera_size)
             node._on_command(_FakeString(encode_camera_command("renew", "llm-test", 10,
                                                               resolution=(1280, 720))))
             self.assertEqual(json.loads(node._status_pub.messages[-1].data)["request"], payload["request"])

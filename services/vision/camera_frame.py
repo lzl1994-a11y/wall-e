@@ -166,9 +166,10 @@ class CameraFrameProvider:
                 if pending is not None and pending["resolution"] == (request.get("width"), request.get("height")):
                     if not pending["acknowledged_at"]:
                         pending["acknowledged_at"] = self._status_time
-                    # A newly started driver has no previous size to switch
-                    # from, but still needs the same initialization budget.
-                    if (self._status_reconfiguring or self._status_state == "starting") and not pending["reconfiguring_at"]:
+                    # Accepting a lease does not prove its size is streaming.
+                    initializing = (self._status_reconfiguring or self._status_state == "starting"
+                                    or (status.get("width"), status.get("height")) != pending["resolution"])
+                    if initializing and not pending["reconfiguring_at"]:
                         pending["reconfiguring_at"] = self._status_time
             self._condition.notify_all()
 
@@ -209,6 +210,7 @@ class CameraFrameProvider:
         first_fresh_frame_sequence = 0
         lease_seconds = request_wait_seconds + frame_wait_seconds + 2.0
         action = "acquire"
+        next_renew_at = requested_at
         try:
             with self._condition:
                 self._requests[client_id] = request
@@ -232,9 +234,11 @@ class CameraFrameProvider:
                     remaining = self._request_deadline(request, deadline, frame_wait_seconds) - now
                     if remaining <= 0:
                         return None
-                    self._publish_command(action, client_id, lease_seconds)
-                    action = "renew"
-                    self._condition.wait(timeout=min(0.5, remaining))
+                    if now >= next_renew_at:
+                        self._publish_command(action, client_id, lease_seconds)
+                        action = "renew"
+                        next_renew_at = now + 0.5
+                    self._condition.wait(timeout=min(0.5, remaining, next_renew_at - now))
         finally:
             with self._condition:
                 self._requests.pop(client_id, None)
@@ -277,6 +281,7 @@ class CameraFrameProvider:
         first_fresh_frame_sequence = 0
         lease_seconds = request_wait_seconds + frame_wait_seconds + duration_seconds + 2.0
         action = "acquire"
+        next_renew_at = requested_at
         first_frame: bytes | None = None
 
         try:
@@ -305,9 +310,11 @@ class CameraFrameProvider:
                     remaining = self._request_deadline(request, deadline, frame_wait_seconds) - now
                     if remaining <= 0:
                         return None
-                    self._publish_command(action, client_id, lease_seconds, resolution=resolution)
-                    action = "renew"
-                    self._condition.wait(timeout=min(0.5, remaining))
+                    if now >= next_renew_at:
+                        self._publish_command(action, client_id, lease_seconds, resolution=resolution)
+                        action = "renew"
+                        next_renew_at = now + 0.5
+                    self._condition.wait(timeout=min(0.5, remaining, next_renew_at - now))
 
             stream_started = time.monotonic()
             stream_deadline = stream_started + duration_seconds

@@ -310,6 +310,63 @@ class CameraIntentTests(unittest.TestCase):
 
 
 class CameraFrameProviderTests(unittest.TestCase):
+    def test_echoed_request_size_does_not_make_old_streaming_dimensions_ready(self):
+        import threading
+        import time
+        from services.vision import camera_frame
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                provider, node, image_type = self._provider()
+                result = []
+                def capture():
+                    result.append(provider.capture_stream(duration_ms=100, fps=15, on_frame=lambda _: None,
+                                  timeout=0.2) if streaming else provider.capture(timeout=0.2))
+                with patch.object(camera_frame, "CAMERA_FIRST_FRAME_TIMEOUT_SEC", 0.6):
+                    thread = threading.Thread(target=capture)
+                    thread.start()
+                    until = time.monotonic() + 1
+                    while not node.publisher.messages and time.monotonic() < until:
+                        time.sleep(0.005)
+                    node.callbacks["/camera_capture_status"](self._ack(node, state="streaming", actual_resolution=(640, 480)))
+                    time.sleep(0.25)
+                    self.assertTrue(thread.is_alive())
+                    node.callbacks["/camera_frame"](image_type())
+                    thread.join(timeout=1)
+                self.assertEqual(result, [b"camera-jpeg"])
+
+    def test_status_ack_cannot_trigger_a_lease_renewal_feedback_loop(self):
+        import queue
+        import threading
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                provider, node, _ = self._provider()
+                commands = queue.Queue()
+                stopped = threading.Event()
+                original_publish = node.publisher.publish
+                def publish(message):
+                    original_publish(message)
+                    if json.loads(message.data)["action"] != "release":
+                        commands.put(message)
+                def acknowledge():
+                    while not stopped.is_set():
+                        try:
+                            commands.get(timeout=0.01)
+                        except queue.Empty:
+                            continue
+                        node.callbacks["/camera_capture_status"](self._ack(node, state="streaming"))
+                worker = threading.Thread(target=acknowledge)
+                worker.start()
+                try:
+                    with patch.object(node.publisher, "publish", side_effect=publish):
+                        result = provider.capture_stream(duration_ms=100, fps=15, on_frame=lambda _: None,
+                                                         timeout=0.2) if streaming else provider.capture(timeout=0.2)
+                    self.assertIsNone(result)
+                    self.assertEqual([json.loads(m.data)["action"] for m in node.publisher.messages],
+                                     ["acquire", "release"])
+                finally:
+                    stopped.set()
+                    worker.join(timeout=1)
+
     def test_new_driver_starting_ack_uses_initialization_budget_without_reconfiguration_flag(self):
         import threading
         import time
@@ -414,12 +471,14 @@ class CameraFrameProviderTests(unittest.TestCase):
             thread.join(timeout=0.4)
             self.assertEqual(result, [None])
 
-    def _ack(self, node, *, state="starting", reconfiguring=False, client_id=None, resolution=None):
+    def _ack(self, node, *, state="starting", reconfiguring=False, client_id=None, resolution=None, actual_resolution=None):
         import json
         command = json.loads(node.publisher.messages[0].data)
         width, height = resolution or (command.get("width", 640), command.get("height", 480))
         return type("Status", (), {"data": json.dumps({
             "state": state, "reconfiguring": reconfiguring,
+            "width": (actual_resolution or (width, height))[0],
+            "height": (actual_resolution or (width, height))[1],
             "request": {"client_id": client_id or command["client_id"], "width": width, "height": height},
         })})()
 
