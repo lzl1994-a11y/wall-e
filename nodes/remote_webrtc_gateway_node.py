@@ -78,6 +78,7 @@ from services.vision.camera_capture_protocol import (
     RAW_CAMERA_CLIENT_PREFIX,
     CAMERA_STATUS_TOPIC,
     encode_camera_command,
+    jpeg_from_ros_image,
 )
 
 
@@ -509,8 +510,18 @@ class RemoteWebRtcGateway:
     def _on_raw_camera_frame(self, message: CompressedImage) -> None:
         # One latest slot: no ROS input backlog is fed to the encoder.
         if self._video_backend == "x3" and message.data:
+            jpeg = bytes(message.data)
+            if getattr(self, "_camera_transition_until", 0.0):
+                # A delayed status is not proof that the requested size is ready.
+                # Keep waiting until an actual raw JPEG matches this request.
+                jpeg = jpeg_from_ros_image(
+                    message, validate_decode=False, expected_size=self._camera_resolution
+                )
+                if not jpeg:
+                    return
+                self._camera_transition_until = 0.0
             with self._frame_lock:
-                self._last_raw_jpeg = bytes(message.data)
+                self._last_raw_jpeg = jpeg
                 self._raw_frame_at = time.monotonic()
 
     def report_hardware_video_error(self, exc: Exception) -> None:
@@ -535,7 +546,7 @@ class RemoteWebRtcGateway:
         self._tracking_active = payload.get("tracking") is True
         if payload.get("reconfiguring") is True and not getattr(self, "_camera_transition_until", 0.0):
             self._camera_transition_until = time.monotonic() + CAMERA_FIRST_FRAME_TIMEOUT_SEC
-        if payload.get("state") == "streaming":
+        if payload.get("state") == "streaming" and self._video_backend != "x3":
             self._camera_transition_until = 0.0
         if payload.get("state") != "error":
             return

@@ -180,6 +180,82 @@ def test_720p_is_not_applied_while_tracking_is_active():
     value._camera_command_pub.publish.assert_not_called()
 
 
+def test_old_streaming_status_does_not_close_connected_peer_during_size_change():
+    from sensor_msgs.msg import CompressedImage
+    from std_msgs.msg import String
+    from aiortc import RTCPeerConnection, RTCConfiguration
+    from services.remote.hardware_video_track import HardwareCameraVideoTrack
+
+    def jpeg(size):
+        output = BytesIO()
+        Image.new("RGB", size, "red").save(output, format="JPEG")
+        return output.getvalue()
+
+    async def scenario():
+        robot = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        controller = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        track = task = None
+        try:
+            robot.createDataChannel("control")
+            await robot.setLocalDescription(await robot.createOffer())
+            await controller.setRemoteDescription(robot.localDescription)
+            await controller.setLocalDescription(await controller.createAnswer())
+            await robot.setRemoteDescription(controller.localDescription)
+            until = time.monotonic() + 10
+            while robot.connectionState != "connected" or controller.connectionState != "connected":
+                assert time.monotonic() < until
+                await asyncio.sleep(.01)
+
+            value = gateway()
+            value._peer = robot
+            value._video_backend = "x3"
+            value._loop = asyncio.get_running_loop()
+            value._audio_tasks = []
+            value._channels = {}
+            value._servo_gate = Mock()
+            value._remote_voice_active = value._remote_call_active = False
+            value._publish_connection_state = Mock()
+            value._last_raw_jpeg = b""
+            value._raw_frame_at = 0.
+            value._camera_transition_until = 0.
+            value._schedule_peer_close = RemoteWebRtcGateway._schedule_peer_close.__get__(value)
+            value._send_event_threadsafe = Mock()
+            track = HardwareCameraVideoTrack(value, __import__("pathlib").Path("unused"))
+            # Exercise an established stream without making this test sleep 60s.
+            track._started_at -= 60
+            value._video_track = track
+            codec = Mock(encode=Mock(return_value=b"packet"))
+            with patch("services.remote.hardware_video_track.X3VideoCodec", return_value=codec):
+                value._on_data_message('{"type":"media","seq":1,"mode":"manual","width":1280,"height":720,"fps":15}')
+                value._on_camera_status(String(data='{"state":"streaming","reconfiguring":false}'))
+                task = asyncio.create_task(track.recv())
+                await asyncio.sleep(.05)
+                assert not task.done()
+                assert robot.connectionState == "connected"
+                value._on_raw_camera_frame(CompressedImage(format="jpeg", data=jpeg((640, 480))))
+                await asyncio.sleep(.03)
+                assert not task.done()
+                assert value.camera_reconfiguring()
+                value._on_raw_camera_frame(CompressedImage(format="jpeg", data=b"invalid jpeg"))
+                assert value.camera_reconfiguring()
+                value._on_raw_camera_frame(CompressedImage(format="jpeg", data=jpeg((1280, 720))))
+                packet = await asyncio.wait_for(task, 2)
+                assert packet.size > 0
+                assert robot.connectionState == "connected"
+                assert not value.camera_reconfiguring()
+        finally:
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            if track is not None:
+                await track.aclose()
+            await robot.close()
+            await controller.close()
+
+    asyncio.run(scenario())
+
+
 def test_manual_video_switches_both_tracks_and_auto_clears_manual_settings():
     value = gateway()
     value._on_data_message('{"type":"media","seq":1,"mode":"manual","width":640,"height":480,"fps":15}')
