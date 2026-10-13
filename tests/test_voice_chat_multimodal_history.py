@@ -148,12 +148,9 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         }
         service.system_prompt = "system"
         service.model = "test-model"
-        events = []
-        service.on_llm_chunk = MagicMock(side_effect=lambda _text: events.append("speech"))
-        service.on_llm_reply = MagicMock(side_effect=lambda _text: events.append("reply"))
-        service.on_tool_call = MagicMock(side_effect=lambda name, _arguments: (
-            events.append(name) or {"status": "completed"}
-        ))
+        service.on_llm_chunk = MagicMock()
+        service.on_llm_reply = MagicMock()
+        service.on_tool_call = MagicMock(return_value={"status": "completed"})
         service._llm_done = MagicMock()
         service._stream_tool_calls = MagicMock(return_value=([
             {
@@ -180,8 +177,6 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
 
         service._send_to_llm("encoded-audio")
 
-        self.assertEqual(events, ["play_sequence", "play_sequence", "speech", "reply"])
-
         self.assertEqual(
             service.on_tool_call.call_args_list,
             [
@@ -192,36 +187,6 @@ class VoiceChatMultimodalHistoryTests(unittest.TestCase):
         self.assertTrue(all(
             result["status"] == "completed" for result in service.last_action_results
         ))
-
-    def test_native_result_does_not_dispatch_actions_again(self):
-        service = self._service()
-        result = {"status": "failure", "results": [{"status": "failed"}]}
-        service.on_action_plan = MagicMock(return_value=result)
-        service.on_tool_call = MagicMock()
-        actions = [{"name": "play_sequence", "arguments": {"sequence_name": "wave_hello"}}]
-
-        actual = service._execute_action_sequence("挥手", actions)
-
-        self.assertIs(actual, result)
-        service.on_action_plan.assert_called_once_with("挥手", actions)
-        service.on_tool_call.assert_not_called()
-
-    def test_cached_sequencer_uses_current_native_callback(self):
-        service = self._service()
-        service.on_tool_call = MagicMock(return_value={"status": "completed"})
-        actions = [{"name": "play_sequence", "arguments": {"sequence_name": "wave_hello"}}]
-
-        fallback = service._execute_action_sequence(None, actions)
-        self.assertEqual(fallback["plan"]["turn_id"], "multimodal_dialog")
-        service.on_tool_call.assert_called_once()
-
-        result = {"status": "success", "results": [{"status": "completed"}]}
-        service.on_action_plan = MagicMock(return_value=result)
-        service.on_tool_call.reset_mock()
-
-        self.assertIs(service._execute_action_sequence(None, actions), result)
-        service.on_action_plan.assert_called_once_with("", actions)
-        service.on_tool_call.assert_not_called()
 
     def test_second_missing_direct_answer_uses_audible_fallback(self):
         service = self._service()

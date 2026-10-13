@@ -46,7 +46,7 @@ from services.orchestration.conditional_task import (
     parse_conditional_decision,
 )
 from services.action.action_intent_guard import validate_action_arguments
-from services.orchestration.dialog_action_plan import DialogActionPlanWorkflow
+from services.orchestration.behavior_tree_workflow import BehaviorTreeActionWorkflow
 from services.vision.visual_search import (
     VISUAL_SEARCH_RESULT_TOOL_NAME,
     VISUAL_SEARCH_TOOL_NAME,
@@ -767,26 +767,23 @@ class VoiceChatService:
             self._llm_done()
 
     def _execute_action_sequence(self, heard_text, actions):
-        """Bind the shared action sequencer to multimodal dialogue callbacks."""
-        workflow = getattr(self, "_dialog_action_plan_workflow", None)
-        if workflow is None:
-            def submit_native(_turn_id, user_prompt, proposed_actions):
-                native_handler = getattr(self, "on_action_plan", None)
-                if native_handler is None:
-                    return None
-                return native_handler(user_prompt, proposed_actions)
+        """Prefer the native tree callback, then use the compatibility tree."""
+        native_handler = getattr(self, "on_action_plan", None)
+        if native_handler is not None:
+            native_state = native_handler(heard_text or "", actions)
+            if native_state is not None:
+                return native_state
 
-            workflow = DialogActionPlanWorkflow(
-                submit_native=submit_native,
+        workflow = getattr(self, "_behavior_tree_workflow", None)
+        if workflow is None:
+            workflow = BehaviorTreeActionWorkflow(
                 authorize=lambda _prompt, name, arguments: (
                     validate_action_arguments(name, arguments)
                 ),
-                execute_action=lambda name, arguments, _turn_id: (
-                    self._execute_tool_call(name, arguments)
-                ),
+                execute=self._execute_tool_call,
                 cancelled=self._cancel_llm.is_set,
             )
-            self._dialog_action_plan_workflow = workflow
+            self._behavior_tree_workflow = workflow
         return workflow.invoke(
             turn_id="multimodal_dialog",
             user_prompt=heard_text or "",
