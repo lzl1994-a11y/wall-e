@@ -1,7 +1,7 @@
 import importlib
 import sys
 import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from services.orchestration.dialog_action_plan import DialogActionPlanWorkflow
 from services.orchestration.behavior_tree_workflow import NativeBehaviorTreeWorkflow
@@ -150,15 +150,28 @@ def _text_node():
     std_msgs = types.ModuleType("std_msgs")
     messages = types.ModuleType("std_msgs.msg")
     messages.String = messages.UInt8MultiArray = object
-    with patch.dict(sys.modules, {
+    overrides = {
         "rclpy": rclpy,
         "rclpy.node": rclpy_node,
         "std_msgs": std_msgs,
         "std_msgs.msg": messages,
-    }):
+    }
+    saved_modules = {
+        name: sys.modules[name] for name in overrides if name in sys.modules
+    }
+    sys.modules.update(overrides)
+    try:
         module = importlib.import_module("nodes.llm_ros_node")
+    finally:
+        # Keep newly imported dependencies cached: their import hooks can
+        # outlive a wholesale sys.modules rollback (e.g. beartype on the board).
+        for name in overrides:
+            if name in saved_modules:
+                sys.modules[name] = saved_modules[name]
+            else:
+                sys.modules.pop(name, None)
+        sys.modules.pop("nodes.llm_ros_node", None)
     node = module.LLMBrainNode.__new__(module.LLMBrainNode)
-    sys.modules.pop("nodes.llm_ros_node", None)
     node._behavior_tree_executor = object()
     node._voice_task_cancelled = MagicMock(return_value=False)
     node._execute_dialog_action = MagicMock()
