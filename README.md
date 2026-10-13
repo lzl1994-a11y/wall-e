@@ -538,6 +538,9 @@ LangGraph 确定性工作流预览 1.5 秒并把末帧交给视觉模型，取�
 时才在提交前回退到兼容行为树。下发后等待带 `request_id` 的 `/action_status=completed`，
 确认完成才进入下一个动作。
 任一动作被拒绝、失败、中断或超时，后续动作都会标记为跳过，两个语音模式使用相同规则。
+文本与多模态直聊共用 `services/orchestration/dialog_action_plan.py` 的动作计划入口，
+由各自调用方提供原生计划提交、校验与取消策略。该层只协调动作执行，不负责模型请求或
+播报时机：文本链路保留流式播报，多模态直聊保留取得动作结果后再回复的体验。
 原生 `wali_behavior_tree_node` 通过 `/behavior_tree/execute` 接收同一 `ActionPlan`，使用
 BehaviorTree.CPP 的异步 `StatefulActionNode` tick 每个动作，再通过 `/action_request`
 提交统一仲裁，并根据 `/action_status` 等待执行终态。原生节点未启动时会在提交前回退到兼容执行器，不会在动作

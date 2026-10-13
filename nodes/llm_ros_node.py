@@ -115,7 +115,8 @@ from services.orchestration.conditional_task import (
     build_conditional_task_failure_outcome,
     build_conditional_task_outcome,
 )
-from services.llm.llm_action_plan import LLMActionPlanWorkflow
+from services.orchestration.dialog_action_plan import DialogActionPlanWorkflow
+from services.orchestration.behavior_tree_workflow import NativeBehaviorTreeWorkflow
 from services.dialog.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
 from services.speech.voice_debug import RollingVoiceDebugStore
 
@@ -170,7 +171,7 @@ class LLMBrainNode(Node):
         self.llm = None
         self._camera_inspection_workflow = None
         self._conditional_task_workflow = None
-        self._llm_action_plan_workflow = None
+        self._dialog_action_plan_workflow = None
 
         # Executors for physical actions and Behavior Tree execution.
         # 实体动作执行器与行为树执行器。
@@ -843,31 +844,37 @@ class LLMBrainNode(Node):
         )
 
     def _action_plan_workflow(self):
-        """Lazy initializer for LLMActionPlanWorkflow.
-
-        懒加载初始化动作计划工作流对象。
-        """
-        workflow = getattr(self, '_llm_action_plan_workflow', None)
+        """Bind the shared action sequencer to text-dialogue policies and ROS."""
+        workflow = getattr(self, '_dialog_action_plan_workflow', None)
         if workflow is None:
             cancelled = lambda: (
                 not getattr(self, '_worker_running', True)
                 or self._voice_task_cancelled()
                 or getattr(self, '_game_mode', 'robot') != 'robot'
             )
-            workflow = LLMActionPlanWorkflow(
-                native_available=lambda: (
-                    getattr(self, '_behavior_tree_executor', None) is not None
-                ),
+            def submit_native(turn_id, user_prompt, actions):
+                if getattr(self, '_behavior_tree_executor', None) is None:
+                    return None
+                return NativeBehaviorTreeWorkflow(
+                    authorize=validate_action_call,
+                    execute_plan=lambda plan: self._try_execute_native_plan(
+                        plan, cancelled=cancelled
+                    ),
+                ).invoke(
+                    turn_id=turn_id,
+                    user_prompt=user_prompt,
+                    actions=actions,
+                )
+
+            workflow = DialogActionPlanWorkflow(
+                submit_native=submit_native,
                 authorize=validate_action_call,
-                execute_plan=lambda plan: self._try_execute_native_plan(
-                    plan, cancelled=cancelled
-                ),
                 execute_action=lambda name, arguments, turn_id: (
                     self._execute_dialog_action(name, arguments, turn_id)
                 ),
                 cancelled=cancelled,
             )
-            self._llm_action_plan_workflow = workflow
+            self._dialog_action_plan_workflow = workflow
         return workflow
 
     def _try_execute_native_plan(self, plan, *, timeout=None, cancelled=None):
