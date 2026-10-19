@@ -26,6 +26,8 @@ PROMPTS = {
     "wake_response.wav": "我在，今天你想聊什么",
     "esp_network_configuring.wav": "ESP配网中",
     "esp_network_connected.wav": "ESP配网成功",
+    "wifi_setup.wav": "请连接屏幕地址配置wifi",
+    "wifi_connected.wav": "wifi配置成功，请稍后",
 }
 
 

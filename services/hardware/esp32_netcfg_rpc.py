@@ -196,3 +196,6 @@ class Esp32NetworkRpcClient(_SerialOwnerRpcClient):
 
     def query(self) -> dict[str, Any]:
         return self._call("query")
+
+    def host_screen(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._call("host_screen", payload)

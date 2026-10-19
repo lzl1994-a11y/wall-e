@@ -45,6 +45,8 @@ class Esp32NetworkPromptSelectorTests(unittest.TestCase):
         root = Path(self.directory.name)
         _write_prompt(root / "esp_network_configuring.wav", 1)
         _write_prompt(root / "esp_network_connected.wav", 2)
+        _write_prompt(root / "wifi_setup.wav", 3)
+        _write_prompt(root / "wifi_connected.wav", 4)
         self.selector = Esp32NetworkPromptSelector(root)
 
     def tearDown(self):
@@ -64,6 +66,12 @@ class Esp32NetworkPromptSelectorTests(unittest.TestCase):
             ("net-1", "esp32_net_connected"),
         )
         self.assertIsNone(self.selector.select(connected))
+
+    def test_host_prompts_are_offline_and_deduplicated(self):
+        for state in ("host_configuring", "host_connected"):
+            message = json.dumps({"state": state, "request_id": "host-1"})
+            self.assertIsNotNone(self.selector.select(message))
+            self.assertIsNone(self.selector.select(message))
 
     def test_failed_is_silent_but_allows_a_new_unidentified_transition(self):
         configuring = '{"state":"configuring"}'

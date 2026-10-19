@@ -142,6 +142,24 @@ class ConfigWebServerTests(unittest.TestCase):
         self.thread.join(timeout=2)
         self.temp_dir.cleanup()
 
+    def test_host_network_routes_require_auth_and_delegate(self):
+        with self.assertRaises(urllib.error.HTTPError) as unauthorized:
+            self.request("/api/host-network/status", token=None)
+        self.assertEqual(unauthorized.exception.code, 401)
+        with self.assertRaises(urllib.error.HTTPError) as unauthorized:
+            self.request("/api/host-network/setup", method="POST", payload={}, token=None)
+        self.assertEqual(unauthorized.exception.code, 401)
+        with patch.object(self.server.host_network, "connect", return_value={"state": "starting"}) as connect:
+            payload = {"ssid": "new", "password": "test-password"}
+            status, result = self.request("/api/host-network/connect", method="POST", payload=payload)
+            self.assertEqual(status, 202)
+            connect.assert_called_once_with(payload)
+            self.assertNotIn("test-password", repr(result))
+        with patch.object(self.server.host_network.backend, "scan", return_value=[{"ssid": "shop"}]):
+            status, result = self.request("/api/host-network/scan")
+            self.assertEqual(status, 200)
+            self.assertEqual(result["networks"], [{"ssid": "shop"}])
+
     def test_port_collision_preserves_original_bind_error(self):
         bind_error = OSError(98, "Address already in use")
         with patch(

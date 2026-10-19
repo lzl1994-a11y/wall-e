@@ -595,7 +595,7 @@ class SerialNode(Node):
             operation = request.get("operation")
         except (TypeError, json.JSONDecodeError):
             return
-        if not isinstance(request_id, str) or operation not in {"save_and_apply", "query"}:
+        if not isinstance(request_id, str) or operation not in {"save_and_apply", "query", "host_screen"}:
             return
         if not self._netcfg_request_lock.acquire(blocking=False):
             response = String()
@@ -632,6 +632,15 @@ class SerialNode(Node):
                         ),
                     )
                 )
+            elif operation == "host_screen":
+                data = self.bridge.run_exclusive(
+                    lambda stream: self.netcfg.host_screen(payload, stream=stream)
+                )
+                if payload.get("audible") is True and payload.get("state") in {"setup", "connected"}:
+                    self._publish_netcfg_status(
+                        "host_configuring" if payload["state"] == "setup" else "host_connected",
+                        request_id=request_id,
+                    )
             else:
                 data = self.bridge.run_exclusive(lambda stream: self.netcfg.query(stream=stream))
             response.update(ok=True, data=data)

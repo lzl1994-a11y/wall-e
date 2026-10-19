@@ -40,6 +40,7 @@ from services.hardware.esp32_netcfg import (
     validate_network_payload,
 )
 from services.hardware.esp32_netcfg_rpc import Esp32NetworkRpcClient
+from services.hardware.host_network import HostNetworkManager
 from services.hardware.eyeconfig_rpc import (
     EYE_CONFIG_DEFAULTS,
     EYE_FIELD_LIMITS,
@@ -935,11 +936,15 @@ class ConfigWebServer(ThreadingHTTPServer):
         # in a non-ROS test or standalone maintenance environment.
         self.network_configurator = network_configurator
         self._network_configurator_lock = threading.Lock()
+        self.host_network = HostNetworkManager(
+            self.store, self.get_network_configurator, server_address[1],
+        )
         # Created only when the eye page is opened.  The web process still
         # never owns or opens the physical ESP32 serial port.
         self.eye_configurator = None
         self._eye_configurator_lock = threading.Lock()
         super().__init__(server_address, handler_class)
+        self.host_network.port = self.server_port
         try:
             self.camera_preview = CameraPreview(self.store.path)
         except Exception:
@@ -959,6 +964,7 @@ class ConfigWebServer(ThreadingHTTPServer):
             return self.eye_configurator
 
     def server_close(self) -> None:
+        self.host_network.close()
         preview = getattr(self, "camera_preview", None)
         if preview is not None:
             preview.close()
@@ -1116,6 +1122,8 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         "/index.html": ("index.html", "text/html; charset=utf-8"),
         "/app.js": ("app.js", "text/javascript; charset=utf-8"),
         "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+        "/wifi": ("wifi.html", "text/html; charset=utf-8"),
+        "/wifi.js": ("wifi.js", "text/javascript; charset=utf-8"),
     }
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -1183,6 +1191,16 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         route = urlsplit(self.path).path
+        if route in {"/api/host-network/status", "/api/host-network/scan"}:
+            if not self._require_api_auth():
+                return
+            try:
+                result = (self.server.host_network.snapshot() if route.endswith("/status")
+                          else {"networks": self.server.host_network.backend.scan()})
+                self._send_json(HTTPStatus.OK, {"ok": True, **result})
+            except NetworkConfigError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
         if route in self.STATIC_ROUTES:
             self._serve_static(route)
             return
@@ -1337,6 +1355,9 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             "/api/camera-preview/stop",
             "/api/esp32-network/save-and-apply",
             "/api/esp32-network/query",
+            "/api/host-network/setup",
+            "/api/host-network/connect",
+            "/api/host-network/retry-sync",
             "/api/eye-config/query",
             "/api/eye-config/command",
             "/api/choreographies",
@@ -1401,6 +1422,20 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "JSON 格式错误"})
+            return
+
+        if route.startswith("/api/host-network/"):
+            manager = self.server.host_network
+            try:
+                if route.endswith("/setup"):
+                    result = manager.enter_setup()
+                elif route.endswith("/connect"):
+                    result = manager.connect(payload)
+                else:
+                    result = manager.retry_sync()
+                self._send_json(HTTPStatus.ACCEPTED, {"ok": True, **result})
+            except NetworkConfigError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
 
         if route in {"/api/choreographies", "/api/choreographies/validate"}:
@@ -1681,6 +1716,7 @@ def run_web_server(bus: object | None = None) -> None:
     token = os.environ.get("WALI_CONFIG_TOKEN") or _config_access_token(DEFAULT_CONFIG_PATH) or DEFAULT_ACCESS_TOKEN
     server = create_server(host=host, port=port, token=token)
     print(f"[ConfigWeb] 配置页面已启动: http://{host}:{server.server_port}")
+    server.host_network.start()
     try:
         server.serve_forever()
     finally:
@@ -1712,6 +1748,7 @@ def main() -> None:
     if server.access_token:
         print("[ConfigWeb] API 已启用访问令牌保护")
     print("[ConfigWeb] Ctrl+C 停止服务")
+    server.host_network.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

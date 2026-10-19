@@ -19,6 +19,8 @@ ESP32_NETCFG_STATUS_TOPIC = "/esp32_netcfg_status"
 NETWORK_PROMPT_ASSETS = {
     "configuring": "esp_network_configuring.wav",
     "connected": "esp_network_connected.wav",
+    "host_configuring": "wifi_setup.wav",
+    "host_connected": "wifi_connected.wav",
 }
 
 

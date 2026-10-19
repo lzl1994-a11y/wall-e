@@ -37,6 +37,26 @@ class SerialNetcfgStartupTests(unittest.TestCase):
         ):
             return importlib.import_module("nodes.serial_ros_node")
 
+    def test_host_screen_uses_serial_owner_and_publishes_sanitized_audio_state(self):
+        module = self._load_module()
+        node = module.SerialNode.__new__(module.SerialNode)
+        node._netcfg_request_lock = threading.Lock()
+        node._netcfg_request_lock.acquire()
+        node._netcfg_status_publisher = MagicMock()
+        node._netcfg_response_publisher = MagicMock()
+        node.bridge = MagicMock()
+        node.bridge.run_exclusive.side_effect = lambda operation: operation(object())
+        node.netcfg = MagicMock()
+        node.netcfg.host_screen.return_value = {"seq": 42}
+        node._run_netcfg_request("host-1", "host_screen", {
+            "state": "setup", "ip": "10.42.0.1", "port": 8080,
+            "ssid": "WALL-E-1234", "password": "never-publish", "audible": True,
+        })
+        event = json.loads(node._netcfg_status_publisher.publish.call_args.args[0].data)
+        self.assertEqual(event["state"], "host_configuring")
+        self.assertNotIn("never-publish", repr(event))
+        self.assertFalse(node._netcfg_request_lock.locked())
+
     def test_startup_queries_then_always_pushes_ram_session_and_statuses(self):
         module = self._load_module()
         node = module.SerialNode.__new__(module.SerialNode)

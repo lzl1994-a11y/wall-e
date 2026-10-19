@@ -444,7 +444,7 @@ class Esp32NetworkConfigurator:
             seq, result, detail = int(fields[0]), int(fields[2]), int(fields[3])
         except ValueError:
             return None
-        if not 0 <= seq <= 0xFFFFFFFF or fields[1] not in {"SET", "APPLY", "QUERY"}:
+        if not 0 <= seq <= 0xFFFFFFFF or fields[1] not in {"SET", "APPLY", "QUERY", "HOSTSCREEN"}:
             return None
         return seq, fields[1], result, detail
 
@@ -491,6 +491,29 @@ class Esp32NetworkConfigurator:
         base = RESULT_MESSAGES.get(result, f"设备返回未知结果码 {result}")
         suffix = DETAIL_MESSAGES.get(detail, f"附加错误码 {detail}") if detail else ""
         return NetworkConfigError(f"{operation} 失败：{base}{('（' + suffix + '）') if suffix else ''}")
+
+    def host_screen(self, payload, *, stream):
+        """Send a versioned screen command; ACK means the main loop rendered it."""
+        if not isinstance(payload, dict) or payload.get("state") not in {"setup", "connecting", "connected", "done"}:
+            raise NetworkConfigError("无效的上位机配网屏幕状态")
+        try:
+            address = str(ipaddress.IPv4Address(payload.get("ip")))
+            port = int(payload.get("port"))
+        except (ValueError, TypeError, ipaddress.AddressValueError) as exc:
+            raise NetworkConfigError("无效的配网 IPv4 地址或端口") from exc
+        if not 1 <= port <= 65535:
+            raise NetworkConfigError("配网页面端口超出范围")
+        fields = [payload.get("ssid", ""), payload.get("password", "")]
+        for value, limit in zip(fields, (32, 63)):
+            if not isinstance(value, str) or len(value) > limit or any(not 32 <= ord(c) <= 126 or c == "|" for c in value):
+                raise NetworkConfigError("配网热点显示参数无效")
+        with self._lock:
+            sequence = self._next_seq()
+            stream.write(self._command(f"hostnet:{sequence}|1|{payload['state']}|{address}|{port}|" + "|".join(fields)))
+            result, detail = self._wait_result(stream, sequence, "HOSTSCREEN", 5)
+            if (result, detail) != (0, 0):
+                raise self._result_error("HOSTSCREEN", result, detail)
+            return {"seq": sequence, "state": payload["state"]}
 
     def save_and_apply(
         self,
