@@ -36,13 +36,24 @@ class TftTcpServiceNodeTests(unittest.TestCase):
         fake_std_msgs_msg.UInt8MultiArray = _UInt8MultiArray
         fake_std_msgs_msg.Float32MultiArray = _Float32MultiArray
         sys.modules.pop("nodes.tft_tcp_service_node", None)
-        with patch.dict(sys.modules, {
+        overrides = {
             "rclpy": fake_rclpy,
             "rclpy.node": fake_rclpy_node,
             "std_msgs": fake_std_msgs,
             "std_msgs.msg": fake_std_msgs_msg,
-        }):
+        }
+        saved_modules = {name: sys.modules[name] for name in overrides if name in sys.modules}
+        sys.modules.update(overrides)
+        try:
             module = importlib.import_module("nodes.tft_tcp_service_node")
+        finally:
+            # Match the existing ROS test harness: extension-module caches must
+            # survive the import (OpenCV cannot safely bootstrap twice).
+            for name in overrides:
+                if name in saved_modules:
+                    sys.modules[name] = saved_modules[name]
+                else:
+                    sys.modules.pop(name, None)
         return module.TftTcpServiceNode
 
     def test_game_frames_are_forwarded_by_display_owner(self):
