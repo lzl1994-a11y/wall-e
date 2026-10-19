@@ -351,6 +351,9 @@ def start_process(entry: NodeEntry):
             str(script),
         ]
     env = os.environ.copy()
+    # Robot-internal DDS must survive wlan0 changing address or entering AP mode.
+    # Remote access uses HTTP/WebRTC; explicit opt-out supports external ROS peers.
+    env["ROS_LOCALHOST_ONLY"] = os.environ.get("WALI_ROS_LOCALHOST_ONLY", "1")
     root_path = str(ROOT)
     existing_paths = [
         path
