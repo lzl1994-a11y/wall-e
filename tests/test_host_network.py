@@ -77,6 +77,13 @@ class HostNetworkTests(unittest.TestCase):
         self.assertEqual(self.manager.snapshot()["state"], "ready")
         self.backend.connect.assert_called_once()
 
+    def test_unavailable_serial_owner_does_not_switch_wifi(self):
+        self.rpc.host_screen.side_effect = NetworkConfigError("serial unavailable")
+        self.connect()
+        self.assertEqual(self.manager.snapshot()["state"], "failed")
+        self.backend.connect.assert_not_called()
+        self.backend.hotspot.assert_not_called()
+
     def test_concurrent_submission_is_rejected(self):
         import threading
         gate = threading.Event()

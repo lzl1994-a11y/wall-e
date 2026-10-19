@@ -246,8 +246,10 @@ class HostNetworkManager:
         try:
             self._prepare_listener()
             self._ap = self.backend.hotspot()
-            self._update(state="setup", ip=AP_ADDRESS, detail=detail, esp32="pending")
             self._screen("setup", AP_ADDRESS, audible=True)
+            self._update(state="setup", ip=AP_ADDRESS, detail=detail, esp32="pending")
+        except NetworkConfigError as exc:
+            self._update(state="failed", detail=str(exc))
         except Exception:
             self._update(state="failed", detail="热点或屏幕配网提示启动失败，请检查网卡、DHCP 依赖及串口服务")
 
@@ -259,6 +261,10 @@ class HostNetworkManager:
         try:
             self._prepare_listener()
             self._screen("connecting", AP_ADDRESS)
+        except Exception:
+            self._update(state="failed", detail="配网屏幕或图像服务尚未就绪，未切换 Wi-Fi，请稍后重试")
+            return
+        try:
             status = self.backend.connect(ssid, password)
         except Exception:
             self._setup("目标 Wi-Fi 连接失败，已恢复热点，请检查密码并重试")
