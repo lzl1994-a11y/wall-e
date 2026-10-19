@@ -843,6 +843,7 @@ class ConfigStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with temp_path.open("w", encoding="utf-8", newline="\n") as stream:
+                os.chmod(temp_path, 0o600)
                 stream.write(rendered)
                 stream.flush()
                 os.fsync(stream.fileno())
