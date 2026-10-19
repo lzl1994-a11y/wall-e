@@ -20,6 +20,9 @@ NetworkManager 连接和写入 `/etc/NetworkManager/system-connections`。X3 当
 进入配网时会将原来绑定某个 LAN IP 的 TFT 图像服务改为 `0.0.0.0`，并通过
 `host_network_prepare/host_network_ready` 等待运行中服务完成重绑；该设置会持久保存，
 保证跨网段和重启后仍可接收 ESP32 的 TCP HELLO。
+启动器默认给所有受管节点设置 `ROS_LOCALHOST_ONLY=1`，避免 wlan0 切换导致内部 DDS
+通信失联；HTTP/WebRTC 的局域网访问保持不变。需要跨机器 ROS 通信时可设置
+`WALI_ROS_LOCALHOST_ONLY=0`，但需另外配置不依赖被切换无线接口的 DDS 传输。
 
 Wi-Fi 密码仅写入 root 可读的 NetworkManager keyfile 和原有私密配置。
 网页状态、日志和 ROS 状态消息均不包含密码。热点密码只通过串口展示到设备屏幕。
