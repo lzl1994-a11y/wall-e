@@ -494,7 +494,7 @@ class Esp32NetworkConfigurator:
 
     def host_screen(self, payload, *, stream):
         """Send a versioned screen command; ACK means the main loop rendered it."""
-        if not isinstance(payload, dict) or payload.get("state") not in {"setup", "connecting", "connected", "done"}:
+        if not isinstance(payload, dict) or payload.get("state") not in {"setup", "connecting", "connected", "syncing", "partial", "done"}:
             raise NetworkConfigError("无效的上位机配网屏幕状态")
         try:
             address = str(ipaddress.IPv4Address(payload.get("ip")))

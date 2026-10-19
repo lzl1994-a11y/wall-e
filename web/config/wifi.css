@@ -1,0 +1,10 @@
+.wifi-page { position: relative; z-index: 1; width: 100%; max-width: 560px; margin: 24px auto; padding: 12px; }
+.wifi-page .card { display: grid; min-width: 0; gap: 16px; padding: 20px; }
+.wifi-page h1, .wifi-page p { margin: 0; overflow-wrap: anywhere; }
+.wifi-page form, .wifi-page #auth { display: grid; min-width: 0; gap: 16px; }
+.wifi-page input, .wifi-page select, .wifi-page button { min-width: 0; max-width: 100%; }
+.wifi-page select { text-overflow: ellipsis; }
+.wifi-page #status { padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.wifi-page #status[data-state="ready"] { color: var(--success); }
+.wifi-page #status[data-state="failed"], .wifi-page #status[data-state="partial"] { color: var(--warning); }
+.wifi-page [hidden] { display: none !important; }

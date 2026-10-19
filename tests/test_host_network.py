@@ -47,7 +47,7 @@ class HostNetworkTests(unittest.TestCase):
         self.assertEqual(self.manager.snapshot()["state"], "ready")
         self.assertNotIn("secret", repr(self.manager.snapshot()))
         self.assertEqual([call.args[0]["state"] for call in self.rpc.host_screen.call_args_list],
-                         ["connecting", "connected", "done"])
+                         ["connecting", "connected", "syncing", "done"])
 
     def test_invalid_wifi_cannot_switch_network(self):
         for ssid, password in [("", "12345678"), ("new\n", "12345678"),
@@ -56,6 +56,19 @@ class HostNetworkTests(unittest.TestCase):
                 self.manager.connect({"ssid": ssid, "password": password})
         self.backend.connect.assert_not_called()
         self.assertEqual(validate_wifi("open", "").password, "")
+
+    def test_first_provision_after_reset_with_null_or_missing_config(self):
+        for previous in (None, "missing"):
+            with self.subTest(previous=previous):
+                self.config.pop("esp32_network", None)
+                if previous is None:
+                    self.config["esp32_network"] = None
+                self.rpc.reset_mock()
+                self.store.reset_mock()
+                self.connect()
+                self.assertEqual(self.manager.snapshot()["state"], "ready")
+                self.rpc.save_and_apply.assert_called_once()
+                self.assertEqual(self.rpc.host_screen.call_args.args[0]["state"], "done")
 
     def test_failure_restores_hotspot_without_overwriting_saved_wifi(self):
         self.backend.connect.side_effect = NetworkConfigError("new-secret")
@@ -70,6 +83,7 @@ class HostNetworkTests(unittest.TestCase):
         self.rpc.save_and_apply.side_effect = NetworkConfigError("serial offline")
         self.connect()
         self.assertEqual(self.manager.snapshot()["state"], "partial")
+        self.assertEqual(self.rpc.host_screen.call_args.args[0]["state"], "partial")
         self.backend.hotspot.assert_not_called()
         self.rpc.save_and_apply.side_effect = None
         self.manager.retry_sync()

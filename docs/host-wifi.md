@@ -7,11 +7,13 @@ NetworkManager 连接和写入 `/etc/NetworkManager/system-connections`。X3 当
 1. 在设置页硬件卡片点击“上位机 Wi-Fi 配置”，或打开 `http://<上位机IP>:8080/wifi`。
 2. 输入与设置页相同的访问令牌。点击“重新进入热点配网”。这会切断现有无线连接。
 3. 胸前屏幕显示热点名称、随机密码及 `10.42.0.1:8080/wifi`（端口跟随网页服务）。
-   手机连接该热点，选择保留无互联网连接，然后打开屏幕地址。
-4. 读取状态、扫描网络或手动输入 SSID，提交密码。请求立即返回，后台稍后切换网络。
+   手机连接该热点，选择保留无互联网连接，然后打开屏幕地址。页面会建立仅允许配网 API
+   使用的 10 分钟 HttpOnly/SameSite 会话，不需要再输入管理令牌；其他局域网访问仍需原令牌。
+4. 页面自动读取状态和扫描网络，在下拉框选择 SSID 后提交密码。请求立即返回，后台稍后切换网络。
 5. 成功后播放“wifi配置成功，请稍后”，胸前屏幕展示新 IP；手机切至目标网络。
    上位机保存本次凭据与新 IP，再通过原有 NETCFG SET/APPLY 同步 ESP32。
-6. Wi-Fi 连接失败会恢复原配网热点；ESP32 同步失败保留上位机连接，可点击单独重试。
+6. Wi-Fi 连接失败会恢复原配网热点；ESP32 同步失败保留上位机连接，屏幕显示 `SYNC FAILED`
+   和重试地址。两端同步完成显示 `WIFI READY` 三秒后返回电量页。
 
 主程序中的 Web 服务会监视无线连接，持续约 45 秒未连接后进入配网热点；
 有局域网连接但没有互联网时不切换。普通单网卡采用 AP/STA 切换，手机短暂断开是正常的。
@@ -26,7 +28,8 @@ NetworkManager 连接和写入 `/etc/NetworkManager/system-connections`。X3 当
 
 Wi-Fi 密码仅写入 root 可读的 NetworkManager keyfile 和原有私密配置。
 网页状态、日志和 ROS 状态消息均不包含密码。热点密码只通过串口展示到设备屏幕。
-现有访问令牌保护同样适用于所有新增 API：
+管理令牌仍可用于所有新增 API；热点会话仅能从设备热点接口和子网访问以下配网 API，
+不能读取完整配置或调用其他管理接口。普通局域网请求和过期会话均不能绕过令牌校验：
 
 | API | 用途 |
 | --- | --- |
@@ -45,7 +48,8 @@ hostnet:<seq>|1|<state>|<IPv4>|<web_port>|<AP_SSID>|<AP_password>\r\n
 NETCFG:RESULT:<seq>|HOSTSCREEN|<result>|0
 ```
 
-`state` 为 `setup`、`connecting`、`connected` 或 `done`；后两项允许空字符串。
+`state` 为 `setup`、`connecting`、`connected`、`syncing`、`partial` 或 `done`；
+最后两个热点字段允许空字符串。
 命令使用有界 ASCII 字段，禁止 `|` 和控制字符；序列号为 uint32。
 结果 `0` 表示主屏已处理命令，`3` 表示参数错误。
 配网页面优先于聊天、视频和网络状态页脚，`done` 才返回电量界面。

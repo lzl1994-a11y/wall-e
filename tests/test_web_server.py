@@ -160,6 +160,44 @@ class ConfigWebServerTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(result["networks"], [{"ssid": "shop"}])
 
+    def test_hotspot_cookie_allows_only_provisioning_and_expires(self):
+        from services.integrations.web_server import ConfigRequestHandler
+        with patch.object(ConfigRequestHandler, "_is_hotspot_client", return_value=True):
+            with urllib.request.urlopen(self.base_url + "/wifi", timeout=3) as response:
+                cookie_header = response.headers["Set-Cookie"]
+            self.assertIn("HttpOnly", cookie_header)
+            self.assertIn("SameSite=Strict", cookie_header)
+            cookie = cookie_header.split(";", 1)[0]
+            def request_cookie(route, payload=None):
+                request = urllib.request.Request(self.base_url + route,
+                    data=None if payload is None else json.dumps(payload).encode(),
+                    headers={"Cookie": cookie, "Content-Type": "application/json"})
+                return urllib.request.urlopen(request, timeout=3)
+            with request_cookie("/api/host-network/status") as response:
+                self.assertTrue(json.load(response)["hotspot_session"])
+            with patch.object(self.server.host_network.backend, "scan", return_value=[{"ssid": "shop"}]):
+                with request_cookie("/api/host-network/scan") as response:
+                    self.assertEqual(json.load(response)["networks"], [{"ssid": "shop"}])
+            with patch.object(self.server.host_network, "connect", return_value={"state": "starting"}):
+                with request_cookie("/api/host-network/connect", {"ssid": "shop", "password": "password"}) as response:
+                    self.assertEqual(response.status, 202)
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                request_cookie("/api/config")
+            self.assertEqual(denied.exception.code, 401)
+            self.server.wifi_session_expires = 0
+            with self.assertRaises(urllib.error.HTTPError):
+                request_cookie("/api/host-network/status")
+        self.server.wifi_session_expires = float("inf")
+        with self.assertRaises(urllib.error.HTTPError):
+            request_cookie("/api/host-network/status")
+
+    def test_lan_wifi_page_does_not_issue_provisioning_cookie(self):
+        with urllib.request.urlopen(self.base_url + "/wifi", timeout=3) as response:
+            self.assertIsNone(response.headers.get("Set-Cookie"))
+            html = response.read().decode()
+            self.assertIn('<select id="ssid"', html)
+            self.assertNotIn('list="networks"', html)
+
     def test_port_collision_preserves_original_bind_error(self):
         bind_error = OSError(98, "Address already in use")
         with patch(

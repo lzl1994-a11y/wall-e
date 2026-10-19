@@ -11,14 +11,17 @@ from __future__ import annotations
 import argparse
 import copy
 import hmac
+import ipaddress
 import json
 import os
 import re
 import secrets
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -40,7 +43,7 @@ from services.hardware.esp32_netcfg import (
     validate_network_payload,
 )
 from services.hardware.esp32_netcfg_rpc import Esp32NetworkRpcClient
-from services.hardware.host_network import HostNetworkManager
+from services.hardware.host_network import AP_ADDRESS, HostNetworkManager
 from services.hardware.eyeconfig_rpc import (
     EYE_CONFIG_DEFAULTS,
     EYE_FIELD_LIMITS,
@@ -927,6 +930,8 @@ class ConfigWebServer(ThreadingHTTPServer):
         self.store = store
         self.static_dir = static_dir.resolve()
         self.access_token = token or ""
+        self.wifi_session_token = secrets.token_urlsafe(32)
+        self.wifi_session_expires = 0.0
         self.choreographies = ChoreographyStore(
             self.store.path,
             directory=choreography_dir,
@@ -1125,6 +1130,7 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         "/styles.css": ("styles.css", "text/css; charset=utf-8"),
         "/wifi": ("wifi.html", "text/html; charset=utf-8"),
         "/wifi.js": ("wifi.js", "text/javascript; charset=utf-8"),
+        "/wifi.css": ("wifi.css", "text/css; charset=utf-8"),
     }
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -1167,6 +1173,34 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "访问令牌无效"})
         return False
 
+    def _is_hotspot_client(self) -> bool:
+        try:
+            return (self.connection.getsockname()[0] == AP_ADDRESS
+                    and ipaddress.ip_address(self.client_address[0]) in ipaddress.ip_network(f"{AP_ADDRESS}/24", strict=False)
+                    and self.server.host_network.hotspot_session_allowed())
+        except (OSError, ValueError):
+            return False
+
+    def _hotspot_authorized(self) -> bool:
+        if not self._is_hotspot_client() or time.monotonic() >= self.server.wifi_session_expires:
+            return False
+        try:
+            cookies = SimpleCookie(self.headers.get("Cookie", ""))
+            supplied = cookies.get("wali_wifi_session")
+            return supplied is not None and hmac.compare_digest(
+                supplied.value.encode("utf-8"), self.server.wifi_session_token.encode("ascii"),
+            )
+        except (CookieError, UnicodeError):
+            return False
+
+    def _require_host_network_auth(self) -> bool:
+        if self._authorized() or self._hotspot_authorized():
+            return True
+        self._send_json(HTTPStatus.UNAUTHORIZED, {
+            "ok": False, "error": "请连接瓦力热点并重新打开配网页面，或输入设置页的访问令牌",
+        })
+        return False
+
     def _serve_static(self, route: str) -> None:
         static = self.STATIC_ROUTES.get(route)
         if static is None:
@@ -1184,6 +1218,9 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if route == "/wifi" and self._is_hotspot_client():
+            self.server.wifi_session_expires = time.monotonic() + 600
+            self.send_header("Set-Cookie", f"wali_wifi_session={self.server.wifi_session_token}; Path=/api/host-network; Max-Age=600; HttpOnly; SameSite=Strict")
         # The timeline editor positions user-authored blocks with CSSOM inline
         # coordinates; scripts remain restricted to same-origin files.
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'")
@@ -1193,12 +1230,12 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         route = urlsplit(self.path).path
         if route in {"/api/host-network/status", "/api/host-network/scan"}:
-            if not self._require_api_auth():
+            if not self._require_host_network_auth():
                 return
             try:
                 result = (self.server.host_network.snapshot() if route.endswith("/status")
                           else {"networks": self.server.host_network.backend.scan()})
-                self._send_json(HTTPStatus.OK, {"ok": True, **result})
+                self._send_json(HTTPStatus.OK, {"ok": True, "hotspot_session": self._hotspot_authorized(), **result})
             except NetworkConfigError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
@@ -1369,7 +1406,8 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         }:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        if not self._require_api_auth():
+        require_auth = self._require_host_network_auth if route.startswith("/api/host-network/") else self._require_api_auth
+        if not require_auth():
             return
 
         if route == "/api/choreography-audio":

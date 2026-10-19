@@ -200,6 +200,9 @@ class HostNetworkManager:
         with self._lock:
             return dict(self._state)
 
+    def hotspot_session_allowed(self):
+        return bool(self._ap) and self.snapshot()["state"] in {"setup", "starting", "connecting", "failed"}
+
     def _update(self, **values):
         with self._lock:
             self._state.update(values)
@@ -242,6 +245,13 @@ class HostNetworkManager:
             raise NetworkConfigError("没有待同步的网络，请先完成 Wi-Fi 配置")
         return self._launch(self._sync)
 
+    def _partial(self, detail, *, esp32="failed"):
+        self._update(state="partial", esp32=esp32, detail=detail)
+        try:
+            self._screen("partial", self.snapshot()["ip"])
+        except Exception:
+            self._update(detail=detail + "；屏幕状态也未能更新，请在网页重试")
+
     def _setup(self, detail=""):
         try:
             self._prepare_listener()
@@ -272,7 +282,7 @@ class HostNetworkManager:
         self._update(state="connected", ip=status["ip"], esp32="pending", detail="Wi-Fi 已连接，正在同步 ESP32")
         try:
             config = self.store.load()
-            previous = config.get("esp32_network", {}).get("wifi", [])
+            previous = (config.get("esp32_network") or {}).get("wifi") or []
             others = [item for item in previous if item.get("ssid") and item["ssid"] != ssid]
             wifi = ([{"ssid": ssid, "password": password}] + others +
                     [{"ssid": "", "password": ""}] * 2)[:3]
@@ -284,18 +294,23 @@ class HostNetworkManager:
             self.store.save_patch({"esp32_network": payload})
             self._screen("connected", status["ip"], audible=True)
         except Exception:
-            self._update(state="partial", detail="Wi-Fi 已连接，但启动配置保存或屏幕提示失败；请重新提交配置")
+            self._partial("Wi-Fi 已连接，但配置保存或屏幕提示失败；请重新提交配置", esp32="pending")
             return
         self._sync()
 
     def _sync(self):
         try:
             self._update(state="syncing", esp32="pending")
+            self._screen("syncing", self.snapshot()["ip"])
             self.rpc_factory().save_and_apply(self._last_payload)
-            self._screen("done", self.snapshot()["ip"])
-            self._update(state="ready", esp32="connected", detail="上位机和 ESP32 网络配置完成")
         except Exception:
-            self._update(state="partial", esp32="failed", detail="上位机已联网，ESP32 同步失败，可单独重试")
+            self._partial("上位机已联网，ESP32 同步失败，请打开屏幕地址重试同步")
+            return
+        try:
+            self._screen("done", self.snapshot()["ip"])
+            self._update(state="ready", esp32="connected", detail="Wi-Fi 配置成功，两端已同步，屏幕即将返回正常界面")
+        except Exception:
+            self._partial("两端已联网，但屏幕完成提示未确认，可重试同步", esp32="connected")
 
     def start(self):
         if os.name != "posix" or not shutil.which("nmcli"):
