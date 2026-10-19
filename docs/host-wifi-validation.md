@@ -3,6 +3,31 @@
 日期：2026-10-19。设备：X3 Ubuntu 22.04.4，`wlan0` / `brcmfmac`，
 NetworkManager 1.36.6；USB TFT ESP32-S3，MAC `e0:72:a1:d3:9e:30`。
 
+## 文件变更清单
+
+上位机修改/新增 22 个文件，无删除：
+
+- 网络管理：`services/hardware/host_network.py`。
+- 串口：`services/hardware/esp32_netcfg.py`、`esp32_netcfg_rpc.py`、`serial_bridge.py`，
+  `nodes/serial_ros_node.py`。
+- 监听与启动：`nodes/tft_tcp_service_node.py`、`launch_nodes.py`。
+- 网页：`services/integrations/web_server.py`、`web/config/index.html`、`wifi.html`、`wifi.js`。
+- 语音：`generate_wake_response.py`、`services/audio/esp32_network_prompt.py`、
+  `assets/wifi_setup.wav`、`assets/wifi_connected.wav`。
+- 测试：`tests/test_host_network.py`、`test_serial_netcfg_startup.py`、`test_system_audio.py`、
+  `test_tft_tcp_service_node.py`、`test_web_server.py`。
+- 文档：`docs/host-wifi.md`、`docs/host-wifi-validation.md`。
+
+下位机修改/新增 8 个文件，无删除：
+
+- `src/domain/HostNetworkScreen.h`。
+- `src/ports/IDisplayPort.h`。
+- `src/adapters/display/St7789DisplayPort.h`、`St7789DisplayPort.cpp`。
+- `src/app/AppController.h`、`AppController.cpp`。
+- `tools/test_host_network_screen.cpp`、`docs/host-wifi.md`。
+
+两端任务开始前已有的未提交改动及图像资产均保留，没有纳入本次提交。
+
 ## 部署
 
 - 上位机：`codex/behavior-tree-orchestration`，代码经 Git bundle fetch + fast-forward 更新到
@@ -40,6 +65,8 @@ node --check web/config/wifi.js
 ```
 
 板上单独运行 `tests/test_tft_tcp_service_node.py`，10 项通过。
+最终板上组合运行 host-network、system-audio、NETCFG、串口启动/路由、TFT 节点测试，
+57 项通过；实际保存配置后确认私密 YAML 和新增 NetworkManager keyfile 权限均为 `0600`。
 主机 C++ `test_host_network_screen.cpp`、原 WTFT/NETCFG 协议测试和 PlatformIO 构建通过。
 启动器套件另有一条既有失败：
 `test_remote_gateway_uses_pyav_resampler_before_ndarray_conversion` 检查旧版
