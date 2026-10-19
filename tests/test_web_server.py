@@ -181,6 +181,10 @@ class ConfigWebServerTests(unittest.TestCase):
             with patch.object(self.server.host_network, "connect", return_value={"state": "starting"}):
                 with request_cookie("/api/host-network/connect", {"ssid": "shop", "password": "password"}) as response:
                     self.assertEqual(response.status, 202)
+            with patch.object(self.server.host_network, "rescan", return_value={"state": "starting"}) as rescan:
+                with request_cookie("/api/host-network/rescan", {}) as response:
+                    self.assertEqual(response.status, 202)
+                rescan.assert_called_once()
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 request_cookie("/api/config")
             self.assertEqual(denied.exception.code, 401)

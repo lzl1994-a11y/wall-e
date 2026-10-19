@@ -60,6 +60,12 @@ class NetworkManagerBackend:
         self.runner = runner
         self.profile_dir = Path(profile_dir)
         self.device = None
+        self._scan_lock = threading.RLock()
+        self._scan_cache = []
+        self._scan_at = None
+        self._scan_cached = False
+        self._scan_detail = ""
+        self._hotspot_ssid = ""
 
     def run(self, *args, timeout=12):
         try:
@@ -97,18 +103,55 @@ class NetworkManagerBackend:
         raise NetworkConfigError("没有找到可用的无线网卡")
 
     def scan(self):
-        self.status()
-        output = self.run("-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list",
-                          "ifname", self.device, "--rescan", "auto")
+        with self._scan_lock:
+            hotspot = self.status()["hotspot"]
+            try:
+                # brcmfmac cannot reliably scan while AP clients are connected.
+                # Never let NetworkManager's cache age trigger an AP-mode scan.
+                output = self.run("-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list",
+                                  "ifname", self.device, "--rescan", "no" if hotspot else "yes")
+            except NetworkConfigError:
+                if not hotspot:
+                    raise
+                self._scan_cached = True
+                self._scan_detail = "当前为配网热点，显示最近搜索结果；可点击重新搜索。"
+                return [dict(item) for item in self._scan_cache]
+            networks = self._parse_scan(output)
+            self._scan_cached = hotspot
+            if networks or not hotspot:
+                self._scan_cache = networks
+            if not hotspot:
+                self._scan_at = time.time()
+            self._scan_detail = "显示进入配网前搜索到的网络，可重新搜索。" if hotspot else ""
+            return [dict(item) for item in self._scan_cache]
+
+    def _parse_scan(self, output):
         networks = {}
         for row in output.splitlines():
             fields = split_nmcli(row)
-            if len(fields) != 3 or not fields[0] or not fields[1].isdigit():
+            if len(fields) != 3 or not fields[0] or fields[0] == self._hotspot_ssid or not fields[1].isdigit():
                 continue
             entry = {"ssid": fields[0], "signal": int(fields[1]), "security": fields[2]}
             if entry["signal"] > networks.get(entry["ssid"], {}).get("signal", -1):
                 networks[entry["ssid"]] = entry
         return sorted(networks.values(), key=lambda item: -item["signal"])
+
+    def scan_info(self):
+        with self._scan_lock:
+            return {"cached": self._scan_cached, "scanned_at": self._scan_at, "detail": self._scan_detail}
+
+    def rescan(self):
+        """Explicit background scan, restoring the same AP even if scanning fails."""
+        with self._scan_lock:
+            if not self.status()["hotspot"]:
+                return self.scan()
+            identifier = self.run("-g", "GENERAL.CON-UUID", "device", "show", self.device)
+            try:
+                # Prevent saved station profiles from auto-connecting mid-scan.
+                self.run("device", "disconnect", self.device)
+                return self.scan()
+            finally:
+                self.activate(identifier)
 
     @staticmethod
     def _escape(value):
@@ -176,7 +219,13 @@ class NetworkManagerBackend:
         else:
             ssid, password = "WALL-E-" + secrets.token_hex(2).upper(), secrets.token_hex(6)
             identifier = self._profile(ssid, password, hotspot=True)
+        self._hotspot_ssid = ssid
         if not status["hotspot"]:
+            try:
+                self.scan()
+            except NetworkConfigError:
+                # Provisioning must remain accessible when a pre-scan fails.
+                self._scan_detail = "首次搜索未完成，进入配网页面后可重新搜索。"
             self.activate(identifier)
         return {"ssid": ssid, "password": password, "ip": AP_ADDRESS}
 
@@ -201,7 +250,7 @@ class HostNetworkManager:
             return dict(self._state)
 
     def hotspot_session_allowed(self):
-        return bool(self._ap) and self.snapshot()["state"] in {"setup", "starting", "connecting", "failed"}
+        return bool(self._ap) and self.snapshot()["state"] in {"setup", "starting", "scanning", "connecting", "failed"}
 
     def _update(self, **values):
         with self._lock:
@@ -244,6 +293,24 @@ class HostNetworkManager:
         if self._last_payload is None:
             raise NetworkConfigError("没有待同步的网络，请先完成 Wi-Fi 配置")
         return self._launch(self._sync)
+
+    def rescan(self):
+        return self._launch(self._rescan, self.snapshot())
+
+    def _rescan(self, previous):
+        if self._closed.wait(self.switch_delay):
+            return
+        self._update(state="scanning", detail="正在重新搜索 Wi-Fi，热点会短暂断开，请等待后重新连接原热点")
+        try:
+            self.backend.rescan()
+            status = self.backend.status()
+            state = "setup" if status["hotspot"] else previous["state"]
+            self._update(state=state, ip=status["ip"], detail="搜索完成，请刷新列表并选择 Wi-Fi")
+        except Exception:
+            if self._ap:
+                self._setup("重新搜索失败，已恢复配网热点，请重试")
+            else:
+                self._update(state="failed", detail="重新搜索失败，原 Wi-Fi 连接未主动切换，请稍后重试")
 
     def _partial(self, detail, *, esp32="failed"):
         self._update(state="partial", esp32=esp32, detail=detail)

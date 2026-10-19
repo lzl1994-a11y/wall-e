@@ -7,7 +7,9 @@
 <h1>瓦力 Wi-Fi 配置</h1>
 <p>先连接胸前屏幕显示的热点，再打开屏幕地址。此页面无需互联网。</p>
 <div id="auth"><label class="field"><span>局域网访问令牌（与设置页相同）</span><input id="token" type="password" autocomplete="off"></label><p>连接瓦力热点后重新打开此页面可直接配网；从其他网络访问时请输入令牌。</p></div>
-<button id="refresh" class="button secondary" type="button">刷新状态并扫描 Wi-Fi</button>
+<button id="refresh" class="button secondary" type="button">刷新状态和 Wi-Fi 列表</button>
+<p id="scan-info" role="status"></p>
+<button id="rescan" class="button secondary" type="button">重新搜索 Wi-Fi（热点会短暂断开）</button>
 <form id="connect-form">
 <label class="field"><span>选择 Wi-Fi</span><select id="ssid" required><option value="">正在读取附近 Wi-Fi…</option></select></label>
 <label class="field"><span>Wi-Fi 密码（开放网络留空）</span><input id="password" type="password" autocomplete="new-password"></label>

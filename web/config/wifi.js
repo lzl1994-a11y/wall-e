@@ -1,15 +1,17 @@
 "use strict";
 const element = (id) => document.getElementById(id);
-const labels = {idle: "等待配网", starting: "正在准备", setup: "等待选择 Wi-Fi", connecting: "正在连接 Wi-Fi", connected: "Wi-Fi 已连接", syncing: "正在同步 ESP32", ready: "配置成功", partial: "需要重试", failed: "操作失败"};
-const busyStates = new Set(["starting", "connecting", "connected", "syncing"]);
+const labels = {idle: "等待配网", starting: "正在准备", scanning: "正在搜索 Wi-Fi", setup: "等待选择 Wi-Fi", connecting: "正在连接 Wi-Fi", connected: "Wi-Fi 已连接", syncing: "正在同步 ESP32", ready: "配置成功", partial: "需要重试", failed: "操作失败"};
+const busyStates = new Set(["starting", "scanning", "connecting", "connected", "syncing"]);
 let pending = false;
 let polling = false;
 let scanning = false;
+let pendingAction = "";
 element("token").value = sessionStorage.getItem("waliConfigToken") || "";
 
 function setPending(value) {
   pending = value;
-  ["connect", "retry", "setup"].forEach((id) => { element(id).disabled = value; });
+  ["connect", "retry", "setup", "rescan"].forEach((id) => { element(id).disabled = value; });
+  if (!value) pendingAction = "";
 }
 async function request(path, payload) {
   const controller = new AbortController();
@@ -40,7 +42,7 @@ async function act(task) {
       element("status").textContent = "配网会话未验证。请连接瓦力热点后重新打开此页，或输入设置页令牌再刷新。";
     } else {
       element("status").textContent = pending
-        ? "正在切换网络或同步设备。手机可能已断开热点，请查看胸前屏幕的新地址；无需重复提交。"
+        ? pendingAction === "rescan" ? "正在重新搜索附近 Wi-Fi，请稍后重新连接原来的瓦力热点，再刷新列表。" : "正在切换网络或同步设备。手机可能已断开热点，请查看胸前屏幕的新地址；无需重复提交。"
         : error.name === "AbortError" ? "读取超时，请稍后重新扫描。" : error.message;
     }
   }
@@ -71,7 +73,8 @@ async function refreshAndScan() {
     const selected = element("ssid").value;
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = result.networks.length ? "请选择附近的 Wi-Fi" : "未发现网络，请重新扫描";
+    placeholder.textContent = result.networks.length ? "请选择附近的 Wi-Fi" : "列表为空，请点击下方重新搜索";
+    element("scan-info").textContent = result.detail || (result.cached ? "显示最近搜索到的网络；未找到目标网络时可重新搜索。" : `找到 ${result.networks.length} 个 Wi-Fi`);
     const options = result.networks.map((network) => {
       const option = document.createElement("option");
       option.value = network.ssid;
@@ -83,12 +86,13 @@ async function refreshAndScan() {
   } finally {
     scanning = false;
     element("refresh").disabled = false;
-    element("refresh").textContent = "刷新状态并扫描 Wi-Fi";
+    element("refresh").textContent = "刷新状态和 Wi-Fi 列表";
   }
 }
 async function submit(path, payload, message) {
   if (pending) return;
   setPending(true);
+  pendingAction = path;
   try {
     await request(path, payload);
     element("status").textContent = message;
@@ -106,10 +110,17 @@ element("connect-form").addEventListener("submit", (event) => {
   });
 });
 element("setup").addEventListener("click", () => act(() => submit("setup", {}, "正在开启配网热点，请查看胸前屏幕。")));
+element("rescan").addEventListener("click", () => act(() => submit("rescan", {}, "正在重新搜索 Wi-Fi，热点会短暂断开。请稍后重新连接原热点，再刷新列表。")));
 element("retry").addEventListener("click", () => act(() => submit("retry-sync", {}, "正在重试 ESP32 同步，请稍候。")));
-setInterval(() => {
+setInterval(async () => {
   if (!pending || polling) return;
   polling = true;
-  act(refresh).finally(() => { polling = false; });
+  const rescan = pendingAction === "rescan";
+  try {
+    await act(async () => {
+      const status = await refresh();
+      if (rescan && !busyStates.has(status.state)) await refreshAndScan();
+    });
+  } finally { polling = false; }
 }, 4000);
 act(refreshAndScan);

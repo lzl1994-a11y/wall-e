@@ -1234,7 +1234,7 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                 return
             try:
                 result = (self.server.host_network.snapshot() if route.endswith("/status")
-                          else {"networks": self.server.host_network.backend.scan()})
+                          else {"networks": self.server.host_network.backend.scan(), **self.server.host_network.backend.scan_info()})
                 self._send_json(HTTPStatus.OK, {"ok": True, "hotspot_session": self._hotspot_authorized(), **result})
             except NetworkConfigError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -1396,6 +1396,7 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             "/api/host-network/setup",
             "/api/host-network/connect",
             "/api/host-network/retry-sync",
+            "/api/host-network/rescan",
             "/api/eye-config/query",
             "/api/eye-config/command",
             "/api/choreographies",
@@ -1470,6 +1471,8 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
                     result = manager.enter_setup()
                 elif route.endswith("/connect"):
                     result = manager.connect(payload)
+                elif route.endswith("/rescan"):
+                    result = manager.rescan()
                 else:
                     result = manager.retry_sync()
                 self._send_json(HTTPStatus.ACCEPTED, {"ok": True, **result})

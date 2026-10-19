@@ -9,7 +9,7 @@ NetworkManager 连接和写入 `/etc/NetworkManager/system-connections`。X3 当
 3. 胸前屏幕显示热点名称、随机密码及 `10.42.0.1:8080/wifi`（端口跟随网页服务）。
    手机连接该热点，选择保留无互联网连接，然后打开屏幕地址。页面会建立仅允许配网 API
    使用的 10 分钟 HttpOnly/SameSite 会话，不需要再输入管理令牌；其他局域网访问仍需原令牌。
-4. 页面自动读取状态和扫描网络，在下拉框选择 SSID 后提交密码。请求立即返回，后台稍后切换网络。
+4. 页面自动读取状态和 Wi-Fi 列表，在下拉框选择 SSID 后提交密码。请求立即返回，后台稍后切换网络。
 5. 成功后播放“wifi配置成功，请稍后”，胸前屏幕展示新 IP；手机切至目标网络。
    上位机保存本次凭据与新 IP，再通过原有 NETCFG SET/APPLY 同步 ESP32。
 6. Wi-Fi 连接失败会恢复原配网热点；ESP32 同步失败保留上位机连接，屏幕显示 `SYNC FAILED`
@@ -26,6 +26,13 @@ NetworkManager 连接和写入 `/etc/NetworkManager/system-connections`。X3 当
 通信失联；HTTP/WebRTC 的局域网访问保持不变。需要跨机器 ROS 通信时可设置
 `WALI_ROS_LOCALHOST_ONLY=0`，但需另外配置不依赖被切换无线接口的 DDS 传输。
 
+`brcmfmac` 在 AP 有客户端连接时不能可靠实时扫描。服务会在开启热点前主动搜索并保留
+SSID、信号和加密信息；热点期间只读 NetworkManager 列表或内存结果，禁止自动触发扫描。
+GET 列表会返回 `cached/scanned_at/detail` 说明来源，不因 NetworkManager 缓存过期而报错。
+如果目标网络不在列表中，点击“重新搜索 Wi-Fi”：后台短暂退出热点完成搜索，并在 finally
+中恢复同一个热点，即使搜索失败也尝试恢复。手机需重新连接原热点；页面恢复通信后自动刷新下拉框。
+重新搜索与联网共用任务锁，不会同时切换无线接口，也不会改动已保存的网络凭据。
+
 Wi-Fi 密码仅写入 root 可读的 NetworkManager keyfile 和原有私密配置。
 网页状态、日志和 ROS 状态消息均不包含密码。热点密码只通过串口展示到设备屏幕。
 管理令牌仍可用于所有新增 API；热点会话仅能从设备热点接口和子网访问以下配网 API，
@@ -35,6 +42,7 @@ Wi-Fi 密码仅写入 root 可读的 NetworkManager keyfile 和原有私密配�
 | --- | --- |
 | GET `/api/host-network/status` | 安全状态快照 |
 | GET `/api/host-network/scan` | 附近 SSID、信号和加密方式 |
+| POST `/api/host-network/rescan` `{}` | 后台主动重新搜索，热点模式下会短暂断开并恢复 |
 | POST `/api/host-network/setup` `{}` | 异步进入配网 |
 | POST `/api/host-network/connect` `{"ssid":"...","password":"..."}` | 异步连接并同步 |
 | POST `/api/host-network/retry-sync` `{}` | 重试当前进程最近一次 ESP32 同步 |

@@ -4,8 +4,8 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const path = require('node:path');
 
-async function page({token = '', authorized = true} = {}) {
-  const ids = ['token', 'auth', 'refresh', 'ssid', 'password', 'connect', 'status', 'new-address', 'retry', 'setup', 'connect-form'];
+async function page({token = '', authorized = true, networks = [{ssid: 'shop', signal: 80, security: 'WPA2'}]} = {}) {
+  const ids = ['token', 'auth', 'refresh', 'ssid', 'password', 'connect', 'status', 'new-address', 'retry', 'setup', 'rescan', 'scan-info', 'connect-form'];
   const nodes = Object.fromEntries(ids.map((id) => [id, {
     value: '', textContent: '', hidden: false, disabled: false, dataset: {}, children: [], listeners: {},
     addEventListener(name, callback) { this.listeners[name] = callback; },
@@ -15,20 +15,21 @@ async function page({token = '', authorized = true} = {}) {
   const calls = [];
   const state = {state: 'setup', ip: '10.42.0.1', detail: '', hotspot_session: true};
   const storage = new Map([['waliConfigToken', token]]);
+  let poll;
   const context = vm.createContext({
-    console, AbortController, setTimeout, clearTimeout, setInterval() {},
+    console, AbortController, setTimeout, clearTimeout, setInterval(callback) { poll = callback; },
     location: {port: '8080'},
     document: {getElementById: (id) => nodes[id], createElement: () => ({value: '', textContent: ''})},
     sessionStorage: {getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value)},
     fetch: async (url, options) => {
       calls.push({url, options});
       return {ok: authorized, status: authorized ? 200 : 401,
-        json: async () => authorized ? {ok: true, ...state, networks: [{ssid: 'shop', signal: 80, security: 'WPA2'}]} : {ok: false, error: 'denied'}};
+        json: async () => authorized ? {ok: true, ...state, networks} : {ok: false, error: 'denied'}};
     },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/config/wifi.js'), 'utf8'), context);
   await new Promise(setImmediate);
-  return {nodes, calls, state, run: (code) => vm.runInContext(code, context)};
+  return {nodes, calls, state, poll: () => poll(), run: (code) => vm.runInContext(code, context)};
 }
 
 test('hotspot page automatically loads status and populates real dropdown', async () => {
@@ -76,4 +77,29 @@ test('duplicate submissions issue one request and partial status enables retry',
   await run('refresh()');
   assert.equal(nodes.retry.disabled, false);
   assert.match(nodes.status.textContent, /需要重试/);
+});
+
+test('empty AP cache offers explicit rescan and explains temporary hotspot loss', async () => {
+  const {nodes, calls, run} = await page({networks: []});
+  assert.match(nodes.ssid.children[0].textContent, /重新搜索/);
+  await run(`submit('rescan', {}, '正在重新搜索 Wi-Fi')`);
+  assert.equal(calls.at(-1).url, '/api/host-network/rescan');
+  assert.equal(nodes.rescan.disabled, true);
+  await run(`fetch = async () => {throw new Error('offline')}; act(refresh)`);
+  assert.match(nodes.status.textContent, /重新连接原来的瓦力热点/);
+  assert.equal(run('pending'), true);
+});
+
+test('reconnecting after rescan automatically reloads the dropdown', async () => {
+  const networks = [];
+  const {nodes, state, poll, run} = await page({networks});
+  await run(`submit('rescan', {}, 'searching')`);
+  state.state = 'scanning';
+  await poll();
+  assert.equal(nodes.rescan.disabled, true);
+  networks.push({ssid: 'new-network', signal: 90, security: 'WPA2'});
+  state.state = 'setup';
+  await poll();
+  assert.equal(nodes.ssid.children[1].value, 'new-network');
+  assert.equal(nodes.rescan.disabled, false);
 });

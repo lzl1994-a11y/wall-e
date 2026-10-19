@@ -146,6 +146,71 @@ class HostNetworkTests(unittest.TestCase):
         bridge.send_raw.assert_called_once_with("hostnet:42|1|done|192.168.0.5|8080||\r\n", wake_screen=False)
         stream.close()
 
+    def test_ap_scan_never_requests_active_scan_and_keeps_pre_ap_results(self):
+        mode = {"hotspot": False, "fail": False}
+        commands = []
+        def runner(command, **kwargs):
+            commands.append(command)
+            if "DEVICE,TYPE,STATE,CONNECTION" in command:
+                output = "wlan0:wifi:connected:" + ("WALL-E-Setup" if mode["hotspot"] else "home")
+            elif "IP4.ADDRESS" in command:
+                output = "10.42.0.1/24" if mode["hotspot"] else "192.168.0.5/24"
+            elif "SSID,SIGNAL,SECURITY" in command:
+                self.assertEqual(command[-1], "no" if mode["hotspot"] else "yes")
+                if mode["fail"]:
+                    return SimpleNamespace(returncode=1, stdout="")
+                output = "" if mode["hotspot"] else "home:90:WPA2\nshop:50:WPA2\nWALL-E-1234:100:WPA2"
+            else:
+                self.fail(repr(command))
+            return SimpleNamespace(returncode=0, stdout=output)
+        backend = NetworkManagerBackend(runner=runner)
+        backend._hotspot_ssid = "WALL-E-1234"
+        original = backend.scan()
+        self.assertEqual([item["ssid"] for item in original], ["home", "shop"])
+        scanned_at = backend.scan_info()["scanned_at"]
+        mode["hotspot"] = True
+        self.assertEqual(backend.scan(), original)
+        mode["fail"] = True
+        self.assertEqual(backend.scan(), original)
+        self.assertTrue(backend.scan_info()["cached"])
+        self.assertEqual(backend.scan_info()["scanned_at"], scanned_at)
+
+    def test_hotspot_is_activated_after_prescan(self):
+        backend = NetworkManagerBackend()
+        backend.status = MagicMock(return_value={"hotspot": False})
+        backend.run = MagicMock(side_effect=lambda *args, **kwargs: (
+            "yes" if "WIFI-PROPERTIES.AP" in args else
+            "ap-uuid:WALL-E-Setup" if "UUID,NAME" in args else
+            "WALL-E-1234" if "802-11-wireless.ssid" in args else "password"
+        ))
+        order = []
+        backend.scan = MagicMock(side_effect=lambda: order.append("scan"))
+        backend.activate = MagicMock(side_effect=lambda _: order.append("activate"))
+        backend.hotspot()
+        self.assertEqual(order, ["scan", "activate"])
+
+    def test_failed_explicit_rescan_always_restores_original_ap(self):
+        backend = NetworkManagerBackend()
+        backend.device = "wlan0"
+        backend.status = MagicMock(return_value={"hotspot": True})
+        backend.run = MagicMock(return_value="original-ap-uuid")
+        backend.scan = MagicMock(side_effect=NetworkConfigError("scan failed"))
+        backend.activate = MagicMock()
+        with self.assertRaises(NetworkConfigError):
+            backend.rescan()
+        backend.activate.assert_called_once_with("original-ap-uuid")
+        backend.run.assert_any_call("device", "disconnect", "wlan0")
+
+    def test_background_rescan_preserves_credentials_and_returns_to_setup(self):
+        self.manager._ap = {"ssid": "WALL-E-1234", "password": "ap-secret"}
+        self.backend.status.return_value = {"hotspot": True, "ip": AP_ADDRESS}
+        self.manager.rescan()
+        self.finish()
+        self.assertEqual(self.manager.snapshot()["state"], "setup")
+        self.backend.rescan.assert_called_once()
+        self.backend.connect.assert_not_called()
+        self.store.save_patch.assert_not_called()
+
     def test_managed_dds_uses_loopback_with_explicit_opt_out(self):
         import launch_nodes
         entry = launch_nodes.NodeEntry("test", launch_nodes.ROOT / "launch_nodes.py")
