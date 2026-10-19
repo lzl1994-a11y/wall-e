@@ -17,6 +17,9 @@ NetworkManager 连接和写入 `/etc/NetworkManager/system-connections`。X3 当
 有局域网连接但没有互联网时不切换。普通单网卡采用 AP/STA 切换，手机短暂断开是正常的。
 本次配网会持久保存一个救援热点配置，但禁止它开机抢占已知 Wi-Fi；
 目标网络由 NetworkManager 保存并启用自动连接。
+进入配网时会将原来绑定某个 LAN IP 的 TFT 图像服务改为 `0.0.0.0`，并通过
+`host_network_prepare/host_network_ready` 等待运行中服务完成重绑；该设置会持久保存，
+保证跨网段和重启后仍可接收 ESP32 的 TCP HELLO。
 
 Wi-Fi 密码仅写入 root 可读的 NetworkManager keyfile 和原有私密配置。
 网页状态、日志和 ROS 状态消息均不包含密码。热点密码只通过串口展示到设备屏幕。

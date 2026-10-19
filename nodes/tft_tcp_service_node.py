@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 import rclpy
 from rclpy.node import Node
@@ -76,6 +77,8 @@ class TftTcpServiceNode(Node):
         self._ready_publisher = self.create_publisher(
             String, TFT_PREVIEW_READY_TOPIC, 10
         )
+        self._network_ready_publisher = self.create_publisher(String, "host_network_ready", 10)
+        self.create_subscription(String, "host_network_prepare", self._on_network_prepare, 10)
         self._result_publisher = self.create_publisher(
             String, TFT_PREVIEW_RESULT_TOPIC, 10
         )
@@ -111,6 +114,22 @@ class TftTcpServiceNode(Node):
     def _publish_ready(self) -> None:
         if self._listening:
             self._ready_publisher.publish(String(data="ready"))
+
+    def _on_network_prepare(self, message) -> None:
+        if not message.data or len(message.data) > 64:
+            return
+        try:
+            with self._surface_lock:
+                if self.settings.bind_address != "0.0.0.0" or not self._listening:
+                    self._listening = False
+                    self.server.stop()
+                    self.settings = replace(self.settings, bind_address="0.0.0.0")
+                    self.server.settings = self.settings
+                    self.server.start()
+                    self._listening = True
+            self._network_ready_publisher.publish(String(data=message.data))
+        except (OSError, RuntimeError) as exc:
+            self.get_logger().error(f"TFT 网络监听切换失败: {exc}")
 
     def _on_vision_pipeline_command(self, message) -> None:
         command = decode_vision_pipeline_command(message.data)

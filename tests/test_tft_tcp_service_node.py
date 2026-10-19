@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from services.game.game_protocol import encode_game_frame
 from services.display.tft_preview_protocol import decode_preview_result
-from services.display.tft_preview_server import PreviewResult
+from services.display.tft_preview_server import PreviewResult, TftPreviewSettings
 
 
 class _String:
@@ -55,6 +55,25 @@ class TftTcpServiceNodeTests(unittest.TestCase):
         node._on_game_frame(_UInt8MultiArray(data=encode_game_frame(raw, 2, 2, 8)))
 
         node._game_frame_adapter.submit_frame.assert_called_once_with(raw, 2, 2, 8)
+
+    def test_network_prepare_rebinds_old_ip_before_ack_and_is_idempotent(self):
+        node_class = self._load_node_class()
+        node = node_class.__new__(node_class)
+        node._surface_lock = threading.RLock()
+        node._listening = True
+        node.settings = TftPreviewSettings(bind_address="192.168.0.5", port=9000)
+        node.server = MagicMock()
+        node._network_ready_publisher = MagicMock()
+        node.get_logger = MagicMock()
+        def acknowledge(message):
+            node.server.start.assert_called_once()
+            self.assertEqual(node.server.settings.bind_address, "0.0.0.0")
+            self.assertEqual(message.data, "request-1")
+        node._network_ready_publisher.publish.side_effect = acknowledge
+        node._on_network_prepare(_String("request-1"))
+        node._on_network_prepare(_String("request-1"))
+        node.server.stop.assert_called_once()
+        self.assertTrue(node._listening)
 
     def test_camera_request_returns_correlated_last_frame(self):
         node_class = self._load_node_class()

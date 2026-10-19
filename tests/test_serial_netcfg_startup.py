@@ -48,6 +48,7 @@ class SerialNetcfgStartupTests(unittest.TestCase):
         node.bridge.run_exclusive.side_effect = lambda operation: operation(object())
         node.netcfg = MagicMock()
         node.netcfg.host_screen.return_value = {"seq": 42}
+        node._prepare_network_listener = MagicMock()
         node._run_netcfg_request("host-1", "host_screen", {
             "state": "setup", "ip": "10.42.0.1", "port": 8080,
             "ssid": "WALL-E-1234", "password": "never-publish", "audible": True,

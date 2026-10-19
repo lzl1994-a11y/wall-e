@@ -210,6 +210,13 @@ class HostNetworkManager:
                                        "ssid": ap.get("ssid", ""),
                                        "password": ap.get("password", ""), "audible": audible})
 
+    def _prepare_listener(self):
+        # A listener pinned to the old LAN address cannot receive ESP32 HELLO
+        # after a subnet change. The serial RPC asks its owner to rebind live.
+        config = self.store.load()
+        if config.get("tft_preview", {}).get("bind_address", "0.0.0.0") != "0.0.0.0":
+            self.store.save_patch({"tft_preview": {"bind_address": "0.0.0.0"}})
+
     def _launch(self, task, *args):
         with self._lock:
             if self._closed.is_set():
@@ -237,6 +244,7 @@ class HostNetworkManager:
 
     def _setup(self, detail=""):
         try:
+            self._prepare_listener()
             self._ap = self.backend.hotspot()
             self._update(state="setup", ip=AP_ADDRESS, detail=detail, esp32="pending")
             self._screen("setup", AP_ADDRESS, audible=True)
@@ -249,6 +257,7 @@ class HostNetworkManager:
             return
         self._update(state="connecting", detail="正在连接目标 Wi-Fi，手机连接可能断开")
         try:
+            self._prepare_listener()
             self._screen("connecting", AP_ADDRESS)
             status = self.backend.connect(ssid, password)
         except Exception:

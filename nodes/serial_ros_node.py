@@ -60,6 +60,10 @@ class SerialNode(Node):
         self._netcfg_request_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._tft_preview_ready = threading.Event()
+        self._network_listener_ready = threading.Event()
+        self._network_listener_request = ""
+        self._network_prepare_pub = self.create_publisher(String, "host_network_prepare", 10)
+        self.create_subscription(String, "host_network_ready", self._on_network_listener_ready, 10)
         self._music_active = False
         self._last_user_turn_id = ""
         self._eye_request_lock = threading.Lock()
@@ -126,6 +130,19 @@ class SerialNode(Node):
 
     def _on_tft_preview_ready(self, _message):
         self._tft_preview_ready.set()
+
+    def _on_network_listener_ready(self, message):
+        if message.data == self._network_listener_request:
+            self._network_listener_ready.set()
+
+    def _prepare_network_listener(self):
+        self._network_listener_request = uuid.uuid4().hex
+        self._network_listener_ready.clear()
+        for _ in range(10):
+            self._network_prepare_pub.publish(String(data=self._network_listener_request))
+            if self._network_listener_ready.wait(0.5):
+                return
+        raise NetworkConfigError("等待 TFT 图像服务切换网络监听地址超时")
 
     def _on_music_state(self, message):
         state = decode_music_state(message.data)
@@ -633,6 +650,8 @@ class SerialNode(Node):
                     )
                 )
             elif operation == "host_screen":
+                if isinstance(payload, dict) and payload.get("state") in {"setup", "connecting"}:
+                    self._prepare_network_listener()
                 data = self.bridge.run_exclusive(
                     lambda stream: self.netcfg.host_screen(payload, stream=stream)
                 )
