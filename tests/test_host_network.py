@@ -10,6 +10,7 @@ from services.hardware.host_network import (
     AP_ADDRESS, HostNetworkManager, NetworkManagerBackend, split_nmcli, validate_wifi,
 )
 from tests.test_esp32_netcfg import FakeSerial
+from services.hardware.serial_bridge import _RoutedNetcfgStream
 
 
 class HostNetworkTests(unittest.TestCase):
@@ -115,6 +116,14 @@ class HostNetworkTests(unittest.TestCase):
             self.assertIn("psk=pass\\sword", profile)
             self.assertIn("ssid=115;104;111;112;58;119;105;102;105;", profile)
             self.assertNotIn("pass word", repr(commands))
+
+    def test_host_screen_sequence_is_routed_by_shared_serial_stream(self):
+        bridge = MagicMock()
+        stream = _RoutedNetcfgStream(bridge)
+        stream.write(b"hostnet:42|1|done|192.168.0.5|8080||\r\n")
+        bridge._register_netcfg_sequence.assert_called_once_with(42)
+        bridge.send_raw.assert_called_once_with("hostnet:42|1|done|192.168.0.5|8080||\r\n", wake_screen=False)
+        stream.close()
 
 
 if __name__ == "__main__":

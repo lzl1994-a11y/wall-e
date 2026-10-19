@@ -355,7 +355,12 @@ class _RoutedNetcfgStream:
         raw = bytes(payload)
         try:
             text = raw.decode("ascii").strip()
-            sequence = int(text.split(":", 2)[2].split("|", 1)[0])
+            prefix, _, arguments = text.rpartition(":")
+            if prefix not in {"netcfg:set", "netcfg:apply", "netcfg:query", "hostnet"}:
+                raise ValueError("Unknown configuration command")
+            sequence = int(arguments.split("|", 1)[0])
+            if not 0 <= sequence <= 0xFFFFFFFF:
+                raise ValueError("Invalid configuration sequence")
         except (UnicodeDecodeError, ValueError, IndexError) as exc:
             raise RuntimeError("无效的 NETCFG 串口命令") from exc
         self._sequences.add(sequence)
