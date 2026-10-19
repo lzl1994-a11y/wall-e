@@ -111,3 +111,40 @@ pio run -e esp32
 该 HTTP 会话测试由本机绑定热点地址模拟热点客户端，未替代实体手机的现场确认。
 TFT 现在显示同步中、同步失败及重试地址；成功提示保持三秒后返回电量页。
 测试后恢复原 Wi-Fi，定时恢复任务已停止，未再次删除用户配置。
+
+## 热点模式下扫描超时修复（2026-10-19）
+
+实机手机请求中，状态接口成功而扫描接口反复返回 400。旧实现使用
+`nmcli device wifi list --rescan auto`，扫描缓存过期后会尝试主动扫描；
+本机 brcmfmac 在 AP 模式下强制扫描等待 15 秒仍不返回，超过接口超时。
+此前快速测试命中了 NetworkManager 缓存，没有覆盖该情况。
+
+修复提交 `8d156a6` 复用现有 NetworkManager 后端、异步配网任务和热点会话鉴权：
+进入热点前扫描并保存列表，热点期间只读缓存；提供明确提示会短暂断网的
+“重新搜索 Wi-Fi”，退出热点扫描后在 finally 中恢复相同热点。
+修改文件为 `services/hardware/host_network.py`、
+`services/integrations/web_server.py`、`web/config/wifi.html`、`wifi.js`、
+`tests/test_host_network.py`、`test_web_server.py`、`test_wifi_frontend.cjs`、
+`docs/host-wifi.md`，并更新本验证记录。无需修改或烧录下位机。
+
+实际运行：
+
+```bash
+python -m pytest tests/test_host_network.py tests/test_wifi_frontend.py tests/test_web_server.py -q --tb=short
+node --test tests/test_wifi_frontend.cjs
+node --check web/config/wifi.js
+python -m compileall -q services/hardware/host_network.py services/integrations/web_server.py
+git diff --check
+```
+
+本地 pytest 95 项通过，Node 测试 6 项通过；板上 host-network 与热点会话
+权限相关测试 16 项通过。代码通过 Git bundle 拉取并快进合并，随后重启服务。
+
+板上 `/tmp/walle-ap-scan-e2e2.log` 验证初始列表 3 个网络；热点开启超过
+65 秒后列表请求仍为 HTTP 200；重新搜索后获得 6 个网络和更新的扫描时间，
+原热点 UUID、密码保持不变。连接原 Wi-Fi 成功，地址恢复 `192.168.0.5`。
+首次 ESP32 同步返回 partial，随后调用重试同步接口得到 ready、connected；
+首次同步失败原因尚未确定，因此完整自动脚本未记为 E2E_PASS。
+日志另确认 ESP32 HELLO 和 USB 音频设备已识别及系统提示音播放调用。
+未现场观察 TFT、听音或用实体手机验证；HTTP 测试绑定热点地址模拟客户端。
+服务 active，测试恢复定时器 inactive，原网络配置保留。
