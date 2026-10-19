@@ -75,3 +75,39 @@ node --check web/config/wifi.js
 没有通过实体手机申请 DHCP 租约，也未直接观察屏幕或现场听音；
 上述屏幕确认来自固件 ACK，语音确认来自播放节点日志。
 只验证了当前真实 2.4 GHz 网络和不存在网络的恢复，未实测另一网段、酒店认证页或企业 Wi-Fi。
+
+## 首次配网问题修复与复测
+
+用户清空网络后反馈“扫描无效、主机联网但 TFT 停在设置页”。实机确认
+`esp32_network` 为 null；原流程联网后直接读取 `.get("wifi")`，在保存和同步前中断。
+新增测试先复现该错误，再验证 null/缺省配置都能完成首次配网。
+页面原来未继承设置页令牌，截图中的请求因空令牌被拒绝；现在热点接口/子网的访问者
+打开配网页面时获得仅用于配网 API 的短期 HttpOnly/SameSite 会话。局域网管理权限不变。
+
+本次上位机修改/新增文件：`services/hardware/host_network.py`、`esp32_netcfg.py`、
+`services/integrations/web_server.py`、`web/config/wifi.html`、`wifi.js`、`wifi.css`、
+`tests/test_host_network.py`、`test_web_server.py`、`test_wifi_frontend.py`、
+`test_wifi_frontend.cjs`、`docs/host-wifi.md`，以及本验证记录。
+下位机修改文件：`src/domain/HostNetworkScreen.h`、`src/app/AppController.h`、
+`AppController.cpp`、`src/adapters/display/St7789DisplayPort.cpp`、
+`tools/test_host_network_screen.cpp`、`docs/host-wifi.md`。
+
+上位机修复提交 `0d0bf46`；下位机提交 `c494b01`。新固件 SHA-256：
+`a25271afec8e29715be1ac38cfc7c70b4ae03510b8ad61b570a5d01411423c94`。
+已备份当前应用并烧录 `0x10000`，哈希验证通过，恢复 `walle.service`。
+
+本地执行以下命令，128 项通过；板上针对首次配网和会话权限边界的 13 项通过。
+
+```bash
+python -m pytest tests/test_host_network.py tests/test_wifi_frontend.py tests/test_system_audio.py tests/test_esp32_netcfg.py tests/test_serial_bridge_hot_path.py tests/test_serial_netcfg_startup.py tests/test_web_server.py -q --tb=short
+node --test tests/test_wifi_frontend.cjs
+pio run -e esp32
+```
+
+板上 `/tmp/walle-wifi-blank-e2e.log` 记录初始配置确实为 null，
+热点会话读取状态成功、无会话访问被拒绝、热点会话访问 `/api/config` 被拒绝。
+扫描得到 7 个网络并找到当前 SSID；经热点会话提交后最终状态 `ready`，
+凭据保存、ESP32 同步和 TFT done ACK 均成功，最后 `E2E_PASS`。
+该 HTTP 会话测试由本机绑定热点地址模拟热点客户端，未替代实体手机的现场确认。
+TFT 现在显示同步中、同步失败及重试地址；成功提示保持三秒后返回电量页。
+测试后恢复原 Wi-Fi，定时恢复任务已停止，未再次删除用户配置。
