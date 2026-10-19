@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from services.hardware.esp32_netcfg import Esp32NetworkConfigurator, NetworkConfigError
 from services.hardware.host_network import (
@@ -131,6 +131,17 @@ class HostNetworkTests(unittest.TestCase):
         bridge._register_netcfg_sequence.assert_called_once_with(42)
         bridge.send_raw.assert_called_once_with("hostnet:42|1|done|192.168.0.5|8080||\r\n", wake_screen=False)
         stream.close()
+
+    def test_managed_dds_uses_loopback_with_explicit_opt_out(self):
+        import launch_nodes
+        entry = launch_nodes.NodeEntry("test", launch_nodes.ROOT / "launch_nodes.py")
+        with patch("launch_nodes.subprocess.Popen") as popen:
+            with patch.dict(launch_nodes.os.environ, {"ROS_LOCALHOST_ONLY": "0"}, clear=True):
+                launch_nodes.start_process(entry)
+                self.assertEqual(popen.call_args.kwargs["env"]["ROS_LOCALHOST_ONLY"], "1")
+            with patch.dict(launch_nodes.os.environ, {"WALI_ROS_LOCALHOST_ONLY": "0"}, clear=True):
+                launch_nodes.start_process(entry)
+                self.assertEqual(popen.call_args.kwargs["env"]["ROS_LOCALHOST_ONLY"], "0")
 
 
 if __name__ == "__main__":
