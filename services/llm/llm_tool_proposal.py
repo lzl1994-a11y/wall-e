@@ -8,11 +8,13 @@ from typing import Any, Mapping, Optional
 
 from services.action.action_intent_guard import validate_action_call
 from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
+from services.vision.visual_search import VISUAL_SEARCH_TOOL_NAME
 
 ROUTE_ACTION = "action"
 ROUTE_CAMERA_PHOTO = "camera_photo"
 ROUTE_CAMERA_INSPECTION = "camera_inspection"
 ROUTE_CONDITIONAL_TASK = "conditional_task"
+ROUTE_VISUAL_SEARCH = "visual_search"
 
 STREAM_CONTROL_BREAK = "break"
 STREAM_CONTROL_CONTINUE = "continue"
@@ -64,6 +66,10 @@ class ToolProposalDecision:
     @property
     def is_conditional_task(self) -> bool:
         return self.is_accepted and self.route == ROUTE_CONDITIONAL_TASK
+
+    @property
+    def is_visual_search(self) -> bool:
+        return self.is_accepted and self.route == ROUTE_VISUAL_SEARCH
 
     @classmethod
     def accept(
@@ -190,6 +196,13 @@ class LLMToolProposalEvaluator:
                 action_name=action_name,
                 arguments=action_arguments,
                 plan=action_arguments,
+            )
+
+        if action_name == VISUAL_SEARCH_TOOL_NAME:
+            return ToolProposalDecision.accept(
+                route=ROUTE_VISUAL_SEARCH,
+                action_name=action_name,
+                arguments=action_arguments,
             )
 
         return ToolProposalDecision.accept(

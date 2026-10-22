@@ -89,6 +89,12 @@ from services.llm.llm_empty_answer_retry import (
     build_empty_answer_retry_request,
 )
 from services.vision.camera_frame import save_camera_photo
+from services.vision.visual_search import (
+    VISUAL_SEARCH_REQUEST_TOPIC, VISUAL_SEARCH_STATUS_TOPIC,
+    VisualSearchWorkflow, VisualSearchViewWorkflow,
+    parse_visual_search_request, parse_visual_search_result,
+    encode_visual_search_status,
+)
 
 # Game protocol and streaming services.
 # 游戏协议与视频流服务。
@@ -171,6 +177,7 @@ class LLMBrainNode(Node):
         self._camera_inspection_workflow = None
         self._conditional_task_workflow = None
         self._llm_action_plan_workflow = None
+        self._visual_search_lock = threading.Lock()
 
         # Executors for physical actions and Behavior Tree execution.
         # 实体动作执行器与行为树执行器。
@@ -277,6 +284,12 @@ class LLMBrainNode(Node):
         # TFT 屏幕相机预览客户端配置与初始化。
         self.tft_preview_settings = load_tft_preview_settings()
         self.tft_preview = TftPreviewClient(self, logger=self.get_logger())
+        self.visual_search_status_publisher = self.create_publisher(
+            String, VISUAL_SEARCH_STATUS_TOPIC, 10
+        )
+        self.create_subscription(
+            String, VISUAL_SEARCH_REQUEST_TOPIC, self._on_visual_search_request, 10
+        )
 
         # Game mode and frame subscriptions, plus periodic commentary timer.
         # 游戏模式与图像帧订阅，以及周期性游戏解说定时器。
@@ -702,6 +715,10 @@ class LLMBrainNode(Node):
                         )
                         return
 
+                    if proposal.is_visual_search:
+                        self._process_visual_search(turn_id, user_prompt, proposal.arguments)
+                        return
+
                     # Record pending standard physical action.
                     # 记录待执行的标准实体动作。
                     action_payload = state.record_pending_action(
@@ -984,6 +1001,101 @@ class LLMBrainNode(Node):
         self._publish_tts(answer, turn_id)
         self._publish_screen_dialog(turn_id, user_prompt, answer, [], error=error)
         self._finish_tts_turn(turn_id)
+
+    def _process_visual_search(self, turn_id, user_prompt, arguments):
+        if self._voice_task_cancelled():
+            return
+        workflow = VisualSearchWorkflow(authorize=validate_action_arguments)
+        preparation = workflow.prepare(turn_id=turn_id, arguments=arguments)
+        plan = preparation.plan
+        if preparation.rejection is not None:
+            result = preparation.rejection
+        else:
+            self._publish_tts("我找一下。", turn_id)
+            self.get_logger().info(
+                f'[{turn_id}] Visual search submitted: plan_id={plan.plan_id}, '
+                f'max_views={plan.max_views}'
+            )
+            execution = self._try_execute_native_plan(
+                plan, timeout=plan.max_views * 50.0 + 10.0,
+                cancelled=self._voice_task_cancelled,
+            )
+            result = workflow.complete(plan, execution)
+        if self._voice_task_cancelled():
+            return
+        error = None
+        if result.get("status") == "completed":
+            answer = result.get("response") or (
+                "找到目标了。" if result.get("found") else "这次没有找到目标。"
+            )
+            self.get_logger().info(
+                f'[{turn_id}] Visual search completed: found={result.get("found")}, '
+                f'attempts={result.get("attempts")}'
+            )
+        else:
+            error = result.get("reason") or "visual_search_failed"
+            self.get_logger().warning(f'[{turn_id}] Visual search failed: {error}')
+            answer = (
+                "搜索行为树还没有就绪，这次没能开始寻找。"
+                if error == "native_behavior_tree_unavailable"
+                else "这次搜索没有完成，我已停止后续动作。"
+            )
+        action = {
+            **result, "name": "search_environment",
+            "arguments": json.dumps(arguments, ensure_ascii=False),
+        }
+        LLMConversationHistory.record_turn(
+            self.chat_history, user_text=user_prompt, assistant_text=answer,
+            actions=[action], turn_id=turn_id,
+        )
+        self.full_ai_publisher.publish(String(data=answer))
+        self._publish_tts(answer, turn_id)
+        self._publish_screen_dialog(turn_id, user_prompt, answer, [action], error=error)
+        self._finish_tts_turn(turn_id)
+
+    def _on_visual_search_request(self, message):
+        request = parse_visual_search_request(message.data)
+        if request is None:
+            self.get_logger().warning("Ignored malformed visual-search request")
+            return
+        threading.Thread(
+            target=self._serve_visual_search_request, args=(request,), daemon=True,
+        ).start()
+
+    def _serve_visual_search_request(self, request):
+        # The plan waits in the dialog worker; ROS callbacks must remain free to
+        # deliver frame data and correlated tree statuses.
+        with self._visual_search_lock:
+            workflow = VisualSearchViewWorkflow(
+                capture=lambda: self._run_camera_preview(
+                    duration_ms=self.tft_preview_settings.recognition_duration_ms,
+                ),
+                evaluate=self._evaluate_visual_search,
+            )
+            decision = workflow.invoke(request)
+            if decision.error:
+                self.get_logger().error(f"Visual search view failed: {decision.error}")
+            self.visual_search_status_publisher.publish(String(
+                data=encode_visual_search_status(request, decision.result)
+            ))
+
+    def _evaluate_visual_search(self, target, question, image_base64):
+        accumulator = VisualResponseAccumulator()
+        for event in self.llm.chat_stream(
+            "只依据当前图片判断搜索目标。清楚可见时 status=found，并说明位置；"
+            "画面清晰但没有目标时 status=not_found；画面无法判断时 status=uncertain。"
+            "只返回 JSON 对象，包含 status、evidence、response 三个字符串字段，"
+            "response 是可直接播报的简短中文观察结果。不要执行动作。\n"
+            f"搜索目标：{target}\n用户问题：{question}",
+            [], image_base64=image_base64, tools_enabled=False,
+            structured_answer=False,
+            system_prompt="你是行为树的视觉检测叶节点。只判断当前画面，返回严格 JSON。",
+        ):
+            accumulator.process_event(event)
+        result = parse_visual_search_result(json.loads(accumulator.raw_text()))
+        if result is None:
+            raise ValueError("visual_search_result_invalid")
+        return result
 
     def _on_action_status(self, message):
         """Receive asynchronous action execution status from action coordinator.

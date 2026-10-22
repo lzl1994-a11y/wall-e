@@ -20,6 +20,14 @@ from services.llm.llm_tool_proposal import (
 
 
 class LLMToolProposalTests(unittest.TestCase):
+    def test_visual_search_uses_dedicated_route_instead_of_action_bus(self):
+        decision = evaluate_tool_proposal(
+            {"name": "search_environment", "arguments": {"target": "红色箱子"}},
+            user_prompt="这个好房间有一个红色的箱子里，找一下在哪里？",
+        )
+        self.assertTrue(decision.is_visual_search)
+        self.assertFalse(decision.is_action)
+
     def test_1_valid_ordinary_action_proposal(self):
         tool_call = {
             "name": "play_sequence",

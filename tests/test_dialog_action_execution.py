@@ -137,6 +137,82 @@ class DialogActionExecutionTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 self._exercise(mode, "completed")
 
+    def test_text_search_submits_visual_tree_and_reports_observation(self):
+        node, publisher, _, reply = self._node("text")
+        node.llm.chat_stream.return_value = iter([{
+            "type": "tool_call", "name": "search_environment",
+            "arguments": json.dumps({"target": "红色箱子"}),
+        }])
+        plans = []
+
+        def execute(plan, **kwargs):
+            plans.append(plan)
+            return {"status": "success", "results": [{
+                "action": "search_environment", "status": "found",
+                "found": True, "response": "红色箱子在左前方。",
+            }]}
+
+        node._try_execute_native_plan = execute
+        node._process_voice_task("turn", "这个好房间有一个红色的箱子里，找一下在哪里？")
+
+        self.assertEqual(reply(), "红色箱子在左前方。")
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0].root_type, "VisualSearch")
+        self.assertEqual(plans[0].target, "红色箱子")
+        call = next(m for m in node.chat_history if m.get("tool_calls"))["tool_calls"][0]
+        self.assertEqual(json.loads(call["function"]["arguments"]), {"target": "红色箱子"})
+        publisher.publish.assert_not_called()
+
+    def test_text_search_reports_missing_native_owner_without_action_fallback(self):
+        node, publisher, _, reply = self._node("text")
+        node._try_execute_native_plan = MagicMock(return_value=None)
+        node._process_visual_search("turn", "找红色箱子", {"target": "红色箱子"})
+
+        self.assertIn("搜索行为树还没有就绪", reply())
+        dialog = json.loads(node.screen_dialog_publisher.publish.call_args.args[0].data)
+        self.assertEqual(dialog["error"], "native_behavior_tree_unavailable")
+        publisher.publish.assert_not_called()
+
+    def test_text_search_rejects_invalid_plan_without_submitting(self):
+        node, publisher, _, _ = self._node("text")
+        node._try_execute_native_plan = MagicMock()
+        node._process_visual_search("turn", "找箱子", {"target": ""})
+        node._try_execute_native_plan.assert_not_called()
+        publisher.publish.assert_not_called()
+
+    def test_text_search_view_returns_correlated_result_and_rejects_invalid_model_output(self):
+        node, _, _, _ = self._node("text")
+        node._visual_search_lock = threading.Lock()
+        node.visual_search_status_publisher = MagicMock()
+        node.tft_preview_settings = types.SimpleNamespace(recognition_duration_ms=100)
+        node._run_camera_preview = MagicMock(return_value=types.SimpleNamespace(
+            busy=False, last_frame=b"jpeg", error=None,
+        ))
+        request = {"request_id": "view-1", "plan_id": "search-1",
+                   "target": "箱子", "question": "在哪里", "attempt": 1, "max_views": 3}
+        for raw, expected in [
+            (json.dumps({"status": "found", "evidence": "红色箱体", "response": "在左侧"}), "found"),
+            ('{"status":"maybe"}', "uncertain"),
+            ("invalid JSON", "uncertain"),
+        ]:
+            with self.subTest(raw=raw):
+                node.llm.chat_stream.return_value = iter([{"type": "text", "content": raw}])
+                node._serve_visual_search_request(request)
+                result = json.loads(node.visual_search_status_publisher.publish.call_args.args[0].data)
+                self.assertEqual(result["request_id"], "view-1")
+                self.assertEqual(result["plan_id"], "search-1")
+                self.assertEqual(result["status"], expected)
+                kwargs = node.llm.chat_stream.call_args.kwargs
+                self.assertFalse(kwargs["tools_enabled"])
+                self.assertEqual(kwargs["image_base64"], "anBlZw==")
+
+    def test_cancelled_search_does_not_publish_stale_final_reply(self):
+        node, _, _, _ = self._node("text")
+        node._voice_task_cancelled = lambda: True
+        node._try_execute_native_plan = MagicMock(return_value=None)
+        node._process_visual_search("turn", "找箱子", {"target": "箱子"})
+        node.full_ai_publisher.publish.assert_not_called()
+
     def test_failed_or_interrupted_action_aborts_remaining_actions_in_each_mode(self):
         for mode in ("voice", "text"):
             for status in ("failed", "interrupted", "rejected"):
