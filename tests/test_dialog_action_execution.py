@@ -192,6 +192,7 @@ class DialogActionExecutionTests(unittest.TestCase):
                    "target": "箱子", "question": "在哪里", "attempt": 1, "max_views": 3}
         for raw, expected in [
             (json.dumps({"status": "found", "evidence": "红色箱体", "response": "在左侧"}), "found"),
+            ('```json\n' + json.dumps({"status": "found", "evidence": "红色箱体", "response": "在左侧"}) + '\n```', "found"),
             ('{"status":"maybe"}', "uncertain"),
             ("invalid JSON", "uncertain"),
         ]:

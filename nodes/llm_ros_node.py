@@ -1092,9 +1092,22 @@ class LLMBrainNode(Node):
             system_prompt="你是行为树的视觉检测叶节点。只判断当前画面，返回严格 JSON。",
         ):
             accumulator.process_event(event)
-        result = parse_visual_search_result(json.loads(accumulator.raw_text()))
+        raw = accumulator.raw_text()
+        try:
+            value = LLMService._parse_json_object(raw)
+        except ValueError as exc:
+            # Keep frame-derived content out of logs while distinguishing an
+            # empty/truncated model answer from malformed JSON.
+            raise ValueError(
+                f"visual_search_model_output_invalid:chars={len(raw)}"
+            ) from exc
+        result = parse_visual_search_result(value)
         if result is None:
             raise ValueError("visual_search_result_invalid")
+        self.get_logger().info(
+            f'Visual search model result: status={result["status"]}, '
+            f'format={"fenced_json" if raw.startswith("```") else "json"}'
+        )
         return result
 
     def _on_action_status(self, message):
