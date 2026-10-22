@@ -172,9 +172,16 @@ class CameraCaptureNode(Node):
         now = time.monotonic()
         self._leases.purge(now=now)
         process = self._camera_process
-        if process is not None and process.poll() is None and self._camera_size != self._leases.resolution:
+        if (
+            process is not None
+            and process.poll() is None
+            and self._leases.active
+            and self._camera_size != self._leases.resolution
+        ):
             # The driver applies dimensions at startup. Keep one device owner;
-            # only restart it when the shared lease requirement changes.
+            # only restart it for an active client's size requirement. With no
+            # clients, stop UVC capture and retain the last configured size so
+            # the next preview can resume without another V4L2 initialization.
             self._reconfiguring = True
             self._publish_status("starting", source=CAMERA_SOURCE_TOPIC, force=True)
             self._stop_camera_process()

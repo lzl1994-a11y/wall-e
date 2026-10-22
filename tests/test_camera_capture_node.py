@@ -267,7 +267,7 @@ class CameraCaptureNodeTests(unittest.TestCase):
             self.assertIn('"state":"error"', node._status_pub.messages[-1].data)
             self.assertIn("持续无响应", node._status_pub.messages[-1].data)
 
-    def test_photo_resolution_changes_only_the_single_camera_owner_and_restores(self):
+    def test_photo_keeps_warm_resolution_until_tracking_requires_another_size(self):
         module = _load_camera_capture_module()
         processes = [_FakeProcess(), _FakeProcess(), _FakeProcess()]
         with (
@@ -283,9 +283,37 @@ class CameraCaptureNodeTests(unittest.TestCase):
             node._on_command(_FakeString(encode_camera_command("renew", "photo", 5, resolution=(1280, 720))))
             self.assertEqual(popen.call_count, 2)
             node._on_command(_FakeString(encode_camera_command("release", "photo")))
+            self.assertFalse(processes[1].terminated)
+            self.assertIs(node._camera_process, processes[1])
+            self.assertEqual(node._camera_size, (1280, 720))
+            self.assertFalse(node._capture_enabled)
+            self.assertEqual(popen.call_count, 2)
+            # A second 720p preview resumes the already-configured driver.
+            node._on_command(_FakeString(encode_camera_command("acquire", "photo", 5, resolution=(1280, 720))))
+            self.assertEqual(popen.call_count, 2)
+            self.assertTrue(node._capture_enabled)
+            node._on_command(_FakeString(encode_camera_command("release", "photo")))
+            # Tracking still has priority and must run at its supported size.
+            node._on_command(_FakeString(encode_camera_command("acquire", "tracking-vision", 5)))
             self.assertTrue(processes[1].terminated)
             self.assertEqual(node._camera_size, (640, 480))
             self.assertEqual(popen.call_count, 3)
+
+    def test_expired_last_720p_lease_stops_capture_without_restarting_driver(self):
+        module = _load_camera_capture_module()
+        processes = [_FakeProcess(), _FakeProcess(), _FakeProcess()]
+        with (
+            patch.object(module, "resolve_camera_device", return_value="/dev/video8"),
+            patch.object(module.subprocess, "Popen", side_effect=processes) as popen,
+        ):
+            node = module.CameraCaptureNode()
+            node._on_command(_FakeString(encode_camera_command("acquire", "photo", 5, resolution=(1280, 720))))
+            node._leases.acquire("photo", 1, now=time.monotonic() - 2, resolution=(1280, 720))
+            node._tick()
+            self.assertFalse(node._capture_enabled)
+            self.assertFalse(processes[1].terminated)
+            self.assertEqual(popen.call_count, 2)
+            self.assertEqual(node._camera_size, (1280, 720))
 
     def test_detection_frames_require_tracking_lease_without_stopping_preview(self):
         module = _load_camera_capture_module()
