@@ -74,6 +74,11 @@
             <div class="switch-grid">
               <label class="switch-row"><span><strong>原生行为树</strong><small>使用受限 ActionPlan、顺序叶节点和关联动作终态</small></span><input data-path="orchestration.native_behavior_tree" type="checkbox"><i></i></label>
             </div>
+            <div class="form-grid">
+              <label class="field"><span>搜索油门（%）</span><input data-path="orchestration.visual_search.throttle" data-default="55" data-type="integer" type="number" min="1" max="100" step="1"></label>
+              <label class="field"><span>搜索转向时长（秒）</span><input data-path="orchestration.visual_search.turn_duration" data-default="1" data-type="number" type="number" min="0.1" max="3" step="0.01"></label>
+            </div>
+            <p class="card-help">仅控制寻找物品时每次转向的油门和持续时间。支持 0.35、0.5 等小数秒；保存后下一次搜索生效，无需重启，不改变正在执行的搜索。</p>
           </article>
           <article class="card span-two" data-module="mcp">
             <div class="card-heading-row"><h3>MCP 外部 Agent 网关</h3><button class="button secondary small module-save" data-save-module="mcp" type="button">保存本模块</button></div>

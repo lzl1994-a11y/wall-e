@@ -1767,7 +1767,7 @@ function inputValue(input) {
 
 function populateFields(root = document) {
   $$('[data-path]', root).forEach((input) => {
-    const value = getPath(state.config, input.dataset.path);
+    const value = getPath(state.config, input.dataset.path) ?? input.dataset.default;
     if (input.dataset.secret === "true") {
       input.value = "";
       return;

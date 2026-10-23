@@ -94,6 +94,7 @@ from services.vision.visual_search import (
     VisualSearchWorkflow, VisualSearchViewWorkflow,
     parse_visual_search_request, parse_visual_search_result,
     encode_visual_search_status,
+    load_visual_search_motion_settings,
 )
 
 # Game protocol and streaming services.
@@ -1005,7 +1006,10 @@ class LLMBrainNode(Node):
     def _process_visual_search(self, turn_id, user_prompt, arguments):
         if self._voice_task_cancelled():
             return
-        workflow = VisualSearchWorkflow(authorize=validate_action_arguments)
+        workflow = VisualSearchWorkflow(
+            authorize=validate_action_arguments,
+            motion_settings=load_visual_search_motion_settings,
+        )
         preparation = workflow.prepare(turn_id=turn_id, arguments=arguments)
         plan = preparation.plan
         if preparation.rejection is not None:

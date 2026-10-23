@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import base64
+import math
+from pathlib import Path
+import yaml
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any
@@ -19,6 +22,33 @@ VISUAL_SEARCH_STATUS_TOPIC = "/visual_search/status"
 VISUAL_SEARCH_RESULT_TOOL_NAME = "visual_search_result"
 
 SEARCH_DIRECTIONS = frozenset({"spin", "left", "right"})
+
+
+@dataclass(frozen=True)
+class VisualSearchMotionSettings:
+    throttle: int = 55
+    turn_duration: float = 1.0
+
+
+def normalize_visual_search_motion_settings(value: Any) -> VisualSearchMotionSettings:
+    if not isinstance(value, dict):
+        raise ValueError("orchestration.visual_search 必须是配置对象")
+    throttle = value.get("throttle", 55)
+    duration = value.get("turn_duration", 1.0)
+    if type(throttle) is not int or not 1 <= throttle <= 100:
+        raise ValueError("orchestration.visual_search.throttle 搜索油门必须是 1 到 100 的整数")
+    if (isinstance(duration, bool) or not isinstance(duration, (int, float))
+            or not 0.1 <= duration <= 3 or not math.isfinite(duration)):
+        raise ValueError("orchestration.visual_search.turn_duration 搜索转向时长必须在 0.1 到 3 秒之间")
+    return VisualSearchMotionSettings(throttle=throttle, turn_duration=float(duration))
+
+
+def load_visual_search_motion_settings(path: str | Path | None = None) -> VisualSearchMotionSettings:
+    config_path = Path(path) if path is not None else Path(__file__).resolve().parents[2] / "core/config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return normalize_visual_search_motion_settings(
+        config.get("orchestration", {}).get("visual_search", {})
+    )
 
 
 def normalize_visual_search_arguments(value: Any) -> dict[str, Any]:
@@ -161,12 +191,17 @@ class VisualSearchWorkflow:
         self,
         *,
         authorize: Callable[[str, dict[str, Any]], tuple[bool, str]],
+        motion_settings: Callable[[], VisualSearchMotionSettings] | None = None,
     ) -> None:
         self._authorize = authorize
+        self._motion_settings = motion_settings
 
     def prepare(self, *, turn_id: str, arguments: Any) -> VisualSearchPreparation:
         try:
-            plan = compile_visual_search_plan(turn_id=turn_id, arguments=arguments)
+            plan = compile_visual_search_plan(
+                turn_id=turn_id, arguments=arguments,
+                motion_settings=self._motion_settings() if self._motion_settings else None,
+            )
         except (TypeError, ValueError) as exc:
             return VisualSearchPreparation(rejection={
                 "status": "rejected",
@@ -209,19 +244,25 @@ class VisualSearchWorkflow:
         }
 
 
-def compile_visual_search_plan(*, turn_id: str, arguments: dict[str, Any]) -> VisualSearchPlan:
+def compile_visual_search_plan(
+    *, turn_id: str, arguments: dict[str, Any],
+    motion_settings: VisualSearchMotionSettings | None = None,
+) -> VisualSearchPlan:
     normalized = normalize_visual_search_arguments(arguments)
     skill = get_action_skill("move_chassis")
     if skill is None or not skill.action_bus:
         raise ValueError("visual_search_motion_skill_unavailable")
     max_views = normalized["max_views"]
+    motion = {
+        "direction": normalized["search_direction"],
+        "duration": normalized["motion_duration"],
+    }
+    if motion_settings is not None:
+        motion.update(duration=motion_settings.turn_duration, throttle=motion_settings.throttle)
     steps = [ActionPlanStep(
         step_id="step-01",
         name="move_chassis",
-        arguments={
-            "direction": normalized["search_direction"],
-            "duration": normalized["motion_duration"],
-        },
+        arguments=motion,
         grounding="",
         depends_on=(),
         resources=skill.plan_resources,
@@ -345,6 +386,9 @@ def encode_visual_search_status(request: dict[str, Any], result: dict[str, str])
 
 
 __all__ = [
+    "VisualSearchMotionSettings",
+    "load_visual_search_motion_settings",
+    "normalize_visual_search_motion_settings",
     "SEARCH_DIRECTIONS",
     "VISUAL_SEARCH_REQUEST_TOPIC",
     "VISUAL_SEARCH_RESULT_TOOL_NAME",

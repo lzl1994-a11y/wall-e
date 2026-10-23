@@ -53,6 +53,7 @@ from services.dialog.dialog_tool_router import DialogToolRouter
 from services.dialog.dialog_turn import DialogTurnController, TTS_CLEAN_RE
 from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.vision.visual_search import (
+    load_visual_search_motion_settings,
     VISUAL_SEARCH_REQUEST_TOPIC,
     VISUAL_SEARCH_STATUS_TOPIC,
     VisualSearchWorkflow,
@@ -172,6 +173,7 @@ class VoiceChatNode(Node):
         )
         self._visual_search_lock = threading.Lock()
         self._visual_search_workflow = VisualSearchWorkflow(
+            motion_settings=load_visual_search_motion_settings,
             authorize=lambda name, arguments: validate_action_arguments(name, arguments)
         )
         self._visual_search_view_workflow = None
@@ -636,6 +638,7 @@ class VoiceChatNode(Node):
         workflow = getattr(self, "_visual_search_workflow", None)
         if workflow is None:
             workflow = VisualSearchWorkflow(
+                motion_settings=load_visual_search_motion_settings,
                 authorize=lambda name, arguments: validate_action_arguments(name, arguments)
             )
             self._visual_search_workflow = workflow

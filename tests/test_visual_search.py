@@ -1,5 +1,7 @@
 import json
 import unittest
+import tempfile
+from pathlib import Path
 
 from services.vision.visual_search import (
     VISUAL_SEARCH_TOOL_NAME,
@@ -10,10 +12,41 @@ from services.vision.visual_search import (
     normalize_visual_search_arguments,
     parse_visual_search_request,
     parse_visual_search_result,
+    load_visual_search_motion_settings,
+    normalize_visual_search_motion_settings,
 )
 
 
 class VisualSearchTests(unittest.TestCase):
+    def test_motion_config_is_reloaded_for_each_new_search(self):
+        from services.action.action_intent_guard import validate_action_arguments
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text("orchestration: {}", encoding="utf-8")
+            self.assertEqual(load_visual_search_motion_settings(path).throttle, 55)
+            workflow = VisualSearchWorkflow(
+                authorize=validate_action_arguments,
+                motion_settings=lambda: load_visual_search_motion_settings(path),
+            )
+            for throttle, duration in [(60, 0.35), (45, 0.5)]:
+                path.write_text(
+                    f"orchestration:\n  visual_search:\n    throttle: {throttle}\n    turn_duration: {duration}\n",
+                    encoding="utf-8",
+                )
+                prepared = workflow.prepare(turn_id="turn", arguments={"target": "箱子", "motion_duration": 3})
+                self.assertIsNone(prepared.rejection)
+                motion = prepared.plan.steps[0].arguments
+                self.assertEqual(motion, {"direction": "spin", "duration": duration, "throttle": throttle})
+                self.assertTrue(validate_action_arguments("move_chassis", motion)[0])
+
+    def test_motion_settings_reject_invalid_and_non_finite_values(self):
+        for value in [None, {"throttle": True}, {"throttle": 0}, {"throttle": 101},
+                      {"turn_duration": True}, {"turn_duration": 0},
+                      {"turn_duration": 3.1}, {"turn_duration": float("nan")},
+                      {"turn_duration": float("inf")}]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_visual_search_motion_settings(value)
+
     def test_compiles_native_visual_search_plan(self):
         plan = compile_visual_search_plan(
             turn_id="turn-1",

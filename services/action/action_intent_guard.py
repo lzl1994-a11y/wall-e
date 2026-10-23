@@ -10,6 +10,7 @@ user's words.
 from __future__ import annotations
 
 import re
+import math
 from pathlib import Path
 
 import yaml
@@ -235,12 +236,16 @@ def _valid_arguments(name, arguments):
     elif name == "move_chassis":
         duration = arguments.get("duration", 1)
         valid = (
-            keys <= {"direction", "duration"}
+            keys <= {"direction", "duration", "throttle"}
             and "direction" in keys
             and arguments.get("direction") in _DIRECTIONS
-            and isinstance(duration, int)
+            and isinstance(duration, (int, float))
             and not isinstance(duration, bool)
-            and 1 <= duration <= 3
+            and 0.1 <= duration <= 3
+            and math.isfinite(duration)
+            and ("throttle" not in keys or (
+                type(arguments["throttle"]) is int and 1 <= arguments["throttle"] <= 100
+            ))
         )
     elif name == "set_tracking_mode":
         valid = keys == {"mode"} and arguments.get("mode") in _TRACKING_MODES

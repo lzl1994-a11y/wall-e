@@ -668,6 +668,33 @@ class ConfigWebServerTests(unittest.TestCase):
             html,
         )
 
+    def test_visual_search_settings_save_and_drive_next_plan(self):
+        from services.vision.visual_search import load_visual_search_motion_settings
+        _, body = self.request("/", token=None)
+        for field in ("throttle", "turn_duration"):
+            self.assertIn(f'data-path="orchestration.visual_search.{field}"', body.decode("utf-8"))
+        status, saved = self.request("/api/config", method="POST", payload={"patch": {
+            "orchestration": {"native_behavior_tree": False, "visual_search": {"throttle": 60, "turn_duration": 0.35}},
+        }})
+        self.assertEqual(status, 200)
+        self.assertFalse(saved["restart_required"])
+        settings = load_visual_search_motion_settings(self.config_path)
+        self.assertEqual(settings.throttle, 60)
+        self.assertEqual(settings.turn_duration, 0.35)
+        before = self.config_path.read_text(encoding="utf-8")
+        for settings in [{"throttle": 0}, {"throttle": 101}, {"throttle": True},
+                         {"turn_duration": 0.01}, {"turn_duration": 4}]:
+            with self.subTest(settings=settings), self.assertRaises(urllib.error.HTTPError) as context:
+                self.request("/api/config", method="POST", payload={"patch": {
+                    "orchestration": {"visual_search": settings},
+                }})
+            self.assertEqual(context.exception.code, 400)
+            self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
+        _, changed = self.request("/api/config", method="POST", payload={"patch": {
+            "orchestration": {"native_behavior_tree": True},
+        }})
+        self.assertTrue(changed["restart_required"])
+
     def test_esp32_network_ui_has_fixed_three_wifi_groups_and_safe_actions(self):
         _, body = self.request("/", token=None)
         html = body.decode("utf-8")

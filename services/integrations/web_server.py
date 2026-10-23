@@ -588,13 +588,20 @@ def validate_config(config: Any) -> list[str]:
     if orchestration is not None:
         if not isinstance(orchestration, dict):
             errors.append("orchestration 必须是配置对象")
-        elif "native_behavior_tree" in orchestration:
-            _check_bool(
-                orchestration,
-                "native_behavior_tree",
-                "orchestration.native_behavior_tree",
-                errors,
-            )
+        else:
+            if "native_behavior_tree" in orchestration:
+                _check_bool(
+                    orchestration,
+                    "native_behavior_tree",
+                    "orchestration.native_behavior_tree",
+                    errors,
+                )
+            if "visual_search" in orchestration:
+                from services.vision.visual_search import normalize_visual_search_motion_settings
+                try:
+                    normalize_visual_search_motion_settings(orchestration["visual_search"])
+                except ValueError as exc:
+                    errors.append(str(exc))
 
     mcp = config.get("mcp")
     if mcp is not None:
@@ -1659,6 +1666,11 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
         is_patch = isinstance(payload, dict) and "patch" in payload
         incoming = payload.get("patch" if is_patch else "config") if isinstance(payload, dict) else None
         try:
+            previous_orchestration = (
+                self.server.store.load().get("orchestration", {})
+                if is_patch and isinstance(incoming, dict) and "orchestration" in incoming
+                else {}
+            )
             snapshot = self.server.store.save_patch(incoming) if is_patch else self.server.store.save(incoming)
         except ConfigError as exc:
             self._send_json(
@@ -1667,6 +1679,14 @@ class ConfigRequestHandler(BaseHTTPRequestHandler):
             )
             return
         hot_reloaded = is_patch and set(incoming).issubset({"remote_control", "usb_devices"})
+        if is_patch and set(incoming) == {"orchestration"}:
+            patch = incoming["orchestration"]
+            hot_reloaded = (
+                isinstance(patch, dict)
+                and set(patch) <= {"visual_search", "native_behavior_tree"}
+                and patch.get("native_behavior_tree", previous_orchestration.get("native_behavior_tree", False))
+                == previous_orchestration.get("native_behavior_tree", False)
+            )
         self._send_json(
             HTTPStatus.OK,
             {

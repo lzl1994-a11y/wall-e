@@ -165,6 +165,22 @@ class SequenceRuntimeTests(unittest.TestCase):
 
 
 class SequenceCommandControllerTests(unittest.TestCase):
+    def test_search_turn_applies_configured_throttle_and_fractional_deadline(self):
+        controller = self._controller()
+        started = controller.handle_action({
+            "name": "move_chassis", "request_id": "search-turn",
+            "arguments": {"direction": "spin", "duration": 0.35, "throttle": 60},
+        }, wall_now=1.0, monotonic_now=10.0)
+        motor = next(effect.payload for effect in started if effect.kind == "motor")
+        self.assertEqual(motor, {
+            "left": {"action": 2, "throttle": 60},
+            "right": {"action": 1, "throttle": 60},
+        })
+        self.assertNotIn("completed", self._statuses(controller.tick(wall_now=1.3, monotonic_now=10.3).effects))
+        finished = controller.tick(wall_now=1.4, monotonic_now=10.4)
+        self.assertIn("completed", self._statuses(finished.effects))
+        self.assertIn("motor_stop", [effect.kind for effect in finished.effects])
+
     def _controller(self, *, sequences=None):
         trajectory = ServoTrajectory(SERVOS)
         library = SequenceLibrary(sequences or {}, {})

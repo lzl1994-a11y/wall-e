@@ -574,6 +574,9 @@ class SequenceCommandController:
                         "type": "motor",
                         "direction": direction,
                         "duration": float(arguments.get("duration", 1.0)),
+                        **({"left_throttle": arguments["throttle"],
+                            "right_throttle": arguments["throttle"]}
+                           if "throttle" in arguments else {}),
                     },
                     monotonic_now=monotonic_now,
                 ),
