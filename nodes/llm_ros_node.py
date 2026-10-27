@@ -65,6 +65,7 @@ from services.llm.llm_stream_response import StreamResponseAccumulator
 from services.llm.llm_voice_turn import LLMVoiceTurnState
 from services.llm.llm_conversation_history import LLMConversationHistory
 from services.llm.llm_request_preparation import (
+    ROUTE_ACTION_BEFORE_INSPECTION,
     ROUTE_CAMERA_INSPECTION,
     ROUTE_CAMERA_PHOTO,
     ROUTE_CONDITIONAL_TASK,
@@ -540,6 +541,12 @@ class LLMBrainNode(Node):
             self._process_conditional_task_request(turn_id, user_prompt)
             return
 
+        if prepared_request.route == ROUTE_ACTION_BEFORE_INSPECTION:
+            self._process_action_before_inspection(
+                turn_id, user_prompt, prepared_request.pre_inspection_actions
+            )
+            return
+
         # Route 3: Camera photo capture (confirm -> TFT preview -> save to disk).
         # 分流 3：相机拍照存盘（语音确认 -> 屏幕预览 -> 保存图片）。
         if prepared_request.route == ROUTE_CAMERA_PHOTO:
@@ -969,7 +976,48 @@ class LLMBrainNode(Node):
         )
         self._finish_tts_turn(turn_id)
 
-    def _process_camera_inspection(self, turn_id, user_prompt):
+    def _process_action_before_inspection(self, turn_id, user_prompt, actions):
+        """Wait for the requested motions before acquiring a new camera preview."""
+        self.corrected_publisher.publish(String(data=user_prompt))
+        self.get_logger().info(f'[{turn_id}] Executing actions before camera inspection.')
+        sequence = self._execute_dialog_action_sequence(
+            actions, user_prompt=user_prompt, turn_id=turn_id,
+        )
+        if self._voice_task_cancelled():
+            return
+        results = sequence.get('results', []) if isinstance(sequence, dict) else []
+        completed = (
+            isinstance(sequence, dict) and sequence.get('status') == 'success'
+            and len(results) == len(actions)
+            and all(isinstance(item, dict) and item.get('status') == 'completed' for item in results)
+        )
+        executed = LLMVoiceTurnState(user_prompt).apply_action_sequence(
+            sequence if isinstance(sequence, dict) else {}, turn_id,
+        )
+        if not completed:
+            answer = '动作没有完成，所以我没有继续观察。'
+            self.get_logger().warning(f'[{turn_id}] Action before inspection failed.')
+            LLMConversationHistory.record_turn(
+                self.chat_history, user_text=user_prompt, assistant_text=answer,
+                actions=executed, turn_id=turn_id,
+            )
+            self.full_ai_publisher.publish(String(data=answer))
+            self._publish_tts(answer, turn_id)
+            self._publish_screen_dialog(turn_id, user_prompt, answer, executed, error='action_before_inspection_failed')
+            self._finish_tts_turn(turn_id)
+            return
+
+        # Completion tracks commanded motion, not servo feedback. Allow a short
+        # settling interval and honour cancellation before requesting a frame.
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            if self._voice_task_cancelled():
+                return
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        if not self._voice_task_cancelled():
+            self._process_camera_inspection(turn_id, user_prompt, actions=executed)
+
+    def _process_camera_inspection(self, turn_id, user_prompt, *, actions=None):
         """Run the camera graph and publish exactly one user-facing answer.
 
         执行摄像头检测工作流：启动实时预览捕获末帧，送入视觉模型分析，发布单次用户答复。
@@ -992,15 +1040,17 @@ class LLMBrainNode(Node):
                 f'[{turn_id}] Camera inspection completed with error: {error}'
             )
         else:
-            LLMConversationHistory.record_dialog_turn(
+            LLMConversationHistory.record_turn(
                 self.chat_history,
                 user_text=user_prompt,
                 assistant_text=answer,
+                actions=actions,
+                turn_id=turn_id,
             )
             self.full_ai_publisher.publish(String(data=answer))
 
         self._publish_tts(answer, turn_id)
-        self._publish_screen_dialog(turn_id, user_prompt, answer, [], error=error)
+        self._publish_screen_dialog(turn_id, user_prompt, answer, actions or [], error=error)
         self._finish_tts_turn(turn_id)
 
     def _process_visual_search(self, turn_id, user_prompt, arguments):

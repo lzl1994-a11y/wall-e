@@ -15,6 +15,62 @@ from services.llm.voice_chat_service import VoiceChatService
 
 
 class DialogActionExecutionTests(unittest.TestCase):
+    def test_inspection_waits_for_completed_motion(self):
+        node, publisher, _, _ = self._node('text')
+        started = threading.Event()
+        node._process_camera_inspection = MagicMock()
+        commands = []
+
+        def publish(message):
+            command = json.loads(message.data)
+            commands.append(command)
+            node._action_executor.accept_status(build_action_status(
+                command['request_id'], command['name'], 'accepted', source='test'
+            ))
+            started.set()
+
+        publisher.publish.side_effect = publish
+        worker = threading.Thread(target=lambda: node._process_voice_task(
+            'turn', '你低头，然后看看有什么。'), daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(started.wait(2))
+            node._process_camera_inspection.assert_not_called()
+            node._action_executor.accept_status(build_action_status(
+                commands[0]['request_id'], commands[0]['name'], 'completed', source='test'
+            ))
+            worker.join(3)
+            self.assertFalse(worker.is_alive())
+            node._process_camera_inspection.assert_called_once()
+        finally:
+            worker.join(2)
+
+    def test_failed_motion_prevents_inspection(self):
+        node, publisher, _, reply = self._node('text')
+        node._process_camera_inspection = MagicMock()
+
+        def publish(message):
+            command = json.loads(message.data)
+            node._action_executor.accept_status(build_action_status(
+                command['request_id'], command['name'], 'failed', source='test'
+            ))
+
+        publisher.publish.side_effect = publish
+        node._process_voice_task('turn', '你低头，然后看看有什么。')
+        node._process_camera_inspection.assert_not_called()
+        self.assertIn('动作没有完成', reply())
+
+    def test_cancelled_turn_does_not_inspect_after_motion(self):
+        node, _, _, _ = self._node('text')
+        node._process_camera_inspection = MagicMock()
+        node._voice_task_cancelled = MagicMock(side_effect=[False, True])
+        node._execute_dialog_action_sequence = MagicMock(return_value={
+            'status': 'success', 'results': [{'status': 'completed'}],
+        })
+        actions = [{'name': 'play_sequence', 'arguments': {'sequence_name': 'head_down'}}]
+        node._process_action_before_inspection('turn', '低头看看', actions)
+        node._process_camera_inspection.assert_not_called()
+
     def _node(self, mode):
         class String:
             def __init__(self, data=""):

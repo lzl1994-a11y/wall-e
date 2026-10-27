@@ -435,6 +435,18 @@ def canonicalize_conditional_action(user_text, plan):
     return normalized
 
 
+def resolve_explicit_sequence_action(user_text):
+    """Resolve a plainly named existing sequence without inventing a motion."""
+    compact = "".join(str(user_text or "").split())
+    if not compact or _obvious_non_command(compact):
+        return None
+    action = _explicit_conditional_action(compact)
+    if action is None or action[0] != "play_sequence":
+        return None
+    allowed, _ = validate_action_call(compact, *action)
+    return action if allowed else None
+
+
 def _has_explicit_argument_conflict(compact, name, arguments):
     """Return True only when text clearly contradicts proposed arguments.
 
