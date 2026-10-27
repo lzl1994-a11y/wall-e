@@ -3,8 +3,9 @@ import sys
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
+import services.vision.camera_capture_protocol as camera_protocol
 from services.vision.camera_capture_protocol import encode_camera_command
 
 
@@ -344,6 +345,91 @@ class CameraCaptureNodeTests(unittest.TestCase):
             self.assertEqual(len(detection_frames), 2)
             self.assertEqual(len(node.publishers["/camera_frame"].messages), 5)
             self.assertEqual(node.publisher_qos["/tracking_camera_frame"], 10)
+
+    def test_camera_uses_the_verified_environment_snapshot_for_its_child(self):
+        module = _load_camera_capture_module()
+        process = _FakeProcess()
+        logger = Mock()
+        inherited = {
+            "WALI_TROS_ENV_READY": camera_protocol.DEFAULT_TROS_SETUP,
+            "WALI_TROS_ENV_SIGNATURE": "verified-by-helper",
+        }
+        with (
+            patch.dict(module.os.environ, inherited, clear=True),
+            patch.object(camera_protocol, "os", types.SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=True),
+            patch.object(camera_protocol, "can_reuse_tros_env", return_value=True) as reusable,
+            patch.object(module.CameraCaptureNode, "get_logger", return_value=logger),
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", return_value=process) as popen,
+        ):
+            module.CameraCaptureNode()
+
+        command = popen.call_args.args[0]
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(command[0], "ros2")
+        self.assertEqual(child_env, inherited)
+        self.assertIs(reusable.call_args.args[0], child_env)
+        self.assertIn(call("相机进程复用已加载的 TROS 环境"), logger.info.call_args_list)
+
+    def test_camera_keeps_explicit_default_setup_override(self):
+        module = _load_camera_capture_module()
+        process = _FakeProcess()
+        logger = Mock()
+        inherited = {
+            "WALI_TROS_ENV_READY": camera_protocol.DEFAULT_TROS_SETUP,
+            "WALI_CAMERA_ROS_SETUP": camera_protocol.DEFAULT_TROS_SETUP,
+        }
+        with (
+            patch.dict(module.os.environ, inherited, clear=True),
+            patch.object(camera_protocol, "os", types.SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=True),
+            patch.object(camera_protocol, "can_reuse_tros_env", return_value=True) as reusable,
+            patch.object(module.CameraCaptureNode, "get_logger", return_value=logger),
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", return_value=process) as popen,
+        ):
+            module.CameraCaptureNode()
+
+        self.assertEqual(popen.call_args.args[0][:2], ["bash", "-c"])
+        self.assertEqual(popen.call_args.args[0][4], camera_protocol.DEFAULT_TROS_SETUP)
+        self.assertEqual(popen.call_args.kwargs["env"], inherited)
+        reusable.assert_not_called()
+        self.assertNotIn(call("相机进程复用已加载的 TROS 环境"), logger.info.call_args_list)
+
+    def test_missing_setup_direct_command_does_not_claim_environment_reuse(self):
+        module = _load_camera_capture_module()
+        logger = Mock()
+        with (
+            patch.dict(module.os.environ, {}, clear=True),
+            patch.object(camera_protocol, "os", types.SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=False),
+            patch.object(camera_protocol, "can_reuse_tros_env", return_value=True) as reusable,
+            patch.object(module.CameraCaptureNode, "get_logger", return_value=logger),
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", return_value=_FakeProcess()) as popen,
+        ):
+            module.CameraCaptureNode()
+
+        self.assertEqual(popen.call_args.args[0][0], "ros2")
+        reusable.assert_not_called()
+        self.assertNotIn(call("相机进程复用已加载的 TROS 环境"), logger.info.call_args_list)
+
+    def test_failed_camera_spawn_does_not_claim_environment_reuse(self):
+        module = _load_camera_capture_module()
+        logger = Mock()
+        with (
+            patch.dict(module.os.environ, {}, clear=True),
+            patch.object(camera_protocol, "os", types.SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=True),
+            patch.object(camera_protocol, "can_reuse_tros_env", return_value=True),
+            patch.object(module.CameraCaptureNode, "get_logger", return_value=logger),
+            patch.object(module, "resolve_camera_device", return_value="/dev/video2"),
+            patch.object(module.subprocess, "Popen", side_effect=OSError("not started")),
+        ):
+            module.CameraCaptureNode()
+
+        self.assertNotIn(call("相机进程复用已加载的 TROS 环境"), logger.info.call_args_list)
 
     def test_camera_starts_on_node_init_and_release_keeps_it_warm(self):
         module = _load_camera_capture_module()

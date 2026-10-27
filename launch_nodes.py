@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from services.ros_environment import can_reuse_tros_env, seal_tros_env
 from services.vision.vision_runtime import VisionArtifactError, require_nv12_padder
 
 try:
@@ -337,19 +338,6 @@ def start_process(entry: NodeEntry):
     if not script.exists():
         raise FileNotFoundError(f"Node script not found: {script}")
 
-    cmd = [sys.executable, str(script)]
-    if entry.environment_setup is not None and os.name != "nt":
-        # Positional parameters keep paths safely quoted while sourcing the RDK
-        # environment in the same shell that execs the ROS node.
-        cmd = [
-            "bash",
-            "-c",
-            'source "$1" && exec "$2" "$3"',
-            "wali-node",
-            str(entry.environment_setup),
-            sys.executable,
-            str(script),
-        ]
     env = os.environ.copy()
     # Robot-internal DDS must survive wlan0 changing address or entering AP mode.
     # Remote access uses HTTP/WebRTC; explicit opt-out supports external ROS peers.
@@ -362,6 +350,28 @@ def start_process(entry: NodeEntry):
     ]
     env["PYTHONPATH"] = os.pathsep.join([root_path, *existing_paths])
     env.update(entry.environment)
+    seal_tros_env(env)
+
+    cmd = [sys.executable, str(script)]
+    reuse_tracking_tros = (
+        entry.name == "tracking"
+        and entry.environment_setup is not None
+        and can_reuse_tros_env(env, entry.environment_setup)
+    )
+    if entry.environment_setup is not None and os.name != "nt" and not reuse_tracking_tros:
+        # Positional parameters keep paths safely quoted while sourcing the RDK
+        # environment in the same shell that execs the ROS node.
+        cmd = [
+            "bash",
+            "-c",
+            'source "$1" && exec "$2" "$3"',
+            "wali-node",
+            str(entry.environment_setup),
+            sys.executable,
+            str(script),
+        ]
+    elif reuse_tracking_tros and os.name != "nt":
+        print("[launcher] tracking: using inherited TROS environment")
     kwargs = {
         "cwd": str(ROOT),
         "env": env,

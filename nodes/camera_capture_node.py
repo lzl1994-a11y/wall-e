@@ -30,12 +30,13 @@ from services.vision.camera_capture_protocol import (
     TRACKING_CAMERA_FRAME_TOPIC,
     CameraLeaseBook,
     CameraWatchdogAction,
-    build_hobot_camera_command,
+    _prepare_hobot_camera_command,
     decode_camera_command,
     evaluate_camera_watchdog,
     jpeg_from_ros_image,
 )
 from services.hardware.usb_devices import resolve_camera_device
+from services.ros_environment import DEFAULT_TROS_SETUP
 
 
 class CameraCaptureNode(Node):
@@ -393,12 +394,21 @@ class CameraCaptureNode(Node):
             )
             return
 
-        ros_setup = os.environ.get("WALI_CAMERA_ROS_SETUP", "/opt/tros/humble/setup.bash")
+        # Use the same snapshot for the reuse decision and the child process.
+        # An explicit camera setup override continues to use the old path.
+        camera_env = os.environ.copy()
+        ros_setup = camera_env.get("WALI_CAMERA_ROS_SETUP", DEFAULT_TROS_SETUP)
         self._camera_size = self._leases.resolution
-        command = build_hobot_camera_command(device, ros_setup=ros_setup, resolution=self._camera_size)
+        command, reused_tros = _prepare_hobot_camera_command(
+            device,
+            ros_setup=ros_setup,
+            resolution=self._camera_size,
+            environment=camera_env,
+        )
         try:
             self._camera_process = subprocess.Popen(
                 command,
+                env=camera_env,
                 start_new_session=(os.name != "nt"),
             )
         except Exception as exc:
@@ -410,6 +420,8 @@ class CameraCaptureNode(Node):
                 force=True,
             )
             return
+        if reused_tros:
+            self.get_logger().info("相机进程复用已加载的 TROS 环境")
         self._camera_device = str(device)
         self._last_source_frame = 0.0
         self._last_output_frame = 0.0

@@ -11,6 +11,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import launch_nodes
+from services.ros_environment import (
+    DEFAULT_TROS_SETUP,
+    TROS_ENV_READY_KEY,
+    TROS_ENV_SIGNATURE_KEY,
+    can_reuse_tros_env,
+)
 from services.vision.vision_runtime import VisionArtifactError
 
 
@@ -514,6 +520,78 @@ class LaunchNodesTests(unittest.TestCase):
         )
 
         with patch.object(launch_nodes.os, "name", "posix"):
+            launch_nodes.start_process(entry)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:3], ["bash", "-c", 'source "$1" && exec "$2" "$3"'])
+        self.assertEqual(command[4], str(setup))
+
+    @patch("services.ros_environment._default_setup_exists", return_value=True)
+    @patch("launch_nodes.subprocess.Popen")
+    def test_tracking_reuses_trusted_tros_environment(self, popen, _exists):
+        setup = Path(DEFAULT_TROS_SETUP)
+        entry = launch_nodes.NodeEntry(
+            "tracking", launch_nodes.ROOT / "launch_nodes.py", environment_setup=setup
+        )
+        path = os.pathsep.join(("/opt/tros/humble/lib", "/opt/ros/humble/lib"))
+        env = {
+            TROS_ENV_READY_KEY: DEFAULT_TROS_SETUP,
+            "AMENT_PREFIX_PATH": path,
+            "PATH": path,
+            "PYTHONPATH": path,
+            "LD_LIBRARY_PATH": path,
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(launch_nodes.os, "name", "posix"), patch("builtins.print") as log:
+            launch_nodes.start_process(entry)
+
+        self.assertEqual(popen.call_args.args[0], [sys.executable, str(entry.script)])
+        self.assertTrue(can_reuse_tros_env(popen.call_args.kwargs["env"], setup))
+        log.assert_any_call("[launcher] tracking: using inherited TROS environment")
+
+    @patch("services.ros_environment._default_setup_exists", return_value=True)
+    @patch("launch_nodes.subprocess.Popen")
+    def test_tracking_sources_when_marked_environment_is_incomplete(self, popen, _exists):
+        setup = Path(DEFAULT_TROS_SETUP)
+        entry = launch_nodes.NodeEntry(
+            "tracking", launch_nodes.ROOT / "launch_nodes.py", environment_setup=setup
+        )
+        path = os.pathsep.join(("/opt/tros/humble/lib", "/opt/ros/humble/lib"))
+        env = {
+            TROS_ENV_READY_KEY: DEFAULT_TROS_SETUP,
+            TROS_ENV_SIGNATURE_KEY: "stale",
+            "AMENT_PREFIX_PATH": path,
+            "PATH": path,
+            "PYTHONPATH": path,
+            "LD_LIBRARY_PATH": "/opt/tros/humble/lib",
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(launch_nodes.os, "name", "posix"), patch("builtins.print") as log:
+            launch_nodes.start_process(entry)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:3], ["bash", "-c", 'source "$1" && exec "$2" "$3"'])
+        self.assertEqual(command[4], str(setup))
+        self.assertNotIn(TROS_ENV_SIGNATURE_KEY, popen.call_args.kwargs["env"])
+        self.assertNotIn(
+            "[launcher] tracking: using inherited TROS environment",
+            [call.args[0] for call in log.call_args_list if call.args],
+        )
+
+    @patch("services.ros_environment._default_setup_exists", return_value=True)
+    @patch("launch_nodes.subprocess.Popen")
+    def test_action_overlay_is_sourced_even_when_tros_is_trusted(self, popen, _exists):
+        setup = launch_nodes.ROOT / "install" / "setup.bash"
+        entry = launch_nodes.NodeEntry(
+            "llm", launch_nodes.ROOT / "launch_nodes.py", environment_setup=setup
+        )
+        path = os.pathsep.join(("/opt/tros/humble/lib", "/opt/ros/humble/lib"))
+        env = {
+            TROS_ENV_READY_KEY: DEFAULT_TROS_SETUP,
+            "AMENT_PREFIX_PATH": path,
+            "PATH": path,
+            "PYTHONPATH": path,
+            "LD_LIBRARY_PATH": path,
+        }
+        with patch.dict(os.environ, env, clear=True), patch.object(launch_nodes.os, "name", "posix"):
             launch_nodes.start_process(entry)
 
         command = popen.call_args.args[0]

@@ -1,4 +1,10 @@
+import os
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import services.vision.camera_capture_protocol as camera_protocol
+from services.ros_environment import seal_tros_env
 
 from services.vision.camera_capture_protocol import (
     CAMERA_FRAME_TOPIC,
@@ -32,6 +38,97 @@ class _JpegImage:
 
 
 class CameraCaptureProtocolTests(unittest.TestCase):
+    def test_real_environment_signature_guards_camera_reuse(self):
+        prefixes = os.pathsep.join(("/opt/tros/humble", "/opt/ros/humble"))
+        inherited = {
+            "WALI_TROS_ENV_READY": camera_protocol.DEFAULT_TROS_SETUP,
+            "AMENT_PREFIX_PATH": prefixes,
+            "PATH": prefixes,
+            "PYTHONPATH": prefixes,
+            "LD_LIBRARY_PATH": prefixes,
+        }
+        with (
+            patch.object(camera_protocol, "os", SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=True),
+        ):
+            seal_tros_env(inherited)
+            reusable = build_hobot_camera_command(
+                "/dev/video2", ros_setup=camera_protocol.DEFAULT_TROS_SETUP,
+                environment=inherited,
+            )
+            changed = dict(inherited)
+            changed["LD_LIBRARY_PATH"] += os.pathsep + "/changed-library-path"
+            fallback = build_hobot_camera_command(
+                "/dev/video2", ros_setup=camera_protocol.DEFAULT_TROS_SETUP,
+                environment=changed,
+            )
+
+        self.assertEqual(reusable[0], "ros2")
+        self.assertEqual(fallback[:2], ["bash", "-c"])
+        self.assertEqual(fallback[4], camera_protocol.DEFAULT_TROS_SETUP)
+
+    def test_default_camera_reuses_only_a_verified_inherited_environment(self):
+        inherited = {"WALI_TROS_ENV_READY": camera_protocol.DEFAULT_TROS_SETUP}
+        with (
+            patch.object(camera_protocol, "os", SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=True),
+            patch.object(camera_protocol, "can_reuse_tros_env", return_value=True) as reusable,
+        ):
+            command = build_hobot_camera_command(
+                "/dev/video2", ros_setup=camera_protocol.DEFAULT_TROS_SETUP,
+                environment=inherited,
+            )
+
+        self.assertEqual(command[:4], ["ros2", "run", "hobot_usb_cam", "hobot_usb_cam"])
+        self.assertIn("video_device:=/dev/video2", command)
+        reusable.assert_called_once_with(inherited, camera_protocol.DEFAULT_TROS_SETUP)
+
+    def test_default_camera_sources_when_inherited_environment_is_unverified(self):
+        with (
+            patch.object(camera_protocol, "os", SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=True),
+            patch.object(camera_protocol, "can_reuse_tros_env", return_value=False),
+        ):
+            command = build_hobot_camera_command(
+                "/dev/video2", ros_setup=camera_protocol.DEFAULT_TROS_SETUP,
+                environment={},
+            )
+
+        self.assertEqual(command[:2], ["bash", "-c"])
+        self.assertEqual(command[4], camera_protocol.DEFAULT_TROS_SETUP)
+        self.assertEqual(command[5:9], ["ros2", "run", "hobot_usb_cam", "hobot_usb_cam"])
+
+    def test_explicit_camera_setup_is_sourced_even_when_default_is_inherited(self):
+        for setup in (camera_protocol.DEFAULT_TROS_SETUP, "/custom/ros/setup.bash"):
+            with self.subTest(setup=setup):
+                with (
+                    patch.object(camera_protocol, "os", SimpleNamespace(name="posix", environ={})),
+                    patch.object(camera_protocol.Path, "is_file", return_value=True),
+                    patch.object(camera_protocol, "can_reuse_tros_env", return_value=True) as reusable,
+                ):
+                    command = build_hobot_camera_command(
+                        "/dev/video2", ros_setup=setup,
+                        environment={"WALI_CAMERA_ROS_SETUP": setup},
+                    )
+                    self.assertEqual(command[:2], ["bash", "-c"])
+                    self.assertEqual(command[4], setup)
+                    reusable.assert_not_called()
+
+    def test_empty_or_missing_camera_setup_retains_direct_launch(self):
+        with (
+            patch.object(camera_protocol, "os", SimpleNamespace(name="posix", environ={})),
+            patch.object(camera_protocol.Path, "is_file", return_value=False),
+            patch.object(camera_protocol, "can_reuse_tros_env") as reusable,
+        ):
+            for setup in ("", "/missing/ros/setup.bash"):
+                with self.subTest(setup=setup):
+                    command = build_hobot_camera_command(
+                        "/dev/video2", ros_setup=setup,
+                        environment={"WALI_CAMERA_ROS_SETUP": setup},
+                    )
+                    self.assertEqual(command[0], "ros2")
+            reusable.assert_not_called()
+
     def test_high_resolution_lease_restores_default_and_keeps_tracking_small(self):
         command = decode_camera_command(encode_camera_command("acquire", "photo", 5, resolution=(1280, 720)))
         self.assertEqual(command["resolution"], (1280, 720))

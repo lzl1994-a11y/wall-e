@@ -8,7 +8,9 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from services.ros_environment import DEFAULT_TROS_SETUP, can_reuse_tros_env
 
 
 CAMERA_FRAME_TOPIC = "/camera_frame"
@@ -23,7 +25,7 @@ CAMERA_FIRST_FRAME_TIMEOUT_SEC = 45.0
 CAMERA_SOURCE_TOPIC = "/image"
 RAW_CAMERA_CLIENT_PREFIX = "webrtc-h264:"
 TRACKING_IMAGE_TOPIC = CAMERA_SOURCE_TOPIC  # Backwards-compatible import name.
-DEFAULT_ROS_SETUP = Path("/opt/tros/humble/setup.bash")
+DEFAULT_ROS_SETUP = Path(DEFAULT_TROS_SETUP)
 
 
 def encode_camera_command(action: str, client_id: str, lease_sec: float = 0.0, *, resolution: tuple[int, int] = (640, 480)) -> str:
@@ -208,7 +210,22 @@ def build_hobot_camera_command(
     *,
     ros_setup: str | Path | None = DEFAULT_ROS_SETUP,
     resolution: tuple[int, int] = (640, 480),
+    environment: Mapping[str, str] | None = None,
 ) -> list[str]:
+    command, _ = _prepare_hobot_camera_command(
+        device, ros_setup=ros_setup, resolution=resolution, environment=environment,
+    )
+    return command
+
+
+def _prepare_hobot_camera_command(
+    device: str,
+    *,
+    ros_setup: str | Path | None = DEFAULT_ROS_SETUP,
+    resolution: tuple[int, int] = (640, 480),
+    environment: Mapping[str, str] | None = None,
+) -> tuple[list[str], bool]:
+    """Return the command and whether its inherited TROS environment is reused."""
     command = [
         "ros2",
         "run",
@@ -230,6 +247,16 @@ def build_hobot_camera_command(
     ]
     setup_path = str(ros_setup or "").strip()
     if os.name != "nt" and setup_path and Path(setup_path).is_file():
+        # An explicit camera override always retains the caller's setup step,
+        # including when it happens to name the default setup file. Reuse is
+        # only safe for the default when the inherited environment is sealed.
+        env = os.environ if environment is None else environment
+        if (
+            "WALI_CAMERA_ROS_SETUP" not in env
+            and setup_path == DEFAULT_TROS_SETUP
+            and can_reuse_tros_env(env, setup_path)
+        ):
+            return command, True
         return [
             "bash",
             "-c",
@@ -237,8 +264,8 @@ def build_hobot_camera_command(
             "camera-capture",
             setup_path,
             *command,
-        ]
-    return command
+        ], False
+    return command, False
 
 
 def jpeg_from_ros_image(

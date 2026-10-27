@@ -21,6 +21,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from services.ros_environment import DEFAULT_TROS_SETUP, can_reuse_tros_env
 from services.vision.vision_pipeline_protocol import (
     VISION_PIPELINE_COMMAND_TOPIC,
     VISION_PIPELINE_START,
@@ -127,8 +128,15 @@ def _start_pipeline(padder_bin: Path | None = None):
     cleanup_old_processes()
     time.sleep(1)
     
+    # Only skip sourcing after the launcher has sealed the already-loaded
+    # default TROS environment. Standalone starts and changed environments
+    # retain the existing setup path.
+    reuse_tros_env = can_reuse_tros_env(env, DEFAULT_TROS_SETUP)
+    if reuse_tros_env:
+        print("[hobot_vision_node] Reusing inherited TROS environment.", flush=True)
+    setup_prefix = "" if reuse_tros_env else f"source {shlex.quote(DEFAULT_TROS_SETUP)} && "
     pipeline_script = (
-        "source /opt/tros/humble/setup.bash && { "
+        setup_prefix + "{ "
         f"ros2 run hobot_codec hobot_codec_republish --ros-args -r __node:=codec_decode --log-level WARN -p channel:=1 -p in_mode:=ros -p in_format:=jpeg -p out_mode:=ros -p out_format:=nv12 -p sub_topic:={TRACKING_CAMERA_FRAME_TOPIC} -p pub_topic:=/image_nv12 & "
         # camera_capture_node already normalizes the shared JPEG stream
         # vertically; keep the detector's existing horizontal correction only.

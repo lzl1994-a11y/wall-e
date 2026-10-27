@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import services.ros_environment as ros_environment
+
 
 class _FakeString:
     def __init__(self, data=""):
@@ -101,6 +103,7 @@ class VisionPipelineControlTests(unittest.TestCase):
             patch.object(module, "cleanup_old_processes"),
             patch.object(module.time, "sleep"),
             patch.object(module.os, "setsid", create=True),
+            patch.object(module, "can_reuse_tros_env", return_value=False),
             patch.object(module.subprocess, "Popen", return_value=process) as popen,
         ):
             self.assertIs(module._start_pipeline(), process)
@@ -127,6 +130,84 @@ class VisionPipelineControlTests(unittest.TestCase):
         self.assertNotIn("/image_padded_jpeg", pipeline_script)
         self.assertIn("ros_img_topic_name:=/image_padded_nv12", pipeline_script)
         self.assertIn("flip_vertical:=false -p flip_horizontal:=true", pipeline_script)
+
+    def test_reusing_verified_environment_only_removes_setup_prefix(self):
+        module = _load_module()
+        original_process, inherited_process = Mock(), Mock()
+
+        with (
+            patch.object(
+                module,
+                "_ensure_padder_binary",
+                return_value=module.Path("/tmp/nv12_padder_node"),
+            ),
+            patch.object(module, "cleanup_old_processes"),
+            patch.object(module.time, "sleep"),
+            patch.object(module.os, "setsid", create=True) as setsid,
+            patch("builtins.print") as log,
+            patch.object(
+                module, "can_reuse_tros_env", side_effect=[False, True]
+            ) as can_reuse,
+            patch.object(
+                module.subprocess,
+                "Popen",
+                side_effect=[original_process, inherited_process],
+            ) as popen,
+        ):
+            self.assertIs(module._start_pipeline(), original_process)
+            self.assertIs(module._start_pipeline(), inherited_process)
+
+        original, inherited = popen.call_args_list
+        original_command = original.args[0]
+        inherited_command = inherited.args[0]
+        self.assertEqual(original_command[:2], ["bash", "-c"])
+        self.assertEqual(inherited_command[:2], ["bash", "-c"])
+        self.assertEqual(
+            original_command[2],
+            "source /opt/tros/humble/setup.bash && " + inherited_command[2],
+        )
+        self.assertTrue(inherited_command[2].startswith("{ "))
+        self.assertTrue(inherited_command[2].endswith("wait -n; }"))
+        reuse_logs = [
+            call for call in log.call_args_list
+            if call.args and call.args[0] == "[hobot_vision_node] Reusing inherited TROS environment."
+        ]
+        self.assertEqual(len(reuse_logs), 1)
+        self.assertEqual(reuse_logs[0].kwargs, {"flush": True})
+        for call, check in zip(popen.call_args_list, can_reuse.call_args_list):
+            self.assertIs(check.args[0], call.kwargs["env"])
+            self.assertEqual(check.args[1], module.DEFAULT_TROS_SETUP)
+            self.assertIs(call.kwargs["preexec_fn"], setsid)
+
+    def test_sealed_environment_is_reused_until_search_paths_change(self):
+        module = _load_module()
+
+        sep = module.os.pathsep
+        env = {
+            ros_environment.TROS_ENV_READY_KEY: ros_environment.DEFAULT_TROS_SETUP,
+            "AMENT_PREFIX_PATH": sep.join(["/opt/tros/humble", "/opt/ros/humble"]),
+            "PATH": sep.join(["/opt/tros/humble/bin", "/opt/ros/humble/bin"]),
+            "PYTHONPATH": sep.join(["/opt/tros/humble/lib", "/opt/ros/humble/lib"]),
+            "LD_LIBRARY_PATH": sep.join(["/opt/tros/humble/lib", "/opt/ros/humble/lib"]),
+        }
+        with patch.object(ros_environment, "_default_setup_exists", return_value=True):
+            ros_environment.seal_tros_env(env)
+            with (
+                patch.dict(module.os.environ, env, clear=True),
+                patch.object(module, "cleanup_old_processes"),
+                patch.object(module.time, "sleep"),
+                patch.object(module.os, "setsid", create=True),
+                patch.object(module.subprocess, "Popen") as popen,
+            ):
+                module._start_pipeline(module.Path("/tmp/nv12_padder_node"))
+                module.os.environ["LD_LIBRARY_PATH"] += sep + "/changed/library/path"
+                module._start_pipeline(module.Path("/tmp/nv12_padder_node"))
+
+        first, second = popen.call_args_list
+        self.assertTrue(first.args[0][2].startswith("{ "))
+        self.assertTrue(
+            second.args[0][2].startswith("source /opt/tros/humble/setup.bash && { ")
+        )
 
     def test_padder_uses_sensor_qos_input_and_reliable_model_output(self):
         source = (
