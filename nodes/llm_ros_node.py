@@ -65,7 +65,7 @@ from services.llm.llm_stream_response import StreamResponseAccumulator
 from services.llm.llm_voice_turn import LLMVoiceTurnState
 from services.llm.llm_conversation_history import LLMConversationHistory
 from services.llm.llm_request_preparation import (
-    ROUTE_ACTION_BEFORE_INSPECTION,
+    ROUTE_ORDERED_TASK,
     ROUTE_CAMERA_INSPECTION,
     ROUTE_CAMERA_PHOTO,
     ROUTE_CONDITIONAL_TASK,
@@ -73,6 +73,10 @@ from services.llm.llm_request_preparation import (
     prepare_voice_request,
 )
 from services.llm.llm_tool_proposal import evaluate_tool_proposal
+from services.orchestration.ordered_task import (
+    ORDERED_TASK_TOOL_NAME, ORDERED_TASK_PLANNING_POLICY, validate_ordered_task_plan,
+)
+from services.orchestration.ordered_task_execution import OrderedTaskExecutor
 from services.llm.llm_conditional_planning import (
     build_conditional_fallback_request,
     evaluate_conditional_plan,
@@ -541,10 +545,8 @@ class LLMBrainNode(Node):
             self._process_conditional_task_request(turn_id, user_prompt)
             return
 
-        if prepared_request.route == ROUTE_ACTION_BEFORE_INSPECTION:
-            self._process_action_before_inspection(
-                turn_id, user_prompt, prepared_request.pre_inspection_actions
-            )
+        if prepared_request.route == ROUTE_ORDERED_TASK:
+            self._process_ordered_task_request(turn_id, user_prompt)
             return
 
         # Route 3: Camera photo capture (confirm -> TFT preview -> save to disk).
@@ -695,6 +697,10 @@ class LLMBrainNode(Node):
                         if proposal.should_continue:
                             continue
                         break
+
+                    if proposal.is_ordered_task:
+                        self._process_ordered_task_request(turn_id, user_prompt, proposal.arguments)
+                        return
 
                     # Dispatch to dedicated camera photo workflow.
                     # 转入专用拍照存盘工作流。
@@ -976,46 +982,111 @@ class LLMBrainNode(Node):
         )
         self._finish_tts_turn(turn_id)
 
-    def _process_action_before_inspection(self, turn_id, user_prompt, actions):
-        """Wait for the requested motions before acquiring a new camera preview."""
-        self.corrected_publisher.publish(String(data=user_prompt))
-        self.get_logger().info(f'[{turn_id}] Executing actions before camera inspection.')
-        sequence = self._execute_dialog_action_sequence(
-            actions, user_prompt=user_prompt, turn_id=turn_id,
-        )
-        if self._voice_task_cancelled():
-            return
-        results = sequence.get('results', []) if isinstance(sequence, dict) else []
-        completed = (
-            isinstance(sequence, dict) and sequence.get('status') == 'success'
-            and len(results) == len(actions)
-            and all(isinstance(item, dict) and item.get('status') == 'completed' for item in results)
-        )
-        executed = LLMVoiceTurnState(user_prompt).apply_action_sequence(
-            sequence if isinstance(sequence, dict) else {}, turn_id,
-        )
-        if not completed:
-            answer = '动作没有完成，所以我没有继续观察。'
-            self.get_logger().warning(f'[{turn_id}] Action before inspection failed.')
-            LLMConversationHistory.record_turn(
-                self.chat_history, user_text=user_prompt, assistant_text=answer,
-                actions=executed, turn_id=turn_id,
-            )
-            self.full_ai_publisher.publish(String(data=answer))
-            self._publish_tts(answer, turn_id)
-            self._publish_screen_dialog(turn_id, user_prompt, answer, executed, error='action_before_inspection_failed')
-            self._finish_tts_turn(turn_id)
-            return
+    def _ordered_task_cancelled(self):
+        return (not getattr(self, '_worker_running', True)
+                or self._voice_task_cancelled()
+                or getattr(self, '_game_mode', 'robot') != 'robot')
 
-        # Completion tracks commanded motion, not servo feedback. Allow a short
-        # settling interval and honour cancellation before requesting a frame.
+    def _settle_ordered_motion(self):
+        # Command completion has no servo-position feedback; let the mount settle.
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
-            if self._voice_task_cancelled():
-                return
+            if self._ordered_task_cancelled():
+                return False
             time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-        if not self._voice_task_cancelled():
-            self._process_camera_inspection(turn_id, user_prompt, actions=executed)
+        return not self._ordered_task_cancelled()
+
+    def _process_ordered_task_request(self, turn_id, user_prompt, arguments=None):
+        """Validate the entire semantic plan before the first physical side effect."""
+        self.corrected_publisher.publish(String(data=user_prompt))
+        try:
+            if arguments is None:
+                for event in self.llm.chat_stream(
+                    user_prompt + '\n' + ORDERED_TASK_PLANNING_POLICY,
+                    self._history_for_request(), tools_enabled=True,
+                    only_action_name=ORDERED_TASK_TOOL_NAME, max_tokens_override=1536,
+                ):
+                    if self._ordered_task_cancelled():
+                        return
+                    if event.get('type') != 'tool_call':
+                        continue
+                    proposal = evaluate_tool_proposal(event, user_prompt=user_prompt)
+                    if not proposal.is_ordered_task:
+                        continue
+                    arguments = proposal.arguments
+                    break
+            plan = validate_ordered_task_plan(user_prompt, arguments)
+        except (TypeError, ValueError):
+            outcome = {'status': 'failed', 'results': [], 'error': 'ordered_plan_invalid',
+                       'response': '这次没有生成完整可执行的任务计划，所以我没有执行动作或观察。'}
+        except Exception as exc:
+            self.get_logger().error(f'[{turn_id}] Ordered planning failed: {type(exc).__name__}')
+            outcome = {'status': 'failed', 'results': [], 'error': 'ordered_planning_failed',
+                       'response': '任务规划没有完成，所以我没有执行动作或观察。'}
+        else:
+            self.get_logger().info(f'[{turn_id}] Executing ordered plan: steps={len(plan["steps"])}')
+            outcome = OrderedTaskExecutor(
+                execute_motion=lambda actions: self._execute_dialog_action_sequence(
+                    actions, user_prompt=user_prompt, turn_id=turn_id,
+                ),
+                inspect=self._execute_ordered_inspection_step,
+                search=lambda args: self._execute_ordered_search_step(args, turn_id),
+                cancelled=self._ordered_task_cancelled,
+                settle=self._settle_ordered_motion,
+            ).invoke(plan)
+
+        actions = LLMVoiceTurnState(user_prompt).apply_action_sequence(outcome, turn_id)
+        answer = outcome.get('response') or ('任务已完成。' if outcome['status'] == 'completed' else '这次任务没有完成，已停止后续步骤。')
+        if outcome['status'] == 'failed' and outcome.get('results'):
+            answer += ' 后续步骤已停止。'
+        LLMConversationHistory.record_turn(
+            self.chat_history, user_text=user_prompt, assistant_text=answer,
+            actions=actions, turn_id=turn_id,
+        )
+        if self._ordered_task_cancelled():
+            return
+        self.full_ai_publisher.publish(String(data=answer))
+        self._publish_tts(answer, turn_id)
+        self._publish_screen_dialog(turn_id, user_prompt, answer, actions, error=outcome.get('error'))
+        self._finish_tts_turn(turn_id)
+
+    def _execute_ordered_inspection_step(self, arguments):
+        preview = self._run_camera_preview(duration_ms=self.tft_preview_settings.recognition_duration_ms)
+        if self._ordered_task_cancelled():
+            return {'status': 'interrupted', 'reason': 'turn_cancelled'}
+        if getattr(preview, 'busy', False) or not getattr(preview, 'last_frame', None):
+            return {'status': 'failed', 'reason': 'camera_frame_unavailable', 'response': '这次没有取得可用画面。'}
+        result = {'status': 'completed'}
+        responses = []
+        if arguments.get('save_photo') is True:
+            try:
+                result['saved_path'] = str(save_camera_photo(preview.last_frame, self.tft_preview_settings.photo_directory))
+                responses.append('照片已保存。')
+            except Exception:
+                return {'status': 'failed', 'reason': 'photo_save_failed', 'response': '画面拍到了，但照片保存失败了。'}
+        question = arguments.get('question', '').strip()
+        if question or not arguments.get('save_photo'):
+            try:
+                answer = self._analyze_camera_frame(preview.last_frame, question or '看看当前画面有什么')
+                if not answer:
+                    raise ValueError('empty_visual_answer')
+                responses.insert(0, answer)
+            except Exception:
+                result.update(status='failed', reason='camera_analysis_failed')
+                responses.append('这次画面没有分析成功。')
+        result['response'] = ' '.join(responses)
+        return result
+
+    def _execute_ordered_search_step(self, arguments, turn_id):
+        workflow = VisualSearchWorkflow(authorize=validate_action_arguments, motion_settings=load_visual_search_motion_settings)
+        preparation = workflow.prepare(turn_id=turn_id, arguments=arguments)
+        if preparation.rejection is not None:
+            return preparation.rejection
+        plan = preparation.plan
+        execution = self._try_execute_native_plan(
+            plan, timeout=plan.max_views * 50.0 + 10.0, cancelled=self._ordered_task_cancelled,
+        )
+        return workflow.complete(plan, execution)
 
     def _process_camera_inspection(self, turn_id, user_prompt, *, actions=None):
         """Run the camera graph and publish exactly one user-facing answer.

@@ -9,12 +9,14 @@ from typing import Any, Mapping, Optional
 from services.action.action_intent_guard import validate_action_call
 from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.vision.visual_search import VISUAL_SEARCH_TOOL_NAME
+from services.orchestration.ordered_task import ORDERED_TASK_TOOL_NAME, is_ordered_task_request
 
 ROUTE_ACTION = "action"
 ROUTE_CAMERA_PHOTO = "camera_photo"
 ROUTE_CAMERA_INSPECTION = "camera_inspection"
 ROUTE_CONDITIONAL_TASK = "conditional_task"
 ROUTE_VISUAL_SEARCH = "visual_search"
+ROUTE_ORDERED_TASK = "ordered_task"
 
 STREAM_CONTROL_BREAK = "break"
 STREAM_CONTROL_CONTINUE = "continue"
@@ -70,6 +72,10 @@ class ToolProposalDecision:
     @property
     def is_visual_search(self) -> bool:
         return self.is_accepted and self.route == ROUTE_VISUAL_SEARCH
+
+    @property
+    def is_ordered_task(self) -> bool:
+        return self.is_accepted and self.route == ROUTE_ORDERED_TASK
 
     @classmethod
     def accept(
@@ -154,6 +160,14 @@ class LLMToolProposalEvaluator:
             )
 
         # Atomic compound task protection
+        if not conditional_request and is_ordered_task_request(user_prompt) and action_name != ORDERED_TASK_TOOL_NAME:
+            return ToolProposalDecision.reject(
+                action_name=action_name,
+                reason="ordered_task_must_stay_atomic",
+                stream_control=STREAM_CONTROL_CONTINUE,
+                arguments=action_arguments,
+            )
+
         if conditional_request and action_name != CONDITIONAL_TASK_TOOL_NAME:
             return ToolProposalDecision.reject(
                 action_name=action_name,
@@ -177,6 +191,14 @@ class LLMToolProposalEvaluator:
             )
 
         # Route determination for valid calls
+        if action_name == ORDERED_TASK_TOOL_NAME:
+            return ToolProposalDecision.accept(
+                route=ROUTE_ORDERED_TASK,
+                action_name=action_name,
+                arguments=action_arguments,
+                plan=action_arguments,
+            )
+
         if action_name == "inspect_camera":
             if action_arguments.get("save_photo") is True:
                 return ToolProposalDecision.accept(

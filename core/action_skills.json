@@ -109,6 +109,15 @@
       "max_attempts": 1,
       "supports_cancel": false
     },
+    "run_ordered_task": {
+      "owner": "dialog_workflow",
+      "plan_resources": ["camera", "action_bus"],
+      "arbitration_resources": ["camera_owner", "motion_owner"],
+      "action_bus": false,
+      "timeout_ms": 60000,
+      "max_attempts": 1,
+      "supports_cancel": true
+    },
     "search_environment": {
       "owner": "wali_behavior_tree_node",
       "plan_resources": ["camera", "chassis"],

@@ -10,20 +10,21 @@ from pypinyin import Style, pinyin
 from services.action.action_intent_guard import (
     deterministic_safety_action,
     required_action_tool,
+    is_non_execution_request,
 )
 from services.vision.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
 )
 from services.orchestration.conditional_task import is_conditional_task_request
-from services.orchestration.action_before_inspection import action_before_inspection
+from services.orchestration.ordered_task import ORDERED_TASK_TOOL_NAME, is_ordered_task_request
 from services.llm.llm_response_policy import LLMResponsePolicy
 
 ROUTE_SAFETY_ACTION = "safety_action"
 ROUTE_CONDITIONAL_TASK = "conditional_task"
 ROUTE_CAMERA_PHOTO = "camera_photo"
 ROUTE_CAMERA_INSPECTION = "camera_inspection"
-ROUTE_ACTION_BEFORE_INSPECTION = "action_before_inspection"
+ROUTE_ORDERED_TASK = "ordered_task"
 ROUTE_ORDINARY_DIALOG = "ordinary_dialog"
 
 
@@ -38,7 +39,6 @@ class PreparedVoiceRequest:
     tools_enabled: bool = True
     max_tokens_override: Optional[int] = None
     only_action_name: Optional[str] = None
-    pre_inspection_actions: Optional[list[dict[str, Any]]] = None
 
     @property
     def is_safety_action(self) -> bool:
@@ -110,6 +110,22 @@ class LLMRequestPreparation:
     ) -> PreparedVoiceRequest:
         text = str(user_prompt or "")
 
+        if is_non_execution_request(text):
+            is_long_form = LLMResponsePolicy.is_long_form_request(text)
+            tokens_source = model_settings if model_settings is not None else configured_tokens
+            return PreparedVoiceRequest(
+                route=ROUTE_ORDINARY_DIALOG,
+                user_prompt=user_prompt,
+                augmented_prompt=cls.build_augmented_prompt(
+                    user_prompt, py_str=cls.generate_pinyin_reference(text), is_long_form=is_long_form,
+                ),
+                tools_enabled=False,
+                is_long_form=is_long_form,
+                max_tokens_override=LLMResponsePolicy.max_tokens(
+                    cls.resolve_configured_max_tokens(tokens_source), long_form=is_long_form,
+                ),
+            )
+
         # 1. Deterministic safety action
         safety_action = deterministic_safety_action(text)
         if safety_action is not None:
@@ -139,12 +155,11 @@ class LLMRequestPreparation:
                 max_tokens_override=None,
             )
 
-        ordered_actions = action_before_inspection(text)
-        if ordered_actions is not None:
+        if is_ordered_task_request(text):
             return PreparedVoiceRequest(
-                route=ROUTE_ACTION_BEFORE_INSPECTION,
+                route=ROUTE_ORDERED_TASK,
                 user_prompt=user_prompt,
-                pre_inspection_actions=ordered_actions,
+                only_action_name=ORDERED_TASK_TOOL_NAME,
             )
 
         # 3. Camera photo (not conditional)

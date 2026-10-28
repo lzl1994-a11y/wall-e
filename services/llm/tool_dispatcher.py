@@ -119,7 +119,13 @@ def get_action_tools():
 
 def get_multimodal_tools():
     """Tools for audio turns, including a transcript for paired history."""
-    return [MULTIMODAL_DIRECT_ANSWER_TOOL, *copy.deepcopy(mcp.get_chat_tools())]
+    # The direct-audio node has a separate executor. Only advertise tools it
+    # handles; ordered mixed tasks currently belong to the text/ASR node.
+    actions = [
+        tool for tool in mcp.get_chat_tools()
+        if tool.get("function", {}).get("name") != "run_ordered_task"
+    ]
+    return [MULTIMODAL_DIRECT_ANSWER_TOOL, *copy.deepcopy(actions)]
 
 
 class ToolCallAccumulator:

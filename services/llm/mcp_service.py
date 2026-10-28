@@ -32,6 +32,10 @@ from services.orchestration.conditional_task import (
     conditional_task_tool_schema,
 )
 from services.vision.visual_search import VISUAL_SEARCH_TOOL_NAME
+from services.orchestration.ordered_task import (
+    ORDERED_TASK_TOOL_NAME,
+    ordered_task_tool_schema,
+)
 
 mcp = FastMCP("Wali_Action_Center")
 LOGGER = logging.getLogger(__name__)
@@ -281,6 +285,25 @@ def run_conditional_task(
 # ==========================================
 
 
+@mcp.tool()
+def run_ordered_task(steps: list[dict[str, Any]]) -> str:
+    """执行用户明确要求的多个动作与观察、拍照、搜索组成的完整有序任务。
+
+    只有明确要求现在执行才调用；翻译、复述、朗读、引用、解释动作或能力询问不能调用。
+    一次提交完整 steps，严格保留所有动作及顺序，不同时调用独立动作或 inspect_camera。
+    每步填写现有工具 name、对应 arguments，以及支持此步骤的用户连续原话 grounding。
+    例如低头然后再看看前面：play_sequence(head_down) 后 inspect_camera；
+    低头、挥手、再看看：保留低头、挥手、观察三步；
+    先低头再观察并保存照片：inspect_camera 的 question 保留问题且 save_photo=true；
+    先转身再找红盒子：move_chassis(spin) 后 search_environment(target=红盒子)。
+    search_environment 自己已负责观察和必要转向；只说在周围找东西时不要额外创造转身。
+    用户说“找到后/找到才”执行的动作放入该 search_environment 的 on_found_actions，
+    不放进无条件外层 steps；无论是否找到都要执行的收尾动作才作为外层后续步骤。
+    每个物理动作必须有用户明确要求，不能凭需要擅自追加；解析不完整时直接澄清。
+    """
+    return "ok"
+
+
 def _configured_sequence_names():
     yaml_path = os.path.join(os.path.dirname(__file__), '../../core/sequences.yaml')
     try:
@@ -298,6 +321,8 @@ def _tighten_tool_schema(name, parameters):
     """Add provider-visible constraints; runtime validation remains mandatory."""
     if name == CONDITIONAL_TASK_TOOL_NAME:
         return conditional_task_tool_schema()
+    if name == ORDERED_TASK_TOOL_NAME:
+        return ordered_task_tool_schema()
     schema = copy.deepcopy(parameters)
     schema['additionalProperties'] = False
     properties = schema.setdefault('properties', {})

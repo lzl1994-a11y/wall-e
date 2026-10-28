@@ -28,7 +28,7 @@ class FastMcpToolTests(unittest.TestCase):
 
     def test_fastmcp_2x_enumerates_openai_tools_with_schemas(self):
         tools = mcp_service.get_chat_tools()
-        self.assertEqual(len(tools), 10)
+        self.assertEqual(len(tools), 11)
         self.assertEqual(
             {item["function"]["name"] for item in tools},
             {
@@ -42,6 +42,7 @@ class FastMcpToolTests(unittest.TestCase):
                 "inspect_camera",
                 "run_conditional_task",
                 "search_environment",
+                "run_ordered_task",
             },
         )
         for item in tools:
@@ -67,6 +68,13 @@ class FastMcpToolTests(unittest.TestCase):
             {"play", "stop"},
         )
         conditional = by_name["run_conditional_task"]["parameters"]
+        ordered = by_name["run_ordered_task"]["parameters"]
+        self.assertEqual(ordered["required"], ["steps"])
+        self.assertEqual(ordered["properties"]["steps"]["maxItems"], 8)
+        self.assertEqual(
+            ordered["properties"]["steps"]["items"]["required"],
+            ["name", "arguments", "grounding"],
+        )
         self.assertIn(
             "save_photo",
             by_name["inspect_camera"]["parameters"]["properties"],

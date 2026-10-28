@@ -1,0 +1,331 @@
+{
+  "mode": "live_planning_only",
+  "results": [
+    {
+      "case": "低头观察",
+      "prompt": "你低头，然后看看有什么。",
+      "expected": [
+        "head_down",
+        "inspect_camera"
+      ],
+      "passed": true,
+      "actual": [
+        "head_down",
+        "inspect_camera"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "head_down"
+            },
+            "grounding": "你低头"
+          },
+          {
+            "name": "inspect_camera",
+            "arguments": {
+              "question": "有什么",
+              "save_photo": false
+            },
+            "grounding": "然后看看有什么"
+          }
+        ]
+      }
+    },
+    {
+      "case": "连续连接词",
+      "prompt": "先低头，然后再看看前面有什么。",
+      "expected": [
+        "head_down",
+        "inspect_camera"
+      ],
+      "passed": true,
+      "actual": [
+        "head_down",
+        "inspect_camera"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "head_down"
+            },
+            "grounding": "先低头"
+          },
+          {
+            "name": "inspect_camera",
+            "arguments": {
+              "question": "前面有什么",
+              "save_photo": false
+            },
+            "grounding": "然后再看看前面有什么"
+          }
+        ]
+      }
+    },
+    {
+      "case": "多动作并保存",
+      "prompt": "先低头，挥手，然后看看前面有什么，并拍照保存。",
+      "expected": [
+        "head_down",
+        "wave_hello",
+        "inspect_camera"
+      ],
+      "passed": true,
+      "actual": [
+        "head_down",
+        "wave_hello",
+        "inspect_camera"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "head_down"
+            },
+            "grounding": "先低头"
+          },
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "wave_hello"
+            },
+            "grounding": "挥手"
+          },
+          {
+            "name": "inspect_camera",
+            "arguments": {
+              "question": "看看前面有什么",
+              "save_photo": true
+            },
+            "grounding": "然后看看前面有什么，并拍照保存"
+          }
+        ]
+      }
+    },
+    {
+      "case": "点头挥手观察",
+      "prompt": "先点头，再挥手，最后看看桌面上有什么。",
+      "expected": [
+        "basic_nod",
+        "wave_hello",
+        "inspect_camera"
+      ],
+      "passed": true,
+      "actual": [
+        "basic_nod",
+        "wave_hello",
+        "inspect_camera"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "basic_nod"
+            },
+            "grounding": "先点头"
+          },
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "wave_hello"
+            },
+            "grounding": "再挥手"
+          },
+          {
+            "name": "inspect_camera",
+            "arguments": {
+              "question": "桌面上有什么",
+              "save_photo": true
+            },
+            "grounding": "最后看看桌面上有什么"
+          }
+        ]
+      }
+    },
+    {
+      "case": "转身找物",
+      "prompt": "先转身，然后找一下红色盒子。",
+      "expected": [
+        "move_chassis",
+        "search_environment"
+      ],
+      "passed": true,
+      "actual": [
+        "move_chassis",
+        "search_environment"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "move_chassis",
+            "arguments": {
+              "direction": "spin",
+              "duration": 1
+            },
+            "grounding": "先转身"
+          },
+          {
+            "name": "search_environment",
+            "arguments": {
+              "target": "红色盒子",
+              "question": "红色盒子在哪里",
+              "search_direction": "spin",
+              "motion_duration": 2,
+              "max_views": 4,
+              "on_found_actions": []
+            },
+            "grounding": "然后找一下红色盒子"
+          }
+        ]
+      }
+    },
+    {
+      "case": "转向搜索找到点头",
+      "prompt": "先向左转一秒，然后找一下红色盒子，找到后点头。",
+      "expected": [
+        "move_chassis",
+        "search_environment"
+      ],
+      "passed": true,
+      "actual": [
+        "move_chassis",
+        "search_environment"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "move_chassis",
+            "arguments": {
+              "direction": "left",
+              "duration": 1
+            },
+            "grounding": "先向左转一秒"
+          },
+          {
+            "name": "search_environment",
+            "arguments": {
+              "target": "红色盒子",
+              "question": "红色盒子在哪里",
+              "search_direction": "spin",
+              "motion_duration": 1,
+              "max_views": 3,
+              "on_found_actions": [
+                {
+                  "name": "play_sequence",
+                  "arguments": {
+                    "sequence_name": "basic_nod"
+                  }
+                }
+              ]
+            },
+            "grounding": "然后找一下红色盒子，找到后点头"
+          }
+        ]
+      }
+    },
+    {
+      "case": "翻译不执行",
+      "prompt": "把“低头然后看看”翻译成英文。",
+      "expected": [],
+      "passed": true,
+      "emitted_tools": []
+    },
+    {
+      "case": "复述不执行",
+      "prompt": "请复述：先低头然后看看前面有什么。",
+      "expected": [],
+      "passed": true,
+      "emitted_tools": []
+    },
+    {
+      "case": "抬右手观察",
+      "prompt": "先抬起右手，然后看看前面有什么。",
+      "expected": [
+        "right_hand_up",
+        "inspect_camera"
+      ],
+      "passed": true,
+      "actual": [
+        "right_hand_up",
+        "inspect_camera"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "right_hand_up"
+            },
+            "grounding": "先抬起右手"
+          },
+          {
+            "name": "inspect_camera",
+            "arguments": {
+              "question": "前面有什么"
+            },
+            "grounding": "然后看看前面有什么"
+          }
+        ]
+      }
+    },
+    {
+      "case": "观察后低头再看",
+      "prompt": "先看看前面有什么，然后低头再看一眼地面。",
+      "expected": [
+        "inspect_camera",
+        "head_down",
+        "inspect_camera"
+      ],
+      "passed": true,
+      "actual": [
+        "inspect_camera",
+        "head_down",
+        "inspect_camera"
+      ],
+      "plan": {
+        "steps": [
+          {
+            "name": "inspect_camera",
+            "arguments": {
+              "question": "前面有什么",
+              "save_photo": false
+            },
+            "grounding": "先看看前面有什么"
+          },
+          {
+            "name": "play_sequence",
+            "arguments": {
+              "sequence_name": "head_down"
+            },
+            "grounding": "然后低头"
+          },
+          {
+            "name": "inspect_camera",
+            "arguments": {
+              "question": "地面",
+              "save_photo": false
+            },
+            "grounding": "再看一眼地面"
+          }
+        ]
+      }
+    },
+    {
+      "case": "能力询问不执行",
+      "prompt": "你会低头然后看看吗？",
+      "expected": [],
+      "passed": true,
+      "emitted_tools": []
+    }
+  ],
+  "date": "2026-10-29",
+  "timezone": "Asia/Shanghai",
+  "configuration_source": "runtime_config_snapshot",
+  "configured_model": "Pro/moonshotai/Kimi-K2.6",
+  "hardware_commands_sent": false
+}

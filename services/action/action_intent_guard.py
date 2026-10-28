@@ -85,6 +85,14 @@ _POSTPOSED_NEGATION_RE = re.compile(
 _EXPLANATION_CONTEXT_RE = re.compile(
     r"(?:什么意思|什么是|怎么读|如何理解|命令句|这句话|那句话|表示|属于)"
 )
+_TEXT_TRANSFORM_REQUEST_RE = re.compile(
+    r"^(?:(?:请|麻烦|帮我|给我|替我|你|瓦力|现在|再|先)[，,:：]*)*"
+    r"(?:复述|复读|朗读(?!器)|翻译(?!机|器|软件|设备)|读一下|读一遍|念一下|念一遍|"
+    r"说一遍|重复一遍|说[“‘\"'])|"
+    r"^(?:(?:请|麻烦|帮我|给我|替我|你|瓦力)[，,:：]*)*(?:把|将).{1,300}"
+    r"(?:翻译(?!机|器|软件|设备)|翻成|复述|朗读(?!器)|读一下|读一遍|念一下|念一遍)|"
+    r"^(?:(?:请|麻烦|帮我|给我|替我|你|瓦力)[，,:：]*)*用.{1,12}(?:说|读|复述)"
+)
 
 _EMOTION_PATTERNS = {
     "curious": r"好奇",
@@ -290,13 +298,23 @@ def _valid_arguments(name, arguments):
             valid = True
         except (TypeError, ValueError):
             valid = False
+    elif name == "run_ordered_task":
+        try:
+            from services.orchestration.ordered_task import normalize_ordered_task_plan
+
+            normalize_ordered_task_plan(arguments)
+            valid = True
+        except (TypeError, ValueError):
+            valid = False
     else:
         return False, "unknown_tool"
     return (True, "") if valid else (False, "invalid_arguments")
 
 
-def _obvious_non_command(user_text):
+def _obvious_non_command(user_text, *, allow_conditional=False):
     compact = "".join(str(user_text or "").split())
+    if _TEXT_TRANSFORM_REQUEST_RE.search(compact):
+        return True
     if re.fullmatch(r"(?:你好|您好|嗨|哈喽|早上好|中午好|晚上好)[！!。.]?", compact):
         return True
     if re.search(r"(?:没有|没|并未)(?:让|叫|要求|命令)", compact):
@@ -307,7 +325,8 @@ def _obvious_non_command(user_text):
         r"(?:今天|现在|马上|立刻|接着|然后|再)", compact
     ):
         return True
-    if re.search(r"(?:如果|假如|要是)", compact) and not _REQUEST_CUE_RE.search(compact):
+    if (not allow_conditional and re.search(r"(?:如果|假如|要是)", compact)
+            and not _REQUEST_CUE_RE.search(compact)):
         return True
     if _THIRD_PARTY_ACTION_RE.search(compact):
         return True
@@ -435,16 +454,16 @@ def canonicalize_conditional_action(user_text, plan):
     return normalized
 
 
-def resolve_explicit_sequence_action(user_text):
-    """Resolve a plainly named existing sequence without inventing a motion."""
+def is_non_execution_request(user_text):
+    """Reject clear text transformation, explanation and narration contexts."""
     compact = "".join(str(user_text or "").split())
-    if not compact or _obvious_non_command(compact):
-        return None
-    action = _explicit_conditional_action(compact)
-    if action is None or action[0] != "play_sequence":
-        return None
-    allowed, _ = validate_action_call(compact, *action)
-    return action if allowed else None
+    # Greetings keep the ordinary streaming route. The action validator still
+    # rejects any proposed physical action for them via _obvious_non_command.
+    if re.fullmatch(r"(?:你好|您好|嗨|哈喽|早上好|中午好|晚上好)[！!。.]?", compact):
+        return False
+    # A real observe-condition-act request still belongs to the dedicated
+    # conditional planner; it must not be disabled as hypothetical small talk.
+    return _obvious_non_command(user_text, allow_conditional=True)
 
 
 def _has_explicit_argument_conflict(compact, name, arguments):
@@ -512,6 +531,14 @@ def validate_action_call(user_text, name, arguments):
         return False, reason
 
     compact = "".join(str(user_text or "").split())
+    if name == "run_ordered_task":
+        try:
+            from services.orchestration.ordered_task import validate_ordered_task_plan
+
+            validate_ordered_task_plan(user_text, arguments)
+            return True, ""
+        except (TypeError, ValueError) as exc:
+            return False, str(exc)
     if name == "run_conditional_task":
         from services.orchestration.conditional_task import (
             is_conditional_task_request,
@@ -663,3 +690,23 @@ def validate_action_arguments(name, arguments):
 def registered_sequence_names():
     """Return the immutable configured sequence/pose allowlist."""
     return tuple(sorted(_SEQUENCE_NAMES))
+
+
+def explicit_sequence_mentions(user_text):
+    """Return unambiguous motion mentions for checking plan coverage only.
+
+    This is a negative completeness check, never a source of executable steps.
+    Directional look wording and emotions remain model-defined because their
+    meaning can refer to the scene rather than a requested physical pose.
+    """
+    compact = "".join(str(user_text or "").split())
+    checked = {
+        "head_down", "basic_nod", "basic_shake_head", "right_hand_up",
+        "left_hand_up", "raise_hand", "arms_up", "arms_down", "wave_hello",
+        "happy_dance", "look_center",
+    }
+    return tuple(
+        (name, match.start(), match.end())
+        for name in sorted(checked & _SEQUENCE_NAMES)
+        for match in re.finditer(_SEQUENCE_PATTERNS[name], compact)
+    )
