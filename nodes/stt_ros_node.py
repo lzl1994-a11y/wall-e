@@ -28,7 +28,7 @@ from services.remote.remote_protocol import (
 from services.remote.microphone_mode import REMOTE_CONNECTION_TOPIC, RemoteMicrophoneLease
 from services.audio.audio_control_protocol import AUDIO_CONTROL_TOPIC, encode_stop_speech_control
 from services.audio.startup_prompts import (
-    StartupPromptGate, clear_startup_ready, mark_startup_ready,
+    clear_startup_ready, mark_startup_ready,
 )
 
 class STTNode(Node):
@@ -43,7 +43,6 @@ class STTNode(Node):
         self._game_active = False
         self._llm_busy = False
         self._recording_paused = False
-        self._startup_prompt_gate = StartupPromptGate()
         self._startup_utterance_submitted = False
         self._startup_recognition_pub = (
             self.create_publisher(String, "startup_recognition_state", 10)
@@ -92,8 +91,6 @@ class STTNode(Node):
                 self._sync_recording()
                 self.create_subscription(String, REMOTE_CONNECTION_TOPIC, self._on_remote_connection, 1)
                 self.create_timer(0.5, self._check_remote_connection)
-            if os.environ.get("WALI_STARTUP_STATUS_DIR"):
-                self.create_timer(0.1, self._sync_recording)
             self._sync_recording()
             mark_startup_ready()
             self.get_logger().info('✅ 听觉节点已上线，正在全天候监听环境声音...')
@@ -104,8 +101,7 @@ class STTNode(Node):
         """
         传动轴函数：底层一旦断句成功，立刻触发这里
         """
-        if (self._game_active or self._llm_busy or getattr(self, "_remote_connected", False)
-                or self._startup_prompt_active()):
+        if self._game_active or self._llm_busy or getattr(self, "_remote_connected", False):
             return
         self.get_logger().info(f'👂 捕捉到人声: "{text}"')
         
@@ -233,8 +229,7 @@ class STTNode(Node):
 
     def _sync_recording(self):
         """Keep the loaded wake model idle while any audio policy blocks recording."""
-        paused = (self._game_active or self._llm_busy or getattr(self, "_remote_connected", False)
-                  or self._startup_prompt_active())
+        paused = self._game_active or self._llm_busy or getattr(self, "_remote_connected", False)
         if paused == self._recording_paused:
             return
         engine = getattr(self, "stt_engine", None)
@@ -249,10 +244,6 @@ class STTNode(Node):
         else:
             self.get_logger().info('🔊 录音恢复，唤醒词检测重新启用')
             engine.resume()
-
-    def _startup_prompt_active(self):
-        gate = getattr(self, "_startup_prompt_gate", None)
-        return gate is not None and gate.active()
 
     def destroy_node(self):
         # 节点被杀死时，务必释放底层麦克风资源，防止端口被占死

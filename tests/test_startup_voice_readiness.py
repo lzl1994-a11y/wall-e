@@ -46,8 +46,6 @@ class StartupVoiceReadinessTests(unittest.TestCase):
         node = module.STTNode.__new__(module.STTNode)
         node._game_active = node._llm_busy = node._recording_paused = False
         node._remote_connected = False
-        node._startup_prompt_gate = MagicMock()
-        node._startup_prompt_gate.active.return_value = True
         node.stt_engine = MagicMock()
         node.publisher_ = MagicMock()
         node.get_logger = lambda: MagicMock()
@@ -65,20 +63,22 @@ class StartupVoiceReadinessTests(unittest.TestCase):
         pipe.on_raw_pcm = MagicMock()
         return pipe
 
-    def test_stt_prompt_gate_is_independent_of_dialogue_busy(self):
+    def test_prompt_cannot_cancel_or_discard_an_inflight_asr_result(self):
         node = self._stt()
+        gate = node.stt_engine._pipe._startup_prompt_gate
+        gate.active.return_value = True
         node._sync_recording()
-        node.stt_engine.pause.assert_called_once()
+        node.stt_engine.pause.assert_not_called()
         self.assertFalse(node._llm_busy)
-        node.on_speech_detected('瓦力准备好了，可以叫我了')
-        node.publisher_.publish.assert_not_called()
-        node._startup_prompt_gate.active.return_value = False
+        node.on_speech_detected('用户在提示播放前说的有效内容')
+        node.publisher_.publish.assert_called_once()
+        self.assertEqual(node.publisher_.publish.call_args.args[0].data, '用户在提示播放前说的有效内容')
+        gate.active.return_value = False
         node._sync_recording()
-        node.stt_engine.resume.assert_called_once()
+        node.stt_engine.resume.assert_not_called()
 
     def test_valid_asr_submission_is_announced_before_voice_text(self):
         node = self._stt()
-        node._startup_prompt_gate.active.return_value = False
         events = []
         node._startup_recognition_pub = MagicMock()
         node.publisher_.get_subscription_count.return_value = 1
@@ -97,7 +97,6 @@ class StartupVoiceReadinessTests(unittest.TestCase):
 
     def test_asr_result_before_llm_subscription_does_not_hold_ready_forever(self):
         node = self._stt()
-        node._startup_prompt_gate.active.return_value = False
         node.publisher_.get_subscription_count.return_value = 0
         node._startup_recognition_pub = MagicMock()
         events = []
@@ -113,7 +112,6 @@ class StartupVoiceReadinessTests(unittest.TestCase):
         for suppressed in (False, True):
             with self.subTest(suppressed=suppressed):
                 node = self._stt()
-                node._startup_prompt_gate.active.return_value = False
                 node._startup_recognition_pub = MagicMock()
                 node.publisher_.get_subscription_count.return_value = 1
                 node._on_recognition_state(True)
@@ -132,9 +130,14 @@ class StartupVoiceReadinessTests(unittest.TestCase):
         for blocker in ('_game_active', '_llm_busy', '_remote_connected'):
             with self.subTest(blocker=blocker):
                 node = self._stt()
+                gate = node.stt_engine._pipe._startup_prompt_gate
+                gate.active.return_value = True
                 node._sync_recording()
+                node.stt_engine.pause.assert_not_called()
                 setattr(node, blocker, True)
-                node._startup_prompt_gate.active.return_value = False
+                node._sync_recording()
+                node.stt_engine.pause.assert_called_once()
+                gate.active.return_value = False
                 node._sync_recording()
                 node.stt_engine.resume.assert_not_called()
                 self.assertTrue(getattr(node, blocker))
@@ -153,6 +156,114 @@ class StartupVoiceReadinessTests(unittest.TestCase):
         pipe._startup_prompt_gate.active.return_value = False
         pipe._queue_processed_pcm(b'\x02\x00')
         self.assertEqual(pipe.audio_queue.get_nowait(), b'\x02\x00')
+
+    def test_vad_utterance_survives_a_late_prompt_through_final_recognition(self):
+        pipe = self._pipe(shared=True)
+        pipe._startup_prompt_gate.active.return_value = False
+        pipe._paused_event = threading.Event()
+        pipe._wake_lock = threading.Lock()
+        pipe._ww = types.SimpleNamespace(enabled=False, reset=lambda: None)
+        pipe._awake, pipe._vad_thresh = True, 0.5
+        pipe._reset_vad_state = MagicMock()
+        first = b'A' * pipe.FRAME_BYTES
+        continuation = b'B' * pipe.FRAME_BYTES
+        silence = b'T' * pipe.FRAME_BYTES
+        required = (pipe.SPEECH_START_MS + pipe.FRAME_MS - 1) // pipe.FRAME_MS
+        silent_count = int(pipe.SILENCE_SEC / (pipe.FRAME_MS / 1000.0)) + 1
+        pipe._vad_prob = lambda frame: float(frame in (first, continuation))
+        for _ in range(required):
+            pipe.audio_queue.put(first)
+        recognizing, release = threading.Event(), threading.Event()
+        received = []
+
+        def speech_start(_pcm):
+            pipe._startup_prompt_gate.active.return_value = True
+            for frame in [continuation] * required + [silence] * silent_count:
+                pipe._queue_processed_pcm(frame)
+
+        def sentence(pcm):
+            received.append(pcm)
+            recognizing.set()
+            release.wait(3)
+            pipe._is_running = False
+
+        pipe.on_speech_start = speech_start
+        pipe.on_speech_audio = None
+        pipe.on_sentence = sentence
+        worker = threading.Thread(target=pipe._run, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(recognizing.wait(2), 'late prompt must not reset active VAD buffers')
+            self.assertTrue(pipe._startup_local_speech_active)
+            self.assertFalse(pipe._startup_prompt_blocks_local_input())
+            self.assertTrue(received[0].startswith(first * required))
+            self.assertIn(continuation * required, received[0])
+            queued = pipe.audio_queue.qsize()
+            pipe._queue_processed_pcm(b'U' * pipe.FRAME_BYTES)
+            self.assertEqual(pipe.audio_queue.qsize(), queued + 1)
+        finally:
+            release.set()
+            pipe._is_running = False
+            pipe.audio_queue.put(b'')
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(pipe._startup_local_speech_active)
+        pipe._drain_queue()
+        pipe._is_running = True
+        pipe._queue_processed_pcm(b'P' * pipe.FRAME_BYTES)
+        self.assertTrue(pipe.audio_queue.empty(), 'new prompt input must be gated after the utterance completes')
+
+    def test_speech_activity_is_tracked_even_without_start_callback(self):
+        pipe = self._pipe(shared=True)
+        pipe.on_speech_start = None
+        pipe._emit_speech_start([b'\0\0'])
+        self.assertTrue(pipe._startup_local_speech_active)
+        self.assertFalse(pipe._startup_prompt_blocks_local_input())
+        pipe._queue_processed_pcm(b'\x01\x00')
+        self.assertEqual(pipe.audio_queue.get_nowait(), b'\x01\x00')
+        pipe.on_sentence = None
+        pipe._emit_sentence([])
+        self.assertFalse(pipe._startup_local_speech_active)
+        pipe._queue_processed_pcm(b'\x02\x00')
+        self.assertTrue(pipe.audio_queue.empty())
+
+    def test_sentence_exit_cancel_pause_and_reset_clear_speech_activity(self):
+        for operation in ('empty', 'short', 'missing_callback', 'callback_error', 'cancel', 'pause', 'reset', 'stop', 'awake_cancel'):
+            with self.subTest(operation=operation):
+                pipe = self._pipe(shared=True)
+                pipe.on_speech_start = None
+                pipe.on_speech_cancel = None
+                pipe.on_sentence = None
+                pipe._emit_speech_start([b'\0\0'])
+                if operation == 'empty':
+                    pipe._emit_sentence([])
+                elif operation == 'short':
+                    pipe._emit_sentence([b'\0\0'])
+                elif operation == 'missing_callback':
+                    pipe._emit_sentence([b'\0\0' * 4000])
+                elif operation == 'callback_error':
+                    pipe.on_sentence = MagicMock(side_effect=RuntimeError('ASR failed'))
+                    pipe._emit_sentence([b'\0\0' * 4000])
+                elif operation == 'cancel':
+                    pipe._emit_speech_cancel()
+                elif operation == 'pause':
+                    pipe._paused_event = threading.Event()
+                    pipe._shared_lock = threading.Lock()
+                    pipe.pause()
+                elif operation == 'stop':
+                    pipe._paused_event = threading.Event()
+                    pipe._external_audio_lock = threading.Lock()
+                    pipe._external_turn_buffer = bytearray()
+                    pipe._close_audio_stream = MagicMock()
+                    pipe._apm = pipe._listen_thread = pipe._device_thread = None
+                    pipe.stop()
+                elif operation == 'awake_cancel':
+                    pipe.set_awake(False)
+                else:
+                    pipe._wake_lock = threading.Lock()
+                    pipe._ww = MagicMock()
+                    pipe.reset_wake_word()
+                self.assertFalse(pipe._startup_local_speech_active)
 
     def test_raw_capture_and_remote_input_remain_available_during_prompt(self):
         pipe = self._pipe(raw=True)
@@ -207,10 +318,8 @@ class StartupVoiceReadinessTests(unittest.TestCase):
                 engine = MagicMock()
                 engine.start.side_effect = RuntimeError('unavailable') if fail else None
                 with (patch.object(module, 'STTService', return_value=engine),
-                      patch.object(module, 'StartupPromptGate') as gate,
                       patch.object(module, 'mark_startup_ready') as ready,
                       patch.dict('os.environ', {'WALI_SHARED_MICROPHONE': '0', 'WALI_STARTUP_STATUS_DIR': ''})):
-                    gate.return_value.active.return_value = False
                     module.STTNode()
                 self.assertEqual(ready.call_count, 0 if fail else 1)
 

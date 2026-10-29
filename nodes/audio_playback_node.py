@@ -152,6 +152,7 @@ class AudioPlaybackNode(Node):
             self._startup_recognition_busy = True
             self._startup_submission_pending = False
             self._startup_input_pending = True
+            self._interrupt_startup_prompt()
         elif msg.data == "submitted":
             self._startup_recognition_busy = False
             self._startup_submission_pending = not self._dialogue_busy

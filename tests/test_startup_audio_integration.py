@@ -215,6 +215,26 @@ class StartupAudioIntegrationTests(unittest.TestCase):
         self.assertTrue(node._startup_prompts.pending_request.startswith('startup_begin-'))
         node._dialog_state_pub.publish.assert_not_called()
 
+    def test_asr_busy_interrupts_a_queued_startup_clip_and_preserves_input(self):
+        node = self.node()
+        node._poll_startup_prompts()
+        self.assertTrue(node._startup_prompts.pending_request.startswith('startup_begin-'))
+        node._on_startup_recognition_state(types.SimpleNamespace(data='busy'))
+        node._player.stop_speech.assert_called_once()
+        self.assertIsNone(node._startup_prompts.pending_request)
+        self.assertTrue(node._startup_recognition_busy)
+        self.assertTrue((self.root / 'startup_begin.finished').exists())
+        for component in self.required:
+            mark_startup_ready(component)
+        self.clock.return_value = 300.0
+        node._poll_startup_prompts()
+        self.assertEqual(node._player.play_prompt.call_count, 1)
+        self.assertFalse(StartupPromptGate().active())
+        node._on_startup_recognition_state(types.SimpleNamespace(data='idle'))
+        node._poll_startup_prompts()
+        self.assertTrue(node._startup_prompts.pending_request.startswith('startup_ready-'))
+        node._dialog_state_pub.publish.assert_not_called()
+
     def test_asr_submitted_after_llm_busy_does_not_leave_a_stale_handoff(self):
         node = self.node()
         node._poll_startup_prompts()
@@ -280,6 +300,36 @@ class StartupAudioIntegrationTests(unittest.TestCase):
 
 
 class StartupLauncherIntegrationTests(unittest.TestCase):
+    def test_shared_voice_environment_keeps_distinct_readiness_identities(self):
+        import launch_nodes
+        args = types.SimpleNamespace(
+            voice_chat=False, remote_intercom=False, real_stt=False,
+            keyboard_stt=False, no_serial=True, tracking=False,
+            no_hardware=False, no_web=False, mcp=False, no_mcp=False,
+            save_voice_debug=False, remote_control=False, no_remote_control=False,
+        )
+        config = {'pipeline': {'mode': 'asr_llm'}, 'webrtc_remote': {'enabled': True}}
+        with patch.object(launch_nodes, 'load_config', return_value=config):
+            entries = launch_nodes.build_node_list(args)
+        llm = next(entry for entry in entries if entry.name == 'llm')
+        stt = next(entry for entry in entries if entry.name == 'stt')
+        shared = llm.environment
+        self.assertIs(shared, stt.environment)
+        session = launch_nodes.prepare_startup_session(entries)
+        try:
+            self.assertIsNot(llm.environment, stt.environment)
+            self.assertNotIn('WALI_STARTUP_COMPONENT', shared)
+            for entry in (llm, stt):
+                self.assertEqual(entry.environment['WALI_STARTUP_COMPONENT'], entry.name)
+                self.assertEqual(entry.environment['WALI_SHARED_MICROPHONE'], '1')
+                self.assertEqual(entry.environment['WALI_STARTUP_STATUS_DIR'], session.name)
+                with patch.dict(os.environ, entry.environment):
+                    self.assertTrue(mark_startup_ready())
+            self.assertTrue((Path(session.name) / 'llm.ready').is_file())
+            self.assertTrue((Path(session.name) / 'stt.ready').is_file())
+        finally:
+            session.cleanup()
+
     def test_audio_is_spawned_first_while_other_order_and_shutdown_remain_intact(self):
         import launch_nodes
         names = ['camera_capture', 'llm', 'tts_play', 'audio_playback', 'stt']

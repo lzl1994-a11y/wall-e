@@ -169,6 +169,7 @@ class AudioPipeline:
         self._shared_capture = bool(shared_capture)
         self._startup_prompt_gate = StartupPromptGate()
         self._startup_microphone_ready = False
+        self._startup_local_speech_active = False
         self._shared_lock = threading.Lock()
         self._shared_resampler = None
         if self._raw_only:
@@ -245,6 +246,7 @@ class AudioPipeline:
     # ── Public API ──
     def start(self):
         self._is_running = True
+        self._startup_local_speech_active = False
         self._paused_event.clear()
         if self._apm_enabled and not self._shared_capture:
             self._apm = WebRTCApm(
@@ -270,6 +272,7 @@ class AudioPipeline:
 
     def stop(self):
         self._is_running = False
+        self._startup_local_speech_active = False
         self._paused_event.set()
         with self._external_audio_lock:
             self._external_session_active = False
@@ -288,8 +291,11 @@ class AudioPipeline:
     def set_awake(self, value: bool):
         """外部重置唤醒状态（超时后关闭 VAD）"""
         self._awake = value
+        if not value:
+            self._startup_local_speech_active = False
 
     def pause(self):
+        self._startup_local_speech_active = False
         self._is_paused = True
         self._paused_event.set()
         self._drain_queue()
@@ -695,12 +701,14 @@ class AudioPipeline:
         # Browser-provided audio is independent of sound from the robot speaker.
         if (getattr(self, "_raw_only", False)
                 or getattr(self, "_external_session_active", False)
-                or getattr(self, "_external_turn_active", False)):
+                or getattr(self, "_external_turn_active", False)
+                or getattr(self, "_startup_local_speech_active", False)):
             return False
         gate = getattr(self, "_startup_prompt_gate", None)
         return gate is not None and gate.active()
 
     def reset_wake_word(self):
+        self._startup_local_speech_active = False
         with self._wake_lock:
             self._ww.reset()
 
@@ -757,6 +765,7 @@ class AudioPipeline:
                 self._reset_vad_state()
                 startup_was_active = startup_prompt
             if self._paused_event.is_set() or startup_prompt:
+                self._startup_local_speech_active = False
                 if startup_prompt:
                     self._drain_queue()
                 time.sleep(0.1)
@@ -800,6 +809,7 @@ class AudioPipeline:
                     if self._check_wake_word(frame):
                         print(f"[AudioPipeline] 唤醒词触发: '{self._ww._keyword}'")
                         self._awake = True
+                        self._startup_local_speech_active = False
                         self._reset_vad_state()
                         pre_roll_frames.clear()
                         speech_candidate_frames.clear()
@@ -955,8 +965,13 @@ class AudioPipeline:
             return 0.0
 
     def _emit_speech_start(self, frames):
+        if not frames:
+            return
+        # A late startup cue may not discard an utterance that already passed
+        # VAD, even while its synchronous final ASR callback is still running.
+        self._startup_local_speech_active = True
         callback = getattr(self, "on_speech_start", None)
-        if not frames or not callback:
+        if not callback:
             return
         try:
             callback(b"".join(frames))
@@ -973,6 +988,7 @@ class AudioPipeline:
             print(f"[AudioPipeline] on_speech_audio 异常: {exc}")
 
     def _emit_speech_cancel(self):
+        self._startup_local_speech_active = False
         callback = getattr(self, "on_speech_cancel", None)
         if not callback:
             return
@@ -983,17 +999,20 @@ class AudioPipeline:
 
     def _emit_sentence(self, frames):
         """将帧列表合并为 PCM bytes，触发 on_sentence 回调。"""
-        if not frames:
-            return
-        pcm = b"".join(frames)
-        dur = len(pcm) // 2 * 1000 // self.SAMPLE_RATE
-        if dur < 200:
-            self._emit_speech_cancel()
-            return
-        if not self.on_sentence:
-            self._emit_speech_cancel()
-            return
         try:
-            self.on_sentence(pcm)
-        except Exception as e:
-            print(f"[AudioPipeline] on_sentence 异常: {e}")
+            if not frames:
+                return
+            pcm = b"".join(frames)
+            dur = len(pcm) // 2 * 1000 // self.SAMPLE_RATE
+            if dur < 200:
+                self._emit_speech_cancel()
+                return
+            if not self.on_sentence:
+                self._emit_speech_cancel()
+                return
+            try:
+                self.on_sentence(pcm)
+            except Exception as e:
+                print(f"[AudioPipeline] on_sentence 异常: {e}")
+        finally:
+            self._startup_local_speech_active = False

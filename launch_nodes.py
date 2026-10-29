@@ -450,6 +450,9 @@ def prepare_startup_session(entries):
     required = voice | ({"audio_playback", "tts_play"} & names)
     session = tempfile.TemporaryDirectory(prefix="wali-startup-")
     for entry in entries:
+        # Voice nodes intentionally share input/debug settings while the list
+        # is built; per-process startup identity must not share that dict.
+        entry.environment = dict(entry.environment)
         entry.environment.update({
             "WALI_STARTUP_STATUS_DIR": session.name,
             "WALI_STARTUP_REQUIRED": json.dumps(sorted(required)),
