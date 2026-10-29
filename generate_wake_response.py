@@ -28,6 +28,8 @@ PROMPTS = {
     "esp_network_connected.wav": "ESP配网成功",
     "wifi_setup.wav": "请连接屏幕地址配置wifi",
     "wifi_connected.wav": "wifi配置成功，请稍后",
+    "startup_begin.wav": "瓦力正在启动，请稍候。",
+    "startup_ready.wav": "瓦力准备好了，可以叫我了。",
 }
 
 
@@ -53,6 +55,10 @@ async def synthesize(names=None):
             .set_channels(OUTPUT_CHANNELS)
             .set_sample_width(OUTPUT_SAMPLE_WIDTH)
         )
+        if filename.startswith("startup_"):
+            # Allow the independent recognition gate to propagate before the
+            # first audible wake-word syllable reaches the microphone.
+            audio = pydub.AudioSegment.silent(duration=200, frame_rate=OUTPUT_SAMPLE_RATE) + audio
         audio.export(output, format="wav")
         print(f"已保存: {output}")
         print(f"时长: {len(audio) / 1000:.1f}s, "

@@ -94,6 +94,15 @@ class MixingPlaybackService(PlaybackService):
             self._mixer.end_speech(("prompt", category, request_id))
         self._ready.set()
 
+    @property
+    def foreground_active(self):
+        """Whether dialogue, realtime speech or a prompt occupies the speech lane."""
+        with self._mix_lock:
+            mixer = self._mixer
+            return bool(mixer is not None and (
+                mixer.speech.parts or mixer.speech.active or mixer._pending_end is not None
+            ))
+
     def play_music(self, samples):
         self._submit("play_music", samples)
 

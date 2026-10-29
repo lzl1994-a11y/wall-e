@@ -21,6 +21,12 @@ from services.audio.audio_control_protocol import (
 )
 from services.audio.music_protocol import MUSIC_AUDIO_TOPIC
 from services.audio.mixing_playback_service import MixingPlaybackService
+from services.audio.startup_prompts import (
+    StartupPromptController, mark_startup_ready, clear_startup_ready,
+)
+from services.dialog.dialog_motion_protocol import (
+    DIALOG_MOTION_VAD_TOPIC, VAD_SPEECH_STARTED, VAD_SPEECH_ENDED,
+)
 from services.audio.esp32_network_prompt import (
     ESP32_NETCFG_STATUS_TOPIC,
     Esp32NetworkPromptSelector,
@@ -68,6 +74,16 @@ class AudioPlaybackNode(Node):
         self._remote_audio_gate = AudioPlaybackGate()
         self._received_tts_chunks = 0
         self._missing_tts_chunks = 0
+        self._startup_prompts = None
+        self._startup_timer = None
+        self._dialogue_busy = False
+        self._startup_input_pending = False
+        self._startup_recognition_busy = False
+        self._startup_submission_pending = False
+        try:
+            self._startup_prompts = StartupPromptController()
+        except (OSError, ValueError) as exc:
+            self.get_logger().warning(f"启动提示音不可用: {exc}")
         self._network_prompts = None
         try:
             self._network_prompts = Esp32NetworkPromptSelector(
@@ -100,6 +116,11 @@ class AudioPlaybackNode(Node):
         self.create_subscription(UInt8MultiArray, MUSIC_AUDIO_TOPIC, self._on_music_audio, 10)
         self.create_subscription(String, WAKE_AUDIO_TOPIC, self._on_wake_audio, 10)
         self.create_subscription(String, SYSTEM_AUDIO_TOPIC, self._on_system_audio, 10)
+        self.create_subscription(String, "llm_busy", self._on_dialogue_state, 10)
+        if self._startup_prompts is not None and self._startup_prompts.enabled:
+            self.create_subscription(String, DIALOG_MOTION_VAD_TOPIC, self._on_startup_vad, 10)
+            self.create_subscription(String, "startup_recognition_state", self._on_startup_recognition_state, 10)
+            self._startup_timer = self.create_timer(0.1, self._poll_startup_prompts)
         # A short-lived retained history closes the process-start race. The
         # selector rejects timestamped stale events if this node restarts later.
         self.create_subscription(
@@ -116,12 +137,82 @@ class AudioPlaybackNode(Node):
         self.get_logger().info(
             f"音频播放节点上线 (mode={mode}, sr={sample_rate})"
         )
+        mark_startup_ready()
+
+    def _on_dialogue_state(self, msg):
+        if msg.data in {"busy", "idle"}:
+            self._dialogue_busy = msg.data == "busy"
+            if self._dialogue_busy:
+                self._startup_submission_pending = False
+                self._startup_input_pending = getattr(self, "_startup_recognition_busy", False)
+                self._interrupt_startup_prompt()
+
+    def _on_startup_recognition_state(self, msg):
+        if msg.data == "busy":
+            self._startup_recognition_busy = True
+            self._startup_submission_pending = False
+            self._startup_input_pending = True
+        elif msg.data == "submitted":
+            self._startup_recognition_busy = False
+            self._startup_submission_pending = not self._dialogue_busy
+            self._startup_input_pending = self._startup_submission_pending
+        elif msg.data == "idle":
+            self._startup_recognition_busy = False
+            self._startup_input_pending = getattr(self, "_startup_submission_pending", False)
+
+    def _on_startup_vad(self, msg):
+        if msg.data == VAD_SPEECH_STARTED:
+            self._startup_input_pending = True
+            self._interrupt_startup_prompt()
+            controller = getattr(self, "_startup_prompts", None)
+            if controller is not None and "voice_chat" in controller.required:
+                # Direct audio has its own turn state machine. An established
+                # user turn takes priority over optional startup feedback.
+                controller.skip_ready()
+        elif msg.data == VAD_SPEECH_ENDED:
+            # ASR owns completion. Fixed delays can interrupt long recognition
+            # or its fallback; an unknown outcome delays only the optional cue.
+            pass
+
+    def _interrupt_startup_prompt(self):
+        controller = getattr(self, "_startup_prompts", None)
+        request_id = controller.pending_request if controller is not None else None
+        if request_id:
+            self._player.stop_speech()
+            controller.cancel(request_id)
+
+    def _poll_startup_prompts(self):
+        controller = self._startup_prompts
+        if controller is None:
+            return
+        if controller.finished:
+            timer = getattr(self, "_startup_timer", None)
+            if timer is not None:
+                timer.cancel()
+                self._startup_timer = None
+            return
+        if (controller.directory / "stopping").exists():
+            self._interrupt_startup_prompt()
+            return
+        if (self._dialogue_busy or self._remote_audio_gate.active
+                or getattr(self, "_startup_input_pending", False)
+                or self._player.foreground_active):
+            return
+        try:
+            prompt = controller.next_prompt()
+            if prompt is not None:
+                request_id, cue, pcm = prompt
+                self.get_logger().info(f"播放启动提示音: {cue}")
+                self._player.play_prompt(np.frombuffer(pcm, dtype=np.int16), "system", request_id)
+        except (OSError, ValueError) as exc:
+            self.get_logger().warning(f"启动提示音播放准备失败: {exc}")
 
     def _on_audio(self, msg):
         if not msg.data:
             self._log_tts_turn_diagnostics()
             self._player.mark_turn_end()
             return
+        self._interrupt_startup_prompt()
         self._track_tts_sequence(msg)
         samples = np.frombuffer(bytes(msg.data), dtype=np.int16)
         self._player.play(samples)
@@ -130,6 +221,7 @@ class AudioPlaybackNode(Node):
         control = decode_audio_control(msg.data)
         if control is None:
             return
+        self._interrupt_startup_prompt()
         if control["source"] in {"remote_safety", "remote_audio_track_ended"}:
             self._remote_audio_gate.close()
         self._player.stop_speech()
@@ -141,12 +233,16 @@ class AudioPlaybackNode(Node):
         if (not msg.data or len(msg.data) % 2
                 or not self._remote_audio_gate.accepts(audio_message_epoch(msg))):
             return
+        self._interrupt_startup_prompt()
         self._player.play_realtime(
             np.frombuffer(bytes(msg.data), dtype=np.int16)
         )
 
     def _on_remote_intercom_state(self, msg):
-        if self._remote_audio_gate.update(msg.data) and not self._remote_audio_gate.active:
+        changed = self._remote_audio_gate.update(msg.data)
+        if changed:
+            self._interrupt_startup_prompt()
+        if changed and not self._remote_audio_gate.active:
             self._player.stop_speech()
             self.get_logger().info("实时对讲接收已停止")
 
@@ -225,6 +321,7 @@ class AudioPlaybackNode(Node):
         except ValueError as exc:
             self.get_logger().warning(f"唤醒音频格式错误: {exc}")
             return
+        self._interrupt_startup_prompt()
         self._player.play_wake(np.frombuffer(pcm, dtype=np.int16), request_id)
 
     def _on_wake_complete(self, request_id):
@@ -253,9 +350,16 @@ class AudioPlaybackNode(Node):
         )
 
     def _on_system_complete(self, request_id):
+        controller = getattr(self, "_startup_prompts", None)
+        if controller is not None:
+            if controller.finish(request_id):
+                cue = "startup_ready" if request_id.startswith("startup_ready-") else "startup_begin"
+                self.get_logger().info(f"启动提示音队列完成: {cue}")
         self._system_done_pub.publish(String(data=request_id))
 
     def destroy_node(self):
+        clear_startup_ready()
+        self._interrupt_startup_prompt()
         self._player.close()
         return super().destroy_node()
 

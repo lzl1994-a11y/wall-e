@@ -16,6 +16,7 @@ from std_msgs.msg import MultiArrayDimension, String, UInt8MultiArray
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.audio.audio_buffer import StreamingPCMPrebuffer
 from services.audio.audio_output import OUTPUT_SAMPLE_RATE
+from services.audio.startup_prompts import mark_startup_ready, clear_startup_ready
 from services.audio.audio_silence import StreamingTailSilenceTrimmer, TurnAudioTrimmer
 from services.audio.paced_pcm_output import PacedPCMOutput
 from services.audio.audio_control_protocol import (
@@ -132,6 +133,7 @@ class TTSPlayNode(Node):
             on_stream_end=self._finish_stream_audio,
         )
 
+        mark_startup_ready()
         self.get_logger().info(
             f"TTS 播放节点上线 "
             f"(voice={self.voice}, rate={self.rate}, pitch={self.pitch}, "
@@ -280,6 +282,7 @@ class TTSPlayNode(Node):
         )
 
     def destroy_node(self):
+        clear_startup_ready()
         self._pipeline.shutdown()
         self._pcm_output.close()
         self._tts.shutdown()

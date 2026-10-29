@@ -21,6 +21,9 @@ from services.audio.audio_pipeline import AudioPipeline
 from .voice_debug import RollingVoiceDebugStore
 
 
+_RECOGNITION_STATE_INIT_LOCK = threading.Lock()
+
+
 class STTService:
     """
     外部接口保持兼容:
@@ -56,6 +59,9 @@ class STTService:
         self.on_wake_word = None
         self.on_speech_start = None
         self.on_speech_end = None
+        self.on_recognition_state = None
+        self._recognition_state_lock = threading.RLock()
+        self._recognition_inflight = 0
 
         # 唤醒词守门
         self._awake = False
@@ -327,6 +333,34 @@ class STTService:
     # PCM → WAV/debug → ASR final result
     # ===================================================================
     def _on_sentence(self, pcm_data: bytes):
+        """Keep optional startup feedback blocked until all recognition exits."""
+        self._change_recognition_state(1)
+        try:
+            return self._recognize_sentence(pcm_data)
+        finally:
+            self._change_recognition_state(-1)
+
+    def _change_recognition_state(self, change):
+        # Legacy embedders and small tests may construct this service via __new__.
+        if not hasattr(self, "_recognition_state_lock"):
+            with _RECOGNITION_STATE_INIT_LOCK:
+                if not hasattr(self, "_recognition_state_lock"):
+                    self._recognition_state_lock = threading.RLock()
+                    self._recognition_inflight = 0
+        with self._recognition_state_lock:
+            previous = self._recognition_inflight
+            self._recognition_inflight = max(0, previous + change)
+            if bool(previous) == bool(self._recognition_inflight):
+                return
+            callback = getattr(self, "on_recognition_state", None)
+            if callback is not None:
+                try:
+                    callback(bool(self._recognition_inflight))
+                except Exception:
+                    # Optional feedback cannot cancel or fail the actual ASR turn.
+                    pass
+
+    def _recognize_sentence(self, pcm_data: bytes):
         """VAD 断句回调：实时会话取最终文本，其他引擎识别完整 WAV。"""
         with self._awake_lock:
             awake = self._awake

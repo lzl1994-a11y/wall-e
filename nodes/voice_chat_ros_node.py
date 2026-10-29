@@ -104,6 +104,7 @@ from services.remote.remote_protocol import (
 from services.remote.microphone_mode import (
     RemoteMicrophoneLease, REMOTE_CONNECTION_TOPIC, local_voice_callback,
 )
+from services.audio.startup_prompts import clear_startup_ready, mark_startup_ready
 
 OUTPUT_ECHO_GUARD_SECONDS = 0.35
 GAME_COMMENTARY_PROMPT = (
@@ -253,6 +254,7 @@ class VoiceChatNode(Node):
             )
             self.create_timer(0.5, self._check_remote_connection)
         self.get_logger().info("语音直聊节点已上线")
+        mark_startup_ready()
 
     def _set_shared_microphone_input(self, enabled):
         # Do not deserialize 50 PCM messages/s into a suspended voice node.
@@ -935,6 +937,7 @@ class VoiceChatNode(Node):
 
     def destroy_node(self):
         self.get_logger().info("正在关闭语音直聊节点...")
+        clear_startup_ready()
         self._output().shutdown()
         with self._timer_lock:
             if self._wake_watchdog is not None:

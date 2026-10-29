@@ -130,6 +130,7 @@ from services.orchestration.conditional_task import (
 from services.llm.llm_action_plan import LLMActionPlanWorkflow
 from services.dialog.dialog_workflow import CameraInspectionWorkflow, ConditionalTaskWorkflow
 from services.speech.voice_debug import RollingVoiceDebugStore
+from services.audio.startup_prompts import clear_startup_ready, mark_startup_ready
 
 
 class LLMBrainNode(Node):
@@ -200,6 +201,7 @@ class LLMBrainNode(Node):
         # Worker queue and thread lifecycle flags.
         # 任务请求队列与工作线程生命周期标记。
         self._request_queue = queue.Queue(maxsize=8)
+        clear_startup_ready()
         self._worker_running = False
         self._voice_mode_lock = threading.RLock()
         self._voice_context = threading.local()
@@ -321,6 +323,7 @@ class LLMBrainNode(Node):
             daemon=True,
         )
         self._worker_thread.start()
+        mark_startup_ready()
 
     def _on_game_state(self, message):
         """Update game mode state and clean up commentary when exiting playing mode.
@@ -1686,6 +1689,7 @@ class LLMBrainNode(Node):
 
         优雅关闭节点：停止工作线程循环、关闭 TFT 预览客户端连接并销毁 ROS 节点。
         """
+        clear_startup_ready()
         self._worker_running = False
         if hasattr(self, '_request_queue'):
             try:

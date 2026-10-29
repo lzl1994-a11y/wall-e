@@ -27,6 +27,9 @@ from services.remote.remote_protocol import (
 )
 from services.remote.microphone_mode import REMOTE_CONNECTION_TOPIC, RemoteMicrophoneLease
 from services.audio.audio_control_protocol import AUDIO_CONTROL_TOPIC, encode_stop_speech_control
+from services.audio.startup_prompts import (
+    StartupPromptGate, clear_startup_ready, mark_startup_ready,
+)
 
 class STTNode(Node):
     def __init__(self):
@@ -40,6 +43,12 @@ class STTNode(Node):
         self._game_active = False
         self._llm_busy = False
         self._recording_paused = False
+        self._startup_prompt_gate = StartupPromptGate()
+        self._startup_utterance_submitted = False
+        self._startup_recognition_pub = (
+            self.create_publisher(String, "startup_recognition_state", 10)
+            if os.environ.get("WALI_STARTUP_STATUS_DIR") else None
+        )
         self._shared_capture = os.environ.get("WALI_SHARED_MICROPHONE") == "1"
         self._remote_connected = self._shared_capture
         self._remote_lease = RemoteMicrophoneLease() if self._shared_capture else None
@@ -74,12 +83,19 @@ class STTNode(Node):
             )
             self.stt_engine.on_speech_start = self._on_vad_speech_start
             self.stt_engine.on_speech_end = self._on_vad_speech_end
+            if self._startup_recognition_pub is not None:
+                self.stt_engine.on_recognition_state = self._on_recognition_state
+                self._publish_startup_recognition_state("idle")
             self.stt_engine.start()
             if self._shared_capture:
                 self.stt_engine.set_remote_connected(True)
                 self._sync_recording()
                 self.create_subscription(String, REMOTE_CONNECTION_TOPIC, self._on_remote_connection, 1)
                 self.create_timer(0.5, self._check_remote_connection)
+            if os.environ.get("WALI_STARTUP_STATUS_DIR"):
+                self.create_timer(0.1, self._sync_recording)
+            self._sync_recording()
+            mark_startup_ready()
             self.get_logger().info('✅ 听觉节点已上线，正在全天候监听环境声音...')
         except Exception as e:
             self.get_logger().error(f'🔴 底层引擎启动失败: {e}')
@@ -88,14 +104,43 @@ class STTNode(Node):
         """
         传动轴函数：底层一旦断句成功，立刻触发这里
         """
-        if self._game_active or self._llm_busy or getattr(self, "_remote_connected", False):
+        if (self._game_active or self._llm_busy or getattr(self, "_remote_connected", False)
+                or self._startup_prompt_active()):
             return
         self.get_logger().info(f'👂 捕捉到人声: "{text}"')
         
         # 将纯文本打包成 ROS 2 的标准 String 消息并广播出去
         msg = String()
         msg.data = text
-        self.publisher_.publish(msg)
+        if getattr(self, "_startup_recognition_pub", None) is not None:
+            try:
+                subscribers = self.publisher_.get_subscription_count()
+            except Exception:
+                subscribers = 0
+            # A volatile voice_text message with no consumer cannot later
+            # produce an LLM busy acknowledgement. Do not hold ready forever.
+            self._startup_utterance_submitted = type(subscribers) is int and subscribers > 0
+            if self._startup_utterance_submitted:
+                self._publish_startup_recognition_state("submitted")
+        try:
+            self.publisher_.publish(msg)
+        except Exception:
+            self._startup_utterance_submitted = False
+            self._publish_startup_recognition_state("idle")
+            raise
+
+    def _publish_startup_recognition_state(self, state):
+        publisher = getattr(self, "_startup_recognition_pub", None)
+        if publisher is not None:
+            publisher.publish(String(data=state))
+
+    def _on_recognition_state(self, busy):
+        if busy:
+            self._startup_utterance_submitted = False
+            state = "busy"
+        else:
+            state = "submitted" if getattr(self, "_startup_utterance_submitted", False) else "idle"
+        self._publish_startup_recognition_state(state)
 
     def _on_remote_connection(self, message):
         try:
@@ -143,6 +188,7 @@ class STTNode(Node):
         """对话开始时暂停 ASR，AI 语音播放完成后恢复。"""
         if msg.data == "busy":
             self._llm_busy = True
+            self._startup_utterance_submitted = False
         elif msg.data == "idle":
             self._llm_busy = False
         else:
@@ -187,7 +233,8 @@ class STTNode(Node):
 
     def _sync_recording(self):
         """Keep the loaded wake model idle while any audio policy blocks recording."""
-        paused = self._game_active or self._llm_busy or getattr(self, "_remote_connected", False)
+        paused = (self._game_active or self._llm_busy or getattr(self, "_remote_connected", False)
+                  or self._startup_prompt_active())
         if paused == self._recording_paused:
             return
         engine = getattr(self, "stt_engine", None)
@@ -203,9 +250,14 @@ class STTNode(Node):
             self.get_logger().info('🔊 录音恢复，唤醒词检测重新启用')
             engine.resume()
 
+    def _startup_prompt_active(self):
+        gate = getattr(self, "_startup_prompt_gate", None)
+        return gate is not None and gate.active()
+
     def destroy_node(self):
         # 节点被杀死时，务必释放底层麦克风资源，防止端口被占死
         self.get_logger().info('🛑 正在安全关闭麦克风...')
+        clear_startup_ready()
         if hasattr(self, 'stt_engine'):
             self.stt_engine.stop()
         super().destroy_node()

@@ -25,6 +25,9 @@ import yaml
 from services.audio.alsa_capture import ArecordInputStream, native_capture_available
 from services.hardware.usb_devices import resolve_alsa_capture_device, resolve_audio_device
 from services.audio.audio_apm import WebRTCApm
+from services.audio.startup_prompts import (
+    StartupPromptGate, clear_startup_ready, mark_startup_ready,
+)
 
 
 def _prefer_keyword_models(files):
@@ -164,6 +167,8 @@ class AudioPipeline:
         if raw_only and shared_capture:
             raise ValueError("raw capture cannot also consume shared capture")
         self._shared_capture = bool(shared_capture)
+        self._startup_prompt_gate = StartupPromptGate()
+        self._startup_microphone_ready = False
         self._shared_lock = threading.Lock()
         self._shared_resampler = None
         if self._raw_only:
@@ -510,6 +515,9 @@ class AudioPipeline:
 
     # ── Internal ──
     def _close_audio_stream(self):
+        if not getattr(self, "_shared_capture", False):
+            self._startup_microphone_ready = False
+            clear_startup_ready("microphone")
         with self._audio_stream_lock:
             stream = self._audio_stream
             self._audio_stream = None
@@ -607,6 +615,10 @@ class AudioPipeline:
 
     def _queue_processed_pcm(self, pcm: bytes):
         if not self._is_running or self._is_paused: return
+        if (pcm and not getattr(self, "_shared_capture", False)
+                and not getattr(self, "_startup_microphone_ready", False)):
+            self._startup_microphone_ready = True
+            mark_startup_ready("microphone")
         callback = getattr(self, "on_raw_pcm", None)
         if callback:
             try:
@@ -614,6 +626,8 @@ class AudioPipeline:
             except Exception as exc:
                 print(f"[AudioPipeline] on_raw_pcm 异常: {exc}")
         if getattr(self, "_raw_only", False):
+            return
+        if self._startup_prompt_blocks_local_input():
             return
         try: self.audio_queue.put_nowait(pcm)
         except queue.Full: pass
@@ -670,10 +684,21 @@ class AudioPipeline:
 
     def _check_wake_word(self, frame: bytes) -> bool:
         """Keep the loaded model idle whenever microphone processing is paused."""
-        if self._is_paused or self._paused_event.is_set() or not self._ww.enabled:
+        if (self._is_paused or self._paused_event.is_set() or not self._ww.enabled
+                or self._startup_prompt_blocks_local_input()):
             return False
         with getattr(self, "_wake_lock", threading.Lock()):
             return self._ww.check(frame)
+
+    def _startup_prompt_blocks_local_input(self):
+        # The sole raw capture owner must continue feeding AEC and WebRTC.
+        # Browser-provided audio is independent of sound from the robot speaker.
+        if (getattr(self, "_raw_only", False)
+                or getattr(self, "_external_session_active", False)
+                or getattr(self, "_external_turn_active", False)):
+            return False
+        gate = getattr(self, "_startup_prompt_gate", None)
+        return gate is not None and gate.active()
 
     def reset_wake_word(self):
         with self._wake_lock:
@@ -723,9 +748,17 @@ class AudioPipeline:
         speech_frame_count = 0
         external_flush_frames = 0
         external_flush_started = False
+        startup_was_active = False
 
         while self._is_running:
-            if self._paused_event.is_set():
+            startup_prompt = self._startup_prompt_blocks_local_input()
+            if startup_prompt != startup_was_active:
+                self.reset_wake_word()
+                self._reset_vad_state()
+                startup_was_active = startup_prompt
+            if self._paused_event.is_set() or startup_prompt:
+                if startup_prompt:
+                    self._drain_queue()
                 time.sleep(0.1)
                 byte_buf.clear()
                 pre_roll_frames.clear()

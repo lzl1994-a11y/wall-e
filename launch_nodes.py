@@ -8,6 +8,7 @@ and can be overridden by CLI flags: --voice-chat / --real-stt / --keyboard-stt.
 import argparse
 import ctypes
 import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from services.ros_environment import can_reuse_tros_env, seal_tros_env
+from services.audio.startup_prompts import clear_startup_ready
 from services.vision.vision_runtime import VisionArtifactError, require_nv12_padder
 
 try:
@@ -351,6 +353,14 @@ def start_process(entry: NodeEntry):
     env["PYTHONPATH"] = os.pathsep.join([root_path, *existing_paths])
     env.update(entry.environment)
     seal_tros_env(env)
+    startup_directory = env.get("WALI_STARTUP_STATUS_DIR")
+    if startup_directory:
+        clear_startup_ready(entry.name, directory=startup_directory)
+        if entry.name == "remote_intercom" or (
+            entry.name in {"stt", "voice_chat"}
+            and env.get("WALI_SHARED_MICROPHONE") != "1"
+        ):
+            clear_startup_ready("microphone", directory=startup_directory)
 
     cmd = [sys.executable, str(script)]
     reuse_tracking_tros = (
@@ -428,9 +438,33 @@ def restart_managed(mp: ManagedProcess):
     return new_mp
 
 
+def prepare_startup_session(entries):
+    """Give one launcher run fresh readiness and prompt-deduplication state."""
+    names = {entry.name for entry in entries}
+    if "voice_chat" in names:
+        voice = {"voice_chat", "microphone"}
+    elif {"llm", "stt"} <= names:
+        voice = {"llm", "stt", "microphone"}
+    else:
+        return None
+    required = voice | ({"audio_playback", "tts_play"} & names)
+    session = tempfile.TemporaryDirectory(prefix="wali-startup-")
+    for entry in entries:
+        entry.environment.update({
+            "WALI_STARTUP_STATUS_DIR": session.name,
+            "WALI_STARTUP_REQUIRED": json.dumps(sorted(required)),
+            "WALI_STARTUP_COMPONENT": entry.name,
+        })
+    return session
+
+
 def run_launcher(args):
     entries = build_node_list(args)
     validate_runtime_artifacts(entries)
+    # The single existing output owner can announce startup while the heavier
+    # voice/model processes initialize. Keep all other relative ordering intact.
+    entries.sort(key=lambda entry: entry.name != "audio_playback")
+    startup_session = prepare_startup_session(entries)
     managed = []
     stopped = False
 
@@ -481,8 +515,12 @@ def run_launcher(args):
         if not stopped:
             print(f"[launcher] error: {exc}")
     finally:
+        if startup_session is not None:
+            (Path(startup_session.name) / "stopping").touch()
         for mp in reversed(managed):
             stop_managed(mp)
+        if startup_session is not None:
+            startup_session.cleanup()
         print("[launcher] shutdown complete.")
 
 
