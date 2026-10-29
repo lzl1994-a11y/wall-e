@@ -9,7 +9,8 @@ from typing import Any, Mapping, Optional
 from services.action.action_intent_guard import validate_action_call
 from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
 from services.vision.visual_search import VISUAL_SEARCH_TOOL_NAME
-from services.orchestration.ordered_task import ORDERED_TASK_TOOL_NAME, is_ordered_task_request
+from services.orchestration.ordered_task import ORDERED_TASK_TOOL_NAME
+from services.orchestration.task_routing import select_task_route
 
 ROUTE_ACTION = "action"
 ROUTE_CAMERA_PHOTO = "camera_photo"
@@ -159,8 +160,10 @@ class LLMToolProposalEvaluator:
                 rejection_kind=REJECTION_MALFORMED_ARGUMENTS,
             )
 
-        # Atomic compound task protection
-        if not conditional_request and is_ordered_task_request(user_prompt) and action_name != ORDERED_TASK_TOOL_NAME:
+        # Recompute the shared route from the original request. The legacy
+        # caller hint cannot relax complete-plan protection or invent a route.
+        task_route = select_task_route(user_prompt)
+        if task_route == ROUTE_ORDERED_TASK and action_name != ORDERED_TASK_TOOL_NAME:
             return ToolProposalDecision.reject(
                 action_name=action_name,
                 reason="ordered_task_must_stay_atomic",
@@ -168,11 +171,18 @@ class LLMToolProposalEvaluator:
                 arguments=action_arguments,
             )
 
-        if conditional_request and action_name != CONDITIONAL_TASK_TOOL_NAME:
+        if task_route == ROUTE_CONDITIONAL_TASK and action_name != CONDITIONAL_TASK_TOOL_NAME:
             return ToolProposalDecision.reject(
                 action_name=action_name,
                 reason="compound_task_must_stay_atomic",
                 stream_control=STREAM_CONTROL_CONTINUE,
+                arguments=action_arguments,
+            )
+
+        if action_name == CONDITIONAL_TASK_TOOL_NAME and task_route != ROUTE_CONDITIONAL_TASK:
+            return ToolProposalDecision.reject(
+                action_name=action_name,
+                reason="not_conditional_command",
                 arguments=action_arguments,
             )
 

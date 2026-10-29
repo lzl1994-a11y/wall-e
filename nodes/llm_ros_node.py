@@ -73,8 +73,9 @@ from services.llm.llm_request_preparation import (
     prepare_voice_request,
 )
 from services.llm.llm_tool_proposal import evaluate_tool_proposal
+from services.llm.llm_ordered_planning import OrderedTaskPlanningWorkflow
 from services.orchestration.ordered_task import (
-    ORDERED_TASK_TOOL_NAME, ORDERED_TASK_PLANNING_POLICY, validate_ordered_task_plan,
+    ORDERED_TASK_TOOL_NAME, ORDERED_TASK_PLANNING_POLICY,
 )
 from services.orchestration.ordered_task_execution import OrderedTaskExecutor
 from services.llm.llm_conditional_planning import (
@@ -1003,22 +1004,35 @@ class LLMBrainNode(Node):
         """Validate the entire semantic plan before the first physical side effect."""
         self.corrected_publisher.publish(String(data=user_prompt))
         try:
-            if arguments is None:
-                for event in self.llm.chat_stream(
-                    user_prompt + '\n' + ORDERED_TASK_PLANNING_POLICY,
+            def propose(feedback):
+                prompt = user_prompt + '\n' + ORDERED_TASK_PLANNING_POLICY
+                if feedback:
+                    prompt += ('\n上次候选未通过校验。按以下错误重新提交完整计划，'
+                               '保持原始任务的全部要求和禁止项：\n' + feedback)
+                stream = self.llm.chat_stream(
+                    prompt,
                     self._history_for_request(), tools_enabled=True,
                     only_action_name=ORDERED_TASK_TOOL_NAME, max_tokens_override=1536,
-                ):
-                    if self._ordered_task_cancelled():
-                        return
-                    if event.get('type') != 'tool_call':
-                        continue
-                    proposal = evaluate_tool_proposal(event, user_prompt=user_prompt)
-                    if not proposal.is_ordered_task:
-                        continue
-                    arguments = proposal.arguments
-                    break
-            plan = validate_ordered_task_plan(user_prompt, arguments)
+                )
+                try:
+                    for event in stream:
+                        if self._ordered_task_cancelled():
+                            return None
+                        if event.get('type') == 'tool_call' and event.get('name') == ORDERED_TASK_TOOL_NAME:
+                            return event.get('arguments')
+                    return None
+                finally:
+                    if hasattr(stream, 'close'):
+                        stream.close()
+
+            planning = OrderedTaskPlanningWorkflow(
+                propose=propose, cancelled=self._ordered_task_cancelled,
+            ).invoke(user_prompt=user_prompt, initial_candidate=arguments)
+            if self._ordered_task_cancelled():
+                return
+            plan = planning.get('plan')
+            if plan is None:
+                raise ValueError(planning.get('error') or 'ordered_plan_invalid')
         except (TypeError, ValueError):
             outcome = {'status': 'failed', 'results': [], 'error': 'ordered_plan_invalid',
                        'response': '这次没有生成完整可执行的任务计划，所以我没有执行动作或观察。'}

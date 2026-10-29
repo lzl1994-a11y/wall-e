@@ -16,8 +16,8 @@ from services.vision.camera_frame import (
     is_camera_inspection_request,
     is_camera_photo_request,
 )
-from services.orchestration.conditional_task import is_conditional_task_request
-from services.orchestration.ordered_task import ORDERED_TASK_TOOL_NAME, is_ordered_task_request
+from services.orchestration.ordered_task import ORDERED_TASK_TOOL_NAME
+from services.orchestration.task_routing import select_task_route
 from services.llm.llm_response_policy import LLMResponsePolicy
 
 ROUTE_SAFETY_ACTION = "safety_action"
@@ -126,9 +126,12 @@ class LLMRequestPreparation:
                 ),
             )
 
-        # 1. Deterministic safety action
+        task_route = select_task_route(text)
+
+        # Keep a standalone tracking stop immediate. A compound request must
+        # not be truncated by a single-action shortcut matching another clause.
         safety_action = deterministic_safety_action(text)
-        if safety_action is not None:
+        if safety_action is not None and task_route is None:
             action_name, action_arguments = safety_action
             return PreparedVoiceRequest(
                 route=ROUTE_SAFETY_ACTION,
@@ -141,9 +144,9 @@ class LLMRequestPreparation:
                 max_tokens_override=None,
             )
 
-        # 2. Conditional task
-        conditional_request = is_conditional_task_request(text)
-        if conditional_request:
+        # One outer route owns the complete request, including independent
+        # steps before or after a conditional observation.
+        if task_route == ROUTE_CONDITIONAL_TASK:
             return PreparedVoiceRequest(
                 route=ROUTE_CONDITIONAL_TASK,
                 user_prompt=user_prompt,
@@ -155,7 +158,7 @@ class LLMRequestPreparation:
                 max_tokens_override=None,
             )
 
-        if is_ordered_task_request(text):
+        if task_route == ROUTE_ORDERED_TASK:
             return PreparedVoiceRequest(
                 route=ROUTE_ORDERED_TASK,
                 user_prompt=user_prompt,
@@ -163,7 +166,7 @@ class LLMRequestPreparation:
             )
 
         # 3. Camera photo (not conditional)
-        if is_camera_photo_request(text) and not conditional_request:
+        if is_camera_photo_request(text):
             return PreparedVoiceRequest(
                 route=ROUTE_CAMERA_PHOTO,
                 user_prompt=user_prompt,
@@ -176,7 +179,7 @@ class LLMRequestPreparation:
             )
 
         # 4. Camera inspection (not conditional)
-        if is_camera_inspection_request(text) and not conditional_request:
+        if is_camera_inspection_request(text):
             return PreparedVoiceRequest(
                 route=ROUTE_CAMERA_INSPECTION,
                 user_prompt=user_prompt,

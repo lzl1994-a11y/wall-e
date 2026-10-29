@@ -11,6 +11,7 @@ from services.action.action_intent_guard import (
     validate_action_call,
 )
 from services.orchestration.conditional_task import CONDITIONAL_TASK_TOOL_NAME
+from services.orchestration.task_routing import select_task_route
 
 STATUS_IGNORED = "ignored"
 STATUS_MALFORMED = "malformed"
@@ -137,6 +138,13 @@ class LLMConditionalPlanning:
         *,
         user_prompt: str,
     ) -> ConditionalPlanDecision:
+        task_route = select_task_route(user_prompt)
+        if task_route != "conditional_task":
+            return ConditionalPlanDecision.rejected(
+                reason=("ordered_task_must_stay_atomic" if task_route == "ordered_task"
+                        else "not_conditional_command"),
+                plan=raw_plan,
+            )
         plan = canonicalize_conditional_action(user_prompt, raw_plan)
         allowed, reason = validate_action_call(
             user_prompt,
