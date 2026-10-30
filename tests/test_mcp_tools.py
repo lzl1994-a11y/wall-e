@@ -407,6 +407,45 @@ class LlmToolAvailabilityTests(unittest.TestCase):
         }, remaining)
         service.client.chat.completions.create.assert_called_once()
 
+    def test_dialog_expression_works_when_tools_disabled(self):
+        class NonExecDialogResponse:
+            def __iter__(self):
+                yield types.SimpleNamespace(choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(
+                        content="😍 happy：我最喜欢充满电的太阳能！",
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )])
+
+        service = self._service()
+        service.client.chat.completions.create.return_value = NonExecDialogResponse()
+        events = list(service.chat_stream(
+            "内部增强 prompt",
+            tools_enabled=False,
+            dialog_expression=True,
+            dialog_heard_text="你喜欢吃什么？",
+        ))
+
+        self.assertIn(
+            {"type": "dialog_expression", "expression": "happy", "intensity": "medium"},
+            events,
+        )
+        self.assertIn(
+            {"type": "text", "content": "我最喜欢充满电的太阳能！"},
+            events,
+        )
+        self.assertIn({
+            "type": "dialog_answer",
+            "heard_text": "你喜欢吃什么？",
+            "response": "我最喜欢充满电的太阳能！",
+            "intent_type": "conversation",
+            "expression": "happy",
+            "intensity": "medium",
+        }, events)
+        request = service.client.chat.completions.create.call_args.kwargs
+        self.assertNotIn("tools", request)
+
     def test_plain_content_does_not_start_a_second_json_request(self):
         class PlainResponse:
             def __iter__(self):

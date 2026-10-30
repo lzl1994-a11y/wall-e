@@ -286,8 +286,6 @@ class LLMService:
                 "structured_answer is reserved for direct-answer-only requests; "
                 "disable action tools for this request"
             )
-        if dialog_expression and not tools_enabled:
-            raise ValueError("dialog_expression requires tools_enabled=True")
         if only_action_name and not tools_enabled:
             raise ValueError("only_action_name requires tools_enabled=True")
         requires_structured_answer = bool(structured_answer)
@@ -427,13 +425,13 @@ class LLMService:
             if chunk_finish_reason:
                 finish_reason = str(chunk_finish_reason)
             delta = choice.delta
-            has_tool_delta = bool(getattr(delta, "tool_calls", None))
+            has_tool_delta = tools_enabled and bool(getattr(delta, "tool_calls", None))
 
             if requires_structured_answer:
                 acc.feed(delta)
                 continue
 
-            if not tools_enabled:
+            if not tools_enabled and not requires_dialog_answer:
                 if delta.content:
                     visible = answer_filter.feed(delta.content)
                     if visible:
@@ -499,9 +497,9 @@ class LLMService:
                         yield {"type": "text", "content": visible}
         if not requires_structured_answer:
             visible_tail = answer_filter.flush()
-            if not tools_enabled and visible_tail:
+            if not tools_enabled and not requires_dialog_answer and visible_tail:
                 yield {"type": "text", "content": visible_tail}
-            elif tools_enabled and branch != "tool":
+            elif (tools_enabled or requires_dialog_answer) and branch != "tool":
                 if buffer_tool_branch and visible_tail:
                     buffered_visible.append(visible_tail)
                 final_visible = (
