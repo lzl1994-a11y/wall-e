@@ -276,7 +276,20 @@
 
           <article class="card prompt-card" data-module="system_prompt">
             <div class="card-heading-row"><h3>系统提示词</h3><button class="button secondary small module-save" data-save-module="system_prompt" type="button">保存本模块</button></div>
-            <label class="field full"><span>人格与行为规则</span><textarea data-path="system_prompt" rows="20" spellcheck="false"></textarea></label>
+            <div class="form-grid">
+              <label class="field full">
+                <span>预设角色模板</span>
+                <select id="prompt-preset-select">
+                  <option value="">-- 选择预设模板快速填入 --</option>
+                  <option value="classic">经典瓦力（忠诚伴随、简洁直截、无废话）</option>
+                  <option value="warm">温暖治愈伴侣（温柔体贴、轻柔安慰、情感共鸣）</option>
+                  <option value="butler">智能管家（沉稳干练、尊贵得体、细致周到）</option>
+                  <option value="playful">活泼机灵鬼（幽默风趣、好奇爱玩、生动元气）</option>
+                  <option value="cyberpunk">赛博极客助手（冷静理性、未来机甲风格、高冷敏锐）</option>
+                </select>
+              </label>
+              <label class="field full"><span>人格与行为规则</span><textarea id="system-prompt-input" data-path="system_prompt" rows="20" spellcheck="false"></textarea></label>
+            </div>
           </article>
         </div>
       </section>
@@ -317,7 +330,7 @@
               <label class="field usb-role">
                 <span>语音 USB</span>
                 <select id="usb-voice" data-usb-role="voice"></select>
-                <small data-usb-detail="voice">麦克风、扬声器和声源定位共用</small>
+                <small data-usb-detail="voice">用于麦克风采集和扬声器播放</small>
               </label>
             </div>
             <p id="usb-scan-status" class="usb-scan-status" aria-live="polite">尚未扫描</p>
@@ -380,7 +393,6 @@
           <article class="card" data-module="serial">
             <div class="card-heading-row"><h3>串口</h3><button class="button secondary small module-save" data-save-module="serial" type="button">保存本模块</button></div>
             <div class="form-grid">
-              <label class="field"><span>DOA 端口</span><input data-path="serial.doa_port" type="text"></label>
               <label class="field"><span>下位机端口</span><input data-path="serial.lower_board_port" type="text"></label>
               <label class="field full"><span>波特率</span><input data-path="serial.baudrate" data-type="integer" type="number" min="1200" max="4000000"></label>
             </div>

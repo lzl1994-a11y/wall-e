@@ -78,7 +78,7 @@ def sample_config():
         },
         "system_prompt": "你是瓦力。",
         "tts": {"engine": "edge-tts", "voice": "zh-CN-XiaoxiaoNeural", "output_device": "default"},
-        "serial": {"doa_port": "COM1", "lower_board_port": "COM2", "baudrate": 115200},
+        "serial": {"lower_board_port": "COM2", "baudrate": 115200},
         "i2c": {"bus": 1, "pca9685_address": 64, "pwm_frequency": 50},
         "vision": {
             "camera_index": 0,
@@ -272,6 +272,19 @@ class ConfigWebServerTests(unittest.TestCase):
         self.assertIn("EYE_PREVIEW_SIZE = 240", app_js)
         self.assertIn("drawEyePreviewBackdrop", app_js)
         self.assertNotIn('api("/api/eye-config/save"', app_js)
+
+    def test_system_prompt_presets_are_exposed_in_static_page(self):
+        _, body = self.request("/", token=None)
+        html = body.decode("utf-8")
+        self.assertIn('id="prompt-preset-select"', html)
+        self.assertIn('value="classic"', html)
+        self.assertIn('value="warm"', html)
+        self.assertIn('value="butler"', html)
+        self.assertIn('value="playful"', html)
+        self.assertIn('value="cyberpunk"', html)
+        app_js = (DEFAULT_STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn("PROMPT_PRESETS", app_js)
+        self.assertIn("prompt-preset-select", app_js)
 
     def test_eye_config_save_persists_on_upper_host_without_opening_serial(self):
         config = {
