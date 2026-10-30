@@ -221,9 +221,9 @@ class LLMService:
               "expression、intensity。expression 只能是 neutral、listening、thinking、"
               "happy、sad、surprised、confused、concerned、curious、disdain、angry；"
               "intensity 只能是 low、"
-              "medium、high。还必须包含 actions 数组。只有用户明确命令瓦力现在执行现实"
-              "动作时，actions 才能填写；普通聊天、能力询问、否定、引用、故事或第三方"
-              "动作必须返回空数组。每项严格使用 {\"name\":工具名,\"arguments\":参数对象}。"
+              "medium、high。还必须包含 actions 数组，填写完成用户当前目标所需的动作，"
+              "可包含必要的准备步骤，并遵守用户禁止项。普通聊天、能力介绍、引用、故事"
+              "或第三方行为返回空数组。每项严格使用 {\"name\":工具名,\"arguments\":参数对象}。"
               "这是 Function Calling 失效后的 JSON 回退，本次必须把应执行的动作写入 actions，"
               "不能只在 response 中声称已经执行。可用动作工具如下：\n"
             + json.dumps(action_catalog, ensure_ascii=False, separators=(",", ":"))

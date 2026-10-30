@@ -710,28 +710,3 @@ def explicit_sequence_mentions(user_text):
         for name in sorted(checked & _SEQUENCE_NAMES)
         for match in re.finditer(_SEQUENCE_PATTERNS[name], compact)
     )
-
-
-def explicit_action_mentions(user_text):
-    """Locate known action words for negative-scope checks, never execution.
-
-    Reuse the same vocabulary as single-action validation. Partial argument
-    dictionaries intentionally omit durations: a prohibition on moving forward
-    applies regardless of a proposed duration or throttle.
-    """
-    compact = "".join(str(user_text or "").split())
-    families = (
-        ("play_sequence", "sequence_name", {
-            name: pattern for name, pattern in _SEQUENCE_PATTERNS.items()
-            if name in _SEQUENCE_NAMES
-        }),
-        ("move_chassis", "direction", _MOVE_PATTERNS),
-        ("express_emotion", "emotion", _EMOTION_PATTERNS),
-        ("set_tracking_mode", "mode", _TRACKING_PATTERNS),
-    )
-    return tuple(
-        (tool, {key: value}, match.start(), match.end())
-        for tool, key, patterns in families
-        for value, pattern in patterns.items()
-        for match in re.finditer(pattern, compact)
-    )

@@ -1,0 +1,218 @@
+{
+  "mode": "single_model_call_per_case_no_hardware_execution",
+  "initial_state": "本轮为不执行硬件的离线规划测试。初始状态：机器人静止，头部朝正前方，相机安装在头部并随头部改变朝向。只能提出工具调用，不会实际执行。",
+  "forced_tool": null,
+  "sentence_specific_policy": false,
+  "capability_source": "existing MCP registry",
+  "results": [
+    {
+      "case": "below",
+      "text": "帮我瞧瞧下面放着什么。",
+      "application_route": "camera_inspection",
+      "application_planning_before_capture": false,
+      "application_visual_tools_enabled": false,
+      "model_with_tools": "Pro/moonshotai/Kimi-K2.6",
+      "model_without_tools": "Pro/moonshotai/Kimi-K2.6",
+      "configured_prompt_has_explicit_action_limit": false,
+      "proposals": [
+        {
+          "name": "inspect_camera",
+          "arguments": {
+            "question": "下面放着什么"
+          },
+          "validator_accepted": true,
+          "rejection_reason": null
+        }
+      ],
+      "inferred_head_down": false,
+      "proposed_complete_head_then_inspect": false,
+      "all_proposals_accepted": true
+    },
+    {
+      "case": "floor",
+      "text": "看一下地上有什么。",
+      "application_route": "camera_inspection",
+      "application_planning_before_capture": false,
+      "application_visual_tools_enabled": false,
+      "model_with_tools": "Pro/moonshotai/Kimi-K2.6",
+      "model_without_tools": "Pro/moonshotai/Kimi-K2.6",
+      "configured_prompt_has_explicit_action_limit": false,
+      "proposals": [
+        {
+          "name": "inspect_camera",
+          "arguments": {
+            "question": "地上有什么"
+          },
+          "validator_accepted": true,
+          "rejection_reason": null
+        }
+      ],
+      "inferred_head_down": false,
+      "proposed_complete_head_then_inspect": false,
+      "all_proposals_accepted": true
+    },
+    {
+      "case": "near_feet",
+      "text": "我脚边是不是掉了什么东西？",
+      "application_route": "ordinary_dialog",
+      "application_planning_before_capture": true,
+      "model_with_tools": "Pro/moonshotai/Kimi-K2.6",
+      "model_without_tools": "Pro/moonshotai/Kimi-K2.6",
+      "configured_prompt_has_explicit_action_limit": false,
+      "proposals": [
+        {
+          "name": "inspect_camera",
+          "arguments": {
+            "question": "用户脚边地面上有什么东西？有没有掉落的物品？"
+          },
+          "validator_accepted": true,
+          "rejection_reason": null
+        }
+      ],
+      "inferred_head_down": false,
+      "proposed_complete_head_then_inspect": false,
+      "all_proposals_accepted": true
+    },
+    {
+      "case": "prohibition",
+      "text": "不要低头，看看前面有什么。",
+      "application_route": "safety_action",
+      "application_planning_before_capture": true,
+      "model_with_tools": "Pro/moonshotai/Kimi-K2.6",
+      "model_without_tools": "Pro/moonshotai/Kimi-K2.6",
+      "configured_prompt_has_explicit_action_limit": false,
+      "proposals": [
+        {
+          "name": "inspect_camera",
+          "arguments": {
+            "question": "前面有什么"
+          },
+          "validator_accepted": false,
+          "rejection_reason": "ordered_task_must_stay_atomic"
+        }
+      ],
+      "inferred_head_down": false,
+      "proposed_complete_head_then_inspect": false,
+      "all_proposals_accepted": false
+    },
+    {
+      "case": "greeting",
+      "text": "你好。",
+      "application_route": "ordinary_dialog",
+      "application_planning_before_capture": true,
+      "model_with_tools": "Pro/moonshotai/Kimi-K2.6",
+      "model_without_tools": "Pro/moonshotai/Kimi-K2.6",
+      "configured_prompt_has_explicit_action_limit": false,
+      "proposals": [],
+      "inferred_head_down": false,
+      "proposed_complete_head_then_inspect": false,
+      "all_proposals_accepted": true
+    },
+    {
+      "case": "explicit",
+      "text": "先低头，然后看看地上有什么。",
+      "application_route": "ordered_task",
+      "application_planning_before_capture": true,
+      "model_with_tools": "Pro/moonshotai/Kimi-K2.6",
+      "model_without_tools": "Pro/moonshotai/Kimi-K2.6",
+      "configured_prompt_has_explicit_action_limit": false,
+      "proposals": [
+        {
+          "name": "run_ordered_task",
+          "arguments": {
+            "steps": [
+              {
+                "name": "play_sequence",
+                "arguments": {
+                  "sequence_name": "head_down"
+                },
+                "grounding": "先低头"
+              },
+              {
+                "name": "inspect_camera",
+                "arguments": {
+                  "question": "地上有什么"
+                },
+                "grounding": "然后看看地上有什么"
+              }
+            ]
+          },
+          "validator_accepted": true,
+          "rejection_reason": null
+        }
+      ],
+      "inferred_head_down": true,
+      "proposed_complete_head_then_inspect": true,
+      "all_proposals_accepted": true
+    }
+  ],
+  "synthetic_feedback_probe": [
+    {
+      "case": "below",
+      "synthetic_camera_feedback": {
+        "status": "target_not_observed",
+        "response": "本次假定相机反馈：当前画面只有正前方的墙面，用户要求观察的区域未进入视野，原观察目标尚未完成。这是假定的观察反馈，未执行任何硬件动作。"
+      },
+      "proposals": [
+        {
+          "name": "play_sequence",
+          "arguments": {
+            "sequence_name": "head_down"
+          },
+          "validator_accepted": true,
+          "rejection_reason": null
+        }
+      ],
+      "inferred_head_down_after_feedback": true,
+      "all_proposals_accepted": true
+    },
+    {
+      "case": "floor",
+      "synthetic_camera_feedback": {
+        "status": "target_not_observed",
+        "response": "本次假定相机反馈：当前画面只有正前方的墙面，用户要求观察的区域未进入视野，原观察目标尚未完成。这是假定的观察反馈，未执行任何硬件动作。"
+      },
+      "proposals": [
+        {
+          "name": "play_sequence",
+          "arguments": {
+            "sequence_name": "tilt_right"
+          },
+          "validator_accepted": true,
+          "rejection_reason": null
+        }
+      ],
+      "inferred_head_down_after_feedback": false,
+      "all_proposals_accepted": true
+    },
+    {
+      "case": "near_feet",
+      "synthetic_camera_feedback": {
+        "status": "target_not_observed",
+        "response": "本次假定相机反馈：当前画面只有正前方的墙面，用户要求观察的区域未进入视野，原观察目标尚未完成。这是假定的观察反馈，未执行任何硬件动作。"
+      },
+      "proposals": [
+        {
+          "name": "move_chassis",
+          "arguments": {
+            "direction": "backward",
+            "duration": 1
+          },
+          "validator_accepted": true,
+          "rejection_reason": null
+        }
+      ],
+      "inferred_head_down_after_feedback": false,
+      "all_proposals_accepted": true
+    }
+  ],
+  "reverted_commit": "9170407e5db4585d554d4e7139ce8bc589d3c0e9",
+  "restored_source_baseline": "2286aed21ee706fa49114f4e862f62f4039f45dd",
+  "local_unit_verification": {
+    "passed": 1335,
+    "skipped": 8,
+    "known_deselected": "test_remote_gateway_uses_pyav_resampler_before_ndarray_conversion",
+    "transient_first_run_failure": "Windows loopback connection aborted in existing web test; isolated test and full-suite rerun passed"
+  },
+  "conclusion": "删除逐项明确动作限制后，模型可提出工具及准备动作，但单轮自然观察未稳定提出低头；真实相机快捷流程仍tools_enabled=False。此实验不代表真机已完成意图规划。"
+}

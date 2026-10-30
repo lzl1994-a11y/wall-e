@@ -54,8 +54,8 @@ class MCPToolDiscoveryError(RuntimeError):
 
 
 _ACTION_TOOL_BOUNDARY = (
-    "仅当用户明确命令瓦力现在执行该动作时调用。能力询问、疑问、假设、故事、引用、"
-    "词义解释、过去事件、第三方行为或单纯提到动作时禁止调用；不确定时直接回答或澄清。"
+    "根据用户当前目标选择技能，可以推导完成目标所需的准备动作，无需用户逐项说出动作。"
+    "遵守用户禁止项和工具能力范围；引用、故事、翻译、能力介绍不作为执行请求，目标不清时澄清。"
 )
 
 # 已知动作的中英文语义映射字典（用于增强大模型的语义理解）
@@ -129,7 +129,7 @@ _play_sequence_doc = _build_sequence_prompt()
 @mcp.tool()
 def express_emotion(emotion: str) -> str:
     """
-    仅当用户明确命令瓦力现在表达某种情绪时，控制瓦力用身体表达情绪。
+    根据用户的身体表达目标，控制瓦力用身体表达情绪。
     询问瓦力是否开心、讨论情绪或普通闲聊时不能为了生动而自行调用。
     
     emotion 可选值与对话表情统一；具体枚举由工具 Schema 提供。
@@ -145,7 +145,7 @@ def play_sequence(sequence_name: str) -> str:
 
 
 @mcp.tool(description=(
-    "仅当用户明确要求现在表演、跳舞或播放已编排动作时调用。"
+    "用于完成表演、跳舞或播放已编排动作的目标。"
     "从已保存的动作编排中选择对应项目，开始后会同时执行其中的舵机和履带轨道；"
     "如果用户只问功能或没有可匹配的编排，不要调用。"
 ))
@@ -160,10 +160,10 @@ def play_choreography(choreography_id: str) -> str:
 @mcp.tool()
 def move_chassis(direction: str, duration: int = 1) -> str:
     """
-    仅当用户明确命令瓦力现在移动时，控制瓦力履带底盘短距离移动。能力询问、
-    疑问、假设、故事、过去事件或单纯提到移动时禁止调用。
+    控制瓦力履带底盘短距离移动，可作为完成用户目标所需的准备动作。
+    能力介绍、假设讨论、故事、过去事件或单纯提到移动不作为执行请求。
     
-    【警告】：如果用户只是让你“向左看”、“向右看”或者“转头”，请调用 play_sequence 工具！只有当用户明确要求“走动”、“移动身体”、“转身”、“前进后退”时，才使用本底盘控制工具！
+    调整头部朝向使用 play_sequence；需要改变身体位置或朝向时才使用底盘工具。
     
     direction 可选：
       - "forward"  : 前进
@@ -186,12 +186,11 @@ def move_chassis(direction: str, duration: int = 1) -> str:
 @mcp.tool()
 def set_tracking_mode(mode: str) -> str:
     """
-    仅当用户明确命令瓦力现在切换持续视觉跟踪模式时调用。仅仅询问、引用、
-    解释或提到“看着我/跟着我”等短语不能调用。
+    用于完成持续视觉跟随或注视目标。引用、功能介绍和解释不触发实际模式切换。
 
-      - 明确命令“看着我/盯着我/注视我”时传入 mode="look_at_me"
-      - 明确命令“跟着我/跟随我”时传入 mode="follow_me"
-      - 明确命令“别看了/停止跟随/退出跟踪”时传入 mode="idle"
+      - 持续注视用户传入 mode="look_at_me"
+      - 持续跟随用户传入 mode="follow_me"
+      - 停止跟随或注视传入 mode="idle"
       
     参数 mode 可选值:
       "follow_me"  : 人体跟随，底盘保持人在画面中央并控制距离
@@ -206,7 +205,7 @@ def set_tracking_mode(mode: str) -> str:
 @mcp.tool()
 def set_vision_gate(enabled: bool) -> str:
     """
-    仅当用户明确命令瓦力现在打开或关闭视觉跟踪总开关时调用。
+    打开或关闭视觉跟踪总开关，用于完成相应跟踪目标。
     enabled=True 默认进入 body_follow，False 退出所有跟踪。
     通过 ROS /action_request 提交，仲裁后由 wali_tracking_node 执行。
     """
@@ -215,7 +214,7 @@ def set_vision_gate(enabled: bool) -> str:
 
 @mcp.tool()
 def inspect_camera(question: str = "", save_photo: bool = False) -> str:
-    """仅当用户明确要求瓦力现在观察、拍摄或识别眼前现实画面时调用。
+    """获取现实画面以完成用户的观察、拍摄或识别目标。
 
     拍摄一帧当前摄像头画面。用户要求保存照片时使用 save_photo=true；需要理解或回答
     画面内容时使用 save_photo=false，并把要回答的问题放入 question。谈论视觉或询问瓦力是否能看见
@@ -268,14 +267,14 @@ def run_conditional_task(
 ) -> str:
     """执行一次“观察画面 → 判断条件 → 条件成立才动作”的复合任务。
 
-    仅当用户明确要求瓦力现在观察真实环境，并根据观察结果决定是否执行一个动作时调用。
+    用于观察真实环境，并根据观察结果决定是否执行一个动作的目标。
     不要把它拆成 inspect_camera 和独立动作工具，也不要同时调用本工具与 action_name 对应的
     动作工具。observation 描述要观察什么；condition 是仅依据当前画面判断的完整条件，
     可以是任意物体、人物、颜色、姿态、数量或空间关系，不要写死特定目标；action_name 和
     action_arguments 描述条件明确成立时执行的一个动作。举手、点头、挥手、转头等预设动作
     必须使用 action_name="play_sequence"，例如举手参数为 {"sequence_name":"raise_hand"}、
     点头为 {"sequence_name":"basic_nod"}。条件不成立或无法确定时不会动作。
-    能力询问、举例、假设讨论、故事、引用或没有要求立即执行的句子禁止调用。
+    能力介绍、举例、假设讨论、故事和引用不作为执行请求。
     """
     return "ok"
 
@@ -287,9 +286,9 @@ def run_conditional_task(
 
 @mcp.tool()
 def run_ordered_task(steps: list[dict[str, Any]]) -> str:
-    """执行用户明确要求的多个动作与观察、拍照、搜索组成的完整有序任务。
+    """执行完成用户目标所需的动作与观察、拍照、搜索组成的完整有序任务。
 
-    只有明确要求现在执行才调用；翻译、复述、朗读、引用、解释动作或能力询问不能调用。
+    根据当前目标规划；翻译、复述、朗读、引用、解释动作或能力介绍不触发执行。
     一次提交完整 steps，严格保留所有动作及顺序，不同时调用独立动作或 inspect_camera。
     每步填写现有工具 name、对应 arguments，以及支持此步骤的用户连续原话 grounding。
     例如低头然后再看看前面：play_sequence(head_down) 后 inspect_camera；
@@ -299,7 +298,7 @@ def run_ordered_task(steps: list[dict[str, Any]]) -> str:
     search_environment 自己已负责观察和必要转向；只说在周围找东西时不要额外创造转身。
     用户说“找到后/找到才”执行的动作放入该 search_environment 的 on_found_actions，
     不放进无条件外层 steps；无论是否找到都要执行的收尾动作才作为外层后续步骤。
-    每个物理动作必须有用户明确要求，不能凭需要擅自追加；解析不完整时直接澄清。
+    可以推导完成目标所必需的准备动作，不能添加无关表演或违反用户禁止项；目标不清时澄清。
     """
     return "ok"
 
